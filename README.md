@@ -2,6 +2,8 @@
 
 NeuroTrace is a local-first EEG/iEEG review and annotation workstation for research data curation and seizure-forecasting workflows.
 
+Canonical public app: https://amaynes.github.io/neurotrace-eeg-studio/
+
 ## Supported recordings
 
 - EDF and EDF+ signal files, streamed from disk by time window

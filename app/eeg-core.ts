@@ -61,6 +61,13 @@ export interface SignalSource {
   ): Promise<WindowData>;
 }
 
+export interface SourceEvent {
+  label: string;
+  timeSec: number;
+  durationSec?: number;
+  source: "edf+" | "mat";
+}
+
 export type SignalErrorCode =
   | "UNSUPPORTED_FORMAT"
   | "INVALID_HEADER"
@@ -350,14 +357,14 @@ function parseEDFDate(dateText: string, timeText: string): Date | undefined {
   if (!dateMatch || !timeMatch) return undefined;
   const shortYear = Number(dateMatch[3]);
   const year = shortYear >= 85 ? 1900 + shortYear : 2000 + shortYear;
-  const date = new Date(
+  const date = new Date(Date.UTC(
     year,
     Number(dateMatch[2]) - 1,
     Number(dateMatch[1]),
     Number(timeMatch[1]),
     Number(timeMatch[2]),
     Number(timeMatch[3]),
-  );
+  ));
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
@@ -514,15 +521,74 @@ export async function parseEDFHeader(file: File): Promise<EDFHeader> {
 /** Alias for callers that prefer conventional mixed-case naming. */
 export const parseEdfHeader = parseEDFHeader;
 
+function parseEdfTalText(text: string): SourceEvent[] {
+  const events: SourceEvent[] = [];
+  for (const tal of text.split("\0")) {
+    if (!tal) continue;
+    const annotationSeparator = tal.indexOf("\x14");
+    if (annotationSeparator < 0) continue;
+    const timing = tal.slice(0, annotationSeparator);
+    const [onsetText, durationText] = timing.split("\x15", 2);
+    const timeSec = Number(onsetText);
+    const durationSec = durationText ? Number(durationText) : undefined;
+    if (!Number.isFinite(timeSec)) continue;
+    const labels = tal.slice(annotationSeparator + 1).split("\x14").map((label) => label.trim()).filter(Boolean);
+    for (const label of labels) {
+      events.push({
+        label,
+        timeSec,
+        durationSec: durationSec !== undefined && Number.isFinite(durationSec) && durationSec >= 0 ? durationSec : undefined,
+        source: "edf+",
+      });
+    }
+  }
+  return events;
+}
+
+export async function parseEDFAnnotations(file: File, header: EDFHeader): Promise<{ events: SourceEvent[]; warnings: string[] }> {
+  const annotationSignals = header.signals.filter((signal) => signal.isAnnotation);
+  if (!annotationSignals.length) return { events: [], warnings: [] };
+  const events: SourceEvent[] = [];
+  const warnings: string[] = [];
+  const recordsPerChunk = Math.max(1, Math.floor((4 * 1024 * 1024) / Math.max(1, header.bytesPerDataRecord)));
+
+  for (let firstRecord = 0; firstRecord < header.dataRecordCount; firstRecord += recordsPerChunk) {
+    const recordCount = Math.min(recordsPerChunk, header.dataRecordCount - firstRecord);
+    const byteStart = header.headerBytes + firstRecord * header.bytesPerDataRecord;
+    const byteEnd = byteStart + recordCount * header.bytesPerDataRecord;
+    const bytes = new Uint8Array(await file.slice(byteStart, byteEnd).arrayBuffer());
+    for (let localRecord = 0; localRecord < recordCount; localRecord += 1) {
+      const recordOffset = localRecord * header.bytesPerDataRecord;
+      for (const signal of annotationSignals) {
+        const start = recordOffset + signal.byteOffsetInRecord;
+        const end = start + signal.samplesPerRecord * 2;
+        events.push(...parseEdfTalText(latin1Decoder.decode(bytes.subarray(start, end))));
+      }
+    }
+  }
+
+  const deduplicated = new Map<string, SourceEvent>();
+  for (const event of events) {
+    const key = `${event.timeSec.toFixed(9)}\0${event.durationSec ?? ""}\0${event.label}`;
+    if (!deduplicated.has(key)) deduplicated.set(key, event);
+  }
+  if (!deduplicated.size) {
+    warnings.push("EDF+ annotation channel contained no non-timekeeping text annotations.");
+  }
+  return { events: [...deduplicated.values()].sort((a, b) => a.timeSec - b.timeSec || a.label.localeCompare(b.label)), warnings };
+}
+
 export class EDFSource implements SignalSource {
   readonly meta: RecordingMeta;
   readonly header: EDFHeader;
+  readonly events: SourceEvent[];
   private readonly file: File;
   private readonly displaySignals: EDFSignalHeader[];
 
-  private constructor(file: File, header: EDFHeader) {
+  private constructor(file: File, header: EDFHeader, events: SourceEvent[], annotationWarnings: string[]) {
     this.file = file;
     this.header = header;
+    this.events = events;
     this.displaySignals = header.signals.filter((signal) => !signal.isAnnotation);
     if (this.displaySignals.length === 0) {
       throw new SignalFileError("INVALID_HEADER", "The EDF contains an annotation channel but no displayable signal channels.");
@@ -544,7 +610,8 @@ export class EDFSource implements SignalSource {
       recordingId: header.recordingIdentification || undefined,
       startedAt: header.startedAt,
       startDateTime: header.startedAt?.toISOString(),
-      warnings: [...header.warnings],
+      warnings: [...header.warnings, ...annotationWarnings],
+      assumptions: header.startedAt ? ["EDF start clock timezone is not specified; preserved as source-local wall time."] : [],
       details: {
         dataRecords: header.dataRecordCount,
         dataRecordDurationSec: header.dataRecordDurationSec,
@@ -555,7 +622,9 @@ export class EDFSource implements SignalSource {
   }
 
   static async create(file: File): Promise<EDFSource> {
-    return new EDFSource(file, await parseEDFHeader(file));
+    const header = await parseEDFHeader(file);
+    const annotations = await parseEDFAnnotations(file, header);
+    return new EDFSource(file, header, annotations.events, annotations.warnings);
   }
 
   async getWindow(
@@ -642,6 +711,8 @@ export interface RawDatSourceOptions {
   physicalOffset?: number | readonly number[];
   channelUnits?: string | readonly string[];
   name?: string;
+  warnings?: readonly string[];
+  assumptions?: readonly string[];
 }
 
 function expandPerChannel(
@@ -690,6 +761,7 @@ export class RawDatSource implements SignalSource {
       : Array.from({ length: options.channelCount }, (_, index) => options.channelUnits?.[index] || defaultUnit);
     const warnings = [
       "Headerless DAT interpretation assumes sample-major, channel-interleaved signed 16-bit little-endian values. Confirm the mapping before clinical review.",
+      ...(options.warnings ?? []),
     ];
     if (trailingBytes) warnings.push(`Ignored ${trailingBytes} trailing byte(s) that do not form a complete sample frame.`);
     if (!options.physicalScale) warnings.push("No physical scale was supplied; raw digital counts are displayed as arbitrary units.");
@@ -708,8 +780,14 @@ export class RawDatSource implements SignalSource {
       sampleRate: options.sampleRate,
       byteLength: file.size,
       warnings,
-      assumptions: ["signed int16", "little-endian", "sample-major channel interleave"],
-      details: { totalSampleFrames: this.totalSamples, trailingBytes },
+      assumptions: ["signed int16", "little-endian", "sample-major channel interleave", ...(options.assumptions ?? [])],
+      details: {
+        totalSampleFrames: this.totalSamples,
+        trailingBytes,
+        sampleRateHz: options.sampleRate,
+        channelCount: options.channelCount,
+        physicalScale: typeof options.physicalScale === "number" ? options.physicalScale : "per-channel or unspecified",
+      },
     };
   }
 
@@ -1442,6 +1520,10 @@ export class MatSource implements SignalSource {
       );
     }
     const signal = signalCandidates[0];
+    const selectionWarnings = [...context.warnings];
+    if (signalCandidates.length > 1) {
+      selectionWarnings.push(`Selected largest numeric matrix "${signal.name}" (${signal.dimensions.join("×")}) from ${signalCandidates.length} viable matrices. Confirm the matrix and sample axis before committed review.`);
+    }
     const foundRate = chooseMatSampleRate(context.numeric);
     const sampleRate = options.sampleRate ?? foundRate.value ?? 256;
     if (!(sampleRate > 0) || !Number.isFinite(sampleRate)) {
@@ -1464,7 +1546,7 @@ export class MatSource implements SignalSource {
       sampleRate,
       sampleRateSource,
       options,
-      context.warnings,
+      selectionWarnings,
     );
   }
 
@@ -1630,6 +1712,8 @@ export interface MontageResult {
   sampleRates?: number[];
   /** Original zero-based source indices contributing to each derived channel. */
   sourceIndices: number[][];
+  /** Source index represented by the row before any reference contribution. */
+  primarySourceIndices: number[];
   mode: MontageMode;
   warnings: string[];
 }
@@ -1679,9 +1763,13 @@ export function buildMontage(
   labels: readonly string[],
   mode: MontageMode,
   badChannels: BadChannelSet = new Set<number | string>(),
+  sampleRates?: readonly number[],
 ): MontageResult {
   if (data.length !== labels.length) {
     throw new Error(`Montage received ${data.length} signals but ${labels.length} labels.`);
+  }
+  if (sampleRates && sampleRates.length !== data.length) {
+    throw new Error(`Montage received ${data.length} signals but ${sampleRates.length} sample rates.`);
   }
   const validIndices = data
     .map((_, index) => index)
@@ -1692,7 +1780,9 @@ export function buildMontage(
     return {
       data: validIndices.map((index) => data[index].slice()),
       labels: validIndices.map((index) => labels[index]),
+      sampleRates: sampleRates ? validIndices.map((index) => sampleRates[index]) : undefined,
       sourceIndices: validIndices.map((index) => [index]),
+      primarySourceIndices: validIndices,
       mode,
       warnings,
     };
@@ -1701,9 +1791,13 @@ export function buildMontage(
   if (mode === "average" || mode === "average-reference") {
     if (validIndices.length === 0) {
       warnings.push("No usable channels remain after bad-channel exclusion.");
-      return { data: [], labels: [], sourceIndices: [], mode, warnings };
+      return { data: [], labels: [], sourceIndices: [], primarySourceIndices: [], mode, warnings };
     }
     const sampleCount = data[validIndices[0]].length;
+    const referenceRate = sampleRates?.[validIndices[0]];
+    if (referenceRate !== undefined && validIndices.some((index) => Math.abs((sampleRates?.[index] ?? referenceRate) - referenceRate) > 1e-9)) {
+      throw new Error("Average reference requires equal sampling rates. Resample mixed-rate EDF channels first.");
+    }
     if (validIndices.some((index) => data[index].length !== sampleCount)) {
       throw new Error("Average reference requires equal-length channels. Resample mixed-rate EDF channels first.");
     }
@@ -1734,7 +1828,9 @@ export function buildMontage(
     return {
       data: output,
       labels: validIndices.map((index) => `${labels[index]} (CAR)`),
+      sampleRates: referenceRate === undefined ? undefined : validIndices.map(() => referenceRate),
       sourceIndices: validIndices.map(() => [...validIndices]),
+      primarySourceIndices: validIndices,
       mode,
       warnings,
     };
@@ -1751,6 +1847,7 @@ export function buildMontage(
   const outputData: Float32Array[] = [];
   const outputLabels: string[] = [];
   const sourceIndices: number[][] = [];
+  const primarySourceIndices: number[] = [];
   for (const contacts of groups.values()) {
     contacts.sort((a, b) => a.contact - b.contact || a.sourceIndex - b.sourceIndex);
     for (let index = 0; index < contacts.length - 1; index += 1) {
@@ -1761,9 +1858,15 @@ export function buildMontage(
       if (contacts[index + 2]?.contact === second.contact) continue;
       const firstData = data[first.sourceIndex];
       const secondData = data[second.sourceIndex];
+      const firstRate = sampleRates?.[first.sourceIndex];
+      const secondRate = sampleRates?.[second.sourceIndex];
+      if (firstRate !== undefined && secondRate !== undefined && Math.abs(firstRate - secondRate) > 1e-9) {
+        warnings.push(`${first.actualLabel}–${second.actualLabel} was omitted because ${firstRate} Hz and ${secondRate} Hz channels cannot be subtracted without resampling.`);
+        continue;
+      }
       const sampleCount = Math.min(firstData.length, secondData.length);
       if (firstData.length !== secondData.length) {
-        warnings.push(`${first.actualLabel}–${second.actualLabel} was clipped to the shorter mixed-rate channel.`);
+        warnings.push(`${first.actualLabel}–${second.actualLabel} was clipped to the shorter equal-rate window.`);
       }
       const derived = new Float32Array(sampleCount);
       for (let sample = 0; sample < sampleCount; sample += 1) {
@@ -1773,12 +1876,21 @@ export function buildMontage(
       outputData.push(derived);
       outputLabels.push(`${first.actualLabel}–${second.actualLabel}`);
       sourceIndices.push([first.sourceIndex, second.sourceIndex]);
+      primarySourceIndices.push(first.sourceIndex);
     }
   }
   if (outputData.length === 0) {
     warnings.push("No adjacent numbered electrode contacts were available for a bipolar derivation.");
   }
-  return { data: outputData, labels: outputLabels, sourceIndices, mode, warnings };
+  return {
+    data: outputData,
+    labels: outputLabels,
+    sampleRates: sampleRates ? primarySourceIndices.map((index) => sampleRates[index]) : undefined,
+    sourceIndices,
+    primarySourceIndices,
+    mode,
+    warnings,
+  };
 }
 
 // ---------------------------------------------------------------------------
