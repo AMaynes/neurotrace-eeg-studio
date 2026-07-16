@@ -443,7 +443,39 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   const queue = page.slice(queueStart, queueEnd);
   assert.match(queue, /instanceQueueEntries\.map/);
   assert.match(queue, /selectInstanceQueueEntry/);
+  assert.match(queue, /className="queue-arrow"[\s\S]*?Open details for/);
+  assert.match(queue, /setQueueDetailTarget\(\{ kind: entry\.kind, id: entry\.id \}\)/);
   assert.doesNotMatch(queue, /setCandidates|Manual review target|\+ Add/, "the queue is navigation-only");
+});
+
+test("opens queue-item details with complete notes and context", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const modalStart = page.indexOf("{queueDetailEntry &&");
+  const modalEnd = page.indexOf("{showAnnotationEditor", modalStart);
+  const modal = page.slice(modalStart, modalEnd);
+
+  assert.match(modal, /role="dialog"[^>]*aria-modal="true"/);
+  assert.match(modal, /Close queue item details/);
+  assert.match(modal, /TIMED CONTEXT/);
+  assert.match(modal, /CONTEXT \/ NOTES/);
+  assert.match(modal, /queueDetailAnnotation\?\.notes\?\.trim\(\)/);
+  assert.match(modal, /CHANNEL PROVENANCE/);
+  assert.match(modal, /Jump to location/);
+  assert.match(modal, /Open annotation/);
+});
+
+test("does not tint the waveform for whole-session labels", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const drawStart = page.lastIndexOf("for (const item of annotations)", page.indexOf("const rows = Math.max(1, display.data.length)"));
+  const drawEnd = page.indexOf("const rows =", drawStart);
+  const shading = page.slice(drawStart, drawEnd);
+
+  assert.match(shading, /const geometry = annotationGeometry\(item\)/);
+  assert.match(shading, /if \(geometry === "session"\) continue/);
+  assert.ok(
+    shading.indexOf('if (geometry === "session") continue') < shading.indexOf("context.fillRect"),
+    "whole-session labels are skipped before any annotation color is painted",
+  );
 });
 
 test("refreshes signal windows during panning instead of debouncing until scrolling stops", async () => {

@@ -221,9 +221,10 @@ textarea:focus-visible {
 
 .queue-section { padding-bottom: 8px; }
 .queue-list { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow: auto; }
-.queue-item { width: 100%; min-height: 42px; display: grid; grid-template-columns: 8px 1fr 8px; align-items: center; gap: 7px; padding: 5px 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; text-align: left; cursor: pointer; }
+.queue-item { width: 100%; min-height: 42px; display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: stretch; border: 1px solid transparent; border-radius: 5px; background: transparent; text-align: left; }
 .queue-item:hover { background: #0f1f25; }
 .queue-item.active { background: #13262b; border-color: #2b4b52; box-shadow: inset 2px 0 0 var(--mint); }
+.queue-jump { min-width: 0; display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 7px; padding: 5px 6px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .queue-status { width: 6px; height: 6px; border: 1px solid #556b72; border-radius: 50%; }
 .queue-status.active { background: var(--mint); border-color: var(--mint); box-shadow: 0 0 0 3px rgba(87, 223, 183, .1); }
 .queue-status.reviewed { background: #54b78f; border-color: #54b78f; }
@@ -232,7 +233,9 @@ textarea:focus-visible {
 .queue-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .queue-copy strong { font-size: 9px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #d7e3e3; }
 .queue-copy small { font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.queue-arrow { color: #4b6269; }
+.queue-arrow { display: grid; place-items: center; margin: 5px 4px 5px 0; padding: 0; border: 1px solid #29434a; border-radius: 4px; background: #102027; color: #789096; cursor: pointer; font-size: 16px; line-height: 1; }
+.queue-arrow:hover,
+.queue-arrow:focus-visible { border-color: var(--mint); background: #173029; color: var(--mint); }
 .empty-queue { padding: 12px 8px; border: 1px dashed #28434a; border-radius: 6px; text-align: center; color: var(--muted); }
 .empty-queue strong { display: block; color: #cad9da; font-size: 10px; }
 .empty-queue p { margin: 4px 0 8px; font-size: 9px; }
@@ -1932,6 +1935,23 @@ textarea:focus-visible {
 }
 .annotation-editor-heading .selected-label { flex: 1; min-width: 0; }
 .annotation-editor-modal .inspector-form { padding: 8px 0 0; }
+.queue-detail-modal { width: min(600px, calc(100vw - 32px)); }
+.queue-detail-heading { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto; align-items: center; gap: 11px; margin: 12px 0 18px; }
+.queue-detail-heading > i { width: 7px; height: 44px; border-radius: 4px; background: var(--label-color); box-shadow: 0 0 14px color-mix(in srgb, var(--label-color) 24%, transparent); }
+.queue-detail-heading h2 { margin: 0 0 4px; font-size: 21px; }
+.queue-detail-heading p { margin: 0; color: #71878d; font-size: 9px; }
+.queue-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #263e46; border-radius: 7px; background: #263e46; }
+.queue-detail-grid > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 11px 12px; background: #0d1c22; }
+.queue-detail-grid span,
+.queue-detail-notes > span,
+.queue-detail-source > span { color: #657b81; font-size: 7px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+.queue-detail-grid strong { overflow-wrap: anywhere; color: #d8e6e5; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.queue-detail-notes,
+.queue-detail-source { margin-top: 12px; padding: 13px; border: 1px solid #263e46; border-radius: 7px; background: #0b181e; }
+.queue-detail-notes p,
+.queue-detail-source p { margin: 7px 0 0; color: #b7c9c9; font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-wrap; }
+.queue-detail-source strong { display: block; margin-top: 7px; color: #dce9e8; font-size: 11px; }
+.queue-detail-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 16px; }
 
 .session-map-tabs {
   height: 44px;

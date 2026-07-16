@@ -605,6 +605,7 @@ export default function Home() {
   const [showSessionContextPicker, setShowSessionContextPicker] = useState(false);
   const [showPatientInfo, setShowPatientInfo] = useState(false);
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
+  const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
@@ -658,6 +659,16 @@ export default function Home() {
       : -1;
     return candidateIndex >= 0 ? candidateIndex : instanceQueueEntries.length ? 0 : -1;
   }, [activeCandidate, candidates, instanceQueueEntries, selectedAnnotationId]);
+  const queueDetailEntry = queueDetailTarget
+    ? instanceQueueEntries.find((item) => item.kind === queueDetailTarget.kind && item.id === queueDetailTarget.id) ?? null
+    : null;
+  const queueDetailAnnotation = queueDetailTarget?.kind === "annotation"
+    ? annotations.find((item) => item.id === queueDetailTarget.id) ?? null
+    : null;
+  const queueDetailCandidate = queueDetailTarget?.kind === "candidate"
+    ? candidates.find((item) => item.id === queueDetailTarget.id) ?? null
+    : null;
+  const queueDetailLabel = queueDetailAnnotation ? LABEL_BY_ID.get(queueDetailAnnotation.labelId) : null;
   const sourceHashDisplay = sourceHash.startsWith("demo:")
     ? sourceHash
     : `${sourceHash.slice(0, 8)}…${sourceHash.slice(-4)}`;
@@ -1395,6 +1406,7 @@ export default function Home() {
         if (!label) continue;
         const x1 = ((Math.max(item.start, viewStart) - viewStart) / timebase) * width;
         const geometry = annotationGeometry(item);
+        if (geometry === "session") continue;
         const x2 = geometry === "point" ? x1 : ((Math.min(item.end, viewStart + timebase) - viewStart) / timebase) * width;
         context.globalAlpha = item.status === "suggestion" ? 0.07 : item.status === "draft" ? 0.11 : 0.075;
         context.fillStyle = label.color;
@@ -2159,7 +2171,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || showPatientInfo || showAnnotationEditor || confirmCommit.length > 0;
+    const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -2199,14 +2211,14 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings]);
+  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
-      const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || showPatientInfo || showAnnotationEditor || confirmCommit.length > 0;
+      const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
       if (modalOpen && zoomModifier && (zoomInKey || zoomOutKey)) {
         event.preventDefault();
         event.stopPropagation();
@@ -2220,6 +2232,7 @@ export default function Home() {
         else if (showSessionMap) setShowSessionMap(false);
         else if (showPatientInfo) setShowPatientInfo(false);
         else if (showAnnotationEditor) setShowAnnotationEditor(false);
+        else if (queueDetailEntry) setQueueDetailTarget(null);
         else if (showImport && !importBusy) setShowImport(false);
         else if (confirmCommit.length) setConfirmCommit([]);
         setSelectedAnnotationId(null);
@@ -2315,7 +2328,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [activeCandidate, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, placePaletteLabel, redo, selectInstanceQueueEntry, selectedAnnotationId, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [activeCandidate, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, placePaletteLabel, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotationId, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -2484,11 +2497,13 @@ export default function Home() {
               <button disabled={!instanceQueueEntries.length || activeQueueIndex >= instanceQueueEntries.length - 1} aria-label="Next event or instance" title="Next event or instance" onClick={() => selectInstanceQueueEntry(Math.min(instanceQueueEntries.length - 1, activeQueueIndex + 1))}>›</button>
             </div>
             <div className="queue-list">
-              {instanceQueueEntries.length ? instanceQueueEntries.map((entry, index) => <button key={`${entry.kind}-${entry.id}`} className={`queue-item ${index === activeQueueIndex ? "active" : ""}`} onClick={() => selectInstanceQueueEntry(index)}>
-                <span className={`queue-status ${entry.status}`} />
-                <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
-                <span className="queue-arrow">›</span>
-              </button>) : <div className="empty-queue"><strong>No events or instance labels</strong><p>{hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
+              {instanceQueueEntries.length ? instanceQueueEntries.map((entry, index) => <div key={`${entry.kind}-${entry.id}`} className={`queue-item ${index === activeQueueIndex ? "active" : ""}`}>
+                <button className="queue-jump" onClick={() => selectInstanceQueueEntry(index)} aria-label={`Jump to ${entry.label}`}>
+                  <span className={`queue-status ${entry.status}`} />
+                  <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
+                </button>
+                <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
+              </div>) : <div className="empty-queue"><strong>No events or instance labels</strong><p>{hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
             </div>
           </section>
         </aside>
@@ -2776,6 +2791,47 @@ export default function Home() {
               setShowPatientInfo(false);
               exportBundle();
             }}>Export model-ready bundle</button>
+          </div>
+        </div>
+      </div>}
+
+      {queueDetailEntry && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setQueueDetailTarget(null); }}>
+        <div className="modal queue-detail-modal" role="dialog" aria-modal="true" aria-label={`${queueDetailEntry.label} details`} tabIndex={-1}>
+          <button className="modal-close" onClick={() => setQueueDetailTarget(null)} aria-label="Close queue item details">×</button>
+          <span className="modal-eyebrow">{queueDetailAnnotation?.track === "context" ? "TIMED CONTEXT" : queueDetailAnnotation ? "EPHYS INSTANCE" : "SOURCE FILE EVENT"}</span>
+          <div className="queue-detail-heading" style={{ "--label-color": queueDetailLabel?.color ?? "#ff6b7b" } as React.CSSProperties}>
+            <i />
+            <div><h2>{queueDetailEntry.label}</h2><p>{queueDetailEntry.detail}</p></div>
+            <span className={`revision-state ${queueDetailEntry.status}`}>{queueDetailEntry.status}</span>
+          </div>
+          <div className="queue-detail-grid">
+            <div><span>Start</span><strong>{formatClock(queueDetailEntry.time, true)}</strong></div>
+            <div><span>Geometry</span><strong>{queueDetailAnnotation ? annotationGeometry(queueDetailAnnotation) === "point" ? "Single moment" : "Timed window" : "Source event"}</strong></div>
+            {queueDetailAnnotation && <div><span>Duration</span><strong>{annotationGeometry(queueDetailAnnotation) === "point" ? "Instant" : `${(queueDetailAnnotation.end - queueDetailAnnotation.start).toFixed(3)} s`}</strong></div>}
+            {queueDetailAnnotation && <div><span>Reviewer</span><strong>{queueDetailAnnotation.reviewer || "Not assigned"}</strong></div>}
+            {queueDetailCandidate && <div><span>Source status</span><strong>{queueDetailCandidate.status}</strong></div>}
+            {queueDetailCandidate && <div><span>Source tier</span><strong>{queueDetailCandidate.source}</strong></div>}
+          </div>
+          <section className="queue-detail-notes">
+            <span>{queueDetailAnnotation?.track === "context" ? "CONTEXT / NOTES" : "NOTES"}</span>
+            <p>{queueDetailAnnotation?.notes?.trim() || (queueDetailAnnotation?.track === "context" ? `${queueDetailEntry.label} at ${formatClock(queueDetailEntry.time, true)}. No additional context note was entered.` : "No notes are attached to this item.")}</p>
+          </section>
+          {queueDetailAnnotation?.channelScope && <section className="queue-detail-source">
+            <span>CHANNEL PROVENANCE</span>
+            <strong>{queueDetailAnnotation.channelScope.displayLabel}</strong>
+            <p>{queueDetailAnnotation.channelScope.sourceLabels.join(", ")} · {queueDetailAnnotation.channelScope.montage}</p>
+          </section>}
+          <div className="queue-detail-actions">
+            <button className="button secondary" onClick={() => {
+              const index = instanceQueueEntries.findIndex((item) => item.kind === queueDetailEntry.kind && item.id === queueDetailEntry.id);
+              if (index >= 0) selectInstanceQueueEntry(index);
+              setQueueDetailTarget(null);
+            }}>Jump to location</button>
+            {queueDetailAnnotation && <button className="button primary" onClick={() => {
+              setSelectedAnnotationId(queueDetailAnnotation.id);
+              setQueueDetailTarget(null);
+              setShowAnnotationEditor(true);
+            }}>Open annotation</button>}
           </div>
         </div>
       </div>}
