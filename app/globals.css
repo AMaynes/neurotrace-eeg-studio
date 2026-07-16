@@ -233,7 +233,12 @@ textarea:focus-visible {
 .queue-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .queue-copy strong { font-size: 9px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #d7e3e3; }
 .queue-copy small { font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.queue-uncertainty { display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; color: #9aadb0; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+.queue-uncertainty { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 1px; padding-right: 4px; color: #9aadb0; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+.queue-uncertainty input { width: 29px; height: 24px; padding: 0 2px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: inherit; font: inherit; text-align: right; appearance: textfield; -moz-appearance: textfield; }
+.queue-uncertainty input::-webkit-inner-spin-button,
+.queue-uncertainty input::-webkit-outer-spin-button { margin: 0; appearance: none; }
+.queue-uncertainty input:hover,
+.queue-uncertainty input:focus { border-color: #3a5b62; background: #0b191e; color: #dce9e7; outline: none; }
 .queue-item.active .queue-uncertainty { color: #c5d8d5; }
 .queue-arrow { display: grid; place-items: center; margin: 5px 4px 5px 0; padding: 0; border: 1px solid #29434a; border-radius: 4px; background: #102027; color: #789096; cursor: pointer; font-size: 16px; line-height: 1; }
 .queue-arrow:hover,

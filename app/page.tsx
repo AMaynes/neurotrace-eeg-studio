@@ -119,6 +119,7 @@ type Candidate = {
   label: string;
   source: Reliability;
   status: "active" | "queued" | "reviewed" | "skipped" | "conflict";
+  uncertainty: number;
 };
 
 type ControlBindings = {
@@ -373,7 +374,11 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
     if (!["active", "queued", "reviewed", "skipped", "conflict"].includes(candidate.status)) return [];
     if (!["gold", "silver", "bronze", "gray"].includes(candidate.source)) return [];
     seenIds.add(candidate.id);
-    return [{ ...candidate, label: candidate.label.trim() }];
+    return [{
+      ...candidate,
+      label: candidate.label.trim(),
+      uncertainty: Math.round(clamp(Number.isFinite(candidate.uncertainty) ? candidate.uncertainty : 100, 0, 100)),
+    }];
   });
 }
 
@@ -647,7 +652,7 @@ export default function Home() {
         label: item.label,
         detail: "File event",
         status: item.status,
-        uncertainty: 100,
+        uncertainty: item.uncertainty,
       }));
     return [...annotationEntries, ...candidateEntries].sort((a, b) => a.time - b.time || a.label.localeCompare(b.label));
   }, [annotations, candidates]);
@@ -1139,6 +1144,15 @@ export default function Home() {
     if (withHistory) commitMutation(apply);
     else setAnnotations(apply);
   }, [commitMutation, meta.durationSec]);
+
+  const updateQueueUncertainty = useCallback((kind: "annotation" | "candidate", id: string, value: number) => {
+    const uncertainty = Math.round(clamp(Number.isFinite(value) ? value : 0, 0, 100));
+    if (kind === "annotation") {
+      updateAnnotation(id, { confidence: 100 - uncertainty });
+      return;
+    }
+    setCandidates((items) => items.map((item) => item.id === id ? { ...item, uncertainty } : item));
+  }, [updateAnnotation]);
 
   const deleteAnnotation = useCallback((id: string) => {
     const removed = annotationsRef.current.find((item) => item.id === id);
@@ -1945,11 +1959,12 @@ export default function Home() {
             label: event.label,
             source: "bronze",
             status: "queued",
+            uncertainty: 100,
           }));
         if (importedCandidates.length) {
           setCandidates((restored) => importedCandidates.map((candidate) => {
             const prior = restored.find((item) => item.id === candidate.id);
-            return prior ? { ...candidate, status: prior.status } : candidate;
+            return prior ? { ...candidate, status: prior.status, uncertainty: prior.uncertainty } : candidate;
           }));
         }
       } else if (dat) {
@@ -2027,10 +2042,11 @@ export default function Home() {
             label: event.label,
             source: "bronze",
             status: "queued",
+            uncertainty: 100,
           }));
         setCandidates((restored) => importedCandidates.map((candidate) => {
           const prior = restored.find((item) => item.id === candidate.id);
-          return prior ? { ...candidate, status: prior.status } : candidate;
+          return prior ? { ...candidate, status: prior.status, uncertainty: prior.uncertainty } : candidate;
         }));
       }
       setPendingDat(null);
@@ -2520,7 +2536,10 @@ export default function Home() {
                   <span className={`queue-status ${entry.status}`} />
                   <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
                 </button>
-                <span className="queue-uncertainty" title={`${entry.uncertainty}% uncertainty`} aria-label={`${entry.uncertainty}% uncertainty`}>{entry.uncertainty}%</span>
+                <label className="queue-uncertainty" title="Editable uncertainty percentage">
+                  <input type="number" min="0" max="100" step="1" value={entry.uncertainty} aria-label={`Uncertainty for ${entry.label}`} onChange={(event) => updateQueueUncertainty(entry.kind, entry.id, Number(event.target.value))} />
+                  <span>%</span>
+                </label>
                 <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
               </div>) : <div className="empty-queue"><strong>No events or instance labels</strong><p>{hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
             </div>

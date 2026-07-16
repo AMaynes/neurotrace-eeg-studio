@@ -452,7 +452,7 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   assert.match(entries, /candidates/);
   assert.match(entries, /linkedCandidateIds/, "reviewed file events are not duplicated beside their linked annotation");
   assert.match(entries, /uncertainty:\s*Math\.round\(clamp\(100\s*-\s*item\.confidence,\s*0,\s*100\)\)/);
-  assert.match(entries, /uncertainty:\s*100/, "file events without confidence are explicitly maximally uncertain");
+  assert.match(entries, /uncertainty:\s*item\.uncertainty/, "file-event uncertainty remains editable and persisted");
   assert.match(entries, /\.sort\(\(a,\s*b\)\s*=>\s*a\.time\s*-\s*b\.time/);
 
   const queueStart = page.indexOf('<section className="queue-section">');
@@ -461,10 +461,29 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   assert.match(queue, /instanceQueueEntries\.map/);
   assert.match(queue, /selectInstanceQueueEntry/);
   assert.match(queue, /className="queue-arrow"[\s\S]*?Open details for/);
-  assert.match(queue, /className="queue-uncertainty"[\s\S]*?\{entry\.uncertainty\}%/);
+  assert.match(queue, /className="queue-uncertainty"[\s\S]*?<input type="number" min="0" max="100"[\s\S]*?value=\{entry\.uncertainty\}/);
+  assert.match(queue, /updateQueueUncertainty\(entry\.kind,\s*entry\.id,\s*Number\(event\.target\.value\)\)/);
   assert.ok(queue.indexOf('className="queue-uncertainty"') < queue.indexOf('className="queue-arrow"'), "uncertainty is immediately left of the details arrow");
   assert.match(queue, /setQueueDetailTarget\(\{ kind: entry\.kind, id: entry\.id \}\)/);
   assert.doesNotMatch(queue, /setCandidates|Manual review target|\+ Add/, "the queue is navigation-only");
+});
+
+test("edits queue uncertainty without a slider and synchronizes annotation confidence", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const updateStart = page.indexOf("const updateQueueUncertainty");
+  const updateEnd = page.indexOf("const deleteAnnotation", updateStart);
+  const update = page.slice(updateStart, updateEnd);
+
+  assert.match(update, /Math\.round\(clamp\(/);
+  assert.match(update, /updateAnnotation\(id,\s*\{\s*confidence:\s*100\s*-\s*uncertainty\s*\}\)/);
+  assert.match(update, /setCandidates\(\(items\)\s*=>\s*items\.map/);
+  assert.match(page, /uncertainty:\s*100/, "new imported file events begin explicitly unscored");
+  assert.match(page, /uncertainty:\s*prior\.uncertainty/, "edited file-event uncertainty survives reimport");
+
+  const queueStart = page.indexOf('<section className="queue-section">');
+  const queueEnd = page.indexOf("</section>", queueStart);
+  const queue = page.slice(queueStart, queueEnd);
+  assert.doesNotMatch(queue, /type="range"/);
 });
 
 test("opens queue-item details with complete notes and context", async () => {
