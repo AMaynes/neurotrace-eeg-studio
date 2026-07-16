@@ -44,7 +44,7 @@ type LabelDefinition = {
   geometry: Geometry;
   track: TrackId;
   defaultDuration: number;
-  category: "Context" | "Seizure" | "Rhythmic / periodic" | "Sleep stage" | "Quality" | "Instance";
+  category: "Context" | "Seizure" | "Rhythmic / periodic" | "Ictal pathology" | "Sleep stage" | "Other";
   shortcut?: string;
   hidden?: boolean;
 };
@@ -197,21 +197,40 @@ const LABELS: LabelDefinition[] = [
   { id: "lrda", name: "LRDA — lateralized rhythmic delta activity", short: "LRDA", color: "#d8b159", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "8" },
   { id: "gsw", name: "GSW — generalized spike-and-wave / sharp-and-wave", short: "GSW", color: "#f6cf6a", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "9" },
   { id: "wake", name: "W — Wake", short: "W", color: "#67d7a2", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
+  { id: "sleep-unspecified", name: "Sleep", short: "SLEEP", color: "#668fc4", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
   { id: "n1", name: "N1 sleep", short: "N1", color: "#79c7f5", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
   { id: "n2", name: "N2 sleep", short: "N2", color: "#67aef8", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
   { id: "n3", name: "N3 sleep", short: "N3", color: "#768eea", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
   { id: "rem", name: "REM sleep", short: "REM", color: "#9b83ee", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
-  { id: "artifact", name: "Artifact", short: "ARTIFACT", color: "#a9b2b8", geometry: "interval", track: "windowed", defaultDuration: 8, category: "Quality" },
-  { id: "uncertain", name: "Uncertain", short: "?", color: "#a88cf4", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Quality" },
-  { id: "spikes", name: "Epileptiform spike", short: "SPIKE", color: "#f6cf6a", geometry: "point", track: "instance", defaultDuration: 0, category: "Instance" },
+  { id: "spikes", name: "Spikes", short: "SPIKE", color: "#f6cf6a", geometry: "point", track: "instance", defaultDuration: 0, category: "Ictal pathology" },
+  { id: "slowing", name: "Slowing", short: "SLOW", color: "#e6a45c", geometry: "interval", track: "windowed", defaultDuration: 10, category: "Ictal pathology" },
+  { id: "suppression", name: "Suppression", short: "SUPPR", color: "#d17a70", geometry: "interval", track: "windowed", defaultDuration: 10, category: "Ictal pathology" },
+  { id: "normal", name: "Normal", short: "NORMAL", color: "#69c992", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Other" },
+  { id: "abnormal", name: "Abnormal", short: "ABNORMAL", color: "#e58f62", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Other" },
+  { id: "artifact", name: "Artifact", short: "ARTIFACT", color: "#a9b2b8", geometry: "interval", track: "windowed", defaultDuration: 8, category: "Other" },
+  { id: "uncertain", name: "Unknown", short: "UNKNOWN", color: "#a88cf4", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Other" },
   { id: "button", name: "Button push", short: "BUTTON", color: "#55a9ff", geometry: "point", track: "context", defaultDuration: 0, category: "Context" },
   { id: "asm", name: "ASM given", short: "ASM", color: "#5fd4c8", geometry: "point", track: "context", defaultDuration: 0, category: "Context" },
   { id: "clinical", name: "Clinical observation", short: "OBS", color: "#ff8e96", geometry: "point", track: "context", defaultDuration: 0, category: "Context" },
   { id: "rpp-unspecified", name: "RPP / IIC unspecified", short: "RPP?", color: "#b6a05d", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", hidden: true },
-  { id: "sleep-unspecified", name: "Sleep stage unspecified", short: "SLEEP?", color: "#668fc4", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage", hidden: true },
 ];
 
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
+const PALETTE_BUTTON_NAMES: Record<string, string> = {
+  preictal: "Pre",
+  ictal: "Ictal",
+  postictal: "Post",
+  spikes: "Spikes",
+  slowing: "Slowing",
+  suppression: "Suppression",
+  wake: "Wake",
+  "sleep-unspecified": "Sleep",
+  rem: "REM",
+  normal: "Normal",
+  abnormal: "Abnormal",
+  artifact: "Artifact",
+  uncertain: "Unknown",
+};
 
 function annotationGeometry(annotation: Pick<Annotation, "geometry" | "labelId">): Geometry {
   return annotation.geometry ?? LABEL_BY_ID.get(annotation.labelId)?.geometry ?? "point";
@@ -567,7 +586,6 @@ export default function Home() {
   const [snapMode, setSnapMode] = useState<"1s" | "100ms" | "sample">("100ms");
   const [playing, setPlaying] = useState(false);
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
-  const [rightTab, setRightTab] = useState<"labels" | "qc">("labels");
   const [paletteSearch, setPaletteSearch] = useState("");
   const [channelSearch, setChannelSearch] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -580,6 +598,10 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [showChannels, setShowChannels] = useState(false);
   const [showSessionMap, setShowSessionMap] = useState(false);
+  const [sessionMapTab, setSessionMapTab] = useState<"map" | "qc">("map");
+  const [showSessionContextPicker, setShowSessionContextPicker] = useState(false);
+  const [patientInfoOpen, setPatientInfoOpen] = useState(false);
+  const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
@@ -1577,16 +1599,18 @@ export default function Home() {
     const onMove = (event: PointerEvent) => {
       const resize = contextResizeRef.current;
       if (!resize) return;
-      setContextTrackHeight(clamp(resize.startHeight + event.clientY - resize.startY, 44, 220));
+      setContextTrackHeight(clamp(resize.startHeight - (event.clientY - resize.startY), 44, 220));
     };
     const onUp = () => {
       contextResizeRef.current = null;
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
   }, []);
 
@@ -1624,12 +1648,13 @@ export default function Home() {
   }, [onViewerWheel]);
 
   useEffect(() => {
+    if (!hasRecording) return;
     const viewer = viewerRef.current;
     if (!viewer) return;
     const handleWheel = (event: WheelEvent) => viewerWheelRef.current(event);
     viewer.addEventListener("wheel", handleWheel, { passive: false, capture: true });
     return () => viewer.removeEventListener("wheel", handleWheel, { capture: true });
-  }, []);
+  }, [hasRecording]);
 
   useEffect(() => () => {
     if (wheelFrameRef.current !== null) window.cancelAnimationFrame(wheelFrameRef.current);
@@ -1896,8 +1921,8 @@ export default function Home() {
 
   const exportBundle = () => {
     if (meta.details?.discontinuous === true) {
-      setRightPanelOpen(true);
-      setRightTab("qc");
+      setSessionMapTab("qc");
+      setShowSessionMap(true);
       setShowExport(false);
       setToast("Export blocked: EDF+D gaps need a discontinuous time-axis conversion before model-ready export");
       return;
@@ -2041,7 +2066,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || confirmCommit.length > 0;
+    const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || showAnnotationEditor || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -2081,14 +2106,14 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, showChannels, showHelp, showImport, showSessionMap, showSettings]);
+  }, [confirmCommit.length, showAnnotationEditor, showChannels, showHelp, showImport, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
-      const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || confirmCommit.length > 0;
+      const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || showAnnotationEditor || confirmCommit.length > 0;
       if (modalOpen && zoomModifier && (zoomInKey || zoomOutKey)) {
         event.preventDefault();
         event.stopPropagation();
@@ -2100,6 +2125,7 @@ export default function Home() {
         else if (showSettings) setShowSettings(false);
         else if (showChannels) setShowChannels(false);
         else if (showSessionMap) setShowSessionMap(false);
+        else if (showAnnotationEditor) setShowAnnotationEditor(false);
         else if (showImport && !importBusy) setShowImport(false);
         else if (confirmCommit.length) setConfirmCommit([]);
         setSelectedAnnotationId(null);
@@ -2107,6 +2133,7 @@ export default function Home() {
         setMarkOnset(null);
         setCursorLocked(false);
         setDragGhost(null);
+        setShowSessionContextPicker(false);
         setActiveTool("cursor");
         return;
       }
@@ -2130,6 +2157,7 @@ export default function Home() {
         setMarkOnset(null);
         setCursorLocked(false);
         setDragGhost(null);
+        setShowSessionContextPicker(false);
         setActiveTool("cursor");
         setToast("Selection and pinned cursor cleared");
         return;
@@ -2195,11 +2223,17 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [activeCandidate, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, markOnset, meta.channelLabels, placePaletteLabel, redo, selectCandidate, selectedAnnotationId, selectedChannels, setViewStartSafe, showChannels, showHelp, showImport, showSessionMap, showSettings, skipActiveCandidate, timebase, undo, zoomTimeWindow]);
+  }, [activeCandidate, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, markOnset, meta.channelLabels, placePaletteLabel, redo, selectCandidate, selectedAnnotationId, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showSessionMap, showSettings, skipActiveCandidate, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
-  const activeLabelGroups = ["Seizure", "Rhythmic / periodic", "Sleep stage", "Quality", "Instance"] as const;
+  const activeLabelGroups = [
+    { label: "Sz", ids: ["preictal", "ictal", "postictal"] },
+    { label: "IIIC", ids: ["gpd", "lpd", "bipd", "grda", "lrda", "gsw"] },
+    { label: "Ictal Pathology", ids: ["spikes", "slowing", "suppression"] },
+    { label: "Wake / Sleep", ids: ["wake", "sleep-unspecified", "rem", "n1", "n2", "n3"] },
+    { label: "Other", ids: ["normal", "abnormal", "artifact", "uncertain"] },
+  ] as const;
   const filteredLabels = LABELS.filter((label) => !label.hidden && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
   const entireSessionContexts = filteredLabels.filter((label) => label.track === "context" && label.geometry === "session");
   const windowContexts = filteredLabels.filter((label) => label.track === "context" && label.geometry !== "session");
@@ -2297,56 +2331,43 @@ export default function Home() {
 
       <div className={`workspace-grid ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
         <aside className="left-sidebar">
-          <section className="sidebar-section recording-card">
-            <div className="section-heading"><span>Recording info</span><small>{hasRecording ? meta.format.toUpperCase() : "EMPTY"}</small></div>
+          <section className="recording-summary">
             {hasRecording ? <>
-              <div className="file-row"><span className="file-type">{meta.format}</span><div><strong title={meta.name}>{shortFileName(meta.name)}</strong><small>{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</small></div></div>
-              <div className="patient-summary">
-                <span>Patient info</span>
-                <strong>{patientLabel(meta)}</strong>
-                <small>{recordingLabel(meta)} · {formatSessionStart(meta.startedAt)}</small>
-              </div>
-              <div className="session-detail-grid">
-                <div><span>Source integrity</span><strong className="hash-text" title={sourceHash}>{sourceHashDisplay}</strong></div>
-                <div><span>Source channels selected</span><strong>{selectedChannels.size} / {meta.channelLabels.length}</strong></div>
-                <div><span>Displayed rows</span><strong>{display.labels.length}</strong></div>
-                <div><span>Quality excluded</span><strong>{badChannels.size}</strong></div>
-              </div>
-              <label className="compact-field"><span>Recording type</span><select value={recordingType} onChange={(event) => setRecordingType(event.target.value)}><option>SEEG / iEEG</option><option>Scalp EEG</option><option>Simultaneous scalp + iEEG</option><option>Other ephys</option></select></label>
-              <label className="compact-field reviewer-field"><span>Reviewer initials</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
-              <div className="recording-actions">
-                <button onClick={() => setShowImport(true)}>Replace</button>
-                <div className="menu-wrap">
-                  <button className="export-side-button" onClick={() => setShowExport((value) => !value)}>Export <span aria-hidden="true">⌄</span></button>
-                  {showExport && <div className="popover export-popover">
-                    <strong>Model-ready bundle</strong>
-                    <p>BIDS-style events and channels, full provenance, 30-second windows, ontology, manifest, and QC report.</p>
-                    <button className="button primary wide" onClick={exportBundle}>Download .zip</button>
-                    <small>Raw EEG is never included.</small>
-                  </div>}
-                </div>
-              </div>
-            </> : <button className="empty-recording-card" onClick={() => setShowImport(true)}>
+              <div className="recording-file-line"><strong title={meta.name}>{shortFileName(meta.name)}</strong><span>File type: {meta.format.toUpperCase()}</span></div>
+              <div className="recording-stats">{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</div>
+              <label className="recording-type-line"><span>Recording type:</span><select value={recordingType} onChange={(event) => setRecordingType(event.target.value)}><option>SEEG / iEEG</option><option>Scalp EEG</option><option>Simultaneous scalp + iEEG</option><option>Other ephys</option></select></label>
+            </> : <button className="compact-load-recording" onClick={() => setShowImport(true)}>
               <span aria-hidden="true">＋</span>
               <strong>Load recording</strong>
-              <small>EDF, MAT, or MAT + DAT</small>
+              <small>EDF · MAT · MAT + DAT</small>
             </button>}
           </section>
 
-          <section className="sidebar-section session-labels-section">
-            <div className="section-heading"><span>Session labels</span><small>{sessionContextAnnotations.length}</small></div>
-            <button className="session-map-button" disabled={!hasRecording} onClick={() => setShowSessionMap(true)}>
-              <span className="map-button-glyph" aria-hidden="true"><i /><i /><i /></span>
-              <span><strong>Session map</strong><small>See the complete labeling picture</small></span>
-              <b>↗</b>
-            </button>
+          <button className="session-map-row" disabled={!hasRecording} onClick={() => {
+            setSessionMapTab("map");
+            setShowSessionMap(true);
+          }}><span>Session Map</span><b aria-hidden="true">↗</b></button>
+
+          <section className="session-labels-section">
+            <div className="sidebar-centered-heading">
+              <strong>Session Labels</strong>
+              <span>{sessionContextAnnotations.length}</span>
+              <div className="session-context-menu-wrap">
+                <button className="sidebar-add-button" disabled={!hasRecording} aria-label="Add session label" title="Add entire-session context" onClick={() => setShowSessionContextPicker((value) => !value)}>＋</button>
+                {showSessionContextPicker && <div className="session-context-picker" role="menu" aria-label="Entire-session context labels">
+                  <strong>Add entire-session context</strong>
+                  {entireSessionContexts.map((label) => <button key={label.id} role="menuitem" onClick={() => {
+                    placePaletteLabel(label);
+                    setShowSessionContextPicker(false);
+                  }} style={{ "--label-color": label.color } as React.CSSProperties}><i />{label.name}</button>)}
+                </div>}
+              </div>
+            </div>
             <div className="session-label-list">
               {sessionContextAnnotations.length ? sessionContextAnnotations.map((item) => {
                 const label = LABEL_BY_ID.get(item.labelId);
                 return <button key={item.id} className={selectedAnnotationId === item.id ? "active" : ""} onClick={() => {
                   setSelectedAnnotationId(item.id);
-                  setRightPanelOpen(true);
-                  setRightTab("labels");
                 }} style={{ "--label-color": label?.color } as React.CSSProperties}>
                   <i /><span><strong>{label?.name ?? item.labelId}</strong><small>{item.notes || "Entire recording"}</small></span>
                 </button>;
@@ -2354,8 +2375,35 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="sidebar-section queue-section">
-            <div className="section-heading"><span>Instance queue</span><small>{candidates.filter((item) => item.status === "reviewed").length}/{candidates.length}</small></div>
+          <button className={`patient-info-disclosure ${patientInfoOpen ? "open" : ""}`} disabled={!hasRecording} aria-expanded={patientInfoOpen} onClick={() => setPatientInfoOpen((value) => !value)}>
+            <span>{patientInfoOpen ? "Hide" : "Open"} Patient Info {hasRecording && `(${patientLabel(meta)})`}</span><b aria-hidden="true">⌄</b>
+          </button>
+          {patientInfoOpen && hasRecording && <section className="patient-info-panel">
+            <div><span>Patient</span><strong>{patientLabel(meta)}</strong></div>
+            <div><span>Session</span><strong>{recordingLabel(meta)}</strong></div>
+            <div><span>Start</span><strong>{formatSessionStart(meta.startedAt)}</strong></div>
+            <div><span>Source integrity</span><strong className="hash-text" title={sourceHash}>{sourceHashDisplay}</strong></div>
+            <label><span>Reviewer</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
+            <div className="patient-info-actions">
+              <button onClick={() => setShowImport(true)}>Replace</button>
+              <div className="menu-wrap">
+                <button onClick={() => setShowExport((value) => !value)}>Export</button>
+                {showExport && <div className="popover export-popover">
+                  <strong>Model-ready bundle</strong>
+                  <p>BIDS-style events and channels, full provenance, 30-second windows, ontology, manifest, and QC report.</p>
+                  <button className="button primary wide" onClick={exportBundle}>Download .zip</button>
+                  <small>Raw EEG is never included.</small>
+                </div>}
+              </div>
+            </div>
+          </section>}
+
+          <section className="queue-section">
+            <div className="queue-heading">
+              <button disabled={!candidates.length || activeCandidate <= 0} aria-label="Previous instance" title="Previous instance" onClick={() => selectCandidate(Math.max(0, activeCandidate - 1))}>‹</button>
+              <div><strong>Instance Queue</strong><span>{candidates.filter((item) => item.status === "reviewed").length}/{candidates.length}</span></div>
+              <button disabled={!candidates.length || activeCandidate >= candidates.length - 1} aria-label="Next instance" title="Next instance" onClick={() => selectCandidate(Math.min(candidates.length - 1, activeCandidate + 1))}>›</button>
+            </div>
             <div className="queue-list">
               {candidates.length ? candidates.map((candidate, index) => <button key={candidate.id} className={`queue-item ${index === activeCandidate ? "active" : ""}`} onClick={() => selectCandidate(index)}>
                 <span className={`queue-status ${candidate.status}`} />
@@ -2363,7 +2411,6 @@ export default function Home() {
                 <span className="queue-arrow">›</span>
               </button>) : <div className="empty-queue"><strong>No instance candidates</strong><p>{hasRecording ? "Imported events and review targets appear here." : "Load a recording to begin."}</p>{hasRecording && cursorLocked && <button onClick={() => setCandidates([{ id: makeId("cand"), time: cursorTime, label: "Manual review target", source: "gold", status: "active" }])}>+ Add {formatClock(cursorTime, true)}</button>}</div>}
             </div>
-            {candidates.length > 0 && <div className="queue-actions"><button onClick={skipActiveCandidate}>Skip current <kbd>{controlBindings.skipCandidate.toUpperCase()}</kbd></button><button onClick={() => selectCandidate(Math.min(candidates.length - 1, activeCandidate + 1))}>Next <kbd>{controlBindings.nextCandidate.toUpperCase()}</kbd></button></div>}
           </section>
         </aside>
 
@@ -2456,7 +2503,7 @@ export default function Home() {
                     </div>;
                   })}
                 </div>
-                {track.id === "context" && <button className="context-resize-handle" aria-label="Resize context track" title="Drag to resize the context track" onPointerDown={(event) => {
+                {track.id === "context" && <button className="context-resize-handle" aria-label="Resize context track" title="Drag up to expand; drag down to shrink the context track" onPointerDown={(event) => {
                   event.preventDefault();
                   contextResizeRef.current = { startY: event.clientY, startHeight: contextTrackHeight };
                 }} />}
@@ -2467,6 +2514,10 @@ export default function Home() {
           <footer className="command-strip">
             <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{display.labels[focusedChannel] ?? "—"}</span><span>{formatAmplitude(cursorAmplitude)}</span><span>sample {Math.round(cursorTime * (display.sampleRates[focusedChannel] ?? primarySampleRate(meta))).toLocaleString()}</span></div>
             <div className="command-status"><span className="status-dot" />{toast}</div>
+            {selectedAnnotation && <div className="annotation-command-actions">
+              <button onClick={() => setShowAnnotationEditor(true)}>Edit label</button>
+              <button className="trash-button" onClick={() => deleteAnnotation(selectedAnnotation.id)} title="Delete annotation" aria-label="Delete annotation">🗑</button>
+            </div>}
           </footer>
           </> : <button className="recording-empty-state" onClick={() => setShowImport(true)}>
             <span className="empty-load-mark" aria-hidden="true">＋</span>
@@ -2477,55 +2528,44 @@ export default function Home() {
         </section>
 
         <aside className="right-sidebar">
-          <div className="right-tabs"><button className={rightTab === "labels" ? "active" : ""} onClick={() => setRightTab("labels")}>Labels</button><button className={rightTab === "qc" ? "active" : ""} onClick={() => setRightTab("qc")}>QC <span>{qcIssues.length}</span></button></div>
-          {rightTab === "labels" ? <>
-            <section className="context-palette-section">
-              <div className="palette-heading"><div><strong>Context Labels</strong><span>Context palette · clinical facts may coexist</span></div></div>
-              <input className="palette-search" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
-              <div className="context-palette-groups">
-                {[{ name: "Entire-session context", labels: entireSessionContexts }, { name: "Window context", labels: windowContexts }].map((group) => group.labels.length ? <div className="context-palette-group" key={group.name}>
-                  <span>{group.name}</span>
-                  <div>{group.labels.map((label) => <button key={label.id} className="context-chip" disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => {
-                    event.dataTransfer.setData("application/x-neurotrace-label", label.id);
-                    event.dataTransfer.effectAllowed = "copy";
-                    setDragGhost({ labelId: label.id, time: cursorTime });
-                  }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.geometry === "session" ? "Applies to the entire recording" : "Place as clinical context"} · drag or click`}>
-                    <span className="context-glyph">{label.geometry === "session" ? "▰" : label.geometry === "point" ? "◆" : "↔"}</span>
-                    <span className="context-copy"><strong>{label.name}</strong><small>{label.geometry === "session" ? "Full recording" : label.geometry === "point" ? "Single clinical moment" : "Timed context"}</small></span>
-                  </button>)}</div>
-                </div> : null)}
-              </div>
-            </section>
-            <section className="palette-section label-palette-section">
-              <div className="palette-heading"><div><strong>ePhys Labels</strong><span>Label palette · click = instance, selected span = window</span></div></div>
-              <div className="palette-groups">
-                {activeLabelGroups.map((category) => {
-                  const group = filteredLabels.filter((label) => label.category === category);
-                  if (!group.length) return null;
-                  return <div className="palette-group" key={category}><span>{category}</span><div>{group.map((label) => <button key={label.id} disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => { event.dataTransfer.setData("application/x-neurotrace-label", label.id); event.dataTransfer.effectAllowed = "copy"; setDragGhost({ labelId: label.id, time: cursorTime }); }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`Click after pinning a point or selecting a span${label.shortcut ? ` · shortcut ${label.shortcut}` : ""}`}><i />{label.name}{label.shortcut && <kbd>{label.shortcut}</kbd>}</button>)}</div></div>;
-                })}
-              </div>
-            </section>
-            <section className="inspector-section">
-              <div className="inspector-heading"><strong>{selectedAnnotation ? "Annotation inspector" : "Selection inspector"}</strong>{selectedAnnotation && <span className={`revision-state ${selectedAnnotation.status}`}>{selectedAnnotation.status}</span>}</div>
-              {selectedAnnotation ? <div className="inspector-form">
-                <div className="selected-label" style={{ "--label-color": LABEL_BY_ID.get(selectedAnnotation.labelId)?.color } as React.CSSProperties}><i /><div><strong>{LABEL_BY_ID.get(selectedAnnotation.labelId)?.name}</strong><span>{selectedGeometry} label · {selectedAnnotation.track} track · revision {selectedAnnotation.revision}</span></div></div>
-                <div className="time-fields"><label><span>Start (s)</span><input type="number" step="0.001" value={selectedAnnotation.start} disabled={selectedGeometry === "session"} onChange={(event) => updateAnnotation(selectedAnnotation.id, { start: clamp(Number(event.target.value), 0, selectedGeometry === "interval" ? selectedAnnotation.end : meta.durationSec) })} /></label><label><span>End (s)</span><input type="number" step="0.001" value={selectedAnnotation.end} disabled={selectedGeometry !== "interval"} onChange={(event) => updateAnnotation(selectedAnnotation.id, { end: clamp(Number(event.target.value), selectedAnnotation.start, meta.durationSec) })} /></label></div>
-                <div className="duration-line"><span>{formatClock(selectedAnnotation.start, true)}</span><i /><span>{(selectedAnnotation.end - selectedAnnotation.start).toFixed(3)} s</span></div>
-                <label className="form-field"><span>Reviewer</span><input value={selectedAnnotation.reviewer} onChange={(event) => updateAnnotation(selectedAnnotation.id, { reviewer: event.target.value })} /></label>
-                <label className="confidence-field"><span>Confidence <strong>{selectedAnnotation.confidence}%</strong></span><input type="range" min="0" max="100" value={selectedAnnotation.confidence} onChange={(event) => updateAnnotation(selectedAnnotation.id, { confidence: Number(event.target.value) }, false)} /></label>
-                <label className="form-field"><span>Clinical / review note</span><textarea rows={3} placeholder="Evidence, uncertainty, or rationale…" value={selectedAnnotation.notes} onChange={(event) => updateAnnotation(selectedAnnotation.id, { notes: event.target.value }, false)} /></label>
-                <div className="inspector-actions"><button className="button primary" onClick={() => commitSelected()}>{selectedAnnotation.status === "committed" ? "Save revision" : "Commit label"}</button><button className="icon-danger" onClick={() => deleteAnnotation(selectedAnnotation.id)} title="Delete annotation" aria-label="Delete annotation">🗑</button></div>
-                <div className="snapshot-note"><span>DISPLAY SNAPSHOT</span><strong>{montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average ref" : "Recorded ref"} · {filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz} Hz notch` : "Raw"}</strong><small>Stored with exported revision; raw samples unchanged.</small></div>
-              </div> : <div className="selection-empty">
-                <div className="selection-graphic"><span /><span /></div>
-                <strong>{selection ? `${(selection.end - selection.start).toFixed(1)} second window ready` : cursorLocked ? "Pinned point ready for an instance label" : "Pin a point or select a window"}</strong>
-                <p>Click the waveform, then click a label for an instance. Drag across the waveform, then click a label for that exact window.</p>
-              </div>}
-            </section>
-          </> : hasRecording
-            ? <QcPanel issues={qcIssues} annotations={annotations} badChannels={badChannels} meta={meta} recoveryStatus={recoveryStatus} onSelect={(id) => { setSelectedAnnotationId(id); setRightTab("labels"); }} />
-            : <div className="empty-qc-panel"><span>✓</span><strong>QC starts with the recording</strong><p>Load EDF or MAT data to run source, timing, channel, and annotation checks.</p></div>}
+          <div className="ontology-search-row">
+            <input className="palette-search" aria-label="Search label ontology" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
+          </div>
+          <section className="compact-context-palette">
+            <h2>Context Labels</h2>
+            <p className="palette-kind">Context palette · clinical facts may coexist</p>
+            <div className="compact-context-groups">
+              {[{ name: "Entire-session context", labels: entireSessionContexts }, { name: "Window context", labels: windowContexts }].map((group) => group.labels.length ? <div className="compact-context-group" key={group.name}>
+                <span>{group.name}</span>
+                <div>{group.labels.map((label) => <button key={label.id} className="compact-palette-button context" disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => {
+                  event.dataTransfer.setData("application/x-neurotrace-label", label.id);
+                  event.dataTransfer.effectAllowed = "copy";
+                  setDragGhost({ labelId: label.id, time: cursorTime });
+                }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name} · ${label.geometry === "session" ? "entire recording" : label.geometry === "point" ? "single clinical moment" : "timed context"}`}>
+                  <i />{label.name}
+                </button>)}</div>
+              </div> : null)}
+            </div>
+          </section>
+          <section className="compact-ephys-palette">
+            <h2>ePhys Labels</h2>
+            <p><span className="palette-kind">Label palette</span> · click = instance · selected span = window</p>
+            <div className="ontology-groups">
+              {activeLabelGroups.map(({ label: groupLabel, ids }) => {
+                const group = ids
+                  .map((id) => LABEL_BY_ID.get(id))
+                  .filter((label): label is LabelDefinition => label !== undefined && !label.hidden && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
+                if (!group.length) return null;
+                return <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{group.map((label) => <button className="compact-palette-button" key={label.id} disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => {
+                  event.dataTransfer.setData("application/x-neurotrace-label", label.id);
+                  event.dataTransfer.effectAllowed = "copy";
+                  setDragGhost({ labelId: label.id, time: cursorTime });
+                }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name}${label.shortcut ? ` · shortcut ${label.shortcut}` : ""}`}>
+                  <i />{PALETTE_BUTTON_NAMES[label.id] ?? label.short}
+                </button>)}</div></div>;
+              })}
+            </div>
+          </section>
         </aside>
       </div>
 
@@ -2636,15 +2676,45 @@ export default function Home() {
         </div>
       </div>}
 
+      {showAnnotationEditor && selectedAnnotation && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAnnotationEditor(false); }}>
+        <div className="modal annotation-editor-modal" role="dialog" aria-modal="true" aria-label="Annotation editor" tabIndex={-1}>
+          <button className="modal-close" onClick={() => setShowAnnotationEditor(false)} aria-label="Close annotation editor">×</button>
+          <span className="modal-eyebrow">ANNOTATION EDITOR</span>
+          <div className="annotation-editor-heading">
+            <div className="selected-label" style={{ "--label-color": LABEL_BY_ID.get(selectedAnnotation.labelId)?.color } as React.CSSProperties}><i /><div><strong>{LABEL_BY_ID.get(selectedAnnotation.labelId)?.name}</strong><span>{selectedGeometry} label · {selectedAnnotation.track} track · revision {selectedAnnotation.revision}</span></div></div>
+            <span className={`revision-state ${selectedAnnotation.status}`}>{selectedAnnotation.status}</span>
+          </div>
+          <div className="inspector-form">
+            <div className="time-fields"><label><span>Start (s)</span><input type="number" step="0.001" value={selectedAnnotation.start} disabled={selectedGeometry === "session"} onChange={(event) => updateAnnotation(selectedAnnotation.id, { start: clamp(Number(event.target.value), 0, selectedGeometry === "interval" ? selectedAnnotation.end : meta.durationSec) })} /></label><label><span>End (s)</span><input type="number" step="0.001" value={selectedAnnotation.end} disabled={selectedGeometry !== "interval"} onChange={(event) => updateAnnotation(selectedAnnotation.id, { end: clamp(Number(event.target.value), selectedAnnotation.start, meta.durationSec) })} /></label></div>
+            <div className="duration-line"><span>{formatClock(selectedAnnotation.start, true)}</span><i /><span>{(selectedAnnotation.end - selectedAnnotation.start).toFixed(3)} s</span></div>
+            <label className="form-field"><span>Reviewer</span><input value={selectedAnnotation.reviewer} onChange={(event) => updateAnnotation(selectedAnnotation.id, { reviewer: event.target.value })} /></label>
+            <label className="confidence-field"><span>Confidence <strong>{selectedAnnotation.confidence}%</strong></span><input type="range" min="0" max="100" value={selectedAnnotation.confidence} onChange={(event) => updateAnnotation(selectedAnnotation.id, { confidence: Number(event.target.value) }, false)} /></label>
+            <label className="form-field"><span>Clinical / review note</span><textarea rows={4} placeholder="Evidence, uncertainty, or rationale…" value={selectedAnnotation.notes} onChange={(event) => updateAnnotation(selectedAnnotation.id, { notes: event.target.value }, false)} /></label>
+            <div className="inspector-actions"><button className="button primary" onClick={() => {
+              commitSelected();
+              setShowAnnotationEditor(false);
+            }}>{selectedAnnotation.status === "committed" ? "Save revision" : "Commit label"}</button><button className="icon-danger" onClick={() => {
+              deleteAnnotation(selectedAnnotation.id);
+              setShowAnnotationEditor(false);
+            }} title="Delete annotation" aria-label="Delete annotation">🗑</button></div>
+            <div className="snapshot-note"><span>DISPLAY SNAPSHOT</span><strong>{montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average ref" : "Recorded ref"} · {filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz} Hz notch` : "Raw"}</strong><small>Stored with the exported revision; raw samples remain unchanged.</small></div>
+          </div>
+        </div>
+      </div>}
+
       {showSessionMap && <SessionMap
         meta={meta}
         annotations={annotations}
         candidates={candidates}
+        tab={sessionMapTab}
+        onTabChange={setSessionMapTab}
+        issues={qcIssues}
+        badChannels={badChannels}
+        recoveryStatus={recoveryStatus}
         onClose={() => setShowSessionMap(false)}
         onOpenAnnotation={(item) => {
           setSelectedAnnotationId(item.id);
           jumpTo(item.start);
-          setRightTab("labels");
           setShowSessionMap(false);
         }}
         onOpenCandidate={(candidate) => {
@@ -2740,6 +2810,11 @@ function SessionMap({
   meta,
   annotations,
   candidates,
+  tab,
+  onTabChange,
+  issues,
+  badChannels,
+  recoveryStatus,
   onClose,
   onOpenAnnotation,
   onOpenCandidate,
@@ -2747,6 +2822,11 @@ function SessionMap({
   meta: RecordingMeta;
   annotations: Annotation[];
   candidates: Candidate[];
+  tab: "map" | "qc";
+  onTabChange: (tab: "map" | "qc") => void;
+  issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }>;
+  badChannels: Set<number>;
+  recoveryStatus: "saved" | "error";
   onClose: () => void;
   onOpenAnnotation: (annotation: Annotation) => void;
   onOpenCandidate: (candidate: Candidate) => void;
@@ -2762,8 +2842,13 @@ function SessionMap({
   ];
   return <div className="modal-backdrop map-backdrop"><div className="session-map-modal">
     <header><div><span className="modal-eyebrow">MODEL-READY SESSION MAP</span><h2>{patientLabel(meta)} <i>/</i> {recordingLabel(meta)}</h2><p>{meta.channelLabels.length} channels · {formatClock(meta.durationSec)} · {primarySampleRate(meta)} Hz</p></div><button onClick={onClose} aria-label="Close session map">×</button></header>
-    <div className="map-equation"><span>entire-session context</span><b>＋</b><span>window context</span><b>＋</b><span>windowed labels</span><b>＋</b><span>instance labels</span><b>→</b><strong>training data</strong></div>
-    <div className={`map-inspection ${inspected ? "active" : ""}`}>
+    <div className="session-map-tabs" role="tablist" aria-label="Session review views">
+      <button role="tab" aria-selected={tab === "map"} className={tab === "map" ? "active" : ""} onClick={() => onTabChange("map")}>Session map</button>
+      <button role="tab" aria-selected={tab === "qc"} className={tab === "qc" ? "active" : ""} onClick={() => onTabChange("qc")}>QC <span>{issues.length}</span></button>
+    </div>
+    {tab === "map" ? <div className="session-map-tab-panel" role="tabpanel">
+      <div className="map-equation"><span>entire-session context</span><b>＋</b><span>window context</span><b>＋</b><span>windowed labels</span><b>＋</b><span>instance labels</span><b>→</b><strong>training data</strong></div>
+      <div className={`map-inspection ${inspected ? "active" : ""}`}>
       {inspected?.kind === "annotation" ? <>
         <i style={{ background: LABEL_BY_ID.get(inspected.item.labelId)?.color }} />
         <div><strong>{LABEL_BY_ID.get(inspected.item.labelId)?.name ?? inspected.item.labelId}</strong><span>{annotationGeometry(inspected.item) === "point" ? formatClock(inspected.item.start, true) : `${formatClock(inspected.item.start, true)} → ${formatClock(inspected.item.end, true)}`} · {inspected.item.status} · {inspected.item.reviewer || "reviewer unset"}</span></div>
@@ -2773,8 +2858,8 @@ function SessionMap({
         <div><strong>{inspected.item.label}</strong><span>{formatClock(inspected.item.time, true)} · suggested instance · {inspected.item.status}</span></div>
         <button onClick={() => onOpenCandidate(inspected.item)}>Review candidate</button>
       </> : <><div><strong>Explore the map</strong><span>Hover for details. Click an item to keep its details here.</span></div></>}
-    </div>
-    <div className="map-timeline">
+      </div>
+      <div className="map-timeline">
       <div className="map-ruler">{[0, .25, .5, .75, 1].map((fraction) => <span key={fraction} style={{ left: `${fraction * 100}%` }}>{formatClock(meta.durationSec * fraction)}</span>)}</div>
       {rows.map((row) => {
         const rowAnnotations = annotations.filter(row.matches);
@@ -2795,7 +2880,11 @@ function SessionMap({
           return <button key={item.id} className="map-candidate" style={{ top: 6 + lane * 29, left: `${(item.time / meta.durationSec) * 100}%` }} title={`Suggested instance · ${item.label}`} aria-label={`${item.label} suggested at ${formatClock(item.time, true)}`} onMouseEnter={() => setHovered(payload)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(payload)} onBlur={() => setHovered(null)} onClick={() => setSelected(payload)} />;
         })}</div></div>;
       })}
-    </div>
-    <footer><div className="geometry-legend"><span><i className="duration" />Duration</span><span><i className="point" />Single moment</span><span><i className="suggestion" />Suggested instance</span></div><button className="button primary" onClick={onClose}>Return to review</button></footer>
+      </div>
+    </div> : <div className="session-map-qc" role="tabpanel"><QcPanel issues={issues} annotations={annotations} badChannels={badChannels} meta={meta} recoveryStatus={recoveryStatus} onSelect={(id) => {
+      const annotation = annotations.find((item) => item.id === id);
+      if (annotation) onOpenAnnotation(annotation);
+    }} /></div>}
+    <footer>{tab === "map" ? <div className="geometry-legend"><span><i className="duration" />Duration</span><span><i className="point" />Single moment</span><span><i className="suggestion" />Suggested instance</span></div> : <span className="qc-footer-note">{issues.length ? `${issues.length} QC finding${issues.length === 1 ? "" : "s"}` : "All integrity checks passed"}</span>}<button className="button primary" onClick={onClose}>Return to review</button></footer>
   </div></div>;
 }

@@ -87,9 +87,9 @@ test("keeps context and model-label palettes visually and semantically separate"
 
   assert.ok(contextPosition >= 0, "context palette is rendered");
   assert.ok(labelPosition > contextPosition, "context palette is above the label palette");
-  assert.match(html, /context-palette-section/);
-  assert.match(html, /context-palette-group/);
-  assert.match(html, /label-palette-section/);
+  assert.match(html, /compact-context-palette/);
+  assert.match(html, /compact-context-group/);
+  assert.match(html, /compact-ephys-palette/);
   assert.match(html, /Entire-session context/);
   assert.match(html, /Window context/);
 });
@@ -299,4 +299,91 @@ test("wires channel, Help, and Settings dialogs to operable controls", async () 
   assert.match(page, /setAttribute\("inert"/);
   assert.match(page, /event\.key\s*!==\s*"Tab"/);
   assert.match(page, /modalOpen\s*&&\s*zoomModifier/);
+});
+
+test("reattaches non-passive waveform wheel controls after a blank session loads", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  const wheelHandlerStart = page.indexOf("const onViewerWheel");
+  const wheelHandlerEnd = page.indexOf("useLayoutEffect", wheelHandlerStart);
+  assert.ok(wheelHandlerStart >= 0 && wheelHandlerEnd > wheelHandlerStart, "the waveform wheel handler is present");
+  const wheelHandler = page.slice(wheelHandlerStart, wheelHandlerEnd);
+  assert.match(wheelHandler, /event\.preventDefault\(\)/, "browser page zoom and scrolling are intercepted over the recording");
+  assert.match(wheelHandler, /event\.ctrlKey\s*\|\|\s*event\.metaKey/, "trackpad pinch and modified wheel gestures enter time zoom");
+  assert.match(wheelHandler, /zoomTimeWindow\(/, "pinch changes the EEG time window");
+  assert.match(wheelHandler, /event\.deltaX/);
+  assert.match(wheelHandler, /event\.deltaY/);
+  assert.match(wheelHandler, /setViewStartSafe\(/, "ordinary wheel and trackpad gestures pan the recording");
+
+  const listenerStart = page.indexOf('viewer.addEventListener("wheel"');
+  const listenerEffectStart = page.lastIndexOf("useEffect(() => {", listenerStart);
+  const listenerEffectEnd = page.indexOf("\n\n  useEffect", listenerStart);
+  assert.ok(listenerEffectStart >= 0 && listenerEffectEnd > listenerStart, "the wheel listener lifecycle is present");
+  const listenerEffect = page.slice(listenerEffectStart, listenerEffectEnd);
+  assert.match(listenerEffect, /viewerRef\.current/);
+  assert.match(listenerEffect, /passive:\s*false/, "wheel handling can prevent browser-level zoom");
+  assert.match(listenerEffect, /removeEventListener\("wheel"/, "the wheel listener is cleaned up");
+  assert.match(
+    listenerEffect,
+    /\},\s*\[[^\]]*\bhasRecording\b[^\]]*\]\);/,
+    "the listener effect reruns when a recording replaces the initial blank state",
+  );
+});
+
+test("resizes context from its top edge, with upward drag expanding the track", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  const resizeRead = page.indexOf("const resize = contextResizeRef.current");
+  const resizeEffectStart = page.lastIndexOf("useEffect(() => {", resizeRead);
+  const resizeEffectEnd = page.indexOf("\n\n  const jumpTo", resizeRead);
+  assert.ok(resizeEffectStart >= 0 && resizeEffectEnd > resizeRead, "the context resize lifecycle is present");
+  const resizeEffect = page.slice(resizeEffectStart, resizeEffectEnd);
+  assert.match(
+    resizeEffect,
+    /resize\.startHeight\s*-\s*\(\s*event\.clientY\s*-\s*resize\.startY\s*\)/,
+    "dragging upward increases context height and dragging downward decreases it",
+  );
+
+  const handleRule = css.match(/\.context-resize-handle\s*\{([^}]+)\}/)?.[1] ?? "";
+  assert.match(handleRule, /\btop\s*:/, "the resize affordance is attached to the context track's top edge");
+  assert.doesNotMatch(handleRule, /\bbottom\s*:/, "the old bottom-edge resize affordance is removed");
+});
+
+test("keeps the right panel label-only and ordered like the ontology palette", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const sidebarStart = page.indexOf('<aside className="right-sidebar">');
+  const sidebarEnd = page.indexOf("</aside>", sidebarStart);
+  assert.ok(sidebarStart >= 0 && sidebarEnd > sidebarStart, "the right label panel is present");
+  const sidebar = page.slice(sidebarStart, sidebarEnd);
+
+  const searchPosition = sidebar.search(/Search ontology/i);
+  const contextPosition = sidebar.indexOf("Context Labels");
+  const ephysPosition = sidebar.indexOf("ePhys Labels");
+  assert.ok(searchPosition >= 0, "ontology search is available at the top of the right panel");
+  assert.ok(contextPosition > searchPosition, "context labels follow ontology search");
+  assert.ok(ephysPosition > contextPosition, "ePhys labels follow context labels");
+  assert.doesNotMatch(sidebar, /right-tabs|rightTab|<QcPanel|\bQC\b|inspector-section/, "QC and annotation inspection do not compete with the label palette");
+});
+
+test("moves QC into an accessible tab inside the Session Map dialog", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const sessionMapStart = page.indexOf("function SessionMap(");
+  assert.ok(sessionMapStart >= 0, "SessionMap is present");
+  const sessionMap = page.slice(sessionMapStart);
+
+  assert.match(sessionMap, /role="tablist"/, "Session Map exposes its view switcher as a tab list");
+  assert.match(sessionMap, /role="tab"[\s\S]{0,300}Session map/i, "the map remains the primary tab");
+  assert.match(sessionMap, /role="tab"[\s\S]{0,300}>QC(?:\s|<)/i, "QC is available as a sibling tab");
+  assert.match(sessionMap, /<QcPanel\b/, "the existing QC report renders inside Session Map");
+
+  const invocationStart = page.indexOf("{showSessionMap && <SessionMap");
+  const invocationEnd = page.indexOf("/>}", invocationStart);
+  assert.ok(invocationStart >= 0 && invocationEnd > invocationStart, "the Session Map dialog is wired from the workspace");
+  const invocation = page.slice(invocationStart, invocationEnd);
+  assert.match(invocation, /(?:issues|qcIssues)=\{qcIssues\}/, "QC findings are passed into Session Map");
+  assert.match(invocation, /badChannels=\{badChannels\}/);
+  assert.match(invocation, /recoveryStatus=\{recoveryStatus\}/);
 });
