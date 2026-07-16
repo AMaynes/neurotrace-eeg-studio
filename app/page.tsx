@@ -34,7 +34,7 @@ type Geometry = "point" | "interval" | "window" | "session";
 type TrackId = "context" | "windowed" | "instance";
 type AnnotationStatus = "draft" | "committed" | "suggestion";
 type AnnotationOrigin = "manual" | "imported" | "detector" | "legacy";
-type PlacementIntent = "native" | "instance" | "windowed";
+type PlacementIntent = "native" | "instance" | "windowed" | "context-instance" | "context-window";
 
 type LabelDefinition = {
   id: string;
@@ -127,7 +127,6 @@ type ControlBindings = {
   commit: string;
   nextCandidate: string;
   previousCandidate: string;
-  skipCandidate: string;
   ictalOnset: string;
   ictalOffset: string;
   toggleBadChannel: string;
@@ -172,6 +171,7 @@ type SessionWorkspaceSnapshot = {
   cursorLocked: boolean;
   snapMode: "1s" | "100ms" | "sample";
   spectrogramOpen: boolean;
+  expandedChannels: boolean;
   candidates: Candidate[];
   activeCandidate: number;
   sourceHash: string;
@@ -196,12 +196,12 @@ const LABELS: LabelDefinition[] = [
   { id: "grda", name: "GRDA — generalized rhythmic delta activity", short: "GRDA", color: "#e7c765", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "7" },
   { id: "lrda", name: "LRDA — lateralized rhythmic delta activity", short: "LRDA", color: "#d8b159", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "8" },
   { id: "gsw", name: "GSW — generalized spike-and-wave / sharp-and-wave", short: "GSW", color: "#f6cf6a", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "9" },
-  { id: "wake", name: "W — Wake", short: "W", color: "#67d7a2", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
-  { id: "sleep-unspecified", name: "Sleep", short: "SLEEP", color: "#668fc4", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
-  { id: "n1", name: "N1 sleep", short: "N1", color: "#79c7f5", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
-  { id: "n2", name: "N2 sleep", short: "N2", color: "#67aef8", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
-  { id: "n3", name: "N3 sleep", short: "N3", color: "#768eea", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
-  { id: "rem", name: "REM sleep", short: "REM", color: "#9b83ee", geometry: "window", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
+  { id: "wake", name: "W — Wake", short: "W", color: "#67d7a2", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
+  { id: "sleep-unspecified", name: "Sleep", short: "SLEEP", color: "#668fc4", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
+  { id: "n1", name: "N1 sleep", short: "N1", color: "#79c7f5", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
+  { id: "n2", name: "N2 sleep", short: "N2", color: "#67aef8", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
+  { id: "n3", name: "N3 sleep", short: "N3", color: "#768eea", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
+  { id: "rem", name: "REM sleep", short: "REM", color: "#9b83ee", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
   { id: "spikes", name: "Spikes", short: "SPIKE", color: "#f6cf6a", geometry: "point", track: "instance", defaultDuration: 0, category: "Ictal pathology" },
   { id: "slowing", name: "Slowing", short: "SLOW", color: "#e6a45c", geometry: "interval", track: "windowed", defaultDuration: 10, category: "Ictal pathology" },
   { id: "suppression", name: "Suppression", short: "SUPPR", color: "#d17a70", geometry: "interval", track: "windowed", defaultDuration: 10, category: "Ictal pathology" },
@@ -231,7 +231,8 @@ const PALETTE_BUTTON_NAMES: Record<string, string> = {
 };
 
 function annotationGeometry(annotation: Pick<Annotation, "geometry" | "labelId">): Geometry {
-  return annotation.geometry ?? LABEL_BY_ID.get(annotation.labelId)?.geometry ?? "point";
+  const geometry = annotation.geometry ?? LABEL_BY_ID.get(annotation.labelId)?.geometry ?? "point";
+  return geometry === "window" ? "interval" : geometry;
 }
 
 function normalizeAnnotationGeometry(annotation: Annotation, durationSec: number): Annotation {
@@ -388,7 +389,6 @@ const DEFAULT_CONTROLS: ControlBindings = {
   commit: "s",
   nextCandidate: "n",
   previousCandidate: "p",
-  skipCandidate: "k",
   ictalOnset: "i",
   ictalOffset: "o",
   toggleBadChannel: "b",
@@ -588,6 +588,7 @@ export default function Home() {
   const [snapMode, setSnapMode] = useState<"1s" | "100ms" | "sample">("100ms");
   const [playing, setPlaying] = useState(false);
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
+  const [expandedChannels, setExpandedChannels] = useState(false);
   const [paletteSearch, setPaletteSearch] = useState("");
   const [channelSearch, setChannelSearch] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -622,7 +623,6 @@ export default function Home() {
 
   const selectedAnnotation = annotations.find((item) => item.id === selectedAnnotationId) ?? null;
   const selectedGeometry = selectedAnnotation ? annotationGeometry(selectedAnnotation) : null;
-  const activeCandidateItem = candidates[activeCandidate] ?? null;
   const instanceQueueEntries = useMemo(() => {
     const linkedCandidateIds = new Set(annotations.flatMap((item) => item.candidateId ? [item.candidateId] : []));
     const annotationEntries = annotations
@@ -718,6 +718,7 @@ export default function Home() {
       cursorLocked,
       snapMode,
       spectrogramOpen,
+      expandedChannels,
       candidates,
       activeCandidate,
       sourceHash,
@@ -749,7 +750,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, cursorAmplitude, cursorLocked, cursorTime, filters, focusedChannel, gain, hasRecording, meta, montage, rawSourceHash, recordingType, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, viewStart]);
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, cursorAmplitude, cursorLocked, cursorTime, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, rawSourceHash, recordingType, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, viewStart]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -795,6 +796,7 @@ export default function Home() {
     setCursorLocked(snapshot.cursorLocked);
     setSnapMode(snapshot.snapMode);
     setSpectrogramOpen(snapshot.spectrogramOpen);
+    setExpandedChannels(snapshot.expandedChannels ?? false);
     setCandidates(snapshot.candidates);
     setActiveCandidate(snapshot.activeCandidate);
     setSourceHash(snapshot.sourceHash);
@@ -858,6 +860,7 @@ export default function Home() {
       cursorLocked: false,
       snapMode: "100ms",
       spectrogramOpen: false,
+      expandedChannels: false,
       candidates: [],
       activeCandidate: 0,
       sourceHash: "",
@@ -968,8 +971,18 @@ export default function Home() {
       return;
     }
     const samplingRate = display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
-    const geometry: Geometry = intent === "instance" ? "point" : intent === "windowed" ? "interval" : label.geometry;
-    const track: TrackId = intent === "instance" ? "instance" : intent === "windowed" ? "windowed" : label.track;
+    const geometry: Geometry = intent === "instance" || intent === "context-instance"
+      ? "point"
+      : intent === "windowed" || intent === "context-window"
+        ? "interval"
+        : label.geometry;
+    const track: TrackId = intent === "context-instance" || intent === "context-window"
+      ? "context"
+      : intent === "instance"
+        ? "instance"
+        : intent === "windowed"
+          ? "windowed"
+          : label.track;
     let start = clamp(snapTime(Math.min(time, explicitEnd ?? time), snapMode, samplingRate), 0, meta.durationSec);
     let end = geometry === "point" ? start : explicitEnd ?? start + label.defaultDuration;
     end = clamp(snapTime(Math.max(end, start), snapMode, samplingRate), start, meta.durationSec);
@@ -1071,7 +1084,9 @@ export default function Home() {
     setSelection(null);
     setToast(sleepOverlapCount
       ? `${label.name} applied to the selected window; overlapping sleep stages were trimmed`
-      : `${label.name} placed at ${formatClock(next.start, true)} — draft`);
+      : geometry === "interval" && explicitEnd !== undefined
+        ? `${label.name} applied to ${formatClock(next.start, true)}–${formatClock(next.end, true)} — draft`
+        : `${label.name} placed at ${formatClock(next.start, true)} — draft`);
   }, [activeCandidate, candidates, commitMutation, display, focusedChannel, hasRecording, meta, montage, reviewer, snapMode]);
 
   const placePaletteLabel = useCallback((label: LabelDefinition) => {
@@ -1083,11 +1098,15 @@ export default function Home() {
       setToast("Click the waveform to pin a time, or drag to select a window");
       return;
     }
-    const intent: PlacementIntent = label.category === "Context"
+    const intent: PlacementIntent = label.geometry === "session"
       ? "native"
-      : selection
-        ? "windowed"
-        : "instance";
+      : label.category === "Context"
+        ? selection
+          ? "context-window"
+          : "context-instance"
+        : selection
+          ? "windowed"
+          : "instance";
     addAnnotation(label, selection?.start ?? cursorTime, selection?.end, intent);
   }, [addAnnotation, cursorLocked, cursorTime, hasRecording, selection]);
 
@@ -1145,7 +1164,7 @@ export default function Home() {
         issues.push({ level: "warning", text: "Manual commit is missing an immutable revision snapshot", annotationId: item.id });
       }
       if (item.candidateId && !candidateIds.has(item.candidateId)) {
-        issues.push({ level: "warning", text: "Annotation references a missing source candidate", annotationId: item.id });
+        issues.push({ level: "warning", text: "Annotation references a missing source file event", annotationId: item.id });
       }
       if (item.labelId === "spikes" && (!item.channelScope || item.channelScope.primarySourceIndex < 0 || item.channelScope.primarySourceIndex >= meta.channelLabels.length || !item.channelScope.sourceIndices.length)) {
         issues.push({ level: "warning", text: "Epileptiform spike is missing valid source-channel provenance", annotationId: item.id });
@@ -1383,6 +1402,12 @@ export default function Home() {
       for (let channel = 0; channel < display.data.length; channel += 1) {
         const values = display.data[channel];
         const center = rowHeight * (channel + 0.5);
+        if (channel === focusedChannel) {
+          context.fillStyle = "rgba(87, 223, 183, .065)";
+          context.fillRect(0, rowHeight * channel, width, rowHeight);
+          context.strokeStyle = "rgba(87, 223, 183, .28)";
+          context.strokeRect(.5, rowHeight * channel + .5, width - 1, Math.max(1, rowHeight - 1));
+        }
         context.strokeStyle = "rgba(116,153,162,.11)";
         context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
         if (!values.length) continue;
@@ -1419,7 +1444,7 @@ export default function Home() {
     };
     waveDrawRef.current = draw;
     draw();
-  }, [annotations, display, gain, markOnset, timebase, viewStart]);
+  }, [annotations, display, focusedChannel, gain, markOnset, timebase, viewStart]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1520,7 +1545,15 @@ export default function Home() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const time = timeFromPointer(event, canvas, event.altKey);
-    const intent: PlacementIntent = label.category === "Context" ? "native" : selection ? "windowed" : "instance";
+    const intent: PlacementIntent = label.geometry === "session"
+      ? "native"
+      : label.category === "Context"
+        ? selection
+          ? "context-window"
+          : "context-instance"
+        : selection
+          ? "windowed"
+          : "instance";
     addAnnotation(label, selection?.start ?? time, selection?.end, intent);
     setDragGhost(null);
   };
@@ -1556,17 +1589,16 @@ export default function Home() {
         const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-track-id]")?.dataset.trackId;
         if (target === "instance" || target === "windowed") {
           track = target;
-          geometry = target === "instance"
-            ? "point"
-            : label?.geometry === "window"
-              ? "window"
-              : "interval";
+          geometry = target === "instance" ? "point" : "interval";
         }
       }
       const duration = geometry === "point"
         ? 0
         : drag.original.track === "instance" && track === "windowed"
-          ? Math.max(30, label?.defaultDuration ?? 30)
+          ? Math.min(
+            meta.durationSec,
+            Math.max(1, Math.min(label?.defaultDuration ?? 5, timebase / 4)),
+          )
           : drag.original.end - drag.original.start;
       let start = drag.original.start;
       let end = drag.original.end;
@@ -1734,15 +1766,6 @@ export default function Home() {
     setToast(`${entry.detail}: ${entry.label}`);
   }, [annotations, candidates, instanceQueueEntries, jumpTo, selectCandidate]);
 
-  const skipActiveCandidate = useCallback(() => {
-    const current = candidates[activeCandidate];
-    if (!current) return;
-    setCandidates((items) => items.map((item, index) => index === activeCandidate ? { ...item, status: "skipped" } : item));
-    const nextIndex = candidates.findIndex((item, index) => index > activeCandidate && item.status !== "reviewed" && item.status !== "skipped");
-    if (nextIndex >= 0) selectCandidate(nextIndex);
-    else setToast("Candidate skipped — no later unresolved instances");
-  }, [activeCandidate, candidates, selectCandidate]);
-
   const loadSource = useCallback(async (source: SignalSource, file: File, interpretation?: Record<string, unknown>) => {
     const targetSessionId = activeSessionId;
     const nextMeta = sourceMeta(source);
@@ -1873,16 +1896,13 @@ export default function Home() {
             time: event.timeSec,
             label: event.label,
             source: "bronze",
-            status: index === 0 ? "active" : "queued",
+            status: "queued",
           }));
         if (importedCandidates.length) {
           setCandidates((restored) => importedCandidates.map((candidate) => {
             const prior = restored.find((item) => item.id === candidate.id);
             return prior ? { ...candidate, status: prior.status } : candidate;
           }));
-          setViewStart(clamp(importedCandidates[0].time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
-          setCursorTime(importedCandidates[0].time);
-          setCursorLocked(true);
         }
       } else if (dat) {
         let legacyMetadata: LegacyMatMetadata | null = null;
@@ -1903,7 +1923,7 @@ export default function Home() {
         setPendingLegacyMatFile(mat ?? null);
         setPendingLegacyMeta(legacyMetadata);
         setShowImport(true);
-        if (legacyMetadata) setToast(`Legacy MAT + DAT mapped — ${legacyMetadata.events.length} candidate event${legacyMetadata.events.length === 1 ? "" : "s"} found`);
+        if (legacyMetadata) setToast(`Legacy MAT + DAT mapped — ${legacyMetadata.events.length} file event${legacyMetadata.events.length === 1 ? "" : "s"} found`);
         else if (!mat) setToast("Raw DAT detected — confirm channel mapping");
       } else if (mat) {
         await loadSource(await MatSource.create(mat), mat);
@@ -1958,17 +1978,12 @@ export default function Home() {
             time: event.timeSec,
             label: event.label,
             source: "bronze",
-            status: index === 0 ? "active" : "queued",
+            status: "queued",
           }));
         setCandidates((restored) => importedCandidates.map((candidate) => {
           const prior = restored.find((item) => item.id === candidate.id);
           return prior ? { ...candidate, status: prior.status } : candidate;
         }));
-        if (importedCandidates[0]) {
-          const importedWindow = Math.min(20, Math.max(5, source.meta.durationSec));
-          setViewStart(clamp(importedCandidates[0].time - importedWindow / 2, 0, Math.max(0, source.meta.durationSec - importedWindow)));
-          setCursorTime(clamp(importedCandidates[0].time, 0, source.meta.durationSec));
-        }
       }
       setPendingDat(null);
       setPendingLegacyMatFile(null);
@@ -2260,8 +2275,6 @@ export default function Home() {
         selectInstanceQueueEntry(Math.min(instanceQueueEntries.length - 1, activeQueueIndex + 1));
       } else if (lower === controlBindings.previousCandidate && instanceQueueEntries.length) {
         selectInstanceQueueEntry(Math.max(0, activeQueueIndex - 1));
-      } else if (lower === controlBindings.skipCandidate && candidates.length) {
-        skipActiveCandidate();
       } else if (lower === controlBindings.toggleBadChannel && selectedChannels.size) {
         const originalIndex = display.primarySourceIndices[focusedChannel];
         if (originalIndex === undefined || originalIndex < 0) {
@@ -2284,7 +2297,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [activeCandidate, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, placePaletteLabel, redo, selectInstanceQueueEntry, selectedAnnotationId, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, skipActiveCandidate, timebase, undo, zoomTimeWindow]);
+  }, [activeCandidate, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, placePaletteLabel, redo, selectInstanceQueueEntry, selectedAnnotationId, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -2310,7 +2323,6 @@ export default function Home() {
     { key: "commit", label: "Commit selected label" },
     { key: "nextCandidate", label: "Next queued event" },
     { key: "previousCandidate", label: "Previous queued event" },
-    { key: "skipCandidate", label: "Skip instance candidate" },
     { key: "ictalOnset", label: "Set ictal onset" },
     { key: "ictalOffset", label: "Set ictal offset" },
     { key: "toggleBadChannel", label: "Toggle focused channel quality" },
@@ -2324,9 +2336,13 @@ export default function Home() {
     () => renderAnnotations.filter((item) => annotationOverlapsWindow(item, viewStart, viewStart + timebase)),
     [renderAnnotations, timebase, viewStart],
   );
-  const contextLaneLayout = useMemo(
-    () => assignAnnotationLanes(visibleAnnotations.filter((item) => item.track === "context")),
+  const bottomAnnotations = useMemo(
+    () => visibleAnnotations.filter((item) => annotationGeometry(item) !== "session"),
     [visibleAnnotations],
+  );
+  const contextLaneLayout = useMemo(
+    () => assignAnnotationLanes(bottomAnnotations.filter((item) => item.track === "context")),
+    [bottomAnnotations],
   );
   const contextLaneCapacity = Math.max(1, Math.floor((contextTrackHeight - 8) / 32));
   const contextLaneStep = contextLaneLayout.laneCount <= contextLaneCapacity
@@ -2335,9 +2351,9 @@ export default function Home() {
       ? Math.max(8, (contextTrackHeight - 36) / (contextLaneCapacity - 1))
       : 0;
   const tracks: Array<{ id: TrackId; label: string }> = [
-    { id: "context", label: "Context" },
-    { id: "windowed", label: "Windowed Labels" },
-    { id: "instance", label: "Instance Labels" },
+    { id: "context", label: "Context Labels" },
+    { id: "windowed", label: "ePhys Window Labels" },
+    { id: "instance", label: "ePhys Instance Labels" },
   ];
   const gridDivisions = timebase <= 30 ? Math.max(2, Math.ceil(timebase / 5)) : 10;
 
@@ -2502,10 +2518,11 @@ export default function Home() {
           </div>
 
           <div ref={viewerRef} className={`signal-and-tracks ${spectrogramOpen ? "with-spectrogram" : ""}`} onDragOver={onLabelDragOver} onDrop={onLabelDrop} onDragLeave={() => setDragGhost(null)}>
-            <div className="waveform-wrap">
+            <div className={`waveform-wrap ${expandedChannels ? "channel-scroll-mode" : ""}`} style={{ "--channel-content-height": `${Math.max(245, display.labels.length * 60 + 28)}px` } as React.CSSProperties}>
               <div className="channel-rail" style={{ gridTemplateRows: `repeat(${Math.max(1, display.labels.length)}, 1fr)` }}>
                 <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
-                {display.labels.map((label, index) => <button key={`${label}-${index}`} className={focusedChannel === index ? "focused" : ""} onClick={() => setFocusedChannel(index)}><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0)}</span></button>)}
+                <button className={`channel-layout-button ${expandedChannels ? "active" : ""}`} aria-label={`${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`} aria-pressed={expandedChannels} title={`${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`} onClick={() => setExpandedChannels((value) => !value)}>E</button>
+                {display.labels.map((label, index) => <button key={`${label}-${index}`} className={focusedChannel === index ? "focused" : ""} aria-pressed={focusedChannel === index} onClick={() => setFocusedChannel(index)}><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0)}</span></button>)}
               </div>
               <div className="canvas-shell">
                 <canvas ref={canvasRef} aria-label="EEG waveform" onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} />
@@ -2513,7 +2530,6 @@ export default function Home() {
                   left: `${((Math.max(viewStart, selection.start) - viewStart) / timebase) * 100}%`,
                   width: `${Math.max(0, ((Math.min(viewStart + timebase, selection.end) - Math.max(viewStart, selection.start)) / timebase) * 100)}%`,
                 }} />}
-                {activeCandidateItem && activeCandidateItem.time >= viewStart && activeCandidateItem.time <= viewStart + timebase && <div className="candidate-cursor" style={{ left: `${((activeCandidateItem.time - viewStart) / timebase) * 100}%` }}><span>Candidate</span></div>}
                 {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
                 {loadingSignal && <div className="signal-loading"><span /> Reading signal window…</div>}
                 {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
@@ -2528,7 +2544,7 @@ export default function Home() {
                 <div className="track-label"><span className={`track-icon ${track.id}`} />{track.label}</div>
                 <div className="track-lane" data-track-id={track.id}>
                   <div className="window-grid">{Array.from({ length: gridDivisions }, (_, index) => <i key={index} />)}</div>
-                  {visibleAnnotations.filter((item) => item.track === track.id).map((item) => {
+                  {bottomAnnotations.filter((item) => item.track === track.id).map((item) => {
                     const label = LABEL_BY_ID.get(item.labelId)!;
                     const geometry = annotationGeometry(item);
                     const point = geometry === "point";
@@ -2577,7 +2593,7 @@ export default function Home() {
           </div>
           <section className="compact-context-palette">
             <h2>Context Labels</h2>
-            <p className="palette-kind">Context palette · clinical facts may coexist</p>
+            <p className="palette-kind">Context palette · click = instance · selected span = window</p>
             <div className="compact-context-only">
               {rightContextLabels.map((label) => <button key={label.id} className="compact-palette-button context" disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => {
                   event.dataTransfer.setData("application/x-neurotrace-label", label.id);
@@ -2774,7 +2790,6 @@ export default function Home() {
       {showSessionMap && <SessionMap
         meta={meta}
         annotations={annotations}
-        candidates={candidates}
         tab={sessionMapTab}
         onTabChange={setSessionMapTab}
         issues={qcIssues}
@@ -2784,11 +2799,6 @@ export default function Home() {
         onOpenAnnotation={(item) => {
           setSelectedAnnotationId(item.id);
           jumpTo(item.start);
-          setShowSessionMap(false);
-        }}
-        onOpenCandidate={(candidate) => {
-          const index = candidates.findIndex((item) => item.id === candidate.id);
-          if (index >= 0) selectCandidate(index);
           setShowSessionMap(false);
         }}
       />}
@@ -2878,7 +2888,6 @@ function QcPanel({ issues, annotations, badChannels, meta, recoveryStatus, onSel
 function SessionMap({
   meta,
   annotations,
-  candidates,
   tab,
   onTabChange,
   issues,
@@ -2886,11 +2895,9 @@ function SessionMap({
   recoveryStatus,
   onClose,
   onOpenAnnotation,
-  onOpenCandidate,
 }: {
   meta: RecordingMeta;
   annotations: Annotation[];
-  candidates: Candidate[];
   tab: "map" | "qc";
   onTabChange: (tab: "map" | "qc") => void;
   issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }>;
@@ -2898,16 +2905,15 @@ function SessionMap({
   recoveryStatus: "saved" | "error";
   onClose: () => void;
   onOpenAnnotation: (annotation: Annotation) => void;
-  onOpenCandidate: (candidate: Candidate) => void;
 }) {
-  const [hovered, setHovered] = useState<{ kind: "annotation"; item: Annotation } | { kind: "candidate"; item: Candidate } | null>(null);
-  const [selected, setSelected] = useState<{ kind: "annotation"; item: Annotation } | { kind: "candidate"; item: Candidate } | null>(null);
+  const [hovered, setHovered] = useState<{ kind: "annotation"; item: Annotation } | null>(null);
+  const [selected, setSelected] = useState<{ kind: "annotation"; item: Annotation } | null>(null);
   const inspected = hovered ?? selected;
   const rows: Array<{ id: string; label: string; matches: (annotation: Annotation) => boolean }> = [
     { id: "session", label: "Entire-session context", matches: (item) => item.track === "context" && annotationGeometry(item) === "session" },
-    { id: "context", label: "Window context", matches: (item) => item.track === "context" && annotationGeometry(item) !== "session" },
-    { id: "windowed", label: "Windowed labels", matches: (item) => item.track === "windowed" },
-    { id: "instance", label: "Instance labels", matches: (item) => item.track === "instance" },
+    { id: "context", label: "Context labels", matches: (item) => item.track === "context" && annotationGeometry(item) !== "session" },
+    { id: "windowed", label: "ePhys window labels", matches: (item) => item.track === "windowed" },
+    { id: "instance", label: "ePhys instance labels", matches: (item) => item.track === "instance" },
   ];
   return <div className="modal-backdrop map-backdrop"><div className="session-map-modal">
     <header><div><span className="modal-eyebrow">MODEL-READY SESSION MAP</span><h2>{patientLabel(meta)} <i>/</i> {recordingLabel(meta)}</h2><p>{meta.channelLabels.length} channels · {formatClock(meta.durationSec)} · {primarySampleRate(meta)} Hz</p></div><button onClick={onClose} aria-label="Close session map">×</button></header>
@@ -2916,16 +2922,12 @@ function SessionMap({
       <button role="tab" aria-selected={tab === "qc"} className={tab === "qc" ? "active" : ""} onClick={() => onTabChange("qc")}>QC <span>{issues.length}</span></button>
     </div>
     {tab === "map" ? <div className="session-map-tab-panel" role="tabpanel">
-      <div className="map-equation"><span>entire-session context</span><b>＋</b><span>window context</span><b>＋</b><span>windowed labels</span><b>＋</b><span>instance labels</span><b>→</b><strong>training data</strong></div>
+      <div className="map-equation"><span>entire-session context</span><b>＋</b><span>context labels</span><b>＋</b><span>ePhys window labels</span><b>＋</b><span>ePhys instance labels</span><b>→</b><strong>training data</strong></div>
       <div className={`map-inspection ${inspected ? "active" : ""}`}>
       {inspected?.kind === "annotation" ? <>
         <i style={{ background: LABEL_BY_ID.get(inspected.item.labelId)?.color }} />
         <div><strong>{LABEL_BY_ID.get(inspected.item.labelId)?.name ?? inspected.item.labelId}</strong><span>{annotationGeometry(inspected.item) === "point" ? formatClock(inspected.item.start, true) : `${formatClock(inspected.item.start, true)} → ${formatClock(inspected.item.end, true)}`} · {inspected.item.status} · {inspected.item.reviewer || "reviewer unset"}</span></div>
         <button onClick={() => onOpenAnnotation(inspected.item)}>Open in viewer</button>
-      </> : inspected?.kind === "candidate" ? <>
-        <i className="candidate-mark" />
-        <div><strong>{inspected.item.label}</strong><span>{formatClock(inspected.item.time, true)} · suggested instance · {inspected.item.status}</span></div>
-        <button onClick={() => onOpenCandidate(inspected.item)}>Review candidate</button>
       </> : <><div><strong>Explore the map</strong><span>Hover for details. Click an item to keep its details here.</span></div></>}
       </div>
       <div className="map-timeline">
@@ -2934,8 +2936,7 @@ function SessionMap({
         const rowAnnotations = annotations.filter(row.matches);
         const laneLayout = assignAnnotationLanes(rowAnnotations);
         const annotationLaneCount = Math.min(8, laneLayout.laneCount);
-        const candidateLaneCount = row.id === "instance" && candidates.length ? Math.min(3, candidates.length) : 0;
-        const rowHeight = 12 + (annotationLaneCount + candidateLaneCount) * 29;
+        const rowHeight = 12 + annotationLaneCount * 29;
         return <div className={`map-row ${row.id}`} key={row.id} style={{ minHeight: rowHeight }}><strong>{row.label}</strong><div style={{ minHeight: rowHeight }}>{rowAnnotations.map((item) => {
           const label = LABEL_BY_ID.get(item.labelId);
           if (!label) return null;
@@ -2943,10 +2944,6 @@ function SessionMap({
           const payload = { kind: "annotation" as const, item };
           const lane = Math.min(laneLayout.lanes.get(item.id) ?? 0, annotationLaneCount - 1);
           return <button key={item.id} className={point ? "map-instance" : ""} aria-label={`${label.name} at ${formatClock(item.start, true)}`} title={`${label.name} · ${formatClock(item.start, true)}${point ? "" : `–${formatClock(item.end, true)}`}`} style={{ top: 6 + lane * 29, left: `${(item.start / meta.durationSec) * 100}%`, width: `${point ? .2 : Math.max(.35, ((item.end - item.start) / meta.durationSec) * 100)}%`, background: label.color }} onMouseEnter={() => setHovered(payload)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(payload)} onBlur={() => setHovered(null)} onClick={() => setSelected(payload)}>{point ? "" : label.short}</button>;
-        })}{row.id === "instance" && candidates.map((item, index) => {
-          const payload = { kind: "candidate" as const, item };
-          const lane = annotationLaneCount + (index % Math.max(1, candidateLaneCount));
-          return <button key={item.id} className="map-candidate" style={{ top: 6 + lane * 29, left: `${(item.time / meta.durationSec) * 100}%` }} title={`Suggested instance · ${item.label}`} aria-label={`${item.label} suggested at ${formatClock(item.time, true)}`} onMouseEnter={() => setHovered(payload)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(payload)} onBlur={() => setHovered(null)} onClick={() => setSelected(payload)} />;
         })}</div></div>;
       })}
       </div>
@@ -2954,6 +2951,6 @@ function SessionMap({
       const annotation = annotations.find((item) => item.id === id);
       if (annotation) onOpenAnnotation(annotation);
     }} /></div>}
-    <footer>{tab === "map" ? <div className="geometry-legend"><span><i className="duration" />Duration</span><span><i className="point" />Single moment</span><span><i className="suggestion" />Suggested instance</span></div> : <span className="qc-footer-note">{issues.length ? `${issues.length} QC finding${issues.length === 1 ? "" : "s"}` : "All integrity checks passed"}</span>}<button className="button primary" onClick={onClose}>Return to review</button></footer>
+    <footer>{tab === "map" ? <div className="geometry-legend"><span><i className="duration" />Duration</span><span><i className="point" />Single moment</span></div> : <span className="qc-footer-note">{issues.length ? `${issues.length} QC finding${issues.length === 1 ? "" : "s"}` : "All integrity checks passed"}</span>}<button className="button primary" onClick={onClose}>Return to review</button></footer>
   </div></div>;
 }

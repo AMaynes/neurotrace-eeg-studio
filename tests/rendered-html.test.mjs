@@ -56,8 +56,8 @@ test("ships product source without starter preview artifacts", async () => {
   assert.match(page, /aria-label="Delete annotation"/);
   assert.match(page, /aria-label="Close Settings"/);
   assert.match(page, /data-track-id=/);
-  assert.match(page, /Windowed Labels/);
-  assert.match(page, /Instance Labels/);
+  assert.match(page, /ePhys Window Labels/);
+  assert.match(page, /ePhys Instance Labels/);
   assert.match(page, /context-resize-handle/);
   assert.match(page, /wave-cursor pinned/);
   assert.match(page, /Converted to a windowed duration label/);
@@ -124,6 +124,7 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
 
   sourceHas(/aria-label="Add channels"/, "CH+ has an accessible action name");
   sourceHas(/>\s*CH\+\s*<\/button>/, "the compact channel action is visible as CH+");
+  sourceHas(/className=\{`channel-layout-button[\s\S]*?>E<\/button>/, "the expanded channel layout control sits beside CH+");
   sourceHas(/aria-label="(?:Open )?Help"/, "Help trigger has an accessible name");
   sourceHas(/aria-label="(?:Open )?Settings"/, "Settings trigger has an accessible name");
 
@@ -175,17 +176,18 @@ test("resolves palette clicks from session, selection, or pinned-cursor context"
   assert.match(resolver, /cursorLocked/);
   assert.match(resolver, /selection\?\.start\s*\?\?\s*cursorTime/);
   assert.match(resolver, /selection\?\.end/);
-  assert.match(resolver, /label\.category\s*===\s*"Context"[\s\S]*?"native"/);
+  assert.match(resolver, /label\.category\s*===\s*"Context"[\s\S]*?"context-window"[\s\S]*?"context-instance"/);
   assert.match(resolver, /selection[\s\S]*?\?\s*"windowed"[\s\S]*?:\s*"instance"/);
   assert.match(resolver, /addAnnotation\(label,\s*selection\?\.start\s*\?\?\s*cursorTime,\s*selection\?\.end,\s*intent\)/);
 
   const addStart = page.indexOf("const addAnnotation");
   const addEnd = page.indexOf("const placePaletteLabel", addStart);
   const addAnnotation = page.slice(addStart, addEnd);
-  assert.match(addAnnotation, /intent\s*===\s*"instance"\s*\?\s*"point"/);
-  assert.match(addAnnotation, /intent\s*===\s*"windowed"\s*\?\s*"interval"/);
-  assert.match(addAnnotation, /intent\s*===\s*"instance"\s*\?\s*"instance"/);
-  assert.match(addAnnotation, /intent\s*===\s*"windowed"\s*\?\s*"windowed"/);
+  assert.match(addAnnotation, /intent\s*===\s*"instance"\s*\|\|\s*intent\s*===\s*"context-instance"[\s\S]*?\?\s*"point"/);
+  assert.match(addAnnotation, /intent\s*===\s*"windowed"\s*\|\|\s*intent\s*===\s*"context-window"[\s\S]*?\?\s*"interval"/);
+  assert.match(addAnnotation, /intent\s*===\s*"context-instance"\s*\|\|\s*intent\s*===\s*"context-window"[\s\S]*?\?\s*"context"/);
+  assert.match(addAnnotation, /intent\s*===\s*"instance"[\s\S]*?\?\s*"instance"/);
+  assert.match(addAnnotation, /intent\s*===\s*"windowed"[\s\S]*?\?\s*"windowed"/);
 
   const paletteClickBindings = page.match(/onClick=\{\(\) => placePaletteLabel\(label\)\}/g) ?? [];
   assert.ok(paletteClickBindings.length >= 2, "both context and label palettes use the same placement resolver");
@@ -193,6 +195,7 @@ test("resolves palette clicks from session, selection, or pinned-cursor context"
   const dropStart = page.indexOf("const onLabelDrop");
   const dropEnd = page.indexOf("const onLabelDragOver", dropStart);
   const drop = page.slice(dropStart, dropEnd);
+  assert.match(drop, /label\.category\s*===\s*"Context"[\s\S]*?"context-window"[\s\S]*?"context-instance"/);
   assert.match(drop, /selection\s*\?\s*"windowed"\s*:\s*"instance"/);
   assert.match(drop, /selection\?\.start\s*\?\?\s*time/);
   assert.match(drop, /selection\?\.end/);
@@ -452,4 +455,48 @@ test("refreshes signal windows during panning instead of debouncing until scroll
   assert.match(effect, /pumpLatestWindow/, "the newest requested window is pumped without building a stale read backlog");
   assert.doesNotMatch(effect, /setTimeout/, "signal refresh no longer waits for wheel momentum to stop");
   assert.match(effect, /displayAppliedRequestIdRef/, "out-of-order reads cannot overwrite a newer rendered window");
+});
+
+test("keeps whole-session context out of the timed tracks and preserves exact label geometry", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /const bottomAnnotations[\s\S]*?annotationGeometry\(item\)\s*!==\s*"session"/);
+  assert.match(page, /bottomAnnotations\.filter\(\(item\)\s*=>\s*item\.track\s*===\s*track\.id\)/);
+  assert.match(page, /\{ id: "context", label: "Context Labels" \}/);
+  assert.match(page, /\{ id: "windowed", label: "ePhys Window Labels" \}/);
+  assert.match(page, /\{ id: "instance", label: "ePhys Instance Labels" \}/);
+  assert.match(page, /return geometry === "window" \? "interval" : geometry/, "legacy fixed windows migrate to ordinary movable intervals");
+  assert.doesNotMatch(page, /id: "(?:wake|sleep-unspecified|n1|n2|n3|rem)"[^\n]+geometry: "window"/);
+
+  const dragStart = page.indexOf("const applyPreview");
+  const dragEnd = page.indexOf("const startAnnotationDrag", dragStart);
+  const drag = page.slice(dragStart, dragEnd);
+  assert.match(drag, /geometry\s*=\s*target\s*===\s*"instance"\s*\?\s*"point"\s*:\s*"interval"/);
+  assert.doesNotMatch(drag, /geometry\s*=\s*"window"/);
+});
+
+test("highlights a focused channel and provides compact or vertically scrollable channel layouts", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /className=\{focusedChannel\s*===\s*index\s*\?\s*"focused"\s*:\s*""\}/);
+  assert.match(page, /aria-pressed=\{focusedChannel\s*===\s*index\}/);
+  assert.match(page, /setFocusedChannel\(index\)/);
+  assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
+  assert.match(page, /--channel-content-height/);
+  assert.match(page, /aria-pressed=\{expandedChannels\}/);
+  assert.match(css, /\.waveform-wrap\.channel-scroll-mode[\s\S]*?overflow-y:\s*auto/);
+  assert.match(css, /\.channel-rail button\.focused/);
+});
+
+test("does not render candidate controls or candidate marks", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.doesNotMatch(page, /activeCandidateItem|candidate-cursor|Suggested instance|skipActiveCandidate/);
+  assert.doesNotMatch(css, /map-candidate|candidate-mark|candidate-cursor/);
 });
