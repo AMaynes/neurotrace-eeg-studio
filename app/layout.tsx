@@ -15,6 +15,7 @@ export async function generateMetadata(): Promise<Metadata> {
     description,
     applicationName: "NeuroTrace",
     keywords: ["EEG", "SEEG", "EDF", "electrophysiology", "annotation", "seizure forecasting"],
+    other: { "neurotrace-release": "public-v2" },
     openGraph: { title, description, type: "website", images: [{ url: image, width: 1731, height: 909, alt: "NeuroTrace clinical EEG annotation workspace" }] },
     twitter: { card: "summary_large_image", title, description, images: [image] },
   };
