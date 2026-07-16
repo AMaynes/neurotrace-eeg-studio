@@ -214,6 +214,7 @@ const LABELS: LabelDefinition[] = [
 ];
 
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
+const CHANNEL_RAIL_HEADER_HEIGHT = 28;
 const PALETTE_BUTTON_NAMES: Record<string, string> = {
   preictal: "Pre",
   ictal: "Ictal",
@@ -1421,19 +1422,30 @@ export default function Home() {
       }
 
       const rows = Math.max(1, display.data.length);
-      const rowHeight = height / rows;
+      const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
+      const plotHeight = Math.max(1, height - plotTop);
+      const rowHeight = plotHeight / rows;
       for (let channel = 0; channel < display.data.length; channel += 1) {
         const values = display.data[channel];
-        const center = rowHeight * (channel + 0.5);
+        const rowTop = plotTop + rowHeight * channel;
+        const center = rowTop + rowHeight * 0.5;
         if (channel === focusedChannel) {
           context.fillStyle = "rgba(87, 223, 183, .065)";
-          context.fillRect(0, rowHeight * channel, width, rowHeight);
+          context.fillRect(0, rowTop, width, rowHeight);
           context.strokeStyle = "rgba(87, 223, 183, .28)";
-          context.strokeRect(.5, rowHeight * channel + .5, width - 1, Math.max(1, rowHeight - 1));
+          context.strokeRect(.5, rowTop + .5, width - 1, Math.max(1, rowHeight - 1));
         }
         context.strokeStyle = "rgba(116,153,162,.11)";
         context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
         if (!values.length) continue;
+        let baselineSum = 0;
+        let baselineCount = 0;
+        for (const value of values) {
+          if (!Number.isFinite(value)) continue;
+          baselineSum += value;
+          baselineCount += 1;
+        }
+        const baseline = baselineCount ? baselineSum / baselineCount : 0;
         const scale = (rowHeight * 0.36 * gain) / 100;
         const samplesPerPixel = values.length / Math.max(1, width);
         context.strokeStyle = "#eaf5f2";
@@ -1449,8 +1461,8 @@ export default function Home() {
             if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
           }
           if (min !== Infinity) {
-            context.moveTo(x, center - max * scale);
-            context.lineTo(x, center - min * scale);
+            context.moveTo(x, center - (max - baseline) * scale);
+            context.lineTo(x, center - (min - baseline) * scale);
           }
         }
         context.stroke();
@@ -1487,7 +1499,9 @@ export default function Home() {
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const time = timeFromPointer(event, event.currentTarget, event.altKey);
     const rect = event.currentTarget.getBoundingClientRect();
-    const row = clamp(Math.floor(((event.clientY - rect.top) / rect.height) * Math.max(1, display.data.length)), 0, Math.max(0, display.data.length - 1));
+    const rowCount = Math.max(1, display.data.length);
+    const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
+    const row = clamp(Math.floor(clamp((event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight, 0, .999999) * rowCount), 0, Math.max(0, display.data.length - 1));
     const values = display.data[row];
     const sample = values?.length ? clamp(Math.floor(((time - viewStart) / timebase) * values.length), 0, values.length - 1) : 0;
     pointerRef.current = { startX: event.clientX, startTime: time, moved: false };
@@ -1502,7 +1516,9 @@ export default function Home() {
     if (!pointerRef.current) return;
     const time = timeFromPointer(event, event.currentTarget, event.altKey);
     const rect = event.currentTarget.getBoundingClientRect();
-    const row = clamp(Math.floor(((event.clientY - rect.top) / rect.height) * Math.max(1, display.data.length)), 0, Math.max(0, display.data.length - 1));
+    const rowCount = Math.max(1, display.data.length);
+    const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
+    const row = clamp(Math.floor(clamp((event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight, 0, .999999) * rowCount), 0, Math.max(0, display.data.length - 1));
     const values = display.data[row];
     const sample = values?.length ? clamp(Math.floor(((time - viewStart) / timebase) * values.length), 0, values.length - 1) : 0;
     if (Math.abs(event.clientX - pointerRef.current.startX) > 3) {

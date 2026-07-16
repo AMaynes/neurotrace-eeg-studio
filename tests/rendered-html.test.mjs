@@ -524,6 +524,26 @@ test("highlights a focused channel and provides compact or vertically scrollable
   assert.match(css, /\.channel-rail button\.focused/);
 });
 
+test("aligns waveform rows and pointer hit-testing with the channel rail", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const CHANNEL_RAIL_HEADER_HEIGHT\s*=\s*28/);
+
+  const drawStart = page.indexOf("const rows = Math.max(1, display.data.length)");
+  const drawEnd = page.indexOf("if (markOnset !== null)", drawStart);
+  const draw = page.slice(drawStart, drawEnd);
+  assert.match(draw, /const plotTop\s*=\s*CHANNEL_RAIL_HEADER_HEIGHT/);
+  assert.match(draw, /const plotHeight\s*=\s*Math\.max\(1,\s*height\s*-\s*plotTop\)/);
+  assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channel/);
+  assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
+  assert.match(draw, /baselineSum[\s\S]*?baselineCount[\s\S]*?max\s*-\s*baseline/, "each trace is centered on its display-window baseline");
+
+  const pointerStart = page.indexOf("const onWavePointerDown");
+  const pointerEnd = page.indexOf("const onWavePointerUp", pointerStart);
+  const pointer = page.slice(pointerStart, pointerEnd);
+  assert.equal((pointer.match(/rect\.height\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/g) ?? []).length, 2);
+  assert.equal((pointer.match(/event\.clientY\s*-\s*rect\.top\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/g) ?? []).length, 2);
+});
+
 test("filters padded signal data and crops back to the requested viewport", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const refreshStart = page.indexOf("const refreshWindow");
