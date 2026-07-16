@@ -331,6 +331,7 @@ test("reattaches non-passive waveform wheel controls after a blank session loads
   assert.match(wheelHandler, /zoomTimeWindow\(/, "pinch changes the EEG time window");
   assert.match(wheelHandler, /event\.deltaX/);
   assert.match(wheelHandler, /event\.deltaY/);
+  assert.match(wheelHandler, /overExpandedChannels[\s\S]*?Math\.abs\(event\.deltaY\)\s*>\s*Math\.abs\(event\.deltaX\)[\s\S]*?return/, "vertical gestures scroll expanded channels natively");
   assert.match(wheelHandler, /setViewStartSafe\(/, "ordinary wheel and trackpad gestures pan the recording");
 
   const listenerStart = page.indexOf('viewer.addEventListener("wheel"');
@@ -487,8 +488,30 @@ test("highlights a focused channel and provides compact or vertically scrollable
   assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
   assert.match(page, /--channel-content-height/);
   assert.match(page, /aria-pressed=\{expandedChannels\}/);
-  assert.match(css, /\.waveform-wrap\.channel-scroll-mode[\s\S]*?overflow-y:\s*auto/);
+  assert.match(css, /\.waveform-wrap\.channel-scroll-mode[\s\S]*?height:\s*0[\s\S]*?overflow-y:\s*scroll/);
   assert.match(css, /\.channel-rail button\.focused/);
+});
+
+test("filters padded signal data and crops back to the requested viewport", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const refreshStart = page.indexOf("const refreshWindow");
+  const refreshEnd = page.indexOf("displayRefreshPendingRef.current = refreshWindow", refreshStart);
+  const refresh = page.slice(refreshStart, refreshEnd);
+
+  assert.match(refresh, /filterPadSec/);
+  assert.match(refresh, /paddedStart\s*=\s*Math\.max\(0,\s*viewStart\s*-\s*filterPadSec\)/);
+  assert.match(refresh, /paddedEnd\s*=\s*Math\.min\(meta\.durationSec,\s*viewStart\s*\+\s*timebase\s*\+\s*filterPadSec\)/);
+  assert.match(refresh, /source\.getWindow\(paddedStart/);
+  assert.match(refresh, /applyDisplayFilters\(windowData\.data/);
+  assert.match(refresh, /cropStart[\s\S]*?channel\.slice\(/, "filter settling samples are removed before rendering");
+});
+
+test("uses every available context lane before compressing overlapping labels", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const contextLaneHeight\s*=\s*34/);
+  assert.match(page, /Math\.floor\(\(contextTrackHeight\s*-\s*10\)\s*\/\s*contextLaneHeight\)/);
+  assert.match(page, /contextLaneLayout\.laneCount\s*<=\s*contextLaneCapacity[\s\S]*?\?\s*contextLaneHeight/);
+  assert.match(page, /clamp\(resize\.startHeight[\s\S]*?,\s*44,\s*420\)/, "the context surface can expand far enough for dense concurrent context");
 });
 
 test("does not render candidate controls or candidate marks", async () => {

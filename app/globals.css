@@ -356,7 +356,7 @@ textarea:focus-visible {
 .overview-viewport i:last-child { right: -2px; }
 .overview-time { display: flex; justify-content: space-between; padding-top: 2px; color: #4e646b; font: 7px ui-monospace, monospace; }
 
-.signal-and-tracks { min-height: 0; flex: 1; display: flex; flex-direction: column; overscroll-behavior: contain; }
+.signal-and-tracks { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: contain; }
 .waveform-wrap { min-height: 245px; flex: 1; display: grid; grid-template-columns: 70px minmax(0, 1fr); border-bottom: 1px solid #20333a; background: #071216; }
 .channel-rail { display: grid; min-height: 0; background: #0a171b; border-right: 1px solid #20363d; padding-top: 19px; }
 .channel-rail button { min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 1px; padding: 0 7px 0 3px; border: 0; border-bottom: 1px solid rgba(38, 64, 72, .32); background: transparent; color: #91adb2; cursor: pointer; text-align: right; }
@@ -1251,9 +1251,14 @@ textarea:focus-visible {
   color: var(--mint);
 }
 .waveform-wrap.channel-scroll-mode {
+  height: 0;
+  min-height: 245px;
+  flex: 1 1 0;
   align-items: start;
-  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-y: scroll;
   overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
 }
 .waveform-wrap.channel-scroll-mode .channel-rail,
 .waveform-wrap.channel-scroll-mode .canvas-shell {

@@ -1291,9 +1291,20 @@ export default function Home() {
       }
       setLoadingSignal(true);
       try {
-        const windowData = await source.getWindow(viewStart, timebase, indices);
+        const filterPadSec = filters.enabled
+          ? Math.min(12, Math.max(2, filters.highPassHz > 0 ? 3 / filters.highPassHz : 2))
+          : 0;
+        const paddedStart = Math.max(0, viewStart - filterPadSec);
+        const paddedEnd = Math.min(meta.durationSec, viewStart + timebase + filterPadSec);
+        const windowData = await source.getWindow(paddedStart, Math.max(0, paddedEnd - paddedStart), indices);
         if (sourceRef.current !== source || requestId <= displayAppliedRequestIdRef.current) return;
-        const filtered = applyDisplayFilters(windowData.data, windowData.sampleRates, filters);
+        const paddedFiltered = applyDisplayFilters(windowData.data, windowData.sampleRates, filters);
+        const filtered = paddedFiltered.map((channel, position) => {
+          const sampleRate = windowData.sampleRates[position] ?? primarySampleRate(meta);
+          const cropStart = clamp(Math.round((viewStart - paddedStart) * sampleRate), 0, channel.length);
+          const requestedSamples = Math.max(0, Math.round(timebase * sampleRate));
+          return channel.slice(cropStart, Math.min(channel.length, cropStart + requestedSamples));
+        });
         const labels = indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`);
         const badDisplayPositions = new Set(indices.flatMap((sourceIndex, position) => badChannels.has(sourceIndex) ? [position] : []));
         const montageResult = buildMontage(
@@ -1674,7 +1685,7 @@ export default function Home() {
     const onMove = (event: PointerEvent) => {
       const resize = contextResizeRef.current;
       if (!resize) return;
-      setContextTrackHeight(clamp(resize.startHeight - (event.clientY - resize.startY), 44, 220));
+      setContextTrackHeight(clamp(resize.startHeight - (event.clientY - resize.startY), 44, 420));
     };
     const onUp = () => {
       contextResizeRef.current = null;
@@ -1698,13 +1709,20 @@ export default function Home() {
   const onViewerWheel = useCallback((event: WheelEvent) => {
     const viewer = viewerRef.current;
     if (!viewer) return;
-    event.preventDefault();
     const rect = viewer.getBoundingClientRect();
     if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
       const anchor = viewStart + clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * timebase;
       zoomTimeWindow(event.deltaY < 0 ? "in" : "out", anchor);
       return;
     }
+    const overExpandedChannels = expandedChannels
+      && event.target instanceof Element
+      && Boolean(event.target.closest(".waveform-wrap.channel-scroll-mode"));
+    if (overExpandedChannels && Math.abs(event.deltaY) > Math.abs(event.deltaX) && !event.shiftKey) {
+      return;
+    }
+    event.preventDefault();
     const rawDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.width : 1;
     wheelDeltaRef.current += rawDelta * unit;
@@ -1716,7 +1734,7 @@ export default function Home() {
       wheelFrameRef.current = null;
       setViewStartSafe((current) => current + seconds);
     });
-  }, [setViewStartSafe, timebase, viewStart, zoomTimeWindow]);
+  }, [expandedChannels, setViewStartSafe, timebase, viewStart, zoomTimeWindow]);
 
   useLayoutEffect(() => {
     viewerWheelRef.current = onViewerWheel;
@@ -2344,11 +2362,12 @@ export default function Home() {
     () => assignAnnotationLanes(bottomAnnotations.filter((item) => item.track === "context")),
     [bottomAnnotations],
   );
-  const contextLaneCapacity = Math.max(1, Math.floor((contextTrackHeight - 8) / 32));
+  const contextLaneHeight = 34;
+  const contextLaneCapacity = Math.max(1, Math.floor((contextTrackHeight - 10) / contextLaneHeight));
   const contextLaneStep = contextLaneLayout.laneCount <= contextLaneCapacity
-    ? 32
+    ? contextLaneHeight
     : contextLaneCapacity > 1
-      ? Math.max(8, (contextTrackHeight - 36) / (contextLaneCapacity - 1))
+      ? Math.max(10, (contextTrackHeight - contextLaneHeight - 10) / (contextLaneCapacity - 1))
       : 0;
   const tracks: Array<{ id: TrackId; label: string }> = [
     { id: "context", label: "Context Labels" },
