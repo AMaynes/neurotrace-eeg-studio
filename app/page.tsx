@@ -2623,7 +2623,7 @@ export default function Home() {
 
           <footer className="command-strip">
             <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{display.labels[focusedChannel] ?? "—"}</span><span>{formatAmplitude(cursorAmplitude)}</span><span>sample {Math.round(cursorTime * (display.sampleRates[focusedChannel] ?? primarySampleRate(meta))).toLocaleString()}</span></div>
-            <div className="command-status"><span className="status-dot" />{toast}</div>
+            <div className="command-status"><span className="status-dot" /><span className="command-status-text">{toast}</span></div>
             {selectedAnnotation && <div className="annotation-command-actions">
               <button onClick={() => setShowAnnotationEditor(true)}>Edit label</button>
               <button className="trash-button" onClick={() => deleteAnnotation(selectedAnnotation.id)} title="Delete annotation" aria-label="Delete annotation">🗑</button>

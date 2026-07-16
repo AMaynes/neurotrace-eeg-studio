@@ -436,8 +436,9 @@ textarea:focus-visible {
 .cursor-readout strong { color: var(--mint); font: 10px ui-monospace, monospace; }
 .cursor-readout span { white-space: nowrap; }
 .crosshair-mini { color: var(--mint); font-size: 11px; }
-.command-status { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 6px; color: #94a8ac; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.status-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--mint); }
+.command-status { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 7px; color: #94a8ac; white-space: nowrap; overflow: hidden; }
+.command-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-dot { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--mint); }
 .strip-actions { display: flex; align-items: center; gap: 4px; }
 .strip-actions button { height: 23px; border: 1px solid #243b42; border-radius: 4px; background: #102027; color: #8fa4a8; cursor: pointer; font: 7px ui-monospace, monospace; }
 .strip-actions button span { margin-left: 4px; font-family: Inter, sans-serif; }
@@ -1311,7 +1312,7 @@ textarea:focus-visible {
 .recording-empty-state small { color: #5e777a; font-size: 9px; }
 
 .command-strip { justify-content: space-between; }
-.command-strip .command-status { justify-content: flex-end; padding-left: 16px; }
+.command-strip .command-status { justify-content: flex-end; padding: 0 12px 0 16px; }
 
 .context-chip:disabled,
 .palette-group button:disabled { cursor: not-allowed; opacity: .42; }
@@ -1908,7 +1909,10 @@ textarea:focus-visible {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 7px;
+  min-height: 28px;
+  padding-left: 12px;
+  border-left: 1px solid #284048;
 }
 .annotation-command-actions button {
   height: 27px;

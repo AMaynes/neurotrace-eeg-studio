@@ -165,6 +165,21 @@ test("keeps requested signal tools in the primary toolbar without legacy clutter
   assert.doesNotMatch(commandStrip, />\s*(?:Spectrum|Controls|Settings|Help)\s*</i);
 });
 
+test("keeps footer status text separated from annotation actions", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  const footerStart = page.indexOf('<footer className="command-strip">');
+  const footerEnd = page.indexOf("</footer>", footerStart);
+  const footer = page.slice(footerStart, footerEnd);
+
+  assert.match(footer, /className="command-status-text">\{toast\}/);
+  assert.match(footer, /className="annotation-command-actions"/);
+  assert.match(css, /\.command-status-text\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis/);
+  assert.match(css, /\.annotation-command-actions\s*\{[^}]*padding-left:\s*12px[^}]*border-left:/);
+});
+
 test("resolves palette clicks from session, selection, or pinned-cursor context", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const resolverStart = page.indexOf("const placePaletteLabel");
