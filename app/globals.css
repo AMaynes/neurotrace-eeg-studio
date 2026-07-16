@@ -1667,7 +1667,6 @@ textarea:focus-visible {
   font-weight: 600;
 }
 .patient-info-disclosure b { color: #657b81; transition: transform .15s; }
-.patient-info-disclosure.open b { transform: rotate(180deg); }
 .patient-info-panel {
   flex: 0 0 auto;
   display: grid;
@@ -1789,6 +1788,12 @@ textarea:focus-visible {
 .palette-kind { color: #81969a; }
 .compact-context-groups,
 .ontology-groups { display: flex; flex-direction: column; gap: 11px; }
+.compact-context-only {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+.compact-context-only > button:first-child { grid-column: 1 / -1; }
 .compact-context-group > span {
   display: block;
   margin-bottom: 5px;
@@ -1955,6 +1960,63 @@ textarea:focus-visible {
   background: #0a171c;
 }
 .qc-footer-note { color: #81969a; font-size: 9px; }
+
+.patient-info-modal { width: min(620px, calc(100vw - 32px)); }
+.patient-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 16px;
+}
+.patient-info-grid > div,
+.patient-info-grid > label {
+  min-width: 0;
+  min-height: 66px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #243d44;
+  border-radius: 7px;
+  background: #09171c;
+}
+.patient-info-grid > label { grid-column: 1 / -1; }
+.patient-info-grid span {
+  color: #687f85;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.patient-info-grid strong {
+  overflow: hidden;
+  color: #d4e1e0;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.patient-info-grid input {
+  width: 100%;
+  height: 31px;
+  border: 1px solid #315048;
+  border-radius: 5px;
+  background: #0d1d20;
+  color: #dce8e7;
+  padding: 0 8px;
+  font: 700 10px ui-monospace, monospace;
+  text-transform: uppercase;
+}
+.patient-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 15px;
+}
+
+.queue-status.committed { border-color: var(--mint); background: var(--mint); }
+.queue-status.draft { border-color: var(--gold); background: var(--gold); }
+.queue-status.suggestion { border-color: var(--purple); background: var(--purple); }
 
 /* Comfortable clinical reading scale */
 .patient-summary > span,

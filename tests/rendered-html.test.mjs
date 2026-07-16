@@ -24,8 +24,9 @@ test("renders the NeuroTrace clinical EEG workspace", async () => {
   assert.match(html, /NEUROTRACE/);
   assert.match(html, /Clinical EEG Studio/);
   assert.match(html, /Context palette/);
-  assert.match(html, /Entire-session context/);
-  assert.match(html, /Window context/);
+  assert.match(html, /Clinical Observation/);
+  assert.match(html, /Medication/);
+  assert.match(html, />Other</);
   assert.match(html, /Label palette/);
   assert.match(html, /GPDs/);
   assert.match(html, /LPDs/);
@@ -62,7 +63,9 @@ test("ships product source without starter preview artifacts", async () => {
   assert.match(page, /Converted to a windowed duration label/);
   assert.match(page, /Context palette/);
   assert.match(page, /Entire-session context/);
-  assert.match(page, /Window context/);
+  assert.match(page, /Clinical Observation/);
+  assert.match(page, /Medication/);
+  assert.match(page, /name:\s*"Other"/);
   assert.match(page, /candidate_events\.tsv/);
   assert.match(page, /source_content_sha256/);
   assert.match(page, /entire_session_context/);
@@ -80,18 +83,30 @@ test("ships product source without starter preview artifacts", async () => {
 });
 
 test("keeps context and model-label palettes visually and semantically separate", async () => {
-  const response = await render();
-  const html = await response.text();
-  const contextPosition = html.indexOf("Context palette");
-  const labelPosition = html.indexOf("Label palette");
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const sidebarStart = page.indexOf('<aside className="right-sidebar">');
+  const sidebarEnd = page.indexOf("</aside>", sidebarStart);
+  const sidebar = page.slice(sidebarStart, sidebarEnd);
+  const contextPosition = sidebar.indexOf("Context palette");
+  const labelPosition = sidebar.indexOf("Label palette");
 
   assert.ok(contextPosition >= 0, "context palette is rendered");
   assert.ok(labelPosition > contextPosition, "context palette is above the label palette");
-  assert.match(html, /compact-context-palette/);
-  assert.match(html, /compact-context-group/);
-  assert.match(html, /compact-ephys-palette/);
-  assert.match(html, /Entire-session context/);
-  assert.match(html, /Window context/);
+  assert.match(sidebar, /compact-context-palette/);
+  assert.match(sidebar, /rightContextLabels\.map/);
+  assert.match(sidebar, /compact-ephys-palette/);
+  assert.doesNotMatch(sidebar, /entireSessionContexts|Window context|Entire-session context/);
+
+  const rightContextDefinition = page.match(/const rightContextLabels = \[([^\]]+)\]/)?.[1] ?? "";
+  assert.match(rightContextDefinition, /"clinical"/);
+  assert.match(rightContextDefinition, /"medication"/);
+  assert.match(rightContextDefinition, /"note"/);
+  assert.equal((rightContextDefinition.match(/"/g) ?? []).length, 6, "the right context palette has exactly three label ids");
+  assert.doesNotMatch(page, /id:\s*"button"|id:\s*"asm"/, "unrequested context definitions are not shipped");
+
+  const leftStart = page.indexOf('<section className="session-labels-section">');
+  const leftEnd = page.indexOf("</section>", leftStart);
+  assert.match(page.slice(leftStart, leftEnd), /entireSessionContexts\.map/, "whole-session labels are added only from the left panel");
 });
 
 test("ships a load-first state and accessible workspace dialogs", async () => {
@@ -386,4 +401,55 @@ test("moves QC into an accessible tab inside the Session Map dialog", async () =
   assert.match(invocation, /(?:issues|qcIssues)=\{qcIssues\}/, "QC findings are passed into Session Map");
   assert.match(invocation, /badChannels=\{badChannels\}/);
   assert.match(invocation, /recoveryStatus=\{recoveryStatus\}/);
+});
+
+test("opens patient information as a modal instead of expanding the left panel", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const leftStart = page.indexOf('<aside className="left-sidebar">');
+  const leftEnd = page.indexOf("</aside>", leftStart);
+  const left = page.slice(leftStart, leftEnd);
+  assert.match(left, /setShowPatientInfo\(true\)/);
+  assert.doesNotMatch(left, /patient-info-panel|aria-expanded|patientInfoOpen/);
+
+  const modalStart = page.indexOf("{showPatientInfo && hasRecording");
+  const modalEnd = page.indexOf("{showAnnotationEditor", modalStart);
+  assert.ok(modalStart >= 0 && modalEnd > modalStart, "patient information popup is present");
+  const modal = page.slice(modalStart, modalEnd);
+  assert.match(modal, /role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Patient information"/);
+  assert.match(modal, /Close patient information/);
+  assert.match(modal, /Patient Information/);
+  assert.match(modal, /Replace recording/);
+  assert.match(modal, /Export model-ready bundle/);
+});
+
+test("uses Instance Queue only to navigate file events, instance labels, and non-session context", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const entriesStart = page.indexOf("const instanceQueueEntries");
+  const entriesEnd = page.indexOf("const activeQueueIndex", entriesStart);
+  const entries = page.slice(entriesStart, entriesEnd);
+  assert.match(entries, /item\.track\s*===\s*"instance"/);
+  assert.match(entries, /item\.track\s*===\s*"context"/);
+  assert.match(entries, /annotationGeometry\(item\)\s*!==\s*"session"/);
+  assert.match(entries, /candidates/);
+  assert.match(entries, /linkedCandidateIds/, "reviewed file events are not duplicated beside their linked annotation");
+  assert.match(entries, /\.sort\(\(a,\s*b\)\s*=>\s*a\.time\s*-\s*b\.time/);
+
+  const queueStart = page.indexOf('<section className="queue-section">');
+  const queueEnd = page.indexOf("</section>", queueStart);
+  const queue = page.slice(queueStart, queueEnd);
+  assert.match(queue, /instanceQueueEntries\.map/);
+  assert.match(queue, /selectInstanceQueueEntry/);
+  assert.doesNotMatch(queue, /setCandidates|Manual review target|\+ Add/, "the queue is navigation-only");
+});
+
+test("refreshes signal windows during panning instead of debouncing until scrolling stops", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const effectStart = page.lastIndexOf("useEffect(() => {", page.indexOf("const requestId = ++displayRequestIdRef.current"));
+  const effectEnd = page.indexOf("\n\n  useEffect", page.indexOf("const requestId = ++displayRequestIdRef.current"));
+  assert.ok(effectStart >= 0 && effectEnd > effectStart, "signal-window refresh effect is present");
+  const effect = page.slice(effectStart, effectEnd);
+  assert.match(effect, /displayRefreshPendingRef\.current\s*=\s*refreshWindow/, "each pan position replaces the pending read immediately");
+  assert.match(effect, /pumpLatestWindow/, "the newest requested window is pumped without building a stale read backlog");
+  assert.doesNotMatch(effect, /setTimeout/, "signal refresh no longer waits for wheel momentum to stop");
+  assert.match(effect, /displayAppliedRequestIdRef/, "out-of-order reads cannot overwrite a newer rendered window");
 });
