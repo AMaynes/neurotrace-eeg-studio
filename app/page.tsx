@@ -636,6 +636,7 @@ export default function Home() {
         label: LABEL_BY_ID.get(item.labelId)?.name ?? item.labelId,
         detail: item.track === "context" ? "Context event" : "Instance label",
         status: item.status,
+        uncertainty: Math.round(clamp(100 - item.confidence, 0, 100)),
       }));
     const candidateEntries = candidates
       .filter((item) => !linkedCandidateIds.has(item.id))
@@ -646,6 +647,7 @@ export default function Home() {
         label: item.label,
         detail: "File event",
         status: item.status,
+        uncertainty: 100,
       }));
     return [...annotationEntries, ...candidateEntries].sort((a, b) => a.time - b.time || a.label.localeCompare(b.label));
   }, [annotations, candidates]);
@@ -2518,6 +2520,7 @@ export default function Home() {
                   <span className={`queue-status ${entry.status}`} />
                   <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
                 </button>
+                <span className="queue-uncertainty" title={`${entry.uncertainty}% uncertainty`} aria-label={`${entry.uncertainty}% uncertainty`}>{entry.uncertainty}%</span>
                 <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
               </div>) : <div className="empty-queue"><strong>No events or instance labels</strong><p>{hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
             </div>
@@ -2823,6 +2826,7 @@ export default function Home() {
           <div className="queue-detail-grid">
             <div><span>Start</span><strong>{formatClock(queueDetailEntry.time, true)}</strong></div>
             <div><span>Geometry</span><strong>{queueDetailAnnotation ? annotationGeometry(queueDetailAnnotation) === "point" ? "Single moment" : "Timed window" : "Source event"}</strong></div>
+            <div><span>Uncertainty</span><strong>{queueDetailEntry.uncertainty}%</strong></div>
             {queueDetailAnnotation && <div><span>Duration</span><strong>{annotationGeometry(queueDetailAnnotation) === "point" ? "Instant" : `${(queueDetailAnnotation.end - queueDetailAnnotation.start).toFixed(3)} s`}</strong></div>}
             {queueDetailAnnotation && <div><span>Reviewer</span><strong>{queueDetailAnnotation.reviewer || "Not assigned"}</strong></div>}
             {queueDetailCandidate && <div><span>Source status</span><strong>{queueDetailCandidate.status}</strong></div>}

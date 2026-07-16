@@ -451,6 +451,8 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   assert.match(entries, /annotationGeometry\(item\)\s*!==\s*"session"/);
   assert.match(entries, /candidates/);
   assert.match(entries, /linkedCandidateIds/, "reviewed file events are not duplicated beside their linked annotation");
+  assert.match(entries, /uncertainty:\s*Math\.round\(clamp\(100\s*-\s*item\.confidence,\s*0,\s*100\)\)/);
+  assert.match(entries, /uncertainty:\s*100/, "file events without confidence are explicitly maximally uncertain");
   assert.match(entries, /\.sort\(\(a,\s*b\)\s*=>\s*a\.time\s*-\s*b\.time/);
 
   const queueStart = page.indexOf('<section className="queue-section">');
@@ -459,6 +461,8 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   assert.match(queue, /instanceQueueEntries\.map/);
   assert.match(queue, /selectInstanceQueueEntry/);
   assert.match(queue, /className="queue-arrow"[\s\S]*?Open details for/);
+  assert.match(queue, /className="queue-uncertainty"[\s\S]*?\{entry\.uncertainty\}%/);
+  assert.ok(queue.indexOf('className="queue-uncertainty"') < queue.indexOf('className="queue-arrow"'), "uncertainty is immediately left of the details arrow");
   assert.match(queue, /setQueueDetailTarget\(\{ kind: entry\.kind, id: entry\.id \}\)/);
   assert.doesNotMatch(queue, /setCandidates|Manual review target|\+ Add/, "the queue is navigation-only");
 });
@@ -473,6 +477,7 @@ test("opens queue-item details with complete notes and context", async () => {
   assert.match(modal, /Close queue item details/);
   assert.match(modal, /TIMED CONTEXT/);
   assert.match(modal, /CONTEXT \/ NOTES/);
+  assert.match(modal, /<span>Uncertainty<\/span><strong>\{queueDetailEntry\.uncertainty\}%<\/strong>/);
   assert.match(modal, /queueDetailAnnotation\?\.notes\?\.trim\(\)/);
   assert.match(modal, /CHANNEL PROVENANCE/);
   assert.match(modal, /Jump to location/);
