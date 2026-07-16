@@ -23,10 +23,21 @@ test("renders the NeuroTrace clinical EEG workspace", async () => {
   assert.match(html, /<title>NeuroTrace — Clinical EEG Studio<\/title>/i);
   assert.match(html, /NEUROTRACE/);
   assert.match(html, /Clinical EEG Studio/);
-  assert.match(html, /Local-only/);
   assert.match(html, /Label palette/);
-  assert.match(html, /Mark seizure/);
+  assert.match(html, /GPDs/);
+  assert.match(html, /LPDs/);
+  assert.match(html, /BIPDs/);
+  assert.match(html, /GRDA/);
+  assert.match(html, /LRDA/);
+  assert.match(html, /N1 sleep/);
+  assert.match(html, /N2 sleep/);
+  assert.match(html, /N3 sleep/);
+  assert.match(html, /REM sleep/);
+  assert.match(html, /Windowed Labels/);
+  assert.match(html, /Instance Labels/);
+  assert.match(html, /Controls/);
   assert.match(html, /og\.png/);
+  assert.doesNotMatch(html, /Mark seizure|PHI stays here|Source \/ reliability|IIIC pattern|Ictal seizure|NREM sleep/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
@@ -39,6 +50,10 @@ test("ships product source without starter preview artifacts", async () => {
   assert.match(page, /EDFSource/);
   assert.match(page, /MatSource/);
   assert.match(page, /createStoredZip/);
+  assert.match(page, /aria-label="Delete annotation"/);
+  assert.match(page, /aria-label="Close controls"/);
+  assert.match(page, /Entire-session labels/);
+  assert.doesNotMatch(page, /Source \/ reliability|Candidate queue|Event labels/);
   assert.match(layout, /NeuroTrace — Clinical EEG Studio/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
