@@ -34,6 +34,7 @@ type Geometry = "point" | "interval" | "window" | "session";
 type TrackId = "context" | "windowed" | "instance";
 type AnnotationStatus = "draft" | "committed" | "suggestion";
 type AnnotationOrigin = "manual" | "imported" | "detector" | "legacy";
+type PlacementIntent = "native" | "instance" | "windowed";
 
 type LabelDefinition = {
   id: string;
@@ -120,6 +121,25 @@ type Candidate = {
   status: "active" | "queued" | "reviewed" | "skipped" | "conflict";
 };
 
+type ControlBindings = {
+  undo: string;
+  redo: string;
+  commit: string;
+  nextCandidate: string;
+  previousCandidate: string;
+  skipCandidate: string;
+  ictalOnset: string;
+  ictalOffset: string;
+  toggleBadChannel: string;
+};
+
+type SessionTab = {
+  id: string;
+  title: string;
+  hasRecording: boolean;
+  recoveryStatus: "saved" | "error";
+};
+
 type DisplayWindow = {
   data: Float32Array[];
   labels: string[];
@@ -127,6 +147,39 @@ type DisplayWindow = {
   sourceIndices: number[][];
   primarySourceIndices: number[];
   warnings: string[];
+};
+
+type SessionWorkspaceSnapshot = {
+  hasRecording: boolean;
+  source: SignalSource;
+  meta: RecordingMeta;
+  sessionKey: string;
+  recordingType: string;
+  reviewer: string;
+  viewStart: number;
+  timebase: number;
+  gain: number;
+  montage: MontageMode;
+  filters: DisplayFilterSettings;
+  selectedChannels: number[];
+  badChannels: number[];
+  focusedChannel: number;
+  annotations: Annotation[];
+  selectedAnnotationId: string | null;
+  selection: { start: number; end: number } | null;
+  cursorTime: number;
+  cursorAmplitude: number;
+  cursorLocked: boolean;
+  snapMode: "1s" | "100ms" | "sample";
+  spectrogramOpen: boolean;
+  candidates: Candidate[];
+  activeCandidate: number;
+  sourceHash: string;
+  rawSourceHash: string;
+  sourceInterpretation: Record<string, unknown> | null;
+  recoveryStatus: "saved" | "error";
+  undo: Annotation[][];
+  redo: Annotation[][];
 };
 
 const LABELS: LabelDefinition[] = [
@@ -305,24 +358,6 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
   });
 }
 
-const DEMO_ANNOTATIONS: Annotation[] = [
-  annotationSeed("laterality", 0, 7938, "committed", "gold", 100, "Right temporal"),
-  annotationSeed("preictal", 948, 972, "committed", "gold", 92, "Subtle rhythmic evolution"),
-  annotationSeed("artifact", 961, 966, "committed", "gold", 98, "Electrode movement"),
-  annotationSeed("ictal", 972.4, 994.8, "committed", "gold", 96, "Electrographic onset with right temporal evolution"),
-  annotationSeed("clinical", 981.2, 981.2, "committed", "gold", 88, "Right head turn"),
-  annotationSeed("button", 985.1, 985.1, "committed", "bronze", 100, "Imported event marker"),
-  annotationSeed("postictal", 994.8, 1030, "committed", "gold", 91, "Diffuse attenuation"),
-  annotationSeed("asm", 1027.5, 1027.5, "committed", "bronze", 100, "Levetiracetam documented"),
-];
-
-const DEMO_CANDIDATES: Candidate[] = [
-  { id: "cand-1", time: 978, label: "EEG onset — right temporal", source: "bronze", status: "active" },
-  { id: "cand-2", time: 4024, label: "Rhythmic evolution", source: "silver", status: "queued" },
-  { id: "cand-3", time: 6072, label: "Tonic event / button push", source: "bronze", status: "queued" },
-  { id: "cand-4", time: 7145, label: "Detector disagreement", source: "silver", status: "conflict" },
-];
-
 const DEFAULT_FILTERS: DisplayFilterSettings = {
   highPassHz: 0.5,
   lowPassHz: 70,
@@ -330,35 +365,19 @@ const DEFAULT_FILTERS: DisplayFilterSettings = {
   enabled: true,
 };
 
-function annotationSeed(
-  labelId: string,
-  start: number,
-  end: number,
-  status: AnnotationStatus,
-  reliability: Reliability,
-  confidence: number,
-  notes: string,
-): Annotation {
-  const now = "2026-07-16T02:18:00.000Z";
-  return {
-    id: `demo-${labelId}-${start}`,
-    labelId,
-    start,
-    end,
-    track: LABEL_BY_ID.get(labelId)?.track ?? "instance",
-    geometry: LABEL_BY_ID.get(labelId)?.geometry ?? "point",
-    channels: [],
-    confidence,
-    reliability,
-    origin: reliability === "silver" ? "detector" : reliability === "bronze" ? "imported" : "legacy",
-    reviewer: "AM",
-    notes,
-    status,
-    revision: 1,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
+const DEFAULT_CONTROLS: ControlBindings = {
+  undo: "u",
+  redo: "u",
+  commit: "s",
+  nextCandidate: "n",
+  previousCandidate: "p",
+  skipCandidate: "k",
+  ictalOnset: "i",
+  ictalOffset: "o",
+  toggleBadChannel: "b",
+};
+
+const CONTROL_OPTIONS = "abcdefghijklmnopqrstuvwxyz".split("");
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -483,11 +502,13 @@ function formatSessionStart(date?: Date) {
 
 export default function Home() {
   const demoSource = useMemo(() => {
-    const source = new DemoSource({ name: "UNM_EMU_2025-05-01_01.edf", durationSec: 7938, sampleRate: 256 });
-    Object.assign(source.meta, { patientId: "P-1027", recordingId: "2025-05-01_01", startedAt: new Date("2025-05-01T00:00:00Z") });
-    return source;
+    return new DemoSource({ name: "blank-session", durationSec: 1, sampleRate: 256 });
   }, []);
   const sourceRef = useRef<SignalSource>(demoSource);
+  const sessionSnapshotsRef = useRef<Map<string, SessionWorkspaceSnapshot>>(new Map());
+  const activeSessionIdRef = useRef("initial-session");
+  const importBusyRef = useRef(false);
+  const flushSessionRef = useRef<() => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overviewRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -495,7 +516,7 @@ export default function Home() {
   const waveDrawRef = useRef<() => void>(() => {});
   const viewerWheelRef = useRef<(event: WheelEvent) => void>(() => {});
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const annotationsRef = useRef<Annotation[]>(DEMO_ANNOTATIONS);
+  const annotationsRef = useRef<Annotation[]>([]);
   const undoRef = useRef<Annotation[][]>([]);
   const redoRef = useRef<Annotation[][]>([]);
   const pointerRef = useRef<{ startX: number; startTime: number; moved: boolean } | null>(null);
@@ -517,25 +538,30 @@ export default function Home() {
   } | null>(null);
 
   const [meta, setMeta] = useState<RecordingMeta>(() => sourceMeta(demoSource));
-  const [sessionKey, setSessionKey] = useState("demo-p1027-2025-05-01");
-  const [recordingType, setRecordingType] = useState("SEEG / iEEG");
-  const [viewStart, setViewStart] = useState(966);
+  const [hasRecording, setHasRecording] = useState(false);
+  const [sessionTabs, setSessionTabs] = useState<SessionTab[]>([
+    { id: "initial-session", title: "Session 1", hasRecording: false, recoveryStatus: "saved" },
+  ]);
+  const [activeSessionId, setActiveSessionId] = useState("initial-session");
+  const [sessionKey, setSessionKey] = useState("blank-initial-session");
+  const [recordingType, setRecordingType] = useState("Scalp EEG");
+  const [viewStart, setViewStart] = useState(0);
   const [timebase, setTimebase] = useState(20);
   const [gain, setGain] = useState(1);
   const [montage, setMontage] = useState<MontageMode>("referential");
   const [filters, setFilters] = useState<DisplayFilterSettings>(DEFAULT_FILTERS);
-  const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set(meta.channelLabels.slice(0, 16).map((_, index) => index)));
-  const [badChannels, setBadChannels] = useState<Set<number>>(() => new Set([9]));
+  const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set());
+  const [badChannels, setBadChannels] = useState<Set<number>>(() => new Set());
   const [focusedChannel, setFocusedChannel] = useState(0);
   const [display, setDisplay] = useState<DisplayWindow>({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
   const [loadingSignal, setLoadingSignal] = useState(false);
-  const [annotations, setAnnotations] = useState<Annotation[]>(DEMO_ANNOTATIONS);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [annotationDragPreview, setAnnotationDragPreview] = useState<{ id: string; patch: Pick<Annotation, "start" | "end" | "track" | "geometry"> } | null>(null);
-  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>("demo-ictal-972.4");
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
-  const [cursorTime, setCursorTime] = useState(978);
+  const [cursorTime, setCursorTime] = useState(0);
   const [cursorAmplitude, setCursorAmplitude] = useState(0);
-  const [cursorLocked, setCursorLocked] = useState(true);
+  const [cursorLocked, setCursorLocked] = useState(false);
   const [activeTool, setActiveTool] = useState<"cursor" | "seizure">("cursor");
   const [markOnset, setMarkOnset] = useState<number | null>(null);
   const [snapMode, setSnapMode] = useState<"1s" | "100ms" | "sample">("100ms");
@@ -544,13 +570,15 @@ export default function Home() {
   const [rightTab, setRightTab] = useState<"labels" | "qc">("labels");
   const [paletteSearch, setPaletteSearch] = useState("");
   const [channelSearch, setChannelSearch] = useState("");
-  const [candidates, setCandidates] = useState<Candidate[]>(DEMO_CANDIDATES);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [activeCandidate, setActiveCandidate] = useState(0);
-  const [toast, setToast] = useState("Ready — raw data stays on this device");
+  const [toast, setToast] = useState("Blank session ready — load a recording");
   const [importBusy, setImportBusy] = useState(false);
   const [dragGhost, setDragGhost] = useState<{ labelId: string; time: number } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
-  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showChannels, setShowChannels] = useState(false);
   const [showSessionMap, setShowSessionMap] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -562,11 +590,12 @@ export default function Home() {
   const [pendingLegacyMeta, setPendingLegacyMeta] = useState<LegacyMatMetadata | null>(null);
   const [datMapping, setDatMapping] = useState({ sampleRate: 0, channelCount: 0, physicalScale: 1 });
   const [confirmCommit, setConfirmCommit] = useState<string[]>([]);
-  const [reviewer, setReviewer] = useState("AM");
-  const [sourceHash, setSourceHash] = useState("demo:synthetic-signal-v1");
-  const [rawSourceHash, setRawSourceHash] = useState("demo:synthetic-signal-v1");
+  const [reviewer, setReviewer] = useState("");
+  const [sourceHash, setSourceHash] = useState("");
+  const [rawSourceHash, setRawSourceHash] = useState("");
   const [sourceInterpretation, setSourceInterpretation] = useState<Record<string, unknown> | null>(null);
   const [recoveryStatus, setRecoveryStatus] = useState<"saved" | "error">("saved");
+  const [controlBindings, setControlBindings] = useState<ControlBindings>(DEFAULT_CONTROLS);
 
   const selectedAnnotation = annotations.find((item) => item.id === selectedAnnotationId) ?? null;
   const selectedGeometry = selectedAnnotation ? annotationGeometry(selectedAnnotation) : null;
@@ -579,20 +608,252 @@ export default function Home() {
     annotationsRef.current = annotations;
   }, [annotations]);
 
+  useLayoutEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
   useEffect(() => {
     try {
       const savedReviewer = localStorage.getItem("neurotrace:reviewer");
+      const savedControls = localStorage.getItem("neurotrace:controls");
       // Local reviewer identity is external persisted state and is restored once after hydration.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       if (savedReviewer) setReviewer(savedReviewer);
+      if (savedControls) {
+        const parsed = JSON.parse(savedControls) as Partial<ControlBindings>;
+        setControlBindings({
+          ...DEFAULT_CONTROLS,
+          ...Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === "string" && /^[a-z]$/i.test(value as string))),
+        });
+      }
     } catch { /* local preferences are optional */ }
   }, []);
 
   useEffect(() => {
     try {
       localStorage.setItem("neurotrace:reviewer", reviewer);
+      localStorage.setItem("neurotrace:controls", JSON.stringify(controlBindings));
     } catch { /* local preferences are optional */ }
-  }, [reviewer]);
+  }, [controlBindings, reviewer]);
+
+  const storeActiveSession = useCallback(() => {
+    const snapshot: SessionWorkspaceSnapshot = {
+      hasRecording,
+      source: sourceRef.current,
+      meta,
+      sessionKey,
+      recordingType,
+      reviewer,
+      viewStart,
+      timebase,
+      gain,
+      montage,
+      filters: { ...filters },
+      selectedChannels: [...selectedChannels],
+      badChannels: [...badChannels],
+      focusedChannel,
+      annotations,
+      selectedAnnotationId,
+      selection,
+      cursorTime,
+      cursorAmplitude,
+      cursorLocked,
+      snapMode,
+      spectrogramOpen,
+      candidates,
+      activeCandidate,
+      sourceHash,
+      rawSourceHash,
+      sourceInterpretation,
+      recoveryStatus,
+      undo: undoRef.current,
+      redo: redoRef.current,
+    };
+    if (snapshot.hasRecording) {
+      try {
+        localStorage.setItem(`neurotrace:draft:${snapshot.sessionKey}`, JSON.stringify(snapshot.annotations));
+        localStorage.setItem(`neurotrace:project:${snapshot.sessionKey}`, JSON.stringify({
+          version: 2,
+          annotations: snapshot.annotations,
+          candidates: snapshot.candidates,
+          activeCandidate: snapshot.activeCandidate,
+          badChannels: snapshot.badChannels,
+          reviewer: snapshot.reviewer,
+          recordingType: snapshot.recordingType,
+          savedAt: new Date().toISOString(),
+        }));
+        snapshot.recoveryStatus = "saved";
+      } catch {
+        snapshot.recoveryStatus = "error";
+      }
+    }
+    sessionSnapshotsRef.current.set(activeSessionId, snapshot);
+    setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
+      ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
+      : tab));
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, cursorAmplitude, cursorLocked, cursorTime, filters, focusedChannel, gain, hasRecording, meta, montage, rawSourceHash, recordingType, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, viewStart]);
+
+  useLayoutEffect(() => {
+    flushSessionRef.current = storeActiveSession;
+  }, [storeActiveSession]);
+
+  useEffect(() => {
+    const flush = () => flushSessionRef.current();
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, []);
+
+  const applySessionSnapshot = useCallback((snapshot: SessionWorkspaceSnapshot) => {
+    if (wheelFrameRef.current !== null) window.cancelAnimationFrame(wheelFrameRef.current);
+    if (cursorFrameRef.current !== null) window.cancelAnimationFrame(cursorFrameRef.current);
+    if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
+    wheelFrameRef.current = null;
+    cursorFrameRef.current = null;
+    dragFrameRef.current = null;
+    wheelDeltaRef.current = 0;
+    pointerRef.current = null;
+    pendingCursorRef.current = null;
+    contextResizeRef.current = null;
+    sourceRef.current = snapshot.source;
+    setHasRecording(snapshot.hasRecording);
+    setMeta(snapshot.meta);
+    setSessionKey(snapshot.sessionKey);
+    setRecordingType(snapshot.recordingType);
+    setReviewer(snapshot.reviewer);
+    setViewStart(snapshot.viewStart);
+    setTimebase(snapshot.timebase);
+    setGain(snapshot.gain);
+    setMontage(snapshot.montage);
+    setFilters({ ...snapshot.filters });
+    setSelectedChannels(new Set(snapshot.selectedChannels));
+    setBadChannels(new Set(snapshot.badChannels));
+    setFocusedChannel(snapshot.focusedChannel);
+    setDisplay({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
+    setAnnotations(snapshot.annotations);
+    setSelectedAnnotationId(snapshot.selectedAnnotationId);
+    setSelection(snapshot.selection);
+    setCursorTime(snapshot.cursorTime);
+    setCursorAmplitude(snapshot.cursorAmplitude);
+    setCursorLocked(snapshot.cursorLocked);
+    setSnapMode(snapshot.snapMode);
+    setSpectrogramOpen(snapshot.spectrogramOpen);
+    setCandidates(snapshot.candidates);
+    setActiveCandidate(snapshot.activeCandidate);
+    setSourceHash(snapshot.sourceHash);
+    setRawSourceHash(snapshot.rawSourceHash);
+    setSourceInterpretation(snapshot.sourceInterpretation);
+    setRecoveryStatus(snapshot.recoveryStatus);
+    setPlaying(false);
+    setMarkOnset(null);
+    setActiveTool("cursor");
+    setDragGhost(null);
+    setAnnotationDragPreview(null);
+    dragAnnotationRef.current = null;
+    pendingAnnotationDragRef.current = null;
+    setPendingDat(null);
+    setPendingLegacyMatFile(null);
+    setPendingLegacyMeta(null);
+    setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: 1 });
+    setShowImport(false);
+    setShowExport(false);
+    setShowFilters(false);
+    setConfirmCommit([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    undoRef.current = snapshot.undo;
+    redoRef.current = snapshot.redo;
+  }, []);
+
+  const switchSession = useCallback((id: string) => {
+    if (importBusy || id === activeSessionId) return;
+    storeActiveSession();
+    const snapshot = sessionSnapshotsRef.current.get(id);
+    if (!snapshot) return;
+    setActiveSessionId(id);
+    applySessionSnapshot(snapshot);
+    setToast(snapshot.hasRecording ? "Session restored" : "Blank session ready — load a recording");
+  }, [activeSessionId, applySessionSnapshot, importBusy, storeActiveSession]);
+
+  const createBlankSession = useCallback(() => {
+    if (importBusy) return;
+    storeActiveSession();
+    const id = makeId("session");
+    const nextNumber = sessionTabs.length + 1;
+    const snapshot: SessionWorkspaceSnapshot = {
+      hasRecording: false,
+      source: demoSource,
+      meta: sourceMeta(demoSource),
+      sessionKey: `blank-${id}`,
+      recordingType: "Scalp EEG",
+      reviewer,
+      viewStart: 0,
+      timebase: 20,
+      gain: 1,
+      montage: "referential",
+      filters: { ...DEFAULT_FILTERS },
+      selectedChannels: [],
+      badChannels: [],
+      focusedChannel: 0,
+      annotations: [],
+      selectedAnnotationId: null,
+      selection: null,
+      cursorTime: 0,
+      cursorAmplitude: 0,
+      cursorLocked: false,
+      snapMode: "100ms",
+      spectrogramOpen: false,
+      candidates: [],
+      activeCandidate: 0,
+      sourceHash: "",
+      rawSourceHash: "",
+      sourceInterpretation: null,
+      recoveryStatus: "saved",
+      undo: [],
+      redo: [],
+    };
+    sessionSnapshotsRef.current.set(id, snapshot);
+    setSessionTabs((current) => [...current, { id, title: `Session ${nextNumber}`, hasRecording: false, recoveryStatus: "saved" }]);
+    setActiveSessionId(id);
+    applySessionSnapshot(snapshot);
+    setShowExport(false);
+    setToast("Blank session ready — load a recording");
+  }, [applySessionSnapshot, demoSource, importBusy, reviewer, sessionTabs.length, storeActiveSession]);
+
+  const closeSession = useCallback((id: string) => {
+    if (importBusy || sessionTabs.length <= 1) return;
+    if (id === activeSessionId) storeActiveSession();
+    const closingSnapshot = sessionSnapshotsRef.current.get(id);
+    if (closingSnapshot?.hasRecording && closingSnapshot.recoveryStatus === "error") {
+      setToast("This session could not be saved locally — export it before closing the tab");
+      return;
+    }
+    const closingIndex = sessionTabs.findIndex((tab) => tab.id === id);
+    const remaining = sessionTabs.filter((tab) => tab.id !== id);
+    sessionSnapshotsRef.current.delete(id);
+    setSessionTabs(remaining);
+    if (id !== activeSessionId) {
+      setToast("Session tab closed; its local recovery remains available");
+      return;
+    }
+    const target = remaining[Math.min(Math.max(0, closingIndex), remaining.length - 1)];
+    const snapshot = target ? sessionSnapshotsRef.current.get(target.id) : undefined;
+    if (!target || !snapshot) return;
+    setActiveSessionId(target.id);
+    applySessionSnapshot(snapshot);
+    setToast(snapshot.hasRecording ? "Session restored" : "Blank session ready — load a recording");
+  }, [activeSessionId, applySessionSnapshot, importBusy, sessionTabs, storeActiveSession]);
+
+  const updateControlBinding = useCallback((binding: keyof ControlBindings, value: string) => {
+    setControlBindings((current) => {
+      const next = { ...current };
+      const conflict = (Object.entries(current) as Array<[keyof ControlBindings, string]>).find(([key, assigned]) =>
+        key !== binding
+        && assigned === value
+        && !([key, binding].includes("undo") && [key, binding].includes("redo")));
+      if (conflict) next[conflict[0]] = current[binding];
+      next[binding] = value;
+      return next;
+    });
+  }, []);
 
   const setViewStartSafe = useCallback((next: number | ((value: number) => number)) => {
     setViewStart((current) => {
@@ -645,16 +906,22 @@ export default function Home() {
     setToast("Annotation change restored");
   }, []);
 
-  const addAnnotation = useCallback((label: LabelDefinition, time: number, explicitEnd?: number) => {
+  const addAnnotation = useCallback((label: LabelDefinition, time: number, explicitEnd?: number, intent: PlacementIntent = "native") => {
+    if (!hasRecording) {
+      setToast("Load a recording before placing labels");
+      return;
+    }
     const samplingRate = display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
+    const geometry: Geometry = intent === "instance" ? "point" : intent === "windowed" ? "interval" : label.geometry;
+    const track: TrackId = intent === "instance" ? "instance" : intent === "windowed" ? "windowed" : label.track;
     let start = clamp(snapTime(Math.min(time, explicitEnd ?? time), snapMode, samplingRate), 0, meta.durationSec);
-    let end = label.geometry === "point" ? start : explicitEnd ?? start + label.defaultDuration;
+    let end = geometry === "point" ? start : explicitEnd ?? start + label.defaultDuration;
     end = clamp(snapTime(Math.max(end, start), snapMode, samplingRate), start, meta.durationSec);
-    if (label.geometry === "window") {
+    if (geometry === "window") {
       const windowStart = Math.floor(start / 30) * 30;
       end = Math.min(meta.durationSec, windowStart + 30);
       time = windowStart;
-    } else if (label.geometry === "session") {
+    } else if (geometry === "session") {
       start = 0;
       end = meta.durationSec;
       time = 0;
@@ -667,8 +934,8 @@ export default function Home() {
       return;
     }
     const activeSourceCandidate = candidates[activeCandidate];
-    const candidateMatches = label.geometry !== "session" && activeSourceCandidate && activeSourceCandidate.status !== "skipped" && activeSourceCandidate.status !== "conflict" && (
-      label.geometry === "point"
+    const candidateMatches = geometry !== "session" && activeSourceCandidate && activeSourceCandidate.status !== "skipped" && activeSourceCandidate.status !== "conflict" && (
+      geometry === "point"
         ? Math.abs(activeSourceCandidate.time - start) <= 1
         : explicitEnd !== undefined
           ? activeSourceCandidate.time >= start && activeSourceCandidate.time <= end
@@ -677,10 +944,10 @@ export default function Home() {
     const next = normalizeAnnotationGeometry({
       id: makeId("ann"),
       labelId: label.id,
-      start: label.geometry === "window" || label.geometry === "session" ? time : start,
+      start: geometry === "window" || geometry === "session" ? time : start,
       end,
-      track: label.track,
-      geometry: label.geometry,
+      track,
+      geometry,
       channels: label.id === "spikes" ? [...sourceIndices] : [],
       confidence: label.id === "uncertain" ? 50 : 85,
       reliability: "gray",
@@ -700,21 +967,73 @@ export default function Home() {
       createdAt: now,
       updatedAt: now,
     }, meta.durationSec);
-    const replacedSleepIds = label.category === "Sleep stage"
+    const sleepOverlapCount = label.category === "Sleep stage" && track === "windowed" && geometry !== "point"
       ? annotationsRef.current.filter((item) => {
         const existing = LABEL_BY_ID.get(item.labelId);
-        return existing?.category === "Sleep stage" && annotationOverlapsWindow(item, next.start, next.end);
-      }).map((item) => item.id)
-      : [];
-    commitMutation((current) => [...current.filter((item) => !replacedSleepIds.includes(item.id)), next]);
+        return existing?.category === "Sleep stage"
+          && item.track === "windowed"
+          && annotationGeometry(item) !== "point"
+          && annotationOverlapsWindow(item, next.start, next.end);
+      }).length
+      : 0;
+    commitMutation((current) => {
+      if (!sleepOverlapCount) return [...current, next];
+      const adjusted = current.flatMap((item) => {
+        const existing = LABEL_BY_ID.get(item.labelId);
+        if (existing?.category !== "Sleep stage"
+          || item.track !== "windowed"
+          || annotationGeometry(item) === "point"
+          || !annotationOverlapsWindow(item, next.start, next.end)) return [item];
+        const pieces: Annotation[] = [];
+        const changedAt = new Date().toISOString();
+        if (item.start < next.start) pieces.push(normalizeAnnotationGeometry({
+          ...item,
+          end: next.start,
+          geometry: "interval",
+          status: "draft",
+          revision: item.revision + 1,
+          updatedAt: changedAt,
+        }, meta.durationSec));
+        if (item.end > next.end) pieces.push(normalizeAnnotationGeometry({
+          ...item,
+          id: makeId("ann"),
+          start: next.end,
+          geometry: "interval",
+          status: "draft",
+          candidateId: undefined,
+          revision: item.revision + 1,
+          createdAt: changedAt,
+          updatedAt: changedAt,
+        }, meta.durationSec));
+        return pieces;
+      });
+      return [...adjusted, next];
+    });
     setSelectedAnnotationId(next.id);
     setCursorTime(next.start);
     setCursorLocked(true);
     setSelection(null);
-    setToast(replacedSleepIds.length
-      ? `${label.name} replaced the prior sleep stage for this 30-second epoch`
+    setToast(sleepOverlapCount
+      ? `${label.name} applied to the selected window; overlapping sleep stages were trimmed`
       : `${label.name} placed at ${formatClock(next.start, true)} — draft`);
-  }, [activeCandidate, candidates, commitMutation, display, focusedChannel, meta, montage, reviewer, snapMode]);
+  }, [activeCandidate, candidates, commitMutation, display, focusedChannel, hasRecording, meta, montage, reviewer, snapMode]);
+
+  const placePaletteLabel = useCallback((label: LabelDefinition) => {
+    if (!hasRecording) {
+      setToast("Load a recording before placing labels");
+      return;
+    }
+    if (!cursorLocked && !selection && label.geometry !== "session") {
+      setToast("Click the waveform to pin a time, or drag to select a window");
+      return;
+    }
+    const intent: PlacementIntent = label.category === "Context"
+      ? "native"
+      : selection
+        ? "windowed"
+        : "instance";
+    addAnnotation(label, selection?.start ?? cursorTime, selection?.end, intent);
+  }, [addAnnotation, cursorLocked, cursorTime, hasRecording, selection]);
 
   const updateAnnotation = useCallback((id: string, patch: Partial<Annotation>, withHistory = true) => {
     const apply = (current: Annotation[]) => current.map((item) => {
@@ -859,6 +1178,7 @@ export default function Home() {
   }, [annotations, badChannels, filters, gain, meta, montage, rawSourceHash, reviewer, selectedAnnotation, selectedChannels, snapMode, sourceHash, sourceInterpretation, updateAnnotation]);
 
   useEffect(() => {
+    if (!hasRecording) return;
     const timer = window.setTimeout(() => {
       try {
         localStorage.setItem(`neurotrace:draft:${sessionKey}`, JSON.stringify(annotations));
@@ -873,13 +1193,15 @@ export default function Home() {
           savedAt: new Date().toISOString(),
         }));
         setRecoveryStatus("saved");
+        setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId ? { ...tab, hasRecording: true, recoveryStatus: "saved" } : tab));
       } catch {
         setRecoveryStatus("error");
+        setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId ? { ...tab, hasRecording: true, recoveryStatus: "error" } : tab));
         setToast("Local recovery failed — export a bundle before closing this session");
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [activeCandidate, annotations, badChannels, candidates, recordingType, reviewer, sessionKey]);
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, hasRecording, recordingType, reviewer, sessionKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -888,7 +1210,7 @@ export default function Home() {
     const refreshWindow = async () => {
       await Promise.resolve();
       if (cancelled) return;
-      if (!indices.length) {
+      if (!hasRecording || !indices.length) {
         setDisplay({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
         setLoadingSignal(false);
         return;
@@ -926,10 +1248,10 @@ export default function Home() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [badChannels, filters, meta, montage, selectedChannels, timebase, viewStart]);
+  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, timebase, viewStart]);
 
   useEffect(() => {
-    if (!playing) return;
+    if (!hasRecording || !playing) return;
     const timer = window.setInterval(() => {
       setCursorTime((value) => {
         const next = value + 0.1;
@@ -942,7 +1264,7 @@ export default function Home() {
       });
     }, 100);
     return () => window.clearInterval(timer);
-  }, [meta.durationSec, playing, setViewStartSafe, timebase, viewStart]);
+  }, [hasRecording, meta.durationSec, playing, setViewStartSafe, timebase, viewStart]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -1116,7 +1438,7 @@ export default function Home() {
         setMarkOnset(null);
         setActiveTool("cursor");
       }
-    } else if (pointer.moved) {
+    } else if (pointer.moved && Math.abs(time - pointer.startTime) > 0) {
       setSelection({ start: Math.min(pointer.startTime, time), end: Math.max(pointer.startTime, time) });
       setToast(`Selected ${Math.abs(time - pointer.startTime).toFixed(1)} s — choose a label`);
     } else {
@@ -1133,7 +1455,8 @@ export default function Home() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const time = timeFromPointer(event, canvas, event.altKey);
-    addAnnotation(label, time);
+    const intent: PlacementIntent = label.category === "Context" ? "native" : selection ? "windowed" : "instance";
+    addAnnotation(label, selection?.start ?? time, selection?.end, intent);
     setDragGhost(null);
   };
 
@@ -1334,7 +1657,7 @@ export default function Home() {
   }, [activeCandidate, candidates, selectCandidate]);
 
   const loadSource = useCallback(async (source: SignalSource, file: File, interpretation?: Record<string, unknown>) => {
-    sourceRef.current = source;
+    const targetSessionId = activeSessionId;
     const nextMeta = sourceMeta(source);
     let lastProgressBucket = -1;
     setToast("Computing full source SHA-256…");
@@ -1352,21 +1675,22 @@ export default function Home() {
       ? await sha256Blob(new Blob([`neurotrace-interpretation-v1\n${contentHash}\n${interpretationMaterial}`]))
       : contentHash;
     const nextKey = interpretationHash.slice(0, 32);
-    setMeta(nextMeta);
-    setSessionKey(nextKey);
-    setRawSourceHash(contentHash);
-    setSourceHash(interpretationHash);
-    setSourceInterpretation(interpretation ?? null);
-    setSelectedChannels(new Set(nextMeta.channelLabels.slice(0, 18).map((_, index) => index)));
-    setBadChannels(new Set());
-    setViewStart(0);
-    setCursorTime(0);
-    setTimebase(Math.min(20, Math.max(5, nextMeta.durationSec)));
-    setCandidates([]);
-    setActiveCandidate(0);
-    setSelectedAnnotationId(null);
-    setRecordingType(nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG");
+    const duplicateEntry = [...sessionSnapshotsRef.current.entries()].find(([id, snapshot]) =>
+      id !== targetSessionId && snapshot.hasRecording && snapshot.sourceHash === interpretationHash);
+    if (duplicateEntry) {
+      storeActiveSession();
+      const [duplicateId, duplicateSnapshot] = duplicateEntry;
+      setActiveSessionId(duplicateId);
+      applySessionSnapshot(duplicateSnapshot);
+      setToast("That recording is already open — switched to its existing session");
+      return false;
+    }
     let restored: Annotation[] = [];
+    let restoredCandidates: Candidate[] = [];
+    let restoredActiveCandidate = 0;
+    let restoredBadChannels: number[] = [];
+    let restoredReviewer: string | null = null;
+    let restoredRecordingType = nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG";
     try {
       const projectJson = localStorage.getItem(`neurotrace:project:${nextKey}`);
       if (projectJson) {
@@ -1380,17 +1704,16 @@ export default function Home() {
         };
         restored = migrateAnnotationList(project.annotations, nextMeta.durationSec, nextMeta.channelLabels.length);
         if (Array.isArray(project.candidates)) {
-          const restoredCandidates = migrateCandidateList(project.candidates, nextMeta.durationSec);
-          setCandidates(restoredCandidates);
+          restoredCandidates = migrateCandidateList(project.candidates, nextMeta.durationSec);
           if (Number.isInteger(project.activeCandidate) && restoredCandidates.length) {
-            setActiveCandidate(clamp(project.activeCandidate as number, 0, restoredCandidates.length - 1));
+            restoredActiveCandidate = clamp(project.activeCandidate as number, 0, restoredCandidates.length - 1);
           }
         }
         if (Array.isArray(project.badChannels)) {
-          setBadChannels(new Set(project.badChannels.filter((index) => Number.isInteger(index) && index >= 0 && index < nextMeta.channelLabels.length)));
+          restoredBadChannels = project.badChannels.filter((index) => Number.isInteger(index) && index >= 0 && index < nextMeta.channelLabels.length);
         }
-        if (typeof project.reviewer === "string") setReviewer(project.reviewer);
-        if (typeof project.recordingType === "string") setRecordingType(project.recordingType);
+        if (typeof project.reviewer === "string") restoredReviewer = project.reviewer;
+        if (typeof project.recordingType === "string") restoredRecordingType = project.recordingType;
       } else {
         const cached = localStorage.getItem(`neurotrace:draft:${nextKey}`);
         if (cached) restored = migrateAnnotationList(JSON.parse(cached), nextMeta.durationSec, nextMeta.channelLabels.length);
@@ -1401,6 +1724,35 @@ export default function Home() {
         if (cached) restored = migrateAnnotationList(JSON.parse(cached), nextMeta.durationSec, nextMeta.channelLabels.length);
       } catch { /* local recovery is optional */ }
     }
+    if (activeSessionIdRef.current !== targetSessionId) {
+      throw new Error("The active session changed while the recording was opening. Load it again in the intended tab.");
+    }
+    sourceRef.current = source;
+    setHasRecording(true);
+    setSessionTabs((current) => current.map((tab) => tab.id === targetSessionId
+      ? { ...tab, title: shortFileName(nextMeta.name.replace(/\.[^.]+$/, ""), 22), hasRecording: true, recoveryStatus: "saved" }
+      : tab));
+    setMeta(nextMeta);
+    setSessionKey(nextKey);
+    setRawSourceHash(contentHash);
+    setSourceHash(interpretationHash);
+    setSourceInterpretation(interpretation ?? null);
+    setSelectedChannels(new Set(nextMeta.channelLabels.slice(0, 18).map((_, index) => index)));
+    setBadChannels(new Set(restoredBadChannels));
+    setDisplay({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
+    setViewStart(0);
+    setCursorTime(0);
+    setCursorLocked(false);
+    setSelection(null);
+    setMarkOnset(null);
+    setActiveTool("cursor");
+    setAnnotationDragPreview(null);
+    setTimebase(Math.min(20, Math.max(5, nextMeta.durationSec)));
+    setCandidates(restoredCandidates);
+    setActiveCandidate(restoredActiveCandidate);
+    setSelectedAnnotationId(null);
+    setRecordingType(restoredRecordingType);
+    if (restoredReviewer) setReviewer(restoredReviewer);
     setAnnotations(restored);
     undoRef.current = [];
     redoRef.current = [];
@@ -1408,10 +1760,12 @@ export default function Home() {
       ? `Recovered ${restored.length} labels and local review state`
       : `${nextMeta.format} recording ready — ${nextMeta.channelLabels.length} channels${nextMeta.warnings.length ? ` · ${nextMeta.warnings.length} source warning${nextMeta.warnings.length === 1 ? "" : "s"}` : ""}`);
     setShowImport(false);
-  }, []);
+    return true;
+  }, [activeSessionId, applySessionSnapshot, storeActiveSession]);
 
   const importFiles = async (files: File[]) => {
-    if (!files.length) return;
+    if (!files.length || importBusyRef.current) return;
+    importBusyRef.current = true;
     setImportBusy(true);
     setShowImport(true);
     try {
@@ -1423,7 +1777,8 @@ export default function Home() {
         : files.find((file) => /\.mat$/i.test(file.name));
       if (edf) {
         const source = await EDFSource.create(edf);
-        await loadSource(source, edf);
+        const opened = await loadSource(source, edf);
+        if (!opened) return;
         const importedCandidates = source.events
           .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
           .map((event, index): Candidate => ({
@@ -1472,12 +1827,14 @@ export default function Home() {
       setToast(error instanceof Error ? error.message : "This recording could not be opened");
       setShowImport(true);
     } finally {
+      importBusyRef.current = false;
       setImportBusy(false);
     }
   };
 
   const confirmDatImport = async () => {
-    if (!pendingDat) return;
+    if (!pendingDat || importBusyRef.current) return;
+    importBusyRef.current = true;
     setImportBusy(true);
     try {
       const companionMatHash = pendingLegacyMatFile
@@ -1505,7 +1862,8 @@ export default function Home() {
         physical_scale_uv_per_count: datMapping.physicalScale,
         layout: "sample-major channel-interleaved signed int16 little-endian",
       };
-      await loadSource(source, pendingDat, interpretation);
+      const opened = await loadSource(source, pendingDat, interpretation);
+      if (!opened) return;
       if (pendingLegacyMeta?.events.length) {
         const importedCandidates = pendingLegacyMeta.events
           .map((event, index): Candidate => ({
@@ -1531,6 +1889,7 @@ export default function Home() {
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Raw binary mapping failed");
     } finally {
+      importBusyRef.current = false;
       setImportBusy(false);
     }
   };
@@ -1682,19 +2041,64 @@ export default function Home() {
   };
 
   useEffect(() => {
+    const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || confirmCommit.length > 0;
+    if (!modalOpen) return;
+    const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
+    if (!modal) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const background = [
+      document.querySelector<HTMLElement>(".topbar"),
+      document.querySelector<HTMLElement>(".workspace-grid"),
+    ].filter((element): element is HTMLElement => Boolean(element));
+    background.forEach((element) => element.setAttribute("inert", ""));
+    const focusableSelector = "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+    const focusFrame = window.requestAnimationFrame(() => {
+      const firstFocusable = [...modal.querySelectorAll<HTMLElement>(focusableSelector)].find((element) => element.offsetParent !== null);
+      (firstFocusable ?? modal).focus();
+    });
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const focusable = [...modal.querySelectorAll<HTMLElement>(focusableSelector)].filter((element) => element.offsetParent !== null);
+      if (!focusable.length) {
+        event.preventDefault();
+        modal.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", trapFocus, true);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", trapFocus, true);
+      background.forEach((element) => element.removeAttribute("inert"));
+      previousFocus?.focus();
+    };
+  }, [confirmCommit.length, showChannels, showHelp, showImport, showSessionMap, showSettings]);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
-      if (zoomModifier && (zoomInKey || zoomOutKey)) {
+      const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || confirmCommit.length > 0;
+      if (modalOpen && zoomModifier && (zoomInKey || zoomOutKey)) {
         event.preventDefault();
         event.stopPropagation();
-        zoomTimeWindow(zoomInKey ? "in" : "out", cursorLocked ? cursorTime : undefined);
         return;
       }
-      if (event.key === "Escape" && (showShortcuts || showImport || showSessionMap || confirmCommit.length)) {
+      if (event.key === "Escape" && modalOpen) {
         event.preventDefault();
-        if (showShortcuts) setShowShortcuts(false);
+        if (showHelp) setShowHelp(false);
+        else if (showSettings) setShowSettings(false);
+        else if (showChannels) setShowChannels(false);
         else if (showSessionMap) setShowSessionMap(false);
         else if (showImport && !importBusy) setShowImport(false);
         else if (confirmCommit.length) setConfirmCommit([]);
@@ -1706,7 +2110,13 @@ export default function Home() {
         setActiveTool("cursor");
         return;
       }
-      if (showShortcuts || showImport || showSessionMap || confirmCommit.length) return;
+      if (modalOpen) return;
+      if (zoomModifier && (zoomInKey || zoomOutKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (hasRecording) zoomTimeWindow(zoomInKey ? "in" : "out", cursorLocked ? cursorTime : undefined);
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         if (dragAnnotationRef.current) {
@@ -1724,6 +2134,10 @@ export default function Home() {
         setToast("Selection and pinned cursor cleared");
         return;
       }
+      if (!hasRecording) {
+        if (event.key === "?") setShowHelp(true);
+        return;
+      }
       const target = event.target as HTMLElement | null;
       if (target?.matches("input, textarea, select")) return;
       const lower = event.key.toLowerCase();
@@ -1739,27 +2153,32 @@ export default function Home() {
         event.preventDefault(); setViewStartSafe((value) => value + timebase);
       } else if (event.key === "PageUp") {
         event.preventDefault(); setViewStartSafe((value) => value - timebase);
-      } else if (lower === "u") {
-        if (event.shiftKey) redo();
-        else undo();
-      } else if (lower === "i") {
-        setMarkOnset(cursorTime); setActiveTool("seizure"); setToast(`Onset placed at ${formatClock(cursorTime, true)} — press O at offset`);
-      } else if (lower === "o" && markOnset !== null) {
+      } else if (lower === controlBindings.redo && event.shiftKey) {
+        redo();
+      } else if (lower === controlBindings.undo && !event.shiftKey) {
+        undo();
+      } else if (lower === controlBindings.ictalOnset) {
+        setMarkOnset(cursorTime); setActiveTool("seizure"); setToast(`Onset placed at ${formatClock(cursorTime, true)} — press ${controlBindings.ictalOffset.toUpperCase()} at offset`);
+      } else if (lower === controlBindings.ictalOffset && markOnset !== null) {
         if (cursorTime > markOnset) { addAnnotation(LABEL_BY_ID.get("ictal")!, markOnset, cursorTime); setMarkOnset(null); setActiveTool("cursor"); }
         else setToast("Offset must be after onset");
-      } else if (lower === "s" || event.key === "Enter" || event.code === "Space") {
+      } else if (lower === controlBindings.commit || event.key === "Enter" || event.code === "Space") {
         if (event.code === "Space") event.preventDefault();
         commitSelected();
       } else if ((event.key === "Delete" || event.key === "Backspace") && selectedAnnotationId) {
         event.preventDefault(); deleteAnnotation(selectedAnnotationId);
-      } else if (lower === "n" && candidates.length) {
+      } else if (lower === controlBindings.nextCandidate && candidates.length) {
         selectCandidate(Math.min(candidates.length - 1, activeCandidate + 1));
-      } else if (lower === "p" && candidates.length) {
+      } else if (lower === controlBindings.previousCandidate && candidates.length) {
         selectCandidate(Math.max(0, activeCandidate - 1));
-      } else if (lower === "k" && candidates.length) {
+      } else if (lower === controlBindings.skipCandidate && candidates.length) {
         skipActiveCandidate();
-      } else if (lower === "b" && selectedChannels.size) {
-        const originalIndex = display.primarySourceIndices[focusedChannel] ?? [...selectedChannels][0];
+      } else if (lower === controlBindings.toggleBadChannel && selectedChannels.size) {
+        const originalIndex = display.primarySourceIndices[focusedChannel];
+        if (originalIndex === undefined || originalIndex < 0) {
+          setToast("Choose a displayed source-derived channel before changing channel quality");
+          return;
+        }
         setBadChannels((current) => {
           const next = new Set(current);
           if (next.has(originalIndex)) next.delete(originalIndex);
@@ -1768,16 +2187,15 @@ export default function Home() {
         });
         setToast(`${meta.channelLabels[originalIndex] ?? "Focused source channel"} quality updated`);
       } else if (event.key === "?") {
-        setShowShortcuts(true);
+        setShowHelp(true);
       } else if (/^[1-9]$/.test(event.key)) {
         const label = LABELS.find((item) => item.shortcut === event.key);
-        if (label && (cursorLocked || selection || label.geometry === "session")) addAnnotation(label, selection?.start ?? cursorTime, selection?.end);
-        else if (label) setToast("Click the waveform to pin a time, then choose a label");
+        if (label) placePaletteLabel(label);
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [activeCandidate, addAnnotation, candidates, commitSelected, confirmCommit.length, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, importBusy, markOnset, meta.channelLabels, redo, selectCandidate, selectedAnnotationId, selectedChannels, selection, setViewStartSafe, showImport, showSessionMap, showShortcuts, skipActiveCandidate, timebase, undo, zoomTimeWindow]);
+  }, [activeCandidate, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, markOnset, meta.channelLabels, placePaletteLabel, redo, selectCandidate, selectedAnnotationId, selectedChannels, setViewStartSafe, showChannels, showHelp, showImport, showSessionMap, showSettings, skipActiveCandidate, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -1785,6 +2203,21 @@ export default function Home() {
   const filteredLabels = LABELS.filter((label) => !label.hidden && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
   const entireSessionContexts = filteredLabels.filter((label) => label.track === "context" && label.geometry === "session");
   const windowContexts = filteredLabels.filter((label) => label.track === "context" && label.geometry !== "session");
+  const sessionContextAnnotations = annotations.filter((item) => item.track === "context" && annotationGeometry(item) === "session");
+  const filteredChannelOptions = meta.channelLabels
+    .map((name, index) => ({ name, index }))
+    .filter(({ name }) => name.toLowerCase().includes(channelSearch.toLowerCase()));
+  const controlRows: Array<{ key: keyof ControlBindings; label: string; modifier?: string }> = [
+    { key: "undo", label: "Undo" },
+    { key: "redo", label: "Redo", modifier: "Shift" },
+    { key: "commit", label: "Commit selected label" },
+    { key: "nextCandidate", label: "Next instance candidate" },
+    { key: "previousCandidate", label: "Previous instance candidate" },
+    { key: "skipCandidate", label: "Skip instance candidate" },
+    { key: "ictalOnset", label: "Set ictal onset" },
+    { key: "ictalOffset", label: "Set ictal offset" },
+    { key: "toggleBadChannel", label: "Toggle focused channel quality" },
+  ];
   const renderAnnotations = useMemo(() => annotationDragPreview
     ? annotations.map((item) => item.id === annotationDragPreview.id
       ? normalizeAnnotationGeometry({ ...item, ...annotationDragPreview.patch }, meta.durationSec)
@@ -1804,13 +2237,6 @@ export default function Home() {
     : contextLaneCapacity > 1
       ? Math.max(8, (contextTrackHeight - 36) / (contextLaneCapacity - 1))
       : 0;
-  const placePaletteLabel = (label: LabelDefinition) => {
-    if (!cursorLocked && !selection && label.geometry !== "session") {
-      setToast("Click the waveform to pin a time, then choose a label");
-      return;
-    }
-    addAnnotation(label, selection?.start ?? cursorTime, selection?.end);
-  };
   const tracks: Array<{ id: TrackId; label: string }> = [
     { id: "context", label: "Context" },
     { id: "windowed", label: "Windowed Labels" },
@@ -1820,44 +2246,112 @@ export default function Home() {
 
   return (
     <main className="neuro-app" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
-      if (event.dataTransfer.files.length) importFiles([...event.dataTransfer.files]);
+      if (!importBusyRef.current && event.dataTransfer.files.length) importFiles([...event.dataTransfer.files]);
     }}>
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /><i /></span>
           <div><strong>NEUROTRACE</strong><span>Clinical EEG Studio</span></div>
         </div>
-        <div className="session-identity">
-          <span className="session-patient">{patientLabel(meta)}</span>
-          <span className="slash">/</span>
-          <span>{recordingLabel(meta)}</span>
-          <span className="session-format">{recordingType}</span>
-        </div>
-        <div className="top-actions">
-          <button className="button secondary" onClick={() => setShowImport(true)}>Load recording</button>
-          <div className="menu-wrap">
-            <button className="button primary" onClick={() => setShowExport((value) => !value)}>Export <span aria-hidden="true">⌄</span></button>
-            {showExport && <div className="popover export-popover">
-              <strong>Model-ready bundle</strong>
-              <p>BIDS-style events and channels, full provenance, 30-second windows, ontology, manifest, and QC report.</p>
-              <button className="button primary wide" onClick={exportBundle}>Download .zip</button>
-              <small>Raw EEG is never included.</small>
-            </div>}
+        <nav className="session-tab-strip" role="tablist" aria-label="EEG sessions" onKeyDown={(event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || importBusy) return;
+          event.preventDefault();
+          const currentIndex = Math.max(0, sessionTabs.findIndex((tab) => tab.id === activeSessionId));
+          const nextIndex = event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? sessionTabs.length - 1
+              : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + sessionTabs.length) % sessionTabs.length;
+          const nextId = sessionTabs[nextIndex]?.id;
+          if (!nextId) return;
+          switchSession(nextId);
+          window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-session-tab="${nextId}"]`)?.focus());
+        }}>
+          <div className="session-tabs">
+            {sessionTabs.map((tab) => {
+              const tabRecovery = tab.id === activeSessionId ? recoveryStatus : tab.recoveryStatus;
+              const tabHasRecording = tab.id === activeSessionId ? hasRecording : tab.hasRecording;
+              return <div className="session-tab-shell" key={tab.id}>
+                <button
+                  role="tab"
+                  aria-selected={tab.id === activeSessionId}
+                  aria-controls="active-session-workspace"
+                  tabIndex={tab.id === activeSessionId ? 0 : -1}
+                  data-session-tab={tab.id}
+                  className={`session-tab ${tab.id === activeSessionId ? "active" : ""}`}
+                  disabled={importBusy}
+                  onClick={() => switchSession(tab.id)}
+                  title={`${tab.title}${tabRecovery === "error" ? " · local recovery unavailable" : tabHasRecording ? " · locally recoverable" : " · blank"}`}
+                ><span className={`session-tab-dot ${tabRecovery === "error" ? "error" : tabHasRecording ? "loaded" : "blank"}`} />{tab.title}</button>
+                <button className="session-tab-close" disabled={importBusy || sessionTabs.length <= 1} aria-label={`Close ${tab.title}`} title={sessionTabs.length <= 1 ? "At least one session stays open" : `Close ${tab.title}`} onClick={() => closeSession(tab.id)}>×</button>
+              </div>;
+            })}
           </div>
+          <button className="add-session-tab" disabled={importBusy} aria-label="Add blank session" title="Add blank session" onClick={createBlankSession}>+</button>
+        </nav>
+        <div className="top-actions utility-actions">
+          <button className="utility-button" aria-label="Open Help" title="Help" onClick={() => setShowHelp(true)}><span aria-hidden="true">?</span></button>
+          <button className="utility-button" aria-label="Open Settings" title="Settings" onClick={() => setShowSettings(true)}><span className="settings-glyph" aria-hidden="true">⚙</span></button>
         </div>
       </header>
 
       <div className={`workspace-grid ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
         <aside className="left-sidebar">
-          <section className="sidebar-section session-card">
-            <div className="section-heading"><span>Session</span><button aria-label="Open session map" onClick={() => setShowSessionMap(true)}>↗</button></div>
-            <div className="file-row"><span className="file-type">{meta.format}</span><div><strong title={meta.name}>{shortFileName(meta.name)}</strong><small>{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</small></div></div>
-            <div className="session-detail-grid">
-              <div><span>Started</span><strong>{formatSessionStart(meta.startedAt)}</strong></div>
-              <div><span>Source</span><strong className="hash-text" title={sourceHash}>{sourceHashDisplay}</strong></div>
+          <section className="sidebar-section recording-card">
+            <div className="section-heading"><span>Recording info</span><small>{hasRecording ? meta.format.toUpperCase() : "EMPTY"}</small></div>
+            {hasRecording ? <>
+              <div className="file-row"><span className="file-type">{meta.format}</span><div><strong title={meta.name}>{shortFileName(meta.name)}</strong><small>{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</small></div></div>
+              <div className="patient-summary">
+                <span>Patient info</span>
+                <strong>{patientLabel(meta)}</strong>
+                <small>{recordingLabel(meta)} · {formatSessionStart(meta.startedAt)}</small>
+              </div>
+              <div className="session-detail-grid">
+                <div><span>Source integrity</span><strong className="hash-text" title={sourceHash}>{sourceHashDisplay}</strong></div>
+                <div><span>Source channels selected</span><strong>{selectedChannels.size} / {meta.channelLabels.length}</strong></div>
+                <div><span>Displayed rows</span><strong>{display.labels.length}</strong></div>
+                <div><span>Quality excluded</span><strong>{badChannels.size}</strong></div>
+              </div>
+              <label className="compact-field"><span>Recording type</span><select value={recordingType} onChange={(event) => setRecordingType(event.target.value)}><option>SEEG / iEEG</option><option>Scalp EEG</option><option>Simultaneous scalp + iEEG</option><option>Other ephys</option></select></label>
+              <label className="compact-field reviewer-field"><span>Reviewer initials</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
+              <div className="recording-actions">
+                <button onClick={() => setShowImport(true)}>Replace</button>
+                <div className="menu-wrap">
+                  <button className="export-side-button" onClick={() => setShowExport((value) => !value)}>Export <span aria-hidden="true">⌄</span></button>
+                  {showExport && <div className="popover export-popover">
+                    <strong>Model-ready bundle</strong>
+                    <p>BIDS-style events and channels, full provenance, 30-second windows, ontology, manifest, and QC report.</p>
+                    <button className="button primary wide" onClick={exportBundle}>Download .zip</button>
+                    <small>Raw EEG is never included.</small>
+                  </div>}
+                </div>
+              </div>
+            </> : <button className="empty-recording-card" onClick={() => setShowImport(true)}>
+              <span aria-hidden="true">＋</span>
+              <strong>Load recording</strong>
+              <small>EDF, MAT, or MAT + DAT</small>
+            </button>}
+          </section>
+
+          <section className="sidebar-section session-labels-section">
+            <div className="section-heading"><span>Session labels</span><small>{sessionContextAnnotations.length}</small></div>
+            <button className="session-map-button" disabled={!hasRecording} onClick={() => setShowSessionMap(true)}>
+              <span className="map-button-glyph" aria-hidden="true"><i /><i /><i /></span>
+              <span><strong>Session map</strong><small>See the complete labeling picture</small></span>
+              <b>↗</b>
+            </button>
+            <div className="session-label-list">
+              {sessionContextAnnotations.length ? sessionContextAnnotations.map((item) => {
+                const label = LABEL_BY_ID.get(item.labelId);
+                return <button key={item.id} className={selectedAnnotationId === item.id ? "active" : ""} onClick={() => {
+                  setSelectedAnnotationId(item.id);
+                  setRightPanelOpen(true);
+                  setRightTab("labels");
+                }} style={{ "--label-color": label?.color } as React.CSSProperties}>
+                  <i /><span><strong>{label?.name ?? item.labelId}</strong><small>{item.notes || "Entire recording"}</small></span>
+                </button>;
+              }) : <div className="empty-session-labels"><strong>No entire-session context</strong><span>Add it from the Context palette.</span></div>}
             </div>
-            <label className="compact-field"><span>Recording type</span><select value={recordingType} onChange={(event) => setRecordingType(event.target.value)}><option>SEEG / iEEG</option><option>Scalp EEG</option><option>Simultaneous scalp + iEEG</option><option>Other ephys</option></select></label>
-            <label className="compact-field reviewer-field"><span>Reviewer initials</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
           </section>
 
           <section className="sidebar-section queue-section">
@@ -1867,56 +2361,33 @@ export default function Home() {
                 <span className={`queue-status ${candidate.status}`} />
                 <span className="queue-copy"><strong>{candidate.label}</strong><small>{formatClock(candidate.time, true)}</small></span>
                 <span className="queue-arrow">›</span>
-              </button>) : <div className="empty-queue"><strong>No imported candidates</strong><p>Review freely or add the cursor position.</p><button onClick={() => setCandidates([{ id: makeId("cand"), time: cursorTime, label: "Manual review target", source: "gold", status: "active" }])}>+ Add {formatClock(cursorTime, true)}</button></div>}
+              </button>) : <div className="empty-queue"><strong>No instance candidates</strong><p>{hasRecording ? "Imported events and review targets appear here." : "Load a recording to begin."}</p>{hasRecording && cursorLocked && <button onClick={() => setCandidates([{ id: makeId("cand"), time: cursorTime, label: "Manual review target", source: "gold", status: "active" }])}>+ Add {formatClock(cursorTime, true)}</button>}</div>}
             </div>
-            {candidates.length > 0 && <div className="queue-actions"><button onClick={skipActiveCandidate}>Skip current <kbd>K</kbd></button><button onClick={() => selectCandidate(Math.min(candidates.length - 1, activeCandidate + 1))}>Next <kbd>N</kbd></button></div>}
-          </section>
-
-          <section className="sidebar-section channel-section">
-            <div className="section-heading"><span>Channels</span><small>{selectedChannels.size}/{meta.channelLabels.length}</small></div>
-            <div className="channel-tools"><input aria-label="Search channels" placeholder="Find contact…" value={channelSearch} onChange={(event) => setChannelSearch(event.target.value)} /><button onClick={() => setSelectedChannels(new Set(meta.channelLabels.map((_, index) => index)))}>All</button></div>
-            <div className="channel-list">
-              {meta.channelLabels.map((name, index) => ({ name, index })).filter(({ name }) => name.toLowerCase().includes(channelSearch.toLowerCase())).map(({ name, index }) => <label key={`${name}-${index}`} className={`channel-row ${badChannels.has(index) ? "bad" : ""}`}>
-                <input type="checkbox" checked={selectedChannels.has(index)} onChange={() => setSelectedChannels((current) => {
-                  const next = new Set(current);
-                  if (next.has(index)) next.delete(index);
-                  else next.add(index);
-                  return next;
-                })} />
-                <span className="channel-name">{name}</span>
-                <span className="channel-unit">{meta.channelUnits[index] ?? "µV"}</span>
-                <button type="button" title={badChannels.has(index) ? "Restore channel" : "Mark bad"} onClick={(event) => {
-                  event.preventDefault();
-                  setBadChannels((current) => {
-                    const next = new Set(current);
-                    if (next.has(index)) next.delete(index);
-                    else next.add(index);
-                    return next;
-                  });
-                }}>{badChannels.has(index) ? "BAD" : "···"}</button>
-              </label>)}
-            </div>
+            {candidates.length > 0 && <div className="queue-actions"><button onClick={skipActiveCandidate}>Skip current <kbd>{controlBindings.skipCandidate.toUpperCase()}</kbd></button><button onClick={() => selectCandidate(Math.min(candidates.length - 1, activeCandidate + 1))}>Next <kbd>{controlBindings.nextCandidate.toUpperCase()}</kbd></button></div>}
           </section>
         </aside>
 
-        <section className="review-surface">
+        <section className="review-surface" id="active-session-workspace" role="tabpanel">
           <div className="viewer-toolbar">
-            <button className={`compact-toggle panel-toggle ${leftPanelOpen ? "active" : ""}`} aria-pressed={leftPanelOpen} title={`${leftPanelOpen ? "Hide" : "Show"} session and channels panel`} onClick={() => setLeftPanelOpen((value) => !value)}><span aria-hidden="true">☰</span><b>Session</b></button>
-            <button className={`compact-toggle panel-toggle ${rightPanelOpen ? "active" : ""}`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} labels and QC panel`} onClick={() => setRightPanelOpen((value) => !value)}><span aria-hidden="true">▤</span><b>Labels / QC</b></button>
-            <div className="transport-group">
-              <button aria-label="Previous page" onClick={() => setViewStartSafe((value) => value - timebase)}>‹</button>
-              <button className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => setPlaying((value) => !value)}>{playing ? "Ⅱ" : "▶"}</button>
-              <button aria-label="Next page" onClick={() => setViewStartSafe((value) => value + timebase)}>›</button>
+            <div className="panel-toggle-pair" aria-label="Workspace panels">
+              <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title={`${leftPanelOpen ? "Hide" : "Show"} recording panel`} onClick={() => setLeftPanelOpen((value) => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
+              <button className={`panel-icon-button ${rightPanelOpen ? "active" : ""}`} aria-label={`${rightPanelOpen ? "Hide" : "Show"} right panel`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} context and label panel`} onClick={() => setRightPanelOpen((value) => !value)}><span className="panel-glyph right" aria-hidden="true"><i /><i /><i /></span></button>
             </div>
-            <div className="toolbar-divider" />
+            <span className="toolbar-kicker">Signal tools</span>
+            <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} aria-label="Spectrum" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrum</b></button>
+            <label className="toolbar-select"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">Anatomical bipolar</option></select></label>
+            <button className={`compact-toggle ${showFilters ? "active" : ""}`} aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
+            <div className="time-window-control" aria-label="Window"><span>Window</span><button disabled={!hasRecording} aria-label="Zoom out in time" title="Zoom out · Ctrl/⌘ −" onClick={() => zoomTimeWindow("out")}>−</button><label><input disabled={!hasRecording} aria-label="Visible seconds" type="number" min="1" max="300" step="1" value={Number(timebase.toFixed(1))} onChange={(event) => setTimeWindow(Number(event.target.value))} /><b>s</b></label><button disabled={!hasRecording} aria-label="Zoom in in time" title="Zoom in · Ctrl/⌘ +" onClick={() => zoomTimeWindow("in")}>+</button></div>
+            <div className="gain-control" aria-label="Gain"><span>Gain</span><button disabled={!hasRecording} onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button><b>{gain.toFixed(1)}×</b><button disabled={!hasRecording} onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button></div>
             <div className="toolbar-spacer" />
-            <label className="toolbar-select"><span>Montage</span><select value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">Anatomical bipolar</option></select></label>
-            <button className={`compact-toggle ${showFilters ? "active" : ""}`} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
-            <div className="time-window-control"><span>Window</span><button aria-label="Zoom out in time" title="Zoom out · Ctrl/⌘ −" onClick={() => zoomTimeWindow("out")}>−</button><label><input aria-label="Visible seconds" type="number" min="1" max="300" step="1" value={Number(timebase.toFixed(1))} onChange={(event) => setTimeWindow(Number(event.target.value))} /><b>s</b></label><button aria-label="Zoom in in time" title="Zoom in · Ctrl/⌘ +" onClick={() => zoomTimeWindow("in")}>+</button></div>
-            <div className="gain-control"><span>Gain</span><button onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button><b>{gain.toFixed(1)}×</b><button onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button></div>
+            <div className="transport-group">
+              <button disabled={!hasRecording} aria-label="Previous page" onClick={() => setViewStartSafe((value) => value - timebase)}>‹</button>
+              <button disabled={!hasRecording} className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => setPlaying((value) => !value)}>{playing ? "Ⅱ" : "▶"}</button>
+              <button disabled={!hasRecording} aria-label="Next page" onClick={() => setViewStartSafe((value) => value + timebase)}>›</button>
+            </div>
           </div>
 
-          {showFilters && <div className="filter-drawer">
+          {hasRecording && showFilters && <div className="filter-drawer">
             <div><strong>Display filters</strong><span>Raw samples remain unchanged</span></div>
             <label>High-pass <input type="number" min="0" step="0.1" value={filters.highPassHz} onChange={(event) => setFilters((current) => ({ ...current, highPassHz: Number(event.target.value) }))} /> Hz</label>
             <label>Low-pass <input type="number" min="1" step="1" value={filters.lowPassHz} onChange={(event) => setFilters((current) => ({ ...current, lowPassHz: Number(event.target.value) }))} /> Hz</label>
@@ -1925,6 +2396,7 @@ export default function Home() {
             <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to raw</button>
           </div>}
 
+          {hasRecording ? <>
           <div className="overview-block">
             <div className="overview-label"><span>FULL SESSION</span><strong>{formatClock(viewStart)} — {formatClock(viewStart + timebase)}</strong></div>
             <div className="overview-track" ref={overviewRef} onPointerDown={(event) => {
@@ -1941,6 +2413,7 @@ export default function Home() {
           <div ref={viewerRef} className={`signal-and-tracks ${spectrogramOpen ? "with-spectrogram" : ""}`} onDragOver={onLabelDragOver} onDrop={onLabelDrop} onDragLeave={() => setDragGhost(null)}>
             <div className="waveform-wrap">
               <div className="channel-rail" style={{ gridTemplateRows: `repeat(${Math.max(1, display.labels.length)}, 1fr)` }}>
+                <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 {display.labels.map((label, index) => <button key={`${label}-${index}`} className={focusedChannel === index ? "focused" : ""} onClick={() => setFocusedChannel(index)}><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0)}</span></button>)}
               </div>
               <div className="canvas-shell">
@@ -1953,7 +2426,7 @@ export default function Home() {
                 {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
                 {loadingSignal && <div className="signal-loading"><span /> Reading signal window…</div>}
                 {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
-                {!display.data.length && !loadingSignal && <div className="no-channels"><strong>No visible channels</strong><span>Select channels in the left panel.</span></div>}
+                {!display.data.length && !loadingSignal && <div className="no-channels"><strong>No visible channels</strong><span>Use CH+ to choose channels.</span></div>}
               </div>
             </div>
 
@@ -1994,20 +2467,25 @@ export default function Home() {
           <footer className="command-strip">
             <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{display.labels[focusedChannel] ?? "—"}</span><span>{formatAmplitude(cursorAmplitude)}</span><span>sample {Math.round(cursorTime * (display.sampleRates[focusedChannel] ?? primarySampleRate(meta))).toLocaleString()}</span></div>
             <div className="command-status"><span className="status-dot" />{toast}</div>
-            <div className="strip-actions"><button onClick={undo}>U <span>Undo</span></button><button onClick={redo}>⇧U <span>Redo</span></button><button onClick={() => setSpectrogramOpen((value) => !value)} className={spectrogramOpen ? "active" : ""}>W <span>Spectrum</span></button><button onClick={() => setShowShortcuts(true)}>? <span>Controls</span></button><label>Snap <select value={snapMode} onChange={(event) => setSnapMode(event.target.value as "1s" | "100ms" | "sample")}><option value="1s">1 s</option><option value="100ms">100 ms</option><option value="sample">Sample</option></select></label></div>
           </footer>
+          </> : <button className="recording-empty-state" onClick={() => setShowImport(true)}>
+            <span className="empty-load-mark" aria-hidden="true">＋</span>
+            <strong>Load a recording to begin</strong>
+            <p>Open EDF / EDF+, MATLAB v5, or a paired MAT + DAT session.</p>
+            <small>Click to choose files, or drop them anywhere in this workspace.</small>
+          </button>}
         </section>
 
         <aside className="right-sidebar">
           <div className="right-tabs"><button className={rightTab === "labels" ? "active" : ""} onClick={() => setRightTab("labels")}>Labels</button><button className={rightTab === "qc" ? "active" : ""} onClick={() => setRightTab("qc")}>QC <span>{qcIssues.length}</span></button></div>
           {rightTab === "labels" ? <>
             <section className="context-palette-section">
-              <div className="palette-heading"><div><strong>Context palette</strong><span>Clinical facts that may coexist</span></div></div>
+              <div className="palette-heading"><div><strong>Context Labels</strong><span>Context palette · clinical facts may coexist</span></div></div>
               <input className="palette-search" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
               <div className="context-palette-groups">
                 {[{ name: "Entire-session context", labels: entireSessionContexts }, { name: "Window context", labels: windowContexts }].map((group) => group.labels.length ? <div className="context-palette-group" key={group.name}>
                   <span>{group.name}</span>
-                  <div>{group.labels.map((label) => <button key={label.id} className="context-chip" draggable onDragStart={(event) => {
+                  <div>{group.labels.map((label) => <button key={label.id} className="context-chip" disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => {
                     event.dataTransfer.setData("application/x-neurotrace-label", label.id);
                     event.dataTransfer.effectAllowed = "copy";
                     setDragGhost({ labelId: label.id, time: cursorTime });
@@ -2019,12 +2497,12 @@ export default function Home() {
               </div>
             </section>
             <section className="palette-section label-palette-section">
-              <div className="palette-heading"><div><strong>Label palette</strong><span>Model targets and signal labels</span></div></div>
+              <div className="palette-heading"><div><strong>ePhys Labels</strong><span>Label palette · click = instance, selected span = window</span></div></div>
               <div className="palette-groups">
                 {activeLabelGroups.map((category) => {
                   const group = filteredLabels.filter((label) => label.category === category);
                   if (!group.length) return null;
-                  return <div className="palette-group" key={category}><span>{category}</span><div>{group.map((label) => <button key={label.id} draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-neurotrace-label", label.id); event.dataTransfer.effectAllowed = "copy"; setDragGhost({ labelId: label.id, time: cursorTime }); }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`Drag to waveform${label.shortcut ? ` · shortcut ${label.shortcut}` : ""}`}><i />{label.name}{label.shortcut && <kbd>{label.shortcut}</kbd>}</button>)}</div></div>;
+                  return <div className="palette-group" key={category}><span>{category}</span><div>{group.map((label) => <button key={label.id} disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => { event.dataTransfer.setData("application/x-neurotrace-label", label.id); event.dataTransfer.effectAllowed = "copy"; setDragGhost({ labelId: label.id, time: cursorTime }); }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`Click after pinning a point or selecting a span${label.shortcut ? ` · shortcut ${label.shortcut}` : ""}`}><i />{label.name}{label.shortcut && <kbd>{label.shortcut}</kbd>}</button>)}</div></div>;
                 })}
               </div>
             </section>
@@ -2041,21 +2519,23 @@ export default function Home() {
                 <div className="snapshot-note"><span>DISPLAY SNAPSHOT</span><strong>{montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average ref" : "Recorded ref"} · {filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz} Hz notch` : "Raw"}</strong><small>Stored with exported revision; raw samples unchanged.</small></div>
               </div> : <div className="selection-empty">
                 <div className="selection-graphic"><span /><span /></div>
-                <strong>{selection ? `${(selection.end - selection.start).toFixed(1)} second selection` : "Select or place a label"}</strong>
-                <p>Drag a label onto the waveform, paint an interval, or click any timeline item to inspect it.</p>
+                <strong>{selection ? `${(selection.end - selection.start).toFixed(1)} second window ready` : cursorLocked ? "Pinned point ready for an instance label" : "Pin a point or select a window"}</strong>
+                <p>Click the waveform, then click a label for an instance. Drag across the waveform, then click a label for that exact window.</p>
               </div>}
             </section>
-          </> : <QcPanel issues={qcIssues} annotations={annotations} badChannels={badChannels} meta={meta} recoveryStatus={recoveryStatus} onSelect={(id) => { setSelectedAnnotationId(id); setRightTab("labels"); }} />}
+          </> : hasRecording
+            ? <QcPanel issues={qcIssues} annotations={annotations} badChannels={badChannels} meta={meta} recoveryStatus={recoveryStatus} onSelect={(id) => { setSelectedAnnotationId(id); setRightTab("labels"); }} />
+            : <div className="empty-qc-panel"><span>✓</span><strong>QC starts with the recording</strong><p>Load EDF or MAT data to run source, timing, channel, and annotation checks.</p></div>}
         </aside>
       </div>
 
       {showImport && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !importBusy) setShowImport(false); }}>
-        <div className="modal import-modal">
-          <button className="modal-close" onClick={() => setShowImport(false)} aria-label="Close">×</button>
+        <div className="modal import-modal" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
+          <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN A RECORDING</span>
           <h2>Bring the signal to the labels.</h2>
           <p>EDF/EDF+ streams by time window. Self-contained MATLAB v5 matrices are mapped locally. Legacy Buzcode sessions can pair a MAT with its same-basename DAT.</p>
-          <button className={`drop-zone ${importBusy ? "busy" : ""}`} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); importFiles([...event.dataTransfer.files]); }}>
+          <button className={`drop-zone ${importBusy ? "busy" : ""}`} disabled={importBusy} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); importFiles([...event.dataTransfer.files]); }}>
             <span className="upload-mark">⇧</span><strong>{importBusy ? "Reading headers…" : "Drop EDF, MAT, or MAT + DAT"}</strong><small>or choose files · recordings never leave this browser</small>
           </button>
           <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat" onChange={(event: ChangeEvent<HTMLInputElement>) => importFiles([...(event.target.files ?? [])])} />
@@ -2072,7 +2552,89 @@ export default function Home() {
 
       {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal"><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but the QC engine found an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => setConfirmCommit([])}>Return to label</button><button className="button primary" onClick={() => commitSelected(true)}>Commit with advisory</button></div></div></div>}
 
-      {showShortcuts && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowShortcuts(false); }}><div className="modal shortcuts-modal"><button className="modal-close" onClick={() => setShowShortcuts(false)} aria-label="Close controls">×</button><span className="modal-eyebrow">CONTROLS &amp; HOTKEYS</span><h2>Move through EEG at signal speed.</h2><p className="controls-intro">Click the recording to pin a time. Drag the recording to select a span. Drag annotations to move, resize, or convert between windowed and instance geometry.</p><div className="shortcut-grid">{[["Ctrl/⌘ + / −", "Zoom only the visible EEG window"], ["Wheel / trackpad", "Move left or right in time"], ["Pinch / Ctrl-wheel", "Zoom around the pointer without page zoom"], ["Click waveform", "Pin the time cursor for one-click labeling"], ["Drag waveform", "Select a time span"], ["Drag between tracks", "Convert windowed ↔ instance"], ["← / →", "Pan 1 second"], ["⇧ ← / →", "Pan 10 seconds"], ["PgUp / PgDn", "Previous / next page"], ["Delete / ⌫", "Remove the selected label"], ["1–9", "Apply a numbered palette label"], ["S / Enter / Space", "Commit the selected label"], ["U / ⇧U", "Undo / redo"], ["N / P", "Next / previous candidate"], ["K", "Skip the current candidate"], ["I / O", "Ictal onset / offset"], ["B", "Toggle focused source-channel quality"], ["Panel buttons", "Show or hide either side panel"], ["Esc", "Unselect and release the pinned cursor"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}</div></div></div>}
+      {showChannels && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowChannels(false); }}>
+        <div className="modal channel-modal" role="dialog" aria-modal="true" aria-label="Channel controls" tabIndex={-1}>
+          <button className="modal-close" onClick={() => setShowChannels(false)} aria-label="Close channel controls">×</button>
+          <span className="modal-eyebrow">CHANNEL DISPLAY</span>
+          <h2>Choose what appears in the recording.</h2>
+          <div className="detected-channels"><strong>Detected channels:</strong><span>{meta.channelLabels.length} total · {selectedChannels.size} source channels selected · {badChannels.size} quality-excluded · {display.labels.length} displayed rows</span></div>
+          <div className="channel-modal-tools">
+            <input aria-label="Search detected channels" placeholder="Find a channel…" value={channelSearch} onChange={(event) => setChannelSearch(event.target.value)} />
+            <button onClick={() => setSelectedChannels(new Set(meta.channelLabels.map((_, index) => index)))}>Enable all</button>
+            <button onClick={() => setSelectedChannels(new Set())}>Disable all</button>
+          </div>
+          <div className="channel-toggle-list">
+            {filteredChannelOptions.map(({ name, index }) => <div className={`channel-toggle-row ${badChannels.has(index) ? "bad" : ""}`} key={`${name}-${index}`}>
+              <label>
+                <input type="checkbox" checked={selectedChannels.has(index)} onChange={() => setSelectedChannels((current) => {
+                  const next = new Set(current);
+                  if (next.has(index)) next.delete(index);
+                  else next.add(index);
+                  return next;
+                })} />
+                <span className="channel-switch" aria-hidden="true" />
+                <span className="channel-toggle-copy"><strong>{name}</strong><small>{meta.channelUnits[index] ?? "µV"} · source channel {index + 1}</small></span>
+              </label>
+              <button className={badChannels.has(index) ? "bad" : ""} onClick={() => setBadChannels((current) => {
+                const next = new Set(current);
+                if (next.has(index)) next.delete(index);
+                else next.add(index);
+                return next;
+              })}>{badChannels.has(index) ? "Bad" : "Good"}</button>
+            </div>)}
+          </div>
+          <p className="channel-modal-note">Montage labels may combine source channels. NeuroTrace keeps the original channel provenance with every channel-specific annotation.</p>
+        </div>
+      </div>}
+
+      {showHelp && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowHelp(false); }}>
+        <div className="modal help-modal" role="dialog" aria-modal="true" aria-label="Help" tabIndex={-1}>
+          <button className="modal-close" onClick={() => setShowHelp(false)} aria-label="Close Help">×</button>
+          <span className="modal-eyebrow">NEUROTRACE GUIDE</span>
+          <h2>Everything in this workspace.</h2>
+          <p className="controls-intro">The viewer is organized around a recording, its clinical context, time-window labels, and precise instance labels.</p>
+          <div className="help-sections">
+            {[
+              ["Session tabs", "Each tab is an independent annotation workspace. Press + for a blank session, then load its recording."],
+              ["Recording info", "Shows the source file, masked patient/session identifiers, recording type, reviewer, source hash, export, and entire-session labels."],
+              ["Instance queue", "Imported EDF+/MAT events and review targets live here. Select one to jump straight to its time."],
+              ["Signal tools", "Spectrum opens the focused-channel spectral view. Montage, filters, window, and gain only change the display; raw samples stay immutable."],
+              ["CH+ channel manager", "Opens detected source channels. Toggle visibility and mark channel quality without losing source-channel provenance."],
+              ["Waveform labeling", "Click once to pin a time, then click any ePhys label to create an instance there. Drag across time, then click a label to apply it to that exact window."],
+              ["Annotation tracks", "Context may stack, windowed labels occupy spans, and instance labels mark single moments. Drag annotations to move them or between the two ePhys tracks to convert geometry."],
+              ["Context Labels", "Entire-session context covers the recording. Window context can overlap and stack because multiple clinical facts may coexist."],
+              ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Sleep stages, rhythmic/periodic patterns, seizure state, quality, and spikes are grouped here."],
+              ["Inspector and deletion", "Select any annotation to edit timing, notes, reviewer, and confidence, commit a revision, or use the trash can. Delete/Backspace also removes the selection."],
+              ["QC and session map", "QC checks source assumptions and label integrity. Session map gives a hoverable, clickable whole-recording view."],
+              ["Navigation", "Trackpad or mouse-wheel movement pans through time. Pinch or Ctrl/⌘ +/- zooms only the EEG window. Escape clears the current interaction."],
+            ].map(([title, copy], index) => <section key={title}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{title}</strong><p>{copy}</p></div></section>)}
+          </div>
+          <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Clinical deployment requires institutional validation and privacy review.</p></div>
+        </div>
+      </div>}
+
+      {showSettings && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowSettings(false); }}>
+        <div className="modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1}>
+          <button className="modal-close" onClick={() => setShowSettings(false)} aria-label="Close Settings">×</button>
+          <span className="modal-eyebrow">CONTROLS</span>
+          <h2>Make the workspace feel natural.</h2>
+          <p>Change the letter shortcuts below. Navigation, zoom, selection, deletion, and Escape remain fixed so the viewer always has a safe recovery path.</p>
+          <section className="settings-section">
+            <div className="settings-heading"><strong>Editable keyboard controls</strong><button onClick={() => setControlBindings(DEFAULT_CONTROLS)}>Restore defaults</button></div>
+            <div className="binding-list">
+              {controlRows.map((row) => <label key={row.key}><span>{row.label}</span><span className="binding-input">{row.modifier && <b>{row.modifier} +</b>}<select aria-label={`${row.label} shortcut`} value={controlBindings[row.key]} onChange={(event) => updateControlBinding(row.key, event.target.value)}>{CONTROL_OPTIONS.map((key) => <option key={key} value={key}>{key.toUpperCase()}</option>)}</select></span></label>)}
+            </div>
+            <small className="binding-note">Choosing a letter already in use swaps the two actions, so every shortcut remains reachable.</small>
+          </section>
+          <section className="settings-section interaction-settings">
+            <div className="settings-heading"><strong>Pointer and timing controls</strong></div>
+            <label><span>Label snapping</span><select value={snapMode} onChange={(event) => setSnapMode(event.target.value as "1s" | "100ms" | "sample")}><option value="1s">1 second</option><option value="100ms">100 milliseconds</option><option value="sample">Focused channel sample</option></select></label>
+            <div className="fixed-control-grid">
+              {[["Click", "Pin instance time"], ["Click + drag", "Select label window"], ["Wheel / trackpad", "Pan in time"], ["Pinch or ⌘ +/−", "EEG-only zoom"], ["Delete / ⌫", "Delete selected label"], ["Escape", "Clear selection and cursor"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
+            </div>
+          </section>
+        </div>
+      </div>}
 
       {showSessionMap && <SessionMap
         meta={meta}
