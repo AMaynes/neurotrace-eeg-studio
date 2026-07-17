@@ -691,8 +691,8 @@ textarea:focus-visible {
 .overview-time { font-size: 9px; }
 .channel-rail strong { font-size: 9px; }
 .channel-rail span { font-size: 8px; }
-.timeline-row { height: 40px; }
-.track-label { font-size: 10px; }
+.timeline-row { height: 46px; }
+.track-label { padding-top: 5px; padding-bottom: 5px; font-size: 10px; line-height: 1.35; }
 .annotation-block { top: 5px; height: 29px; }
 .annotation-block strong { font-size: 9px; }
 .annotation-block > span { font-size: 8px; }
@@ -1149,11 +1149,13 @@ textarea:focus-visible {
 
 .panel-toggle-pair {
   flex: 0 0 auto;
+  position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  padding-bottom: 10px;
 }
 .panel-toggle-pair .panel-icon-button:first-child { border-radius: 6px 0 0 6px; }
-.panel-toggle-pair .panel-icon-button:last-child { margin-left: -1px; border-radius: 0 6px 6px 0; }
+.panel-toggle-pair .panel-icon-button:nth-child(2) { margin-left: -1px; border-radius: 0 6px 6px 0; }
 
 .panel-icon-button {
   width: 36px;
@@ -1165,6 +1167,28 @@ textarea:focus-visible {
 
 .panel-icon-button:hover,
 .panel-icon-button.active { border-color: #3f635b; background: #142923; color: var(--mint); }
+
+.panel-bottom-button {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  bottom: 0;
+  width: 30px;
+  height: 13px;
+  display: grid;
+  place-items: center;
+  transform: translateX(-50%);
+  padding: 0;
+  border: 1px solid #294149;
+  border-radius: 0 0 5px 5px;
+  background: #102027;
+  color: #71898e;
+  cursor: pointer;
+}
+.panel-bottom-button:hover,
+.panel-bottom-button.active { border-color: #3f635b; background: #142923; color: var(--mint); }
+.bottom-panel-glyph { width: 17px; height: 7px; display: flex; flex-direction: column; justify-content: space-between; }
+.bottom-panel-glyph i { display: block; width: 17px; height: 1px; border-radius: 1px; background: currentColor; }
 
 .panel-glyph {
   width: 20px;

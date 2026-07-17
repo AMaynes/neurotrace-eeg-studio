@@ -615,6 +615,7 @@ export default function Home() {
   const [showImport, setShowImport] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [bottomTracksOpen, setBottomTracksOpen] = useState(true);
   const [contextTrackHeight, setContextTrackHeight] = useState(76);
   const [pendingDat, setPendingDat] = useState<File | null>(null);
   const [pendingLegacyMatFile, setPendingLegacyMatFile] = useState<File | null>(null);
@@ -2551,6 +2552,7 @@ export default function Home() {
             <div className="panel-toggle-pair" aria-label="Workspace panels">
               <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title={`${leftPanelOpen ? "Hide" : "Show"} recording panel`} onClick={() => setLeftPanelOpen((value) => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
               <button className={`panel-icon-button ${rightPanelOpen ? "active" : ""}`} aria-label={`${rightPanelOpen ? "Hide" : "Show"} right panel`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} context and label panel`} onClick={() => setRightPanelOpen((value) => !value)}><span className="panel-glyph right" aria-hidden="true"><i /><i /><i /></span></button>
+              <button className={`panel-bottom-button ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} title={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} onClick={() => setBottomTracksOpen((value) => !value)}><span className="bottom-panel-glyph" aria-hidden="true"><i /><i /><i /></span></button>
             </div>
             <span className="toolbar-kicker">Signal tools</span>
             <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} aria-label="Spectrum" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrum</b></button>
@@ -2611,7 +2613,7 @@ export default function Home() {
 
             {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={viewStart} cursor={cursorTime} label={display.labels[focusedChannel] || "Focused channel"} />}
 
-            <div className="timeline" ref={timelineRef}>
+            {bottomTracksOpen && <div className="timeline" ref={timelineRef}>
               {tracks.map((track) => <div className={`timeline-row ${track.id === "context" ? "context-row" : ""}`} key={track.id} style={track.id === "context" ? { height: contextTrackHeight } : undefined}>
                 <div className="track-label"><span className={`track-icon ${track.id}`} />{track.label}</div>
                 <div className="track-lane" data-track-id={track.id}>
@@ -2640,7 +2642,7 @@ export default function Home() {
                   contextResizeRef.current = { startY: event.clientY, startHeight: contextTrackHeight };
                 }} />}
               </div>)}
-            </div>
+            </div>}
           </div>
 
           <footer className="command-strip">

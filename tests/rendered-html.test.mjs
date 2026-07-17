@@ -149,6 +149,9 @@ test("keeps requested signal tools in the primary toolbar without legacy clutter
   assert.doesNotMatch(toolbar, />\s*(?:Cursor|Select)\s*</i);
   assert.doesNotMatch(toolbar, /Mark seizure|Manage ontology/i);
   assert.match(page, /className="channel-manager-button"[\s\S]{0,160}>CH\+<\/button>/, "CH+ is in the recording rail");
+  assert.match(toolbar, /className=\{`panel-bottom-button/);
+  assert.match(toolbar, /aria-pressed=\{bottomTracksOpen\}/);
+  assert.match(toolbar, /setBottomTracksOpen\(\(value\)\s*=>\s*!value\)/);
 
   const headerStart = page.indexOf('<header className="topbar">');
   const headerEnd = page.indexOf("</header>", headerStart);
@@ -545,6 +548,24 @@ test("keeps whole-session context out of the timed tracks and preserves exact la
   const drag = page.slice(dragStart, dragEnd);
   assert.match(drag, /geometry\s*=\s*target\s*===\s*"instance"\s*\?\s*"point"\s*:\s*"interval"/);
   assert.doesNotMatch(drag, /geometry\s*=\s*"window"/);
+});
+
+test("gives wrapped bottom-track labels vertical breathing room", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.timeline-row\s*\{\s*height:\s*46px;\s*\}/);
+  assert.match(css, /\.track-label\s*\{[^}]*padding-top:\s*5px;[^}]*padding-bottom:\s*5px;[^}]*line-height:\s*1\.35;/);
+});
+
+test("toggles the complete bottom label-track surface from the centered panel control", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /const \[bottomTracksOpen,\s*setBottomTracksOpen\]\s*=\s*useState\(true\)/);
+  assert.match(page, /\{bottomTracksOpen && <div className="timeline"/);
+  assert.match(page, /Hide" : "Show"\} bottom label tracks/);
+  assert.match(css, /\.panel-toggle-pair\s*\{[^}]*position:\s*relative;[^}]*padding-bottom:\s*10px;/);
+  assert.match(css, /\.panel-bottom-button\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*bottom:\s*0;/);
 });
 
 test("highlights a focused channel and provides compact or vertically scrollable channel layouts", async () => {
