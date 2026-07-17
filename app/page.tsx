@@ -35,6 +35,8 @@ type TrackId = "context" | "windowed" | "instance";
 type AnnotationStatus = "draft" | "committed" | "suggestion";
 type AnnotationOrigin = "manual" | "imported" | "detector" | "legacy";
 type PlacementIntent = "native" | "instance" | "windowed" | "context-instance" | "context-window";
+type AnnotationDragPatch = Pick<Annotation, "start" | "end" | "track" | "geometry">;
+type AnnotationSelectionBox = { left: number; top: number; width: number; height: number };
 
 type LabelDefinition = {
   id: string;
@@ -566,14 +568,21 @@ export default function Home() {
   const sessionLabelsSectionRef = useRef<HTMLElement>(null);
   const queueSectionRef = useRef<HTMLElement>(null);
   const dragFrameRef = useRef<number | null>(null);
-  const pendingAnnotationDragRef = useRef<Pick<Annotation, "start" | "end" | "track" | "geometry"> | null>(null);
+  const pendingAnnotationDragRef = useRef<Record<string, AnnotationDragPatch> | null>(null);
   const dragAnnotationRef = useRef<{
     id: string;
     mode: "move" | "start" | "end";
     originX: number;
     original: Annotation;
+    originals: Annotation[];
     snapshot: Annotation[];
     moved: boolean;
+  } | null>(null);
+  const annotationSelectionRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    selectedIds: Set<string>;
   } | null>(null);
 
   const [meta, setMeta] = useState<RecordingMeta>(() => sourceMeta(demoSource));
@@ -595,8 +604,10 @@ export default function Home() {
   const [display, setDisplay] = useState<DisplayWindow>({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
   const [loadingSignal, setLoadingSignal] = useState(false);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [annotationDragPreview, setAnnotationDragPreview] = useState<{ id: string; patch: Pick<Annotation, "start" | "end" | "track" | "geometry"> } | null>(null);
+  const [annotationDragPreview, setAnnotationDragPreview] = useState<{ patches: Record<string, AnnotationDragPatch> } | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [selectedAnnotationIds, setSelectedAnnotationIds] = useState<Set<string>>(() => new Set());
+  const [annotationSelectionBox, setAnnotationSelectionBox] = useState<AnnotationSelectionBox | null>(null);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
   const [cursorTime, setCursorTime] = useState(0);
   const [cursorAmplitude, setCursorAmplitude] = useState(0);
@@ -846,6 +857,7 @@ export default function Home() {
     setDisplay({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
     setAnnotations(snapshot.annotations);
     setSelectedAnnotationId(snapshot.selectedAnnotationId);
+    setSelectedAnnotationIds(snapshot.selectedAnnotationId ? new Set([snapshot.selectedAnnotationId]) : new Set());
     setSelection(snapshot.selection);
     setCursorTime(snapshot.cursorTime);
     setCursorAmplitude(snapshot.cursorAmplitude);
@@ -864,6 +876,8 @@ export default function Home() {
     setActiveTool("cursor");
     setDragGhost(null);
     setAnnotationDragPreview(null);
+    setAnnotationSelectionBox(null);
+    annotationSelectionRef.current = null;
     dragAnnotationRef.current = null;
     pendingAnnotationDragRef.current = null;
     setPendingDat(null);
@@ -1007,6 +1021,7 @@ export default function Home() {
     redoRef.current.push(annotationsRef.current);
     setAnnotations(previous);
     setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
     setToast("Last annotation change undone");
   }, []);
 
@@ -1018,6 +1033,8 @@ export default function Home() {
     }
     undoRef.current.push(annotationsRef.current);
     setAnnotations(next);
+    setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
     setToast("Annotation change restored");
   }, []);
 
@@ -1135,6 +1152,7 @@ export default function Home() {
       return [...adjusted, next];
     });
     setSelectedAnnotationId(next.id);
+    setSelectedAnnotationIds(new Set([next.id]));
     setCursorTime(next.start);
     setCursorLocked(true);
     setSelection(null);
@@ -1201,8 +1219,55 @@ export default function Home() {
       }
     }
     setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
     setToast("Annotation removed — undo is available");
   }, [commitMutation]);
+
+  const deleteSelectedAnnotations = useCallback(() => {
+    const ids = new Set(selectedAnnotationIds);
+    if (!ids.size) return;
+    const removed = annotationsRef.current.filter((item) => ids.has(item.id));
+    const remaining = annotationsRef.current.filter((item) => !ids.has(item.id));
+    commitMutation(() => remaining);
+    const candidateIds = new Set(removed.flatMap((item) => item.candidateId ? [item.candidateId] : []));
+    if (candidateIds.size) {
+      const stillCommitted = new Set(remaining.flatMap((item) => item.status === "committed" && item.candidateId ? [item.candidateId] : []));
+      setCandidates((items) => items.map((item) => candidateIds.has(item.id) && !stillCommitted.has(item.id) && item.status === "reviewed"
+        ? { ...item, status: "queued" }
+        : item));
+    }
+    setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
+    setToast(`${removed.length} label${removed.length === 1 ? "" : "s"} removed — undo is available`);
+  }, [commitMutation, selectedAnnotationIds]);
+
+  const moveSelectedAnnotations = useCallback((direction: -1 | 1, accelerated = false) => {
+    const ids = selectedAnnotationIds;
+    const movable = annotationsRef.current.filter((item) => ids.has(item.id) && annotationGeometry(item) !== "session");
+    if (!movable.length) return;
+    const sampleRate = display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
+    const baseStep = snapMode === "1s" ? 1 : snapMode === "100ms" ? 0.1 : 1 / Math.max(1, sampleRate);
+    const requestedDelta = direction * baseStep * (accelerated ? 10 : 1);
+    const earliest = Math.min(...movable.map((item) => item.start));
+    const latest = Math.max(...movable.map((item) => item.end));
+    const delta = clamp(requestedDelta, -earliest, meta.durationSec - latest);
+    if (Math.abs(delta) < 1e-9) {
+      setToast("Selected labels are already at the recording boundary");
+      return;
+    }
+    const changedAt = new Date().toISOString();
+    commitMutation((current) => current.map((item) => ids.has(item.id) && annotationGeometry(item) !== "session"
+      ? normalizeAnnotationGeometry({
+        ...item,
+        start: item.start + delta,
+        end: item.end + delta,
+        status: item.status === "committed" ? "draft" : item.status,
+        revision: item.revision + 1,
+        updatedAt: changedAt,
+      }, meta.durationSec)
+      : item));
+    setToast(`${movable.length} selected label${movable.length === 1 ? "" : "s"} moved ${direction < 0 ? "left" : "right"}`);
+  }, [commitMutation, display.sampleRates, focusedChannel, meta, selectedAnnotationIds, snapMode]);
 
   const qcIssues = useMemo(() => {
     const issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }> = [];
@@ -1660,16 +1725,35 @@ export default function Home() {
   useEffect(() => {
     const applyPreview = () => {
       const drag = dragAnnotationRef.current;
-      const patch = pendingAnnotationDragRef.current;
+      const patches = pendingAnnotationDragRef.current;
       dragFrameRef.current = null;
-      if (!drag || !patch) return;
-      setAnnotationDragPreview({ id: drag.id, patch });
+      if (!drag || !patches) return;
+      setAnnotationDragPreview({ patches });
     };
     const onMove = (event: PointerEvent) => {
       const drag = dragAnnotationRef.current;
       const timeline = timelineRef.current;
       if (!drag || !timeline) return;
       const delta = ((event.clientX - drag.originX) / timeline.getBoundingClientRect().width) * timebase;
+      if (drag.mode === "move" && drag.originals.length > 1) {
+        const dragSampleRate = drag.original.channelScope
+          ? meta.sampleRates[drag.original.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
+          : display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
+        const snappedDelta = snapTime(drag.original.start + delta, snapMode, dragSampleRate) - drag.original.start;
+        const earliest = Math.min(...drag.originals.map((item) => item.start));
+        const latest = Math.max(...drag.originals.map((item) => item.end));
+        const sharedDelta = clamp(snappedDelta, -earliest, meta.durationSec - latest);
+        const patches = Object.fromEntries(drag.originals.map((item) => [item.id, {
+          start: item.start + sharedDelta,
+          end: item.end + sharedDelta,
+          track: item.track,
+          geometry: annotationGeometry(item),
+        } satisfies AnnotationDragPatch]));
+        pendingAnnotationDragRef.current = patches;
+        drag.moved = Math.abs(sharedDelta) > 1e-9;
+        if (dragFrameRef.current === null) dragFrameRef.current = window.requestAnimationFrame(applyPreview);
+        return;
+      }
       const label = LABEL_BY_ID.get(drag.original.labelId);
       const originalGeometry = annotationGeometry(drag.original);
       const dragSampleRate = drag.original.channelScope
@@ -1704,10 +1788,12 @@ export default function Home() {
       }
       const normalized = normalizeAnnotationGeometry({ ...drag.original, start, end, track, geometry }, meta.durationSec);
       pendingAnnotationDragRef.current = {
-        start: normalized.start,
-        end: normalized.end,
-        track: normalized.track,
-        geometry: normalized.geometry,
+        [drag.id]: {
+          start: normalized.start,
+          end: normalized.end,
+          track: normalized.track,
+          geometry: normalized.geometry,
+        },
       };
       drag.moved = normalized.start !== drag.original.start
         || normalized.end !== drag.original.end
@@ -1722,16 +1808,23 @@ export default function Home() {
         window.cancelAnimationFrame(dragFrameRef.current);
         dragFrameRef.current = null;
       }
-      const patch = pendingAnnotationDragRef.current;
-      if (drag.moved && patch) {
+      const patches = pendingAnnotationDragRef.current;
+      if (drag.moved && patches) {
         undoRef.current.push(drag.snapshot);
         if (undoRef.current.length > 100) undoRef.current.shift();
         redoRef.current = [];
-        setAnnotations((current) => current.map((item) => item.id === drag.id
-          ? normalizeAnnotationGeometry({ ...item, ...patch, status: item.status === "committed" ? "draft" : item.status, revision: item.revision + 1, updatedAt: new Date().toISOString() }, meta.durationSec)
-          : item));
-        if (patch.track !== drag.original.track) {
-          setToast(patch.track === "instance"
+        const changedAt = new Date().toISOString();
+        setAnnotations((current) => current.map((item) => {
+          const patch = patches[item.id];
+          return patch
+            ? normalizeAnnotationGeometry({ ...item, ...patch, status: item.status === "committed" ? "draft" : item.status, revision: item.revision + 1, updatedAt: changedAt }, meta.durationSec)
+            : item;
+        }));
+        const primaryPatch = patches[drag.id];
+        if (drag.originals.length > 1) {
+          setToast(`${drag.originals.length} selected labels moved together`);
+        } else if (primaryPatch?.track !== drag.original.track) {
+          setToast(primaryPatch.track === "instance"
             ? "Converted to a single-moment instance label"
             : "Converted to a windowed duration label");
         }
@@ -1753,13 +1846,78 @@ export default function Home() {
     event.preventDefault();
     event.stopPropagation();
     setSelectedAnnotationId(item.id);
+    const moveGroup = mode === "move" && selectedAnnotationIds.has(item.id) && selectedAnnotationIds.size > 1;
+    const originals = moveGroup
+      ? annotationsRef.current.filter((annotation) => selectedAnnotationIds.has(annotation.id) && annotationGeometry(annotation) !== "session")
+      : [{ ...item }];
+    if (!moveGroup) setSelectedAnnotationIds(new Set([item.id]));
     if (annotationGeometry(item) === "session") {
       setToast("Entire-session labels always span the full recording");
       return;
     }
     pendingAnnotationDragRef.current = null;
     setAnnotationDragPreview(null);
-    dragAnnotationRef.current = { id: item.id, mode, originX: event.clientX, original: { ...item }, snapshot: annotationsRef.current, moved: false };
+    dragAnnotationRef.current = { id: item.id, mode, originX: event.clientX, original: { ...item }, originals, snapshot: annotationsRef.current, moved: false };
+  };
+
+  const onTimelinePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (event.button !== 0 || target.closest("[data-annotation-id], button")) return;
+    event.preventDefault();
+    annotationSelectionRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      selectedIds: new Set(),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const timelineRect = event.currentTarget.getBoundingClientRect();
+    setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
+    setAnnotationSelectionBox({ left: event.clientX - timelineRect.left, top: event.clientY - timelineRect.top, width: 0, height: 0 });
+  };
+
+  const onTimelinePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const selectionDrag = annotationSelectionRef.current;
+    const timeline = timelineRef.current;
+    if (!selectionDrag || !timeline || selectionDrag.pointerId !== event.pointerId) return;
+    const timelineRect = timeline.getBoundingClientRect();
+    const leftClient = Math.min(selectionDrag.startClientX, event.clientX);
+    const rightClient = Math.max(selectionDrag.startClientX, event.clientX);
+    const topClient = Math.min(selectionDrag.startClientY, event.clientY);
+    const bottomClient = Math.max(selectionDrag.startClientY, event.clientY);
+    const box = {
+      left: clamp(leftClient - timelineRect.left, 0, timelineRect.width),
+      top: clamp(topClient - timelineRect.top, 0, timelineRect.height),
+      width: Math.max(0, Math.min(rightClient, timelineRect.right) - Math.max(leftClient, timelineRect.left)),
+      height: Math.max(0, Math.min(bottomClient, timelineRect.bottom) - Math.max(topClient, timelineRect.top)),
+    };
+    setAnnotationSelectionBox(box);
+    if (box.width < 3 && box.height < 3) return;
+    const nextIds = new Set<string>();
+    timeline.querySelectorAll<HTMLElement>("[data-annotation-id]").forEach((element) => {
+      const rect = element.getBoundingClientRect();
+      const intersects = rect.right >= leftClient
+        && rect.left <= rightClient
+        && rect.bottom >= topClient
+        && rect.top <= bottomClient;
+      if (intersects && element.dataset.annotationId) nextIds.add(element.dataset.annotationId);
+    });
+    selectionDrag.selectedIds = nextIds;
+    setSelectedAnnotationIds(nextIds);
+    setSelectedAnnotationId(nextIds.values().next().value ?? null);
+  };
+
+  const onTimelinePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const selectionDrag = annotationSelectionRef.current;
+    if (!selectionDrag || selectionDrag.pointerId !== event.pointerId) return;
+    annotationSelectionRef.current = null;
+    setAnnotationSelectionBox(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const selectedCount = selectionDrag.selectedIds.size;
+    setToast(selectedCount
+      ? `${selectedCount} label${selectedCount === 1 ? "" : "s"} selected — drag, use arrows, or press Delete`
+      : "No labels inside selection box");
   };
 
   useEffect(() => {
@@ -1853,12 +2011,14 @@ export default function Home() {
       const candidateIndex = candidates.findIndex((item) => item.id === entry.id);
       if (candidateIndex >= 0) selectCandidate(candidateIndex);
       setSelectedAnnotationId(null);
+      setSelectedAnnotationIds(new Set());
       setToast(`File event: ${entry.label}`);
       return;
     }
     const annotation = annotations.find((item) => item.id === entry.id);
     if (!annotation) return;
     setSelectedAnnotationId(annotation.id);
+    setSelectedAnnotationIds(new Set([annotation.id]));
     setCursorTime(annotation.start);
     setCursorLocked(true);
     jumpTo(annotation.start);
@@ -1960,6 +2120,7 @@ export default function Home() {
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
     setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
     setRecordingType(restoredRecordingType);
     if (restoredReviewer) setReviewer(restoredReviewer);
     setAnnotations(restored);
@@ -2308,6 +2469,7 @@ export default function Home() {
         else if (showImport && !importBusy) setShowImport(false);
         else if (confirmCommit.length) setConfirmCommit([]);
         setSelectedAnnotationId(null);
+        setSelectedAnnotationIds(new Set());
         setSelection(null);
         setMarkOnset(null);
         setCursorLocked(false);
@@ -2330,8 +2492,11 @@ export default function Home() {
           pendingAnnotationDragRef.current = null;
         }
         setAnnotationDragPreview(null);
+        setAnnotationSelectionBox(null);
+        annotationSelectionRef.current = null;
         (event.target as HTMLElement | null)?.blur?.();
         setSelectedAnnotationId(null);
+        setSelectedAnnotationIds(new Set());
         setSelection(null);
         setMarkOnset(null);
         setCursorLocked(false);
@@ -2353,9 +2518,13 @@ export default function Home() {
         if (event.shiftKey) redo();
         else undo();
       } else if (event.key === "ArrowLeft") {
-        event.preventDefault(); setViewStartSafe((value) => value - (event.shiftKey ? 10 : 1));
+        event.preventDefault();
+        if (selectedAnnotationIds.size) moveSelectedAnnotations(-1, event.shiftKey);
+        else setViewStartSafe((value) => value - (event.shiftKey ? 10 : 1));
       } else if (event.key === "ArrowRight") {
-        event.preventDefault(); setViewStartSafe((value) => value + (event.shiftKey ? 10 : 1));
+        event.preventDefault();
+        if (selectedAnnotationIds.size) moveSelectedAnnotations(1, event.shiftKey);
+        else setViewStartSafe((value) => value + (event.shiftKey ? 10 : 1));
       } else if (event.key === "PageDown") {
         event.preventDefault(); setViewStartSafe((value) => value + timebase);
       } else if (event.key === "PageUp") {
@@ -2372,8 +2541,8 @@ export default function Home() {
       } else if (lower === controlBindings.commit || event.key === "Enter" || event.code === "Space") {
         if (event.code === "Space") event.preventDefault();
         commitSelected();
-      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedAnnotationId) {
-        event.preventDefault(); deleteAnnotation(selectedAnnotationId);
+      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedAnnotationIds.size) {
+        event.preventDefault(); deleteSelectedAnnotations();
       } else if (lower === controlBindings.nextCandidate && instanceQueueEntries.length) {
         selectInstanceQueueEntry(Math.min(instanceQueueEntries.length - 1, activeQueueIndex + 1));
       } else if (lower === controlBindings.previousCandidate && instanceQueueEntries.length) {
@@ -2400,7 +2569,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [activeCandidate, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteAnnotation, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, placePaletteLabel, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotationId, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [activeCandidate, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -2431,8 +2600,8 @@ export default function Home() {
     { key: "toggleBadChannel", label: "Toggle focused channel quality" },
   ];
   const renderAnnotations = useMemo(() => annotationDragPreview
-    ? annotations.map((item) => item.id === annotationDragPreview.id
-      ? normalizeAnnotationGeometry({ ...item, ...annotationDragPreview.patch }, meta.durationSec)
+    ? annotations.map((item) => annotationDragPreview.patches[item.id]
+      ? normalizeAnnotationGeometry({ ...item, ...annotationDragPreview.patches[item.id] }, meta.durationSec)
       : item)
     : annotations, [annotationDragPreview, annotations, meta.durationSec]);
   const visibleAnnotations = useMemo(
@@ -2555,6 +2724,7 @@ export default function Home() {
                 const label = LABEL_BY_ID.get(item.labelId);
                 return <button key={item.id} className={selectedAnnotationId === item.id ? "active" : ""} onClick={() => {
                   setSelectedAnnotationId(item.id);
+                  setSelectedAnnotationIds(new Set([item.id]));
                 }} style={{ "--label-color": label?.color } as React.CSSProperties}>
                   <i /><span><strong>{label?.name ?? item.labelId}</strong><small>{item.notes || "Entire recording"}</small></span>
                 </button>;
@@ -2677,7 +2847,14 @@ export default function Home() {
 
             {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={viewStart} cursor={cursorTime} label={display.labels[focusedChannel] || "Focused channel"} />}
 
-            {bottomTracksOpen && <div className="timeline" ref={timelineRef}>
+            {bottomTracksOpen && <div
+              className={`timeline ${annotationSelectionBox ? "box-selecting" : ""}`}
+              ref={timelineRef}
+              onPointerDown={onTimelinePointerDown}
+              onPointerMove={onTimelinePointerMove}
+              onPointerUp={onTimelinePointerUp}
+              onPointerCancel={onTimelinePointerUp}
+            >
               {tracks.map((track) => <div className={`timeline-row ${track.id === "context" ? "context-row" : ""}`} key={track.id} style={track.id === "context" ? { height: contextTrackHeight } : undefined}>
                 <div className="track-label"><span className={`track-icon ${track.id}`} />{track.label}</div>
                 <div className="track-lane" data-track-id={track.id}>
@@ -2694,7 +2871,7 @@ export default function Home() {
                     const displayLane = Math.min(sourceLane, contextLaneCapacity - 1);
                     const top = track.id === "context" ? 5 + displayLane * contextLaneStep : 5;
                     const sharedStyle = { left: `${left}%`, top, "--label-color": label.color } as React.CSSProperties;
-                    return point ? <button key={item.id} className={`event-pin ${track.id === "context" ? "context-pin" : ""} ${selectedAnnotationId === item.id ? "selected" : ""}`} style={sharedStyle} onPointerDown={(event) => startAnnotationDrag(event, item, "move")} onClick={() => setSelectedAnnotationId(item.id)} title={`${label.name} · ${formatClock(item.start, true)} · drag to move${track.id === "instance" ? " or move up to convert" : ""}`}><i /><span>{label.short}</span></button> : <div key={item.id} className={`annotation-block ${track.id === "context" ? "context-annotation" : ""} ${geometry === "session" ? "session-label" : ""} ${item.status} ${selectedAnnotationId === item.id ? "selected" : ""}`} style={{ ...sharedStyle, width: `${width}%` }} onPointerDown={(event) => startAnnotationDrag(event, item, "move")} onClick={() => setSelectedAnnotationId(item.id)} title={`${label.name} · ${formatClock(item.start, true)}–${formatClock(item.end, true)} · drag to move${track.id === "windowed" ? " or move down to convert" : ""}`}>
+                    return point ? <button key={item.id} data-annotation-id={item.id} className={`event-pin ${track.id === "context" ? "context-pin" : ""} ${selectedAnnotationIds.has(item.id) ? "selected" : ""}`} style={sharedStyle} onPointerDown={(event) => startAnnotationDrag(event, item, "move")} title={`${label.name} · ${formatClock(item.start, true)} · drag to move${track.id === "instance" ? " or move up to convert" : ""}`}><i /><span>{label.short}</span></button> : <div key={item.id} data-annotation-id={item.id} className={`annotation-block ${track.id === "context" ? "context-annotation" : ""} ${geometry === "session" ? "session-label" : ""} ${item.status} ${selectedAnnotationIds.has(item.id) ? "selected" : ""}`} style={{ ...sharedStyle, width: `${width}%` }} onPointerDown={(event) => startAnnotationDrag(event, item, "move")} title={`${label.name} · ${formatClock(item.start, true)}–${formatClock(item.end, true)} · drag to move${track.id === "windowed" ? " or move down to convert" : ""}`}>
                       {geometry === "interval" && <button className="resize-handle start" aria-label="Resize start" onPointerDown={(event) => startAnnotationDrag(event, item, "start")} />}
                       <strong>{label.short}</strong><span>{(item.end - item.start).toFixed(1)}s</span>
                       {geometry === "interval" && <button className="resize-handle end" aria-label="Resize end" onPointerDown={(event) => startAnnotationDrag(event, item, "end")} />}
@@ -2706,15 +2883,18 @@ export default function Home() {
                   contextResizeRef.current = { startY: event.clientY, startHeight: contextTrackHeight };
                 }} />}
               </div>)}
+              {annotationSelectionBox && <div className="annotation-selection-box" style={annotationSelectionBox} aria-hidden="true" />}
             </div>}
           </div>
 
           <footer className="command-strip">
             <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{display.labels[focusedChannel] ?? "—"}</span><span>{formatAmplitude(cursorAmplitude)}</span><span>sample {Math.round(cursorTime * (display.sampleRates[focusedChannel] ?? primarySampleRate(meta))).toLocaleString()}</span></div>
             <div className="command-status"><span className="status-dot" /><span className="command-status-text">{toast}</span></div>
-            {selectedAnnotation && <div className="annotation-command-actions">
-              <button onClick={() => setShowAnnotationEditor(true)}>Edit label</button>
-              <button className="trash-button" onClick={() => deleteAnnotation(selectedAnnotation.id)} title="Delete annotation" aria-label="Delete annotation">🗑</button>
+            {selectedAnnotationIds.size > 0 && <div className="annotation-command-actions">
+              {selectedAnnotationIds.size === 1 && selectedAnnotation
+                ? <button onClick={() => setShowAnnotationEditor(true)}>Edit label</button>
+                : <span>{selectedAnnotationIds.size} labels selected</span>}
+              <button className="trash-button" onClick={deleteSelectedAnnotations} title="Delete selected labels" aria-label="Delete selected labels">🗑</button>
             </div>}
           </footer>
           </> : <button className="recording-empty-state" onClick={() => setShowImport(true)}>
@@ -2934,6 +3114,7 @@ export default function Home() {
             }}>Jump to location</button>
             {queueDetailAnnotation && <button className="button primary" onClick={() => {
               setSelectedAnnotationId(queueDetailAnnotation.id);
+              setSelectedAnnotationIds(new Set([queueDetailAnnotation.id]));
               setQueueDetailTarget(null);
               setShowAnnotationEditor(true);
             }}>Open annotation</button>}
@@ -2978,6 +3159,7 @@ export default function Home() {
         onClose={() => setShowSessionMap(false)}
         onOpenAnnotation={(item) => {
           setSelectedAnnotationId(item.id);
+          setSelectedAnnotationIds(new Set([item.id]));
           jumpTo(item.start);
           setShowSessionMap(false);
         }}

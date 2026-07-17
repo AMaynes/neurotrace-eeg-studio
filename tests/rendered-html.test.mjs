@@ -585,10 +585,33 @@ test("toggles the complete bottom label-track surface from the centered panel co
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /const \[bottomTracksOpen,\s*setBottomTracksOpen\]\s*=\s*useState\(true\)/);
-  assert.match(page, /\{bottomTracksOpen && <div className="timeline"/);
+  assert.match(page, /\{bottomTracksOpen && <div[\s\S]*?className=\{`timeline/);
   assert.match(page, /Hide" : "Show"\} bottom label tracks/);
   assert.match(css, /\.panel-toggle-pair\s*\{[^}]*position:\s*relative;[^}]*padding-bottom:\s*10px;/);
   assert.match(css, /\.panel-bottom-button\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*bottom:\s*0;/);
+});
+
+test("box-selects labels and moves or deletes the selected group atomically", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /const \[selectedAnnotationIds,\s*setSelectedAnnotationIds\]\s*=\s*useState<Set<string>>/);
+  assert.match(page, /const \[annotationSelectionBox,\s*setAnnotationSelectionBox\]/);
+  assert.match(page, /querySelectorAll<HTMLElement>\("\[data-annotation-id\]"\)/);
+  assert.match(page, /const intersects\s*=\s*rect\.right\s*>=\s*leftClient[\s\S]*?rect\.top\s*<=\s*bottomClient/);
+  assert.equal((page.match(/data-annotation-id=\{item\.id\}/g) ?? []).length, 2);
+  assert.match(page, /selectedAnnotationIds\.has\(item\.id\)\s*\?\s*"selected"/);
+  assert.match(page, /drag\.mode\s*===\s*"move"\s*&&\s*drag\.originals\.length\s*>\s*1/);
+  assert.match(page, /const sharedDelta\s*=\s*clamp\(snappedDelta,\s*-earliest,\s*meta\.durationSec\s*-\s*latest\)/);
+  assert.match(page, /Object\.fromEntries\(drag\.originals\.map/);
+  assert.match(page, /if\s*\(selectedAnnotationIds\.size\)\s*moveSelectedAnnotations\(-1,\s*event\.shiftKey\)/);
+  assert.match(page, /if\s*\(selectedAnnotationIds\.size\)\s*moveSelectedAnnotations\(1,\s*event\.shiftKey\)/);
+  assert.match(page, /Delete"\s*\|\|\s*event\.key\s*===\s*"Backspace"\)\s*&&\s*selectedAnnotationIds\.size/);
+  assert.match(page, /deleteSelectedAnnotations\(\)/);
+  assert.match(page, /commitMutation\(\(\)\s*=>\s*remaining\)/);
+  assert.match(css, /\.annotation-selection-box\s*\{[^}]*border:\s*1px dashed #7ce8c7;[^}]*pointer-events:\s*none;/);
 });
 
 test("highlights a focused channel and provides compact or vertically scrollable channel layouts", async () => {
