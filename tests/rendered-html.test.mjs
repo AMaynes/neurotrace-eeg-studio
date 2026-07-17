@@ -432,6 +432,10 @@ test("opens patient information as a modal instead of expanding the left panel",
   const left = page.slice(leftStart, leftEnd);
   assert.match(left, /setShowPatientInfo\(true\)/);
   assert.doesNotMatch(left, /patient-info-panel|aria-expanded|patientInfoOpen/);
+  assert.ok(
+    left.indexOf('className="patient-info-disclosure"') < left.indexOf('className="session-map-row"'),
+    "Patient Info appears above Session Map",
+  );
 
   const modalStart = page.indexOf("{showPatientInfo && hasRecording");
   const modalEnd = page.indexOf("{showAnnotationEditor", modalStart);

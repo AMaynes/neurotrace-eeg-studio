@@ -2489,6 +2489,10 @@ export default function Home() {
             </button>}
           </section>
 
+          <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
+            <span>Open Patient Info {hasRecording && `(${patientLabel(meta)})`}</span><b aria-hidden="true">↗</b>
+          </button>
+
           <button className="session-map-row" disabled={!hasRecording} onClick={() => {
             setSessionMapTab("map");
             setShowSessionMap(true);
@@ -2520,10 +2524,6 @@ export default function Home() {
               }) : <div className="empty-session-labels"><strong>No session labels</strong><span>Use + above to add one.</span></div>}
             </div>
           </section>
-
-          <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
-            <span>Open Patient Info {hasRecording && `(${patientLabel(meta)})`}</span><b aria-hidden="true">↗</b>
-          </button>
 
           <section className="queue-section">
             <div className="queue-heading">
