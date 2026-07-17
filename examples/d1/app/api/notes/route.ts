@@ -1,3 +1,19 @@
+/**
+ * Overview & Purpose
+ * Demonstrates validated list/create behavior for an optional D1-backed route.
+ *
+ * Architectural Relationships
+ * Called by: Example-only HTTP GET and POST requests.
+ * Calls: The optional database adapter and example notes schema.
+ *
+ * External Resources
+ * A configured D1 database and generated notes migration.
+ *
+ * Notes
+ * This example is not imported by the NeuroTrace runtime.
+ */
+
+
 import { desc } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { notes } from "../../../db/schema";

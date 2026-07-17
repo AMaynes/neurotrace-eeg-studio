@@ -1,3 +1,19 @@
+/**
+ * Overview & Purpose
+ * Creates the optional typed Drizzle client for a configured D1 binding.
+ *
+ * Architectural Relationships
+ * Called by: Optional database-backed routes and examples.
+ * Calls: Cloudflare Worker bindings, Drizzle, and db/schema.ts.
+ *
+ * External Resources
+ * The injected DB binding when D1 is enabled.
+ *
+ * Notes
+ * The current NeuroTrace product does not persist recordings or annotations to D1.
+ */
+
+
 import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";

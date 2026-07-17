@@ -1,3 +1,19 @@
+/**
+ * Overview & Purpose
+ * Packages Sites hosting metadata and optional Drizzle migrations after builds.
+ *
+ * Architectural Relationships
+ * Called by: vite.config.ts during production compilation.
+ * Calls: Node filesystem operations within the project build output.
+ *
+ * External Resources
+ * .openai/hosting.json, drizzle/, and dist/.openai/.
+ *
+ * Notes
+ * Build-only code; it never handles recording data or browser state.
+ */
+
+
 import { access, cp, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";

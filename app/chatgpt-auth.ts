@@ -1,3 +1,19 @@
+/**
+ * Overview & Purpose
+ * Provides optional identity and redirect helpers for ChatGPT-hosted routes.
+ *
+ * Architectural Relationships
+ * Called by: No current NeuroTrace production route; retained hosting scaffolding.
+ * Calls: Trusted Next request headers and navigation redirects.
+ *
+ * External Resources
+ * ChatGPT hosting identity headers and reserved authentication routes.
+ *
+ * Notes
+ * Return paths are constrained to same-origin relative URLs to prevent open redirects.
+ */
+
+
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 

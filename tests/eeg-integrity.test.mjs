@@ -1,3 +1,19 @@
+/**
+ * Overview & Purpose
+ * Verifies EDF+ event decoding and montage safety rules.
+ *
+ * Architectural Relationships
+ * Called by: Node's built-in test runner.
+ * Calls: Public signal-domain operations from app/eeg-core.ts.
+ *
+ * External Resources
+ * None; fixtures are deterministic in-memory data.
+ *
+ * Notes
+ * Tests avoid filesystem and timing dependencies.
+ */
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

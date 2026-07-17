@@ -1,3 +1,19 @@
+/**
+ * Overview & Purpose
+ * Assembles the vinext, Sites packaging, and Cloudflare build environments.
+ *
+ * Architectural Relationships
+ * Called by: npm development and production build commands.
+ * Calls: worker/index.ts, build/sites-vite-plugin.ts, and hosting metadata.
+ *
+ * External Resources
+ * .openai/hosting.json and project-local .wrangler state.
+ *
+ * Notes
+ * Sandboxed macOS previews use polling because FSEvents is unavailable.
+ */
+
+
 import vinext from "vinext";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";

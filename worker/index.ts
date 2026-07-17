@@ -1,4 +1,20 @@
-/** Cloudflare Worker entry point for the vinext-starter template. */
+/**
+ * Overview & Purpose
+ * Adapts the vinext application and image endpoint to a Cloudflare Worker.
+ *
+ * Architectural Relationships
+ * Called by: Cloudflare through vite.config.ts local/deployment bindings.
+ * Calls: vinext routing, static assets, and the Cloudflare image transformer.
+ *
+ * External Resources
+ * ASSETS and IMAGES Worker bindings; optional DB typing is retained for scaffolding.
+ *
+ * Notes
+ * Request handling is stateless. Recording files are browser-local and never
+ * enter this worker.
+ */
+
+
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 

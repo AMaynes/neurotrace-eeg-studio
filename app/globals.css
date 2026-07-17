@@ -1,3 +1,20 @@
+/*
+ * Overview & Purpose
+ * Defines the NeuroTrace visual system, responsive workstation layout, and
+ * accessible interaction states.
+ *
+ * Architectural Relationships
+ * Called by: app/layout.tsx as the application-wide stylesheet.
+ * Calls: Tailwind's generated base layer through PostCSS.
+ *
+ * External Resources
+ * None.
+ *
+ * Notes
+ * Presentation is CSS-owned; recording and annotation behavior remains in React.
+ */
+
+
 @import "tailwindcss";
 
 :root {

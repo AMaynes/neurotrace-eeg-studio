@@ -1,11 +1,21 @@
 /**
- * Browser-side signal ingestion and display processing for the EEG viewer.
+ * Overview & Purpose
+ * Owns browser-side recording ingestion, signal-window access, display
+ * filtering, montage construction, and signal-domain formatting.
  *
- * This module intentionally has no Node.js dependencies. Large EDF and raw DAT
- * recordings are read a window at a time with File.slice(); MAT v5 files are
- * decoded in memory because compressed MATLAB elements are not independently
- * seekable.
+ * Architectural Relationships
+ * Called by: app/page.tsx and signal-integrity tests.
+ * Calls: Browser File/Blob, TextDecoder, DataView, and DecompressionStream APIs.
+ *
+ * External Resources
+ * User-selected EDF/EDF+, MATLAB v5, and raw signed-int16 DAT files.
+ *
+ * Notes
+ * This module has no Node.js dependencies. EDF and DAT remain file-backed and
+ * are read with File.slice(); MAT v5 is decoded in memory because compressed
+ * MATLAB elements are not independently seekable. All state is caller-owned.
  */
+
 
 export type RecordingFormat =
   | "demo"

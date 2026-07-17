@@ -1,5 +1,23 @@
 "use client";
 
+/**
+ * Overview & Purpose
+ * Owns the interactive NeuroTrace workstation and coordinates recording review,
+ * annotation, local recovery, QC, session navigation, and export.
+ *
+ * Architectural Relationships
+ * Called by: The root application route through app/layout.tsx.
+ * Calls: Browser signal sources in eeg-core.ts and source hashing in source-integrity.ts.
+ *
+ * External Resources
+ * Browser File/Blob APIs, localStorage, Canvas 2D, and public/og.png via layout metadata.
+ *
+ * Notes
+ * React owns UI state on the main thread. File reads are asynchronous and stale
+ * display requests are discarded so an older window cannot replace a newer one.
+ */
+
+
 import {
   useCallback,
   useEffect,

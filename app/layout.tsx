@@ -1,3 +1,19 @@
+/**
+ * Overview & Purpose
+ * Defines NeuroTrace document metadata, viewport policy, and root HTML shell.
+ *
+ * Architectural Relationships
+ * Called by: The Next/vinext application router.
+ * Calls: Request-header inspection for host-aware social metadata.
+ *
+ * External Resources
+ * public/og.png and the canonical GitHub Pages URL.
+ *
+ * Notes
+ * Metadata generation is request-scoped and does not access recording data.
+ */
+
+
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./globals.css";

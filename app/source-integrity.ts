@@ -1,3 +1,20 @@
+/**
+ * Overview & Purpose
+ * Computes deterministic SHA-256 source fingerprints with bounded memory.
+ *
+ * Architectural Relationships
+ * Called by: app/page.tsx during import and source-integrity tests.
+ * Calls: Browser Blob slicing and ArrayBuffer APIs.
+ *
+ * External Resources
+ * User-selected recording blobs; no network or persistent storage.
+ *
+ * Notes
+ * Hash state is mutable but confined to one IncrementalSha256 instance. Blob
+ * hashing is sequential, cancellable between chunks, and independent of chunk size.
+ */
+
+
 const SHA256_BLOCK_BYTES = 64;
 const DEFAULT_CHUNK_BYTES = 4 * 1024 * 1024;
 
