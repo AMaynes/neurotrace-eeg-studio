@@ -553,6 +553,9 @@ export default function Home() {
   const cursorFrameRef = useRef<number | null>(null);
   const pendingCursorRef = useRef<{ time: number; row: number; amplitude: number; selection?: { start: number; end: number } } | null>(null);
   const contextResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const sessionQueueResizeRef = useRef<{ startY: number; startHeight: number; availableHeight: number } | null>(null);
+  const sessionLabelsSectionRef = useRef<HTMLElement>(null);
+  const queueSectionRef = useRef<HTMLElement>(null);
   const dragFrameRef = useRef<number | null>(null);
   const pendingAnnotationDragRef = useRef<Pick<Annotation, "start" | "end" | "track" | "geometry"> | null>(null);
   const dragAnnotationRef = useRef<{
@@ -617,6 +620,7 @@ export default function Home() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [bottomTracksOpen, setBottomTracksOpen] = useState(true);
   const [contextTrackHeight, setContextTrackHeight] = useState(76);
+  const [sessionLabelsHeight, setSessionLabelsHeight] = useState(145);
   const [pendingDat, setPendingDat] = useState<File | null>(null);
   const [pendingLegacyMatFile, setPendingLegacyMatFile] = useState<File | null>(null);
   const [pendingLegacyMeta, setPendingLegacyMeta] = useState<LegacyMatMetadata | null>(null);
@@ -705,6 +709,29 @@ export default function Home() {
         });
       }
     } catch { /* local preferences are optional */ }
+  }, []);
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const resize = sessionQueueResizeRef.current;
+      if (!resize) return;
+      setSessionLabelsHeight(clamp(
+        resize.startHeight + (event.clientY - resize.startY),
+        105,
+        Math.max(105, resize.availableHeight - 155),
+      ));
+    };
+    const onUp = () => {
+      sessionQueueResizeRef.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
   }, []);
 
   useEffect(() => {
@@ -2498,7 +2525,7 @@ export default function Home() {
             setShowSessionMap(true);
           }}><span>Session Map</span><b aria-hidden="true">↗</b></button>
 
-          <section className="session-labels-section">
+          <section className="session-labels-section" ref={sessionLabelsSectionRef} style={{ height: sessionLabelsHeight }}>
             <div className="sidebar-centered-heading">
               <strong>Session Labels</strong>
               <span>{sessionContextAnnotations.length}</span>
@@ -2525,7 +2552,34 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="queue-section">
+          <div
+            className="left-split-resize-handle"
+            role="separator"
+            tabIndex={0}
+            aria-label="Resize Session Labels and Instance Queue"
+            aria-orientation="horizontal"
+            aria-valuemin={105}
+            aria-valuemax={320}
+            aria-valuenow={Math.round(sessionLabelsHeight)}
+            title="Drag to resize Session Labels and Instance Queue"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              const sessionHeight = sessionLabelsSectionRef.current?.getBoundingClientRect().height ?? sessionLabelsHeight;
+              const queueHeight = queueSectionRef.current?.getBoundingClientRect().height ?? 170;
+              sessionQueueResizeRef.current = {
+                startY: event.clientY,
+                startHeight: sessionHeight,
+                availableHeight: sessionHeight + queueHeight,
+              };
+            }}
+            onKeyDown={(event) => {
+              if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+              event.preventDefault();
+              setSessionLabelsHeight((height) => clamp(height + (event.key === "ArrowDown" ? 10 : -10), 105, 320));
+            }}
+          ><span /></div>
+
+          <section className="queue-section" ref={queueSectionRef}>
             <div className="queue-heading">
               <button disabled={!instanceQueueEntries.length || activeQueueIndex <= 0} aria-label="Previous event or instance" title="Previous event or instance" onClick={() => selectInstanceQueueEntry(Math.max(0, activeQueueIndex - 1))}>‹</button>
               <div><strong>Instance Queue</strong><span>{instanceQueueEntries.length ? activeQueueIndex + 1 : 0}/{instanceQueueEntries.length}</span></div>

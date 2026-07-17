@@ -104,7 +104,7 @@ test("keeps context and model-label palettes visually and semantically separate"
   assert.equal((rightContextDefinition.match(/"/g) ?? []).length, 6, "the right context palette has exactly three label ids");
   assert.doesNotMatch(page, /id:\s*"button"|id:\s*"asm"/, "unrequested context definitions are not shipped");
 
-  const leftStart = page.indexOf('<section className="session-labels-section">');
+  const leftStart = page.indexOf('<section className="session-labels-section"');
   const leftEnd = page.indexOf("</section>", leftStart);
   assert.match(page.slice(leftStart, leftEnd), /entireSessionContexts\.map/, "whole-session labels are added only from the left panel");
 });
@@ -448,6 +448,24 @@ test("opens patient information as a modal instead of expanding the left panel",
   assert.match(modal, /Export model-ready bundle/);
 });
 
+test("starts with a compact Session Labels area and resizes it against Instance Queue", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /const \[sessionLabelsHeight,\s*setSessionLabelsHeight\]\s*=\s*useState\(145\)/);
+  assert.match(page, /className="session-labels-section"[^>]*ref=\{sessionLabelsSectionRef\}[^>]*height:\s*sessionLabelsHeight/);
+  assert.match(page, /className="left-split-resize-handle"/);
+  assert.match(page, /Resize Session Labels and Instance Queue/);
+  assert.match(page, /availableHeight:\s*sessionHeight\s*\+\s*queueHeight/);
+  assert.match(page, /resize\.startHeight\s*\+\s*\(event\.clientY\s*-\s*resize\.startY\)/);
+  assert.match(page, /ref=\{queueSectionRef\}/);
+  assert.match(page, /ArrowUp/);
+  assert.match(page, /ArrowDown/);
+  assert.match(css, /\.left-sidebar \.session-labels-section\s*\{[^}]*flex:\s*0 0 auto;[^}]*min-height:\s*105px;/);
+  assert.match(css, /\.left-split-resize-handle\s*\{[^}]*height:\s*9px;[^}]*cursor:\s*ns-resize;/);
+});
+
 test("uses Instance Queue only to navigate file events, instance labels, and non-session context", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const entriesStart = page.indexOf("const instanceQueueEntries");
@@ -462,7 +480,7 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   assert.match(entries, /uncertainty:\s*item\.uncertainty/, "file-event uncertainty remains editable and persisted");
   assert.match(entries, /\.sort\(\(a,\s*b\)\s*=>\s*a\.time\s*-\s*b\.time/);
 
-  const queueStart = page.indexOf('<section className="queue-section">');
+  const queueStart = page.indexOf('<section className="queue-section"');
   const queueEnd = page.indexOf("</section>", queueStart);
   const queue = page.slice(queueStart, queueEnd);
   assert.match(queue, /instanceQueueEntries\.map/);
@@ -487,7 +505,7 @@ test("edits queue uncertainty without a slider and synchronizes annotation confi
   assert.match(page, /uncertainty:\s*100/, "new imported file events begin explicitly unscored");
   assert.match(page, /uncertainty:\s*prior\.uncertainty/, "edited file-event uncertainty survives reimport");
 
-  const queueStart = page.indexOf('<section className="queue-section">');
+  const queueStart = page.indexOf('<section className="queue-section"');
   const queueEnd = page.indexOf("</section>", queueStart);
   const queue = page.slice(queueStart, queueEnd);
   assert.doesNotMatch(queue, /type="range"/);
