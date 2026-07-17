@@ -119,7 +119,8 @@ type Candidate = {
   label: string;
   source: Reliability;
   status: "active" | "queued" | "reviewed" | "skipped" | "conflict";
-  uncertainty: number;
+  confidence: number;
+  uncertainty?: number;
 };
 
 type ControlBindings = {
@@ -377,7 +378,15 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
     return [{
       ...candidate,
       label: candidate.label.trim(),
-      uncertainty: Math.round(clamp(Number.isFinite(candidate.uncertainty) ? candidate.uncertainty : 100, 0, 100)),
+      confidence: Math.round(clamp(
+        Number.isFinite(candidate.confidence)
+          ? candidate.confidence
+          : Number.isFinite(candidate.uncertainty)
+            ? 100 - Number(candidate.uncertainty)
+            : 0,
+        0,
+        100,
+      )),
     }];
   });
 }
@@ -646,7 +655,7 @@ export default function Home() {
         label: LABEL_BY_ID.get(item.labelId)?.name ?? item.labelId,
         detail: item.track === "context" ? "Context event" : "Instance label",
         status: item.status,
-        uncertainty: Math.round(clamp(100 - item.confidence, 0, 100)),
+        confidence: Math.round(clamp(item.confidence, 0, 100)),
       }));
     const candidateEntries = candidates
       .filter((item) => !linkedCandidateIds.has(item.id))
@@ -657,7 +666,7 @@ export default function Home() {
         label: item.label,
         detail: "File event",
         status: item.status,
-        uncertainty: item.uncertainty,
+        confidence: item.confidence,
       }));
     return [...annotationEntries, ...candidateEntries].sort((a, b) => a.time - b.time || a.label.localeCompare(b.label));
   }, [annotations, candidates]);
@@ -1173,13 +1182,13 @@ export default function Home() {
     else setAnnotations(apply);
   }, [commitMutation, meta.durationSec]);
 
-  const updateQueueUncertainty = useCallback((kind: "annotation" | "candidate", id: string, value: number) => {
-    const uncertainty = Math.round(clamp(Number.isFinite(value) ? value : 0, 0, 100));
+  const updateQueueConfidence = useCallback((kind: "annotation" | "candidate", id: string, value: number) => {
+    const confidence = Math.round(clamp(Number.isFinite(value) ? value : 0, 0, 100));
     if (kind === "annotation") {
-      updateAnnotation(id, { confidence: 100 - uncertainty });
+      updateAnnotation(id, { confidence });
       return;
     }
-    setCandidates((items) => items.map((item) => item.id === id ? { ...item, uncertainty } : item));
+    setCandidates((items) => items.map((item) => item.id === id ? { ...item, confidence } : item));
   }, [updateAnnotation]);
 
   const deleteAnnotation = useCallback((id: string) => {
@@ -1987,12 +1996,12 @@ export default function Home() {
             label: event.label,
             source: "bronze",
             status: "queued",
-            uncertainty: 100,
+            confidence: 0,
           }));
         if (importedCandidates.length) {
           setCandidates((restored) => importedCandidates.map((candidate) => {
             const prior = restored.find((item) => item.id === candidate.id);
-            return prior ? { ...candidate, status: prior.status, uncertainty: prior.uncertainty } : candidate;
+            return prior ? { ...candidate, status: prior.status, confidence: prior.confidence } : candidate;
           }));
         }
       } else if (dat) {
@@ -2070,11 +2079,11 @@ export default function Home() {
             label: event.label,
             source: "bronze",
             status: "queued",
-            uncertainty: 100,
+            confidence: 0,
           }));
         setCandidates((restored) => importedCandidates.map((candidate) => {
           const prior = restored.find((item) => item.id === candidate.id);
-          return prior ? { ...candidate, status: prior.status, uncertainty: prior.uncertainty } : candidate;
+          return prior ? { ...candidate, status: prior.status, confidence: prior.confidence } : candidate;
         }));
       }
       setPendingDat(null);
@@ -2162,7 +2171,7 @@ export default function Home() {
         "unassigned",
       ].map(csvCell).join(","));
     }
-    const candidateEventsTsv = [["candidate_id", "source_event_time", "source_event_label", "status", "source", "linked_annotation_ids", "linked_annotation_statuses", "relative_onsets", "relative_offsets"].join("\t"), ...candidates.map((candidate) => {
+    const candidateEventsTsv = [["candidate_id", "source_event_time", "source_event_label", "status", "source", "confidence", "linked_annotation_ids", "linked_annotation_statuses", "relative_onsets", "relative_offsets"].join("\t"), ...candidates.map((candidate) => {
       const linked = annotations.filter((item) => item.candidateId === candidate.id);
       return [
         candidate.id,
@@ -2170,6 +2179,7 @@ export default function Home() {
         candidate.label,
         candidate.status,
         candidate.source,
+        candidate.confidence,
         linked.map((item) => item.id).join("|"),
         linked.map((item) => item.status).join("|"),
         linked.map((item) => (item.start - candidate.time).toFixed(6)).join("|"),
@@ -2591,8 +2601,8 @@ export default function Home() {
                   <span className={`queue-status ${entry.status}`} />
                   <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
                 </button>
-                <label className="queue-uncertainty" title="Editable uncertainty percentage">
-                  <input type="number" min="0" max="100" step="1" value={entry.uncertainty} aria-label={`Uncertainty for ${entry.label}`} onChange={(event) => updateQueueUncertainty(entry.kind, entry.id, Number(event.target.value))} />
+                <label className="queue-confidence" title="Editable confidence percentage">
+                  <input type="number" min="0" max="100" step="1" value={entry.confidence} aria-label={`Confidence for ${entry.label}`} onChange={(event) => updateQueueConfidence(entry.kind, entry.id, Number(event.target.value))} />
                   <span>%</span>
                 </label>
                 <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
@@ -2901,7 +2911,7 @@ export default function Home() {
           <div className="queue-detail-grid">
             <div><span>Start</span><strong>{formatClock(queueDetailEntry.time, true)}</strong></div>
             <div><span>Geometry</span><strong>{queueDetailAnnotation ? annotationGeometry(queueDetailAnnotation) === "point" ? "Single moment" : "Timed window" : "Source event"}</strong></div>
-            <div><span>Uncertainty</span><strong>{queueDetailEntry.uncertainty}%</strong></div>
+            <div><span>Confidence</span><strong>{queueDetailEntry.confidence}%</strong></div>
             {queueDetailAnnotation && <div><span>Duration</span><strong>{annotationGeometry(queueDetailAnnotation) === "point" ? "Instant" : `${(queueDetailAnnotation.end - queueDetailAnnotation.start).toFixed(3)} s`}</strong></div>}
             {queueDetailAnnotation && <div><span>Reviewer</span><strong>{queueDetailAnnotation.reviewer || "Not assigned"}</strong></div>}
             {queueDetailCandidate && <div><span>Source status</span><strong>{queueDetailCandidate.status}</strong></div>}

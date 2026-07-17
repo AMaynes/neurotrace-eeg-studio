@@ -476,8 +476,8 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   assert.match(entries, /annotationGeometry\(item\)\s*!==\s*"session"/);
   assert.match(entries, /candidates/);
   assert.match(entries, /linkedCandidateIds/, "reviewed file events are not duplicated beside their linked annotation");
-  assert.match(entries, /uncertainty:\s*Math\.round\(clamp\(100\s*-\s*item\.confidence,\s*0,\s*100\)\)/);
-  assert.match(entries, /uncertainty:\s*item\.uncertainty/, "file-event uncertainty remains editable and persisted");
+  assert.match(entries, /confidence:\s*Math\.round\(clamp\(item\.confidence,\s*0,\s*100\)\)/);
+  assert.match(entries, /confidence:\s*item\.confidence/, "file-event confidence remains editable and persisted");
   assert.match(entries, /\.sort\(\(a,\s*b\)\s*=>\s*a\.time\s*-\s*b\.time/);
 
   const queueStart = page.indexOf('<section className="queue-section"');
@@ -486,24 +486,25 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   assert.match(queue, /instanceQueueEntries\.map/);
   assert.match(queue, /selectInstanceQueueEntry/);
   assert.match(queue, /className="queue-arrow"[\s\S]*?Open details for/);
-  assert.match(queue, /className="queue-uncertainty"[\s\S]*?<input type="number" min="0" max="100"[\s\S]*?value=\{entry\.uncertainty\}/);
-  assert.match(queue, /updateQueueUncertainty\(entry\.kind,\s*entry\.id,\s*Number\(event\.target\.value\)\)/);
-  assert.ok(queue.indexOf('className="queue-uncertainty"') < queue.indexOf('className="queue-arrow"'), "uncertainty is immediately left of the details arrow");
+  assert.match(queue, /className="queue-confidence"[\s\S]*?<input type="number" min="0" max="100"[\s\S]*?value=\{entry\.confidence\}/);
+  assert.match(queue, /updateQueueConfidence\(entry\.kind,\s*entry\.id,\s*Number\(event\.target\.value\)\)/);
+  assert.ok(queue.indexOf('className="queue-confidence"') < queue.indexOf('className="queue-arrow"'), "confidence is immediately left of the details arrow");
   assert.match(queue, /setQueueDetailTarget\(\{ kind: entry\.kind, id: entry\.id \}\)/);
   assert.doesNotMatch(queue, /setCandidates|Manual review target|\+ Add/, "the queue is navigation-only");
 });
 
-test("edits queue uncertainty without a slider and synchronizes annotation confidence", async () => {
+test("edits queue confidence without a slider and synchronizes the annotation editor", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const updateStart = page.indexOf("const updateQueueUncertainty");
+  const updateStart = page.indexOf("const updateQueueConfidence");
   const updateEnd = page.indexOf("const deleteAnnotation", updateStart);
   const update = page.slice(updateStart, updateEnd);
 
   assert.match(update, /Math\.round\(clamp\(/);
-  assert.match(update, /updateAnnotation\(id,\s*\{\s*confidence:\s*100\s*-\s*uncertainty\s*\}\)/);
+  assert.match(update, /updateAnnotation\(id,\s*\{\s*confidence\s*\}\)/);
   assert.match(update, /setCandidates\(\(items\)\s*=>\s*items\.map/);
-  assert.match(page, /uncertainty:\s*100/, "new imported file events begin explicitly unscored");
-  assert.match(page, /uncertainty:\s*prior\.uncertainty/, "edited file-event uncertainty survives reimport");
+  assert.match(page, /confidence:\s*0/, "new imported file events begin explicitly unscored");
+  assert.match(page, /confidence:\s*prior\.confidence/, "edited file-event confidence survives reimport");
+  assert.match(page, /Number\.isFinite\(candidate\.uncertainty\)[\s\S]*?100\s*-\s*Number\(candidate\.uncertainty\)/, "legacy uncertainty values migrate to confidence");
 
   const queueStart = page.indexOf('<section className="queue-section"');
   const queueEnd = page.indexOf("</section>", queueStart);
@@ -521,7 +522,7 @@ test("opens queue-item details with complete notes and context", async () => {
   assert.match(modal, /Close queue item details/);
   assert.match(modal, /TIMED CONTEXT/);
   assert.match(modal, /CONTEXT \/ NOTES/);
-  assert.match(modal, /<span>Uncertainty<\/span><strong>\{queueDetailEntry\.uncertainty\}%<\/strong>/);
+  assert.match(modal, /<span>Confidence<\/span><strong>\{queueDetailEntry\.confidence\}%<\/strong>/);
   assert.match(modal, /queueDetailAnnotation\?\.notes\?\.trim\(\)/);
   assert.match(modal, /CHANNEL PROVENANCE/);
   assert.match(modal, /Jump to location/);
