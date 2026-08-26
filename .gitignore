@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/.npm-cache/
 
 # next.js
 /.next/
@@ -38,6 +39,7 @@ yarn-error.log*
 next-env.d.ts
 *.tsbuildinfo
 /dist/
+/pages-dist/
 /.wrangler/
 /outputs/
 /work/

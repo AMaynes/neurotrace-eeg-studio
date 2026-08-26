@@ -11,6 +11,7 @@ neurotrace-eeg-studio/
 │   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.
 │   ├── globals.css — Defines the complete NeuroTrace visual system and responsive workspace layout.
 │   ├── layout.tsx — Supplies application metadata, social previews, viewport configuration, and the root HTML shell.
+│   ├── pages-client.tsx — Mounts the shared workstation for the browser-only GitHub Pages release.
 │   ├── page.tsx — Coordinates the browser workstation, annotation state, session workflow, rendering, and exports.
 │   └── source-integrity.ts — Computes incremental SHA-256 fingerprints without buffering complete recordings.
 ├── build/
@@ -33,6 +34,7 @@ neurotrace-eeg-studio/
 │   └── og.png — Provides the NeuroTrace social-preview image.
 ├── tests/
 │   ├── eeg-integrity.test.mjs — Verifies EDF+ annotation decoding and montage safety.
+│   ├── pages-release.test.mjs — Verifies the static Pages artifact and relative runtime assets.
 │   ├── rendered-html.test.mjs — Verifies server rendering and key product interaction contracts.
 │   └── source-integrity.test.mjs — Verifies incremental SHA-256 correctness across chunk boundaries.
 ├── worker/
@@ -44,14 +46,16 @@ neurotrace-eeg-studio/
 ├── cloudflare-env.d.ts — Declares the minimal Cloudflare bindings used by development infrastructure.
 ├── drizzle.config.ts — Configures optional SQLite/D1 migration generation.
 ├── eslint.config.mjs — Configures Next.js TypeScript and core-web-vitals linting.
+├── index.html — Defines metadata and the mount point for the static Pages release.
 ├── next.config.ts — Holds the intentionally minimal Next-compatible configuration.
 ├── package-lock.json — Locks the npm dependency graph.
 ├── package.json — Declares runtime requirements, dependencies, and development commands.
 ├── postcss.config.mjs — Enables Tailwind’s PostCSS integration for the build.
 ├── tsconfig.json — Configures strict TypeScript checking and framework path resolution.
-└── vite.config.ts — Assembles vinext, Sites packaging, and Cloudflare build adapters.
+├── vite.config.ts — Assembles vinext, Sites packaging, and Cloudflare build adapters.
+└── vite.pages.config.ts — Builds the browser-only static artifact in `pages-dist/`.
 
-Generated or local-only directories such as `node_modules/`, `dist/`, `.next/`, `.vinext/`, `.wrangler/`, `outputs/`, and `work/` are not source architecture and must not contain canonical implementation.
+Generated or local-only directories such as `node_modules/`, `dist/`, `pages-dist/`, `.next/`, `.vinext/`, `.wrangler/`, `outputs/`, and `work/` are not source architecture and must not contain canonical implementation.
 ```
 
 ---
@@ -85,6 +89,10 @@ Defines product colors, typography, panel layout, waveform/timeline controls, di
 ### `app/layout.tsx`
 
 Builds host-aware metadata and the root document shell. It references `public/og.png` and declares the canonical GitHub Pages URL.
+
+### `app/pages-client.tsx`
+
+Mounts the shared `Home` component and global stylesheet into the static HTML shell. It contains no server or provider adapter and is used only by `vite.pages.config.ts`.
 
 ### `app/page.tsx`
 
@@ -174,6 +182,10 @@ Contains deterministic Node tests. Tests may import TypeScript source directly u
 
 Exercises EDF+ text-annotation extraction and rejects unsafe mixed-rate bipolar derivations.
 
+### `tests/pages-release.test.mjs`
+
+Checks the built `pages-dist/` snapshot for document-relative hashed assets, the social image, and the absence of server/RSC runtime references.
+
 ### `tests/rendered-html.test.mjs`
 
 Builds the server worker, verifies the rendered NeuroTrace shell, and protects key interface and interaction wiring from regression.
@@ -218,6 +230,10 @@ Points migration generation at `db/schema.ts` and emits SQLite-compatible artifa
 
 Combines Next.js core-web-vitals and TypeScript rules while excluding generated build and static-release output.
 
+## `index.html`
+
+Provides canonical metadata and the application mount for the static GitHub Pages build. Runtime assets are injected and rewritten by Vite.
+
 ## `next.config.ts`
 
 Provides the minimal Next-compatible configuration surface required by vinext.
@@ -241,3 +257,7 @@ Enables strict, no-emit TypeScript checking, DOM libraries, isolated modules, fr
 ## `vite.config.ts`
 
 Builds the application through vinext, packages Sites metadata, configures optional local D1/R2 bindings, and adapts file watching for sandboxed macOS previews.
+
+## `vite.pages.config.ts`
+
+Builds a browser-only static release with React and document-relative asset URLs. It emits the deployable `pages-dist/` snapshot without vinext, Worker, Cloudflare, D1, or R2 runtime dependencies.

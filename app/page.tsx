@@ -36,9 +36,12 @@ import {
   RawDatSource,
   applyDisplayFilters,
   buildMontage,
+  clinicalDecimationFactor,
+  detectRawSynchronizedFlatlines,
   formatClock,
   makeId,
   parseLegacyMatMetadata,
+  prepareClinicalDisplaySignals,
   type DisplayFilterSettings,
   type LegacyMatMetadata,
   type MontageMode,
@@ -165,9 +168,38 @@ type DisplayWindow = {
   data: Float32Array[];
   labels: string[];
   sampleRates: number[];
+  sourceSampleRates: number[];
+  /** Absolute time represented by sample zero for each displayed row. */
+  startSecs: number[];
+  units: string[];
   sourceIndices: number[][];
   primarySourceIndices: number[];
   warnings: string[];
+  viewStart: number;
+  flatlineRegions: Array<{ startSec: number; endSec: number }>;
+};
+
+type RawWindowCache = {
+  source: SignalSource;
+  channelKey: string;
+  startSec: number;
+  endSec: number;
+  data: Float32Array[];
+  sampleRates: number[];
+  channelStartSecs: number[];
+  channelUnits: string[];
+  byteLength: number;
+  flatlineRegions: Array<{ startSec: number; endSec: number }>;
+};
+
+type ProcessedWindowCache = {
+  raw: RawWindowCache;
+  settingsKey: string;
+  data: Float32Array[];
+  sampleRates: number[];
+  channelStartSecs: number[];
+  factors: Array<1 | 2>;
+  byteLength: number;
 };
 
 type SessionWorkspaceSnapshot = {
@@ -411,12 +443,100 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
   });
 }
 
-const DEFAULT_FILTERS: DisplayFilterSettings = {
-  highPassHz: 0.5,
-  lowPassHz: 70,
-  notchHz: 60,
-  enabled: true,
+type RecoveredProject = {
+  annotations: Annotation[];
+  candidates: Candidate[];
+  activeCandidate: number;
+  badChannels: number[];
+  reviewer: string | null;
+  recordingType: string | null;
 };
+
+function hasValidRecoveryBounds(value: unknown, durationSec: number): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const annotation = value as Record<string, unknown>;
+  if (typeof annotation.labelId !== "string" || !LABEL_BY_ID.has(annotation.labelId)) return false;
+  if (typeof annotation.start !== "number" || !Number.isFinite(annotation.start)
+    || typeof annotation.end !== "number" || !Number.isFinite(annotation.end)) return false;
+  if (annotation.start < 0 || annotation.end > durationSec || annotation.end < annotation.start) return false;
+  const rawGeometry = annotation.geometry ?? LABEL_BY_ID.get(annotation.labelId)?.geometry;
+  if (rawGeometry !== "point" && rawGeometry !== "interval" && rawGeometry !== "window" && rawGeometry !== "session") return false;
+  if (rawGeometry === "point") return annotation.start === annotation.end && annotation.start < durationSec;
+  if (rawGeometry === "session") return annotation.start === 0 && annotation.end === durationSec;
+  return annotation.end > annotation.start;
+}
+
+function parseRecoveryDraft(raw: string, durationSec: number, channelCount: number): Annotation[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("Draft labels are not a list");
+  if (parsed.some((annotation) => !hasValidRecoveryBounds(annotation, durationSec))) throw new Error("Draft label bounds failed validation");
+  const annotations = migrateAnnotationList(parsed, durationSec, channelCount);
+  if (annotations.length !== parsed.length) throw new Error("Draft labels failed validation");
+  return annotations;
+}
+
+function parseRecoveryProject(raw: string, durationSec: number, channelCount: number): RecoveredProject {
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Project is not an object");
+  const project = parsed as Record<string, unknown>;
+  if (project.version !== 2) throw new Error("Project version is unsupported");
+  if (!Array.isArray(project.annotations)) throw new Error("Project labels are missing");
+  if (project.annotations.some((annotation) => !hasValidRecoveryBounds(annotation, durationSec))) throw new Error("Project label bounds failed validation");
+  const annotations = migrateAnnotationList(project.annotations, durationSec, channelCount);
+  if (annotations.length !== project.annotations.length) throw new Error("Project labels failed validation");
+
+  if (project.candidates !== undefined && !Array.isArray(project.candidates)) throw new Error("Project events are invalid");
+  const rawCandidates: unknown[] = Array.isArray(project.candidates) ? project.candidates : [];
+  const candidates = migrateCandidateList(rawCandidates, durationSec);
+  if (candidates.length !== rawCandidates.length) throw new Error("Project events failed validation");
+
+  if (project.badChannels !== undefined && !Array.isArray(project.badChannels)) throw new Error("Project channel exclusions are invalid");
+  const rawBadChannels: unknown[] = Array.isArray(project.badChannels) ? project.badChannels : [];
+  const badChannels = rawBadChannels.filter((index): index is number => typeof index === "number" && Number.isInteger(index) && index >= 0 && index < channelCount);
+  if (badChannels.length !== rawBadChannels.length) throw new Error("Project channel exclusions failed validation");
+
+  const activeCandidate = project.activeCandidate === undefined ? 0 : Number(project.activeCandidate);
+  if (!Number.isInteger(activeCandidate) || activeCandidate < 0
+    || (candidates.length > 0 && activeCandidate >= candidates.length)
+    || (candidates.length === 0 && activeCandidate !== 0)) {
+    throw new Error("Project event position is invalid");
+  }
+  if (project.reviewer !== undefined && typeof project.reviewer !== "string") throw new Error("Project reviewer is invalid");
+  if (project.recordingType !== undefined && typeof project.recordingType !== "string") throw new Error("Project recording type is invalid");
+
+  return {
+    annotations,
+    candidates,
+    activeCandidate: candidates.length ? activeCandidate : 0,
+    badChannels,
+    reviewer: typeof project.reviewer === "string" ? project.reviewer : null,
+    recordingType: typeof project.recordingType === "string" ? project.recordingType : null,
+  };
+}
+
+const DEFAULT_FILTERS: DisplayFilterSettings = {
+  highPassHz: 0,
+  lowPassHz: 200,
+  notchHz: 0,
+  enabled: false,
+};
+
+const EMPTY_DISPLAY: DisplayWindow = {
+  data: [],
+  labels: [],
+  sampleRates: [],
+  sourceSampleRates: [],
+  startSecs: [],
+  units: [],
+  sourceIndices: [],
+  primarySourceIndices: [],
+  warnings: [],
+  viewStart: 0,
+  flatlineRegions: [],
+};
+
+const RAW_WINDOW_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
+const CANVAS_PIXEL_BUDGET = 8_000_000;
 
 const DEFAULT_CONTROLS: ControlBindings = {
   undo: "u",
@@ -449,10 +569,65 @@ function shortFileName(name: string, max = 26) {
   return `${name.slice(0, max - ext.length - 1)}…${ext}`;
 }
 
-function formatAmplitude(value: number) {
+function formatAmplitude(value: number, unit = "µV") {
+  if (!Number.isFinite(value)) return `— ${unit}`;
   const abs = Math.abs(value);
-  if (abs >= 1000) return `${(value / 1000).toFixed(2)} mV`;
-  return `${value.toFixed(abs >= 100 ? 0 : 1)} µV`;
+  if (unit === "µV" && abs >= 1000) return `${(value / 1000).toFixed(2)} mV`;
+  const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${unit || "a.u."}`;
+}
+
+function robustTraceBaseline(values: Float32Array, maximumSamples = 257) {
+  if (!values.length) return 0;
+  const sampled: number[] = [];
+  let finiteCount = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!Number.isFinite(value)) continue;
+    finiteCount += 1;
+    if (sampled.length < maximumSamples) {
+      sampled.push(value);
+      continue;
+    }
+    // Deterministic reservoir sampling keeps the median representative while
+    // guaranteeing that a short finite island in otherwise missing data is
+    // never skipped by a fixed-position stride.
+    const candidate = ((Math.imul(finiteCount, 0x9e3779b1) >>> 0) % finiteCount);
+    if (candidate < maximumSamples) sampled[candidate] = value;
+  }
+  return medianSampledValues(sampled);
+}
+
+function medianSampledValues(sampled: number[]) {
+  if (!sampled.length) return 0;
+  sampled.sort((left, right) => left - right);
+  const middle = Math.floor(sampled.length / 2);
+  return sampled.length % 2 ? sampled[middle] : (sampled[middle - 1] + sampled[middle]) / 2;
+}
+
+function boundedCanvasScale(width: number, height: number, requestedScale: number) {
+  const safeArea = Math.max(1, width * height);
+  return Math.min(Math.max(0.1, requestedScale), 2, Math.sqrt(CANVAS_PIXEL_BUDGET / safeArea));
+}
+
+function yieldDisplayWork() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+function sourceRateForDisplayRow(display: DisplayWindow, meta: RecordingMeta, row: number) {
+  return display.sourceSampleRates[row]
+    ?? meta.sampleRates[display.primarySourceIndices[row]]
+    ?? display.sampleRates[row]
+    ?? primarySampleRate(meta);
+}
+
+function sampleIndexForDisplayRow(display: DisplayWindow, row: number, timeSec: number) {
+  const values = display.data[row];
+  if (!values?.length) return 0;
+  const sampleRate = display.sampleRates[row];
+  const startSec = display.startSecs[row] ?? display.viewStart;
+  if (!(sampleRate > 0) || !Number.isFinite(sampleRate)) return 0;
+  return clamp(Math.round((timeSec - startSec) * sampleRate), 0, values.length - 1);
 }
 
 function downloadBlob(name: string, blob: Blob) {
@@ -571,7 +746,7 @@ export default function Home() {
   const annotationsRef = useRef<Annotation[]>([]);
   const undoRef = useRef<Annotation[][]>([]);
   const redoRef = useRef<Annotation[][]>([]);
-  const pointerRef = useRef<{ startX: number; startTime: number; moved: boolean } | null>(null);
+  const pointerRef = useRef<{ pointerId: number; startX: number; startTime: number; moved: boolean } | null>(null);
   const wheelFrameRef = useRef<number | null>(null);
   const wheelDeltaRef = useRef(0);
   const wheelWidthRef = useRef(1);
@@ -579,6 +754,8 @@ export default function Home() {
   const displayAppliedRequestIdRef = useRef(0);
   const displayRefreshPendingRef = useRef<(() => Promise<void>) | null>(null);
   const displayRefreshActiveRef = useRef(false);
+  const rawWindowCacheRef = useRef<RawWindowCache[]>([]);
+  const processedWindowCacheRef = useRef<ProcessedWindowCache[]>([]);
   const cursorFrameRef = useRef<number | null>(null);
   const pendingCursorRef = useRef<{ time: number; row: number; amplitude: number; selection?: { start: number; end: number } } | null>(null);
   const contextResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -619,7 +796,8 @@ export default function Home() {
   const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set());
   const [badChannels, setBadChannels] = useState<Set<number>>(() => new Set());
   const [focusedChannel, setFocusedChannel] = useState(0);
-  const [display, setDisplay] = useState<DisplayWindow>({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
+  const [display, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
+  const [waveformWidth, setWaveformWidth] = useState(1);
   const [loadingSignal, setLoadingSignal] = useState(false);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [annotationDragPreview, setAnnotationDragPreview] = useState<{ patches: Record<string, AnnotationDragPatch> } | null>(null);
@@ -734,13 +912,11 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const savedReviewer = localStorage.getItem("neurotrace:reviewer");
       const savedControls = localStorage.getItem("neurotrace:controls");
-      // Local reviewer identity is external persisted state and is restored once after hydration.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (savedReviewer) setReviewer(savedReviewer);
       if (savedControls) {
         const parsed = JSON.parse(savedControls) as Partial<ControlBindings>;
+        // Browser-local key bindings are external preferences restored once after hydration.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setControlBindings({
           ...DEFAULT_CONTROLS,
           ...Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === "string" && /^[a-z]$/i.test(value as string))),
@@ -774,10 +950,9 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("neurotrace:reviewer", reviewer);
       localStorage.setItem("neurotrace:controls", JSON.stringify(controlBindings));
     } catch { /* local preferences are optional */ }
-  }, [controlBindings, reviewer]);
+  }, [controlBindings]);
 
   const storeActiveSession = useCallback(() => {
     const snapshot: SessionWorkspaceSnapshot = {
@@ -872,7 +1047,9 @@ export default function Home() {
     setSelectedChannels(new Set(snapshot.selectedChannels));
     setBadChannels(new Set(snapshot.badChannels));
     setFocusedChannel(snapshot.focusedChannel);
-    setDisplay({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
+    rawWindowCacheRef.current = [];
+    processedWindowCacheRef.current = [];
+    setDisplay(EMPTY_DISPLAY);
     setAnnotations(snapshot.annotations);
     setSelectedAnnotationId(snapshot.selectedAnnotationId);
     setSelectedAnnotationIds(snapshot.selectedAnnotationId ? new Set([snapshot.selectedAnnotationId]) : new Set());
@@ -931,7 +1108,7 @@ export default function Home() {
       meta: sourceMeta(demoSource),
       sessionKey: `blank-${id}`,
       recordingType: "Scalp EEG",
-      reviewer,
+      reviewer: "",
       viewStart: 0,
       timebase: 20,
       gain: 1,
@@ -963,7 +1140,7 @@ export default function Home() {
     setActiveSessionId(id);
     applySessionSnapshot(snapshot);
     setToast("Blank session ready — load a recording");
-  }, [applySessionSnapshot, demoSource, importBusy, reviewer, sessionTabs.length, storeActiveSession]);
+  }, [applySessionSnapshot, demoSource, importBusy, sessionTabs.length, storeActiveSession]);
 
   const closeSession = useCallback((id: string) => {
     if (importBusy || sessionTabs.length <= 1) return;
@@ -1056,12 +1233,18 @@ export default function Home() {
     setToast("Annotation change restored");
   }, []);
 
-  const addAnnotation = useCallback((label: LabelDefinition, time: number, explicitEnd?: number, intent: PlacementIntent = "native") => {
+  const addAnnotation = useCallback((
+    label: LabelDefinition,
+    time: number,
+    explicitEnd?: number,
+    intent: PlacementIntent = "native",
+    targetRow = focusedChannel,
+  ) => {
     if (!hasRecording) {
       setToast("Load a recording before placing labels");
       return;
     }
-    const samplingRate = display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
+    const samplingRate = sourceRateForDisplayRow(display, meta, targetRow);
     const geometry: Geometry = intent === "instance" || intent === "context-instance"
       ? "point"
       : intent === "windowed" || intent === "context-window"
@@ -1087,8 +1270,8 @@ export default function Home() {
       time = 0;
     }
     const now = new Date().toISOString();
-    const sourceIndices = display.sourceIndices[focusedChannel] ?? [];
-    const primarySourceIndex = display.primarySourceIndices[focusedChannel];
+    const sourceIndices = display.sourceIndices[targetRow] ?? [];
+    const primarySourceIndex = display.primarySourceIndices[targetRow];
     if (label.id === "spikes" && (primarySourceIndex === undefined || primarySourceIndex < 0 || sourceIndices.length === 0)) {
       setToast("Choose a visible source channel before placing an epileptiform spike");
       return;
@@ -1117,7 +1300,7 @@ export default function Home() {
       status: "draft",
       candidateId: candidateMatches ? activeSourceCandidate.id : undefined,
       channelScope: label.id === "spikes" && primarySourceIndex !== undefined ? {
-        displayLabel: display.labels[focusedChannel] ?? `Display row ${focusedChannel + 1}`,
+        displayLabel: display.labels[targetRow] ?? `Display row ${targetRow + 1}`,
         montage,
         primarySourceIndex,
         sourceIndices: [...sourceIndices],
@@ -1227,8 +1410,21 @@ export default function Home() {
     setCandidates((items) => items.map((item) => item.id === id ? { ...item, confidence } : item));
   }, [updateAnnotation]);
 
+  const confirmAnnotationDeletion = useCallback((items: Annotation[]) => {
+    const committedCount = items.filter((item) => item.status === "committed").length;
+    if (!committedCount) return true;
+    return window.confirm(committedCount === 1
+      ? "Delete this committed label? Its saved revision will be removed from this session."
+      : `Delete ${committedCount} committed labels? Their saved revisions will be removed from this session.`);
+  }, []);
+
   const deleteAnnotation = useCallback((id: string) => {
     const removed = annotationsRef.current.find((item) => item.id === id);
+    if (!removed) return false;
+    if (!confirmAnnotationDeletion([removed])) {
+      setToast("Deletion canceled — the committed label is unchanged");
+      return false;
+    }
     commitMutation((current) => current.filter((item) => item.id !== id));
     if (removed?.candidateId) {
       const hasOtherCommittedLink = annotationsRef.current.some((item) => item.id !== id && item.candidateId === removed.candidateId && item.status === "committed");
@@ -1239,12 +1435,18 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setToast("Annotation removed — undo is available");
-  }, [commitMutation]);
+    return true;
+  }, [commitMutation, confirmAnnotationDeletion]);
 
   const deleteSelectedAnnotations = useCallback(() => {
     const ids = new Set(selectedAnnotationIds);
-    if (!ids.size) return;
+    if (!ids.size) return false;
     const removed = annotationsRef.current.filter((item) => ids.has(item.id));
+    if (!removed.length) return false;
+    if (!confirmAnnotationDeletion(removed)) {
+      setToast("Deletion canceled — committed labels are unchanged");
+      return false;
+    }
     const remaining = annotationsRef.current.filter((item) => !ids.has(item.id));
     commitMutation(() => remaining);
     const candidateIds = new Set(removed.flatMap((item) => item.candidateId ? [item.candidateId] : []));
@@ -1257,13 +1459,17 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setToast(`${removed.length} label${removed.length === 1 ? "" : "s"} removed — undo is available`);
-  }, [commitMutation, selectedAnnotationIds]);
+    return true;
+  }, [commitMutation, confirmAnnotationDeletion, selectedAnnotationIds]);
 
   const moveSelectedAnnotations = useCallback((direction: -1 | 1, accelerated = false) => {
     const ids = selectedAnnotationIds;
     const movable = annotationsRef.current.filter((item) => ids.has(item.id) && annotationGeometry(item) !== "session");
     if (!movable.length) return;
-    const sampleRate = display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
+    const anchor = movable.find((item) => item.id === selectedAnnotationId) ?? movable[0];
+    const sampleRate = anchor.channelScope
+      ? meta.sampleRates[anchor.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
+      : sourceRateForDisplayRow(display, meta, focusedChannel);
     const baseStep = snapMode === "1s" ? 1 : snapMode === "100ms" ? 0.1 : 1 / Math.max(1, sampleRate);
     const requestedDelta = direction * baseStep * (accelerated ? 10 : 1);
     const earliest = Math.min(...movable.map((item) => item.start));
@@ -1285,7 +1491,7 @@ export default function Home() {
       }, meta.durationSec)
       : item));
     setToast(`${movable.length} selected label${movable.length === 1 ? "" : "s"} moved ${direction < 0 ? "left" : "right"}`);
-  }, [commitMutation, display.sampleRates, focusedChannel, meta, selectedAnnotationIds, snapMode]);
+  }, [commitMutation, display, focusedChannel, meta, selectedAnnotationId, selectedAnnotationIds, snapMode]);
 
   const qcIssues = useMemo(() => {
     const issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }> = [];
@@ -1338,17 +1544,39 @@ export default function Home() {
   }, [annotations, badChannels, candidates, display.warnings, meta.assumptions, meta.channelLabels.length, meta.durationSec, meta.warnings, recoveryStatus]);
 
   const commitSelected = useCallback((force = false) => {
-    if (!selectedAnnotation) return;
-    const warnings: string[] = [];
-    if (selectedAnnotation.end < selectedAnnotation.start) warnings.push("Offset must follow onset.");
-    if (!selectedAnnotation.reviewer.trim()) warnings.push("Reviewer initials are required for committed provenance.");
-    if (selectedAnnotation.labelId === "spikes" && !selectedAnnotation.channelScope) warnings.push("Epileptiform spikes require a source-channel scope.");
-    if (selectedAnnotation.labelId === "ictal" && selectedAnnotation.end - selectedAnnotation.start < 3) warnings.push("Ictal duration is under 3 seconds.");
+    if (!selectedAnnotation) return false;
+    const blockers: string[] = [];
+    const advisories: string[] = [];
+    const geometry = annotationGeometry(selectedAnnotation);
+    if (!Number.isFinite(selectedAnnotation.start) || !Number.isFinite(selectedAnnotation.end)) {
+      blockers.push("Start and end times must be valid numbers.");
+    } else {
+      if (selectedAnnotation.start < 0 || selectedAnnotation.end > meta.durationSec) blockers.push("The label must stay inside the recording.");
+      if (selectedAnnotation.end < selectedAnnotation.start) blockers.push("Offset must follow onset.");
+      if (geometry !== "point" && selectedAnnotation.end <= selectedAnnotation.start) blockers.push("A timed label must have a duration greater than zero.");
+      if (geometry === "point" && selectedAnnotation.end !== selectedAnnotation.start) blockers.push("A single-moment label must have matching start and end times.");
+    }
+    if (!selectedAnnotation.reviewer.trim()) blockers.push("Reviewer initials are required before committing.");
+    if (selectedAnnotation.labelId === "spikes" && (
+      !selectedAnnotation.channelScope
+      || !Number.isInteger(selectedAnnotation.channelScope.primarySourceIndex)
+      || selectedAnnotation.channelScope.primarySourceIndex < 0
+      || selectedAnnotation.channelScope.primarySourceIndex >= meta.channelLabels.length
+      || !selectedAnnotation.channelScope.sourceIndices.length
+      || selectedAnnotation.channelScope.sourceIndices.some((index) => !Number.isInteger(index) || index < 0 || index >= meta.channelLabels.length)
+      || !selectedAnnotation.channelScope.sourceIndices.includes(selectedAnnotation.channelScope.primarySourceIndex)
+    )) blockers.push("Epileptiform spikes require a valid source-channel scope.");
+    if (blockers.length) {
+      setConfirmCommit([]);
+      setToast(`Cannot commit: ${blockers[0]}`);
+      return false;
+    }
+    if (selectedAnnotation.labelId === "ictal" && selectedAnnotation.end - selectedAnnotation.start < 3) advisories.push("Ictal duration is under 3 seconds.");
     const duplicate = annotations.some((item) => item.id !== selectedAnnotation.id && item.labelId === "ictal" && selectedAnnotation.labelId === "ictal" && Math.abs(item.start - selectedAnnotation.start) < 30);
-    if (duplicate) warnings.push("Another ictal onset exists within 30 seconds.");
-    if (warnings.length && !force) {
-      setConfirmCommit(warnings);
-      return;
+    if (duplicate) advisories.push("Another ictal onset exists within 30 seconds.");
+    if (advisories.length && !force) {
+      setConfirmCommit(advisories);
+      return false;
     }
     const committedAt = new Date().toISOString();
     updateAnnotation(selectedAnnotation.id, {
@@ -1397,8 +1625,9 @@ export default function Home() {
     if (selectedAnnotation.candidateId) {
       setCandidates((items) => items.map((item) => item.id === selectedAnnotation.candidateId ? { ...item, status: "reviewed" } : item));
     }
-    setToast(`Revision committed by ${selectedAnnotation.reviewer || reviewer}`);
-  }, [annotations, badChannels, filters, gain, meta, montage, rawSourceHash, reviewer, selectedAnnotation, selectedChannels, snapMode, sourceHash, sourceInterpretation, updateAnnotation]);
+    setToast(`Revision committed by ${selectedAnnotation.reviewer}`);
+    return true;
+  }, [annotations, badChannels, filters, gain, meta, montage, rawSourceHash, selectedAnnotation, selectedChannels, snapMode, sourceHash, sourceInterpretation, updateAnnotation]);
 
   useEffect(() => {
     if (!hasRecording) return;
@@ -1430,10 +1659,11 @@ export default function Home() {
     const requestId = ++displayRequestIdRef.current;
     const source = sourceRef.current;
     const indices = [...selectedChannels].sort((a, b) => a - b);
+    const channelKey = indices.join(",");
     const refreshWindow = async () => {
       if (!hasRecording || !indices.length) {
         displayAppliedRequestIdRef.current = requestId;
-        setDisplay({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
+        setDisplay({ ...EMPTY_DISPLAY, viewStart });
         setLoadingSignal(false);
         return;
       }
@@ -1442,39 +1672,228 @@ export default function Home() {
         const filterPadSec = filters.enabled
           ? Math.min(12, Math.max(2, filters.highPassHz > 0 ? 3 / filters.highPassHz : 2))
           : 0;
-        const paddedStart = Math.max(0, viewStart - filterPadSec);
-        const paddedEnd = Math.min(meta.durationSec, viewStart + timebase + filterPadSec);
-        const windowData = await source.getWindow(paddedStart, Math.max(0, paddedEnd - paddedStart), indices);
-        if (sourceRef.current !== source || requestId <= displayAppliedRequestIdRef.current) return;
-        const paddedFiltered = applyDisplayFilters(windowData.data, windowData.sampleRates, filters);
-        const filtered = paddedFiltered.map((channel, position) => {
-          const sampleRate = windowData.sampleRates[position] ?? primarySampleRate(meta);
-          const cropStart = clamp(Math.round((viewStart - paddedStart) * sampleRate), 0, channel.length);
-          const requestedSamples = Math.max(0, Math.round(timebase * sampleRate));
-          return channel.slice(cropStart, Math.min(channel.length, cropStart + requestedSamples));
+        // The fixed 48-sample FIR delay exists only for channels eligible for
+        // Sean's 2x display decimator. Applying it to a 0.1 Hz auxiliary row,
+        // for example, would unnecessarily load hundreds of extra seconds.
+        const groupDelayPadSec = Math.max(0, ...indices.map((index) => {
+          const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
+          return sampleRate >= 1000 ? 48 / sampleRate : 0;
+        }));
+        const processingPadSec = filterPadSec + groupDelayPadSec;
+        const requiredStart = Math.max(0, viewStart - processingPadSec);
+        const requiredEnd = Math.min(meta.durationSec, viewStart + timebase + processingPadSec);
+        const byteRate = indices.reduce((sum, index) => sum + Math.max(1, meta.sampleRates[index] ?? primarySampleRate(meta)) * Float32Array.BYTES_PER_ELEMENT, 0);
+        const requiredDuration = Math.max(0, requiredEnd - requiredStart);
+        const budgetDuration = RAW_WINDOW_CACHE_BUDGET_BYTES / Math.max(1, byteRate);
+        const desiredDuration = Math.max(requiredDuration, Math.min(budgetDuration, requiredDuration + timebase * 2));
+        const extraDuration = Math.max(0, desiredDuration - requiredDuration);
+        let cacheStart = Math.max(0, requiredStart - extraDuration / 2);
+        let cacheEnd = Math.min(meta.durationSec, requiredEnd + extraDuration / 2);
+        if (cacheEnd - cacheStart < desiredDuration) {
+          if (cacheStart === 0) cacheEnd = Math.min(meta.durationSec, desiredDuration);
+          else if (cacheEnd === meta.durationSec) cacheStart = Math.max(0, meta.durationSec - desiredDuration);
+        }
+
+        let rawWindow = rawWindowCacheRef.current.find((entry) =>
+          entry.source === source
+          && entry.channelKey === channelKey
+          && entry.startSec <= requiredStart + 1e-9
+          && entry.endSec >= requiredEnd - 1e-9);
+        if (rawWindow) {
+          rawWindowCacheRef.current = [
+            ...rawWindowCacheRef.current.filter((entry) => entry !== rawWindow),
+            rawWindow,
+          ];
+        } else {
+          const windowData = await source.getWindow(cacheStart, Math.max(0, cacheEnd - cacheStart), indices);
+          if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+          const byteLength = windowData.data.reduce((sum, channel) => sum + channel.byteLength, 0);
+          const flatlineRegions = detectRawSynchronizedFlatlines(windowData.data, windowData.sampleRates, {
+            startSec: windowData.startSec,
+            channelStartSecs: windowData.channelStartSecs,
+            thresholdFraction: .8,
+            minimumDurationSec: .25,
+          }).map((region) => ({ startSec: region.startSec, endSec: region.endSec }));
+          rawWindow = {
+            source,
+            channelKey,
+            startSec: windowData.startSec,
+            endSec: windowData.startSec + windowData.durationSec,
+            data: windowData.data,
+            sampleRates: windowData.sampleRates,
+            channelStartSecs: windowData.channelStartSecs,
+            channelUnits: windowData.channelUnits,
+            byteLength,
+            flatlineRegions,
+          };
+          if (byteLength <= RAW_WINDOW_CACHE_BUDGET_BYTES) {
+            rawWindowCacheRef.current.push(rawWindow);
+            let cachedBytes = rawWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
+            while (cachedBytes > RAW_WINDOW_CACHE_BUDGET_BYTES && rawWindowCacheRef.current.length > 1) {
+              const removed = rawWindowCacheRef.current.shift();
+              cachedBytes -= removed?.byteLength ?? 0;
+            }
+            const liveRaw = new Set(rawWindowCacheRef.current);
+            processedWindowCacheRef.current = processedWindowCacheRef.current.filter((entry) => liveRaw.has(entry.raw));
+          } else {
+            rawWindowCacheRef.current = [];
+            processedWindowCacheRef.current = [];
+          }
+        }
+        if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+
+        const cacheDuration = Math.max(timebase, rawWindow.endSec - rawWindow.startSec);
+        const processingPixelCount = Math.max(1, waveformWidth * cacheDuration / Math.max(1e-9, timebase));
+        const expectedFactors = rawWindow.data.map((channel, index) =>
+          clinicalDecimationFactor(rawWindow.sampleRates[index], channel.length, processingPixelCount));
+        const settingsKey = JSON.stringify({
+          filters: filters.enabled ? filters : { enabled: false },
+          factors: expectedFactors,
+        });
+        let processed = processedWindowCacheRef.current.find((entry) => entry.raw === rawWindow && entry.settingsKey === settingsKey);
+        if (processed) {
+          processedWindowCacheRef.current = [
+            ...processedWindowCacheRef.current.filter((entry) => entry !== processed),
+            processed,
+          ];
+        } else {
+          const processedData: Float32Array[] = [];
+          const processedRates: number[] = [];
+          const processedStartSecs: number[] = [];
+          const factors: Array<1 | 2> = [];
+          let samplesSinceYield = 0;
+          for (let position = 0; position < rawWindow.data.length; position += 1) {
+            const sourceChannel = rawWindow.data[position];
+            const sourceRate = rawWindow.sampleRates[position];
+            const filteredChannel = filters.enabled
+              ? applyDisplayFilters([sourceChannel], [sourceRate], filters)[0]
+              : sourceChannel;
+            const sourceStartSampleIndex = Math.round(
+              (rawWindow.channelStartSecs[position] ?? rawWindow.startSec) * sourceRate,
+            );
+            const prepared = prepareClinicalDisplaySignals(
+              [filteredChannel],
+              [sourceRate],
+              processingPixelCount,
+              [sourceStartSampleIndex],
+            );
+            processedData.push(prepared.data[0]);
+            processedRates.push(prepared.sampleRates[0]);
+            processedStartSecs.push(prepared.outputStartSampleIndices[0] / sourceRate);
+            factors.push(prepared.factors[0]);
+            samplesSinceYield += sourceChannel.length;
+            if (samplesSinceYield >= 100_000) {
+              samplesSinceYield = 0;
+              await yieldDisplayWork();
+              if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+            }
+          }
+          const byteLength = processedData.reduce((sum, channel) => sum + channel.byteLength, 0);
+          processed = {
+            raw: rawWindow,
+            settingsKey,
+            data: processedData,
+            sampleRates: processedRates,
+            channelStartSecs: processedStartSecs,
+            factors,
+            byteLength,
+          };
+          const duplicatesRaw = !filters.enabled && factors.every((factor) => factor === 1);
+          const rawOwnerIsCached = rawWindowCacheRef.current.includes(rawWindow);
+          if (rawOwnerIsCached
+            && !duplicatesRaw
+            && rawWindow.byteLength + byteLength <= RAW_WINDOW_CACHE_BUDGET_BYTES * 2) {
+            processedWindowCacheRef.current.push(processed);
+            let cachedBytes = processedWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
+            while (cachedBytes > RAW_WINDOW_CACHE_BUDGET_BYTES && processedWindowCacheRef.current.length > 1) {
+              const removed = processedWindowCacheRef.current.shift();
+              cachedBytes -= removed?.byteLength ?? 0;
+            }
+          }
+        }
+        if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+
+        const croppedStartSecs: number[] = [];
+        const cropped = processed.data.map((channel, position) => {
+          const sampleRate = processed.sampleRates[position] ?? primarySampleRate(meta);
+          const channelStart = processed.channelStartSecs[position] ?? rawWindow.startSec;
+          // Keep the sample immediately before the requested left edge. Its
+          // true timestamp lets the renderer cover the boundary without
+          // stretching N samples across an N-sample-duration viewport.
+          const cropStart = clamp(
+            Math.floor((viewStart - channelStart) * sampleRate + 1e-9),
+            0,
+            channel.length,
+          );
+          const requestedEnd = Math.max(
+            cropStart + 1,
+            Math.ceil((viewStart + timebase - channelStart) * sampleRate - 1e-9),
+          );
+          const requestedSamples = Math.max(1, requestedEnd - cropStart);
+          croppedStartSecs.push(channelStart + cropStart / sampleRate);
+          if (cropStart + requestedSamples <= channel.length) {
+            return channel.subarray(cropStart, cropStart + requestedSamples);
+          }
+          const output = new Float32Array(requestedSamples);
+          output.fill(Number.NaN);
+          output.set(channel.subarray(cropStart, channel.length));
+          return output;
         });
         const labels = indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`);
         const badDisplayPositions = new Set(indices.flatMap((sourceIndex, position) => badChannels.has(sourceIndex) ? [position] : []));
+        const montageWarnings: string[] = [];
+        if (montage !== "referential") {
+          const unitCounts = new Map<string, number>();
+          rawWindow.channelUnits.forEach((unit, position) => {
+            if (!badDisplayPositions.has(position)) unitCounts.set(unit, (unitCounts.get(unit) ?? 0) + 1);
+          });
+          const referenceUnit = [...unitCounts].sort((left, right) => right[1] - left[1] || Number(right[0] === "µV") - Number(left[0] === "µV"))[0]?.[0];
+          rawWindow.channelUnits.forEach((unit, position) => {
+            if (referenceUnit && unit !== referenceUnit) badDisplayPositions.add(position);
+          });
+          const omittedUnits = [...new Set(rawWindow.channelUnits.filter((unit) => referenceUnit && unit !== referenceUnit))];
+          if (omittedUnits.length) montageWarnings.push(`${omittedUnits.join(", ")} channels were excluded from ${montage === "bipolar" ? "bipolar" : "average-reference"} arithmetic because units cannot be mixed.`);
+        }
         const montageResult = buildMontage(
-          filtered,
+          cropped,
           labels,
           montage,
           badDisplayPositions,
-          windowData.sampleRates,
+          processed.sampleRates,
+          croppedStartSecs,
         );
         const sourceIndices = montageResult.sourceIndices.map((contributors) => contributors.map((position) => indices[position]).filter((index) => index !== undefined));
         const primarySourceIndices = montageResult.primarySourceIndices.map((position) => indices[position] ?? -1);
-        const sampleRates = montageResult.primarySourceIndices.map((position) => windowData.sampleRates[position] ?? primarySampleRate(meta));
+        const sampleRates = montageResult.primarySourceIndices.map((position) => processed.sampleRates[position] ?? primarySampleRate(meta));
+        const sourceSampleRates = montageResult.primarySourceIndices.map((position) => rawWindow.sampleRates[position] ?? primarySampleRate(meta));
+        const startSecs = montageResult.sampleStartSecs
+          ?? montageResult.primarySourceIndices.map((position) => croppedStartSecs[position] ?? viewStart);
+        const units = montageResult.sourceIndices.map((contributors) => {
+          const contributorUnits = [...new Set(contributors.map((position) => rawWindow.channelUnits[position]).filter(Boolean))];
+          return contributorUnits.length === 1 ? contributorUnits[0] : contributorUnits.length ? "mixed" : "a.u.";
+        });
         displayAppliedRequestIdRef.current = requestId;
-        setDisplay({ data: montageResult.data, labels: montageResult.labels, sampleRates, sourceIndices, primarySourceIndices, warnings: montageResult.warnings });
+        setDisplay({
+          data: montageResult.data,
+          labels: montageResult.labels,
+          sampleRates,
+          sourceSampleRates,
+          startSecs,
+          units,
+          sourceIndices,
+          primarySourceIndices,
+          warnings: [...montageWarnings, ...montageResult.warnings],
+          viewStart,
+          flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > viewStart && region.startSec < viewStart + timebase),
+        });
         setFocusedChannel((current) => clamp(current, 0, Math.max(0, montageResult.labels.length - 1)));
         setLoadingSignal(false);
       } catch (error) {
-        if (sourceRef.current !== source || requestId <= displayAppliedRequestIdRef.current) return;
+        if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
         displayAppliedRequestIdRef.current = requestId;
         setLoadingSignal(false);
         const message = error instanceof Error ? error.message : "Could not read this signal window";
-        setDisplay({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [message] });
+        setDisplay({ ...EMPTY_DISPLAY, viewStart, warnings: [message] });
         setToast(message);
       }
     };
@@ -1491,7 +1910,7 @@ export default function Home() {
       };
       void pumpLatestWindow();
     }
-  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, timebase, viewStart]);
+  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, timebase, viewStart, waveformWidth]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -1514,14 +1933,18 @@ export default function Home() {
     if (!canvas) return;
     const draw = () => {
       const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      const canvasScale = boundedCanvasScale(rect.width, rect.height, window.devicePixelRatio || 1);
+      const backingWidth = Math.max(1, Math.floor(rect.width * canvasScale));
+      const backingHeight = Math.max(1, Math.floor(rect.height * canvasScale));
+      if (canvas.width !== backingWidth) canvas.width = backingWidth;
+      if (canvas.height !== backingHeight) canvas.height = backingHeight;
       const context = canvas.getContext("2d");
       if (!context) return;
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
       const width = rect.width;
       const height = rect.height;
+      const displayStart = display.viewStart;
+      const displayEnd = displayStart + timebase;
       context.fillStyle = "#071216";
       context.fillRect(0, 0, width, height);
 
@@ -1529,22 +1952,51 @@ export default function Home() {
       context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
       context.textAlign = "center";
       context.textBaseline = "top";
-      for (let second = Math.ceil(viewStart / secondsPerGrid) * secondsPerGrid; second <= viewStart + timebase; second += secondsPerGrid) {
-        const x = ((second - viewStart) / timebase) * width;
+      for (let second = Math.ceil(displayStart / secondsPerGrid) * secondsPerGrid; second <= displayEnd; second += secondsPerGrid) {
+        const x = ((second - displayStart) / timebase) * width;
         context.strokeStyle = second % (secondsPerGrid * 5) === 0 ? "rgba(133,171,181,.20)" : "rgba(133,171,181,.09)";
         context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
         context.fillStyle = "rgba(167,190,197,.74)";
         context.fillText(formatClock(second), x, 5);
       }
 
+      for (const region of display.flatlineRegions) {
+        if (region.endSec <= displayStart || region.startSec >= displayEnd) continue;
+        const x1 = ((Math.max(region.startSec, displayStart) - displayStart) / timebase) * width;
+        const x2 = ((Math.min(region.endSec, displayEnd) - displayStart) / timebase) * width;
+        context.fillStyle = "rgba(243, 187, 95, .08)";
+        context.fillRect(x1, CHANNEL_RAIL_HEADER_HEIGHT, Math.max(1, x2 - x1), Math.max(0, height - CHANNEL_RAIL_HEADER_HEIGHT));
+        context.fillStyle = "rgba(243, 187, 95, .74)";
+        context.textAlign = "left";
+        context.fillText("RAW SOURCE FLATLINE", x1 + 4, CHANNEL_RAIL_HEADER_HEIGHT + 3);
+        context.textAlign = "center";
+      }
+
+      const rows = Math.max(1, display.data.length);
+      const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
+      const plotHeight = Math.max(1, height - plotTop);
+      const rowHeight = plotHeight / rows;
+      for (let channel = 0; channel < display.data.length; channel += 1) {
+        const rowTop = plotTop + rowHeight * channel;
+        const center = rowTop + rowHeight * 0.5;
+        if (channel === focusedChannel) {
+          context.fillStyle = "rgba(87, 223, 183, .065)";
+          context.fillRect(0, rowTop, width, rowHeight);
+          context.strokeStyle = "rgba(87, 223, 183, .28)";
+          context.strokeRect(.5, rowTop + .5, width - 1, Math.max(1, rowHeight - 1));
+        }
+        context.strokeStyle = "rgba(116,153,162,.11)";
+        context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
+      }
+
       for (const item of annotations) {
-        if (item.end < viewStart || item.start > viewStart + timebase) continue;
+        if (item.end < displayStart || item.start > displayEnd) continue;
         const label = LABEL_BY_ID.get(item.labelId);
         if (!label) continue;
-        const x1 = ((Math.max(item.start, viewStart) - viewStart) / timebase) * width;
+        const x1 = ((Math.max(item.start, displayStart) - displayStart) / timebase) * width;
         const geometry = annotationGeometry(item);
         if (geometry === "session") continue;
-        const x2 = geometry === "point" ? x1 : ((Math.min(item.end, viewStart + timebase) - viewStart) / timebase) * width;
+        const x2 = geometry === "point" ? x1 : ((Math.min(item.end, displayEnd) - displayStart) / timebase) * width;
         context.globalAlpha = item.status === "suggestion" ? 0.07 : item.status === "draft" ? 0.11 : 0.075;
         context.fillStyle = label.color;
         context.fillRect(x1, 0, Math.max(geometry === "point" ? 2 : x2 - x1, 2), height);
@@ -1557,55 +2009,126 @@ export default function Home() {
         }
       }
 
-      const rows = Math.max(1, display.data.length);
-      const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
-      const plotHeight = Math.max(1, height - plotTop);
-      const rowHeight = plotHeight / rows;
-      for (let channel = 0; channel < display.data.length; channel += 1) {
+      const traceOrder = display.data.map((_, index) => index).sort((left, right) => {
+        if (left === focusedChannel) return 1;
+        if (right === focusedChannel) return -1;
+        return left - right;
+      });
+      for (const channel of traceOrder) {
         const values = display.data[channel];
+        const sampleRate = display.sampleRates[channel] ?? 1;
+        const rowStartSec = display.startSecs[channel] ?? displayStart;
         const rowTop = plotTop + rowHeight * channel;
         const center = rowTop + rowHeight * 0.5;
-        if (channel === focusedChannel) {
-          context.fillStyle = "rgba(87, 223, 183, .065)";
-          context.fillRect(0, rowTop, width, rowHeight);
-          context.strokeStyle = "rgba(87, 223, 183, .28)";
-          context.strokeRect(.5, rowTop + .5, width - 1, Math.max(1, rowHeight - 1));
-        }
-        context.strokeStyle = "rgba(116,153,162,.11)";
-        context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
-        if (!values.length) continue;
-        let baselineSum = 0;
-        let baselineCount = 0;
-        for (const value of values) {
-          if (!Number.isFinite(value)) continue;
-          baselineSum += value;
-          baselineCount += 1;
-        }
-        const baseline = baselineCount ? baselineSum / baselineCount : 0;
+        if (!values.length || !(sampleRate > 0)) continue;
         const scale = (rowHeight * 0.36 * gain) / 100;
-        const samplesPerPixel = values.length / Math.max(1, width);
-        context.strokeStyle = "#eaf5f2";
-        context.lineWidth = 0.9;
-        context.beginPath();
-        for (let x = 0; x < width; x += 1) {
-          const from = Math.floor(x * samplesPerPixel);
-          const to = Math.max(from + 1, Math.min(values.length, Math.ceil((x + 1) * samplesPerPixel)));
-          let min = Infinity;
-          let max = -Infinity;
-          for (let sample = from; sample < to; sample += 1) {
+        const selected = channel === focusedChannel;
+        context.strokeStyle = selected ? "rgba(242, 255, 251, 1)" : "rgba(218, 235, 232, .72)";
+        context.lineWidth = selected ? 1.25 : 0.85;
+        if (values.length <= Math.max(2, width * 1.5)) {
+          const baseline = robustTraceBaseline(values);
+          context.beginPath();
+          let connected = false;
+          for (let sample = 0; sample < values.length; sample += 1) {
             const value = values[sample];
-            if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
+            if (!Number.isFinite(value)) {
+              connected = false;
+              continue;
+            }
+            const sampleTime = rowStartSec + sample / sampleRate;
+            const x = ((sampleTime - displayStart) / timebase) * width;
+            const y = center - (value - baseline) * scale;
+            if (connected) context.lineTo(x, y);
+            else context.moveTo(x, y);
+            connected = true;
           }
-          if (min !== Infinity) {
-            context.moveTo(x, center - (max - baseline) * scale);
-            context.lineTo(x, center - (min - baseline) * scale);
+          context.stroke();
+        } else {
+          const pixelColumns = Math.max(1, Math.floor(width));
+          const minima = new Float64Array(pixelColumns);
+          minima.fill(Number.POSITIVE_INFINITY);
+          const maxima = new Float64Array(pixelColumns);
+          maxima.fill(Number.NEGATIVE_INFINITY);
+          const gaps = new Uint8Array(pixelColumns);
+          const midpoints = new Float64Array(pixelColumns);
+          midpoints.fill(Number.NaN);
+          const baselineSamples: number[] = [];
+          let baselineFiniteCount = 0;
+          for (let sample = 0; sample < values.length; sample += 1) {
+            const sampleTime = rowStartSec + sample / sampleRate;
+            const column = Math.floor(((sampleTime - displayStart) / timebase) * pixelColumns);
+            if (column < 0 || column >= pixelColumns) continue;
+            const value = values[sample];
+            if (!Number.isFinite(value)) {
+              // A missing source sample is a real discontinuity. Do not let a
+              // finite neighbor in the same pixel visually bridge that gap.
+              gaps[column] = 1;
+              continue;
+            }
+            baselineFiniteCount += 1;
+            if (baselineSamples.length < 257) baselineSamples.push(value);
+            else {
+              const candidate = ((Math.imul(baselineFiniteCount, 0x9e3779b1) >>> 0) % baselineFiniteCount);
+              if (candidate < 257) baselineSamples[candidate] = value;
+            }
+            minima[column] = Math.min(minima[column], value);
+            maxima[column] = Math.max(maxima[column], value);
           }
+          const baseline = medianSampledValues(baselineSamples);
+          context.save();
+          context.globalAlpha = selected ? .72 : .42;
+          context.beginPath();
+          for (let x = 0; x < pixelColumns; x += 1) {
+            const min = minima[x];
+            const max = maxima[x];
+            if (min === Number.POSITIVE_INFINITY) continue;
+            // Preserve finite extrema in a partly missing pixel column, but
+            // break the connecting centerline so a real gap is never bridged.
+            if (!gaps[x]) midpoints[x] = (min + max) / 2;
+            context.moveTo(x + .5, center - (max - baseline) * scale);
+            context.lineTo(x + .5, center - (min - baseline) * scale);
+          }
+          context.stroke();
+          context.restore();
+          context.beginPath();
+          let connected = false;
+          for (let x = 0; x < pixelColumns; x += 1) {
+            const value = midpoints[x];
+            if (!Number.isFinite(value)) {
+              connected = false;
+              continue;
+            }
+            const y = center - (value - baseline) * scale;
+            if (connected) context.lineTo(x + .5, y);
+            else context.moveTo(x + .5, y);
+            connected = true;
+          }
+          context.stroke();
         }
+      }
+
+      const scaleRow = clamp(focusedChannel, 0, Math.max(0, display.data.length - 1));
+      if (display.data.length) {
+        const scale = (rowHeight * 0.36 * gain) / 100;
+        const barValue = 100;
+        const x = Math.max(18, width - 34);
+        const y = plotTop + rowHeight * (scaleRow + .5);
+        const halfHeight = barValue * scale * .5;
+        context.strokeStyle = "rgba(87, 223, 183, .95)";
+        context.lineWidth = 1.25;
+        context.beginPath();
+        context.moveTo(x, y - halfHeight); context.lineTo(x, y + halfHeight);
+        context.moveTo(x - 4, y - halfHeight); context.lineTo(x + 4, y - halfHeight);
+        context.moveTo(x - 4, y + halfHeight); context.lineTo(x + 4, y + halfHeight);
         context.stroke();
+        context.fillStyle = "rgba(155, 225, 207, .92)";
+        context.textAlign = "right";
+        context.textBaseline = "middle";
+        context.fillText(formatAmplitude(barValue, display.units[scaleRow] || "a.u."), x - 7, y);
       }
 
       if (markOnset !== null) {
-        const onsetX = ((markOnset - viewStart) / timebase) * width;
+        const onsetX = ((markOnset - displayStart) / timebase) * width;
         context.strokeStyle = "#57dfb7";
         context.lineWidth = 2;
         context.setLineDash([7, 4]);
@@ -1615,32 +2138,42 @@ export default function Home() {
     };
     waveDrawRef.current = draw;
     draw();
-  }, [annotations, display, focusedChannel, gain, markOnset, timebase, viewStart]);
+  }, [annotations, display, focusedChannel, gain, markOnset, timebase]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const observer = new ResizeObserver(() => waveDrawRef.current());
+    const observer = new ResizeObserver(() => {
+      const nextWidth = Math.max(1, Math.round(canvas.getBoundingClientRect().width));
+      setWaveformWidth((current) => current === nextWidth ? current : nextWidth);
+      waveDrawRef.current();
+    });
     observer.observe(canvas);
     return () => observer.disconnect();
   }, []);
 
-  const timeFromPointer = useCallback((event: { clientX: number }, element: HTMLElement, bypass = false) => {
+  const timeFromPointer = useCallback((event: { clientX: number }, element: HTMLElement, row: number, bypass = false) => {
     const rect = element.getBoundingClientRect();
-    const raw = viewStart + clamp((event.clientX - rect.left) / rect.width, 0, 1) * timebase;
-    const focusedRate = display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
-    return clamp(snapTime(raw, snapMode, focusedRate, bypass), 0, meta.durationSec);
-  }, [display.sampleRates, focusedChannel, meta, snapMode, timebase, viewStart]);
+    const raw = display.viewStart + clamp((event.clientX - rect.left) / rect.width, 0, 1) * timebase;
+    const visibleStart = clamp(display.viewStart, 0, meta.durationSec);
+    const visibleEnd = clamp(display.viewStart + timebase, visibleStart, meta.durationSec);
+    return clamp(
+      snapTime(raw, snapMode, sourceRateForDisplayRow(display, meta, row), bypass),
+      visibleStart,
+      visibleEnd,
+    );
+  }, [display, meta, snapMode, timebase]);
 
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    const time = timeFromPointer(event, event.currentTarget, event.altKey);
+    if (event.button !== 0 || loadingSignal || !display.data.length) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const rowCount = Math.max(1, display.data.length);
     const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
     const row = clamp(Math.floor(clamp((event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight, 0, .999999) * rowCount), 0, Math.max(0, display.data.length - 1));
+    const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
     const values = display.data[row];
-    const sample = values?.length ? clamp(Math.floor(((time - viewStart) / timebase) * values.length), 0, values.length - 1) : 0;
-    pointerRef.current = { startX: event.clientX, startTime: time, moved: false };
+    const sample = sampleIndexForDisplayRow(display, row, time);
+    pointerRef.current = { pointerId: event.pointerId, startX: event.clientX, startTime: time, moved: false };
     event.currentTarget.setPointerCapture(event.pointerId);
     setCursorTime(time);
     setCursorLocked(true);
@@ -1649,14 +2182,14 @@ export default function Home() {
   };
 
   const onWavePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!pointerRef.current) return;
-    const time = timeFromPointer(event, event.currentTarget, event.altKey);
+    if (!pointerRef.current || pointerRef.current.pointerId !== event.pointerId) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const rowCount = Math.max(1, display.data.length);
     const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
     const row = clamp(Math.floor(clamp((event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight, 0, .999999) * rowCount), 0, Math.max(0, display.data.length - 1));
+    const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
     const values = display.data[row];
-    const sample = values?.length ? clamp(Math.floor(((time - viewStart) / timebase) * values.length), 0, values.length - 1) : 0;
+    const sample = sampleIndexForDisplayRow(display, row, time);
     if (Math.abs(event.clientX - pointerRef.current.startX) > 3) {
       pointerRef.current.moved = true;
     }
@@ -1682,16 +2215,24 @@ export default function Home() {
 
   const onWavePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const pointer = pointerRef.current;
+    if (!pointer || pointer.pointerId !== event.pointerId) return;
     pointerRef.current = null;
-    if (!pointer) return;
     if (cursorFrameRef.current !== null) {
       window.cancelAnimationFrame(cursorFrameRef.current);
       cursorFrameRef.current = null;
     }
     pendingCursorRef.current = null;
-    const time = timeFromPointer(event, event.currentTarget, event.altKey);
+    const rect = event.currentTarget.getBoundingClientRect();
+    const rowCount = Math.max(1, display.data.length);
+    const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
+    const row = clamp(Math.floor(clamp((event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight, 0, .999999) * rowCount), 0, Math.max(0, display.data.length - 1));
+    const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
+    const values = display.data[row];
+    const sample = sampleIndexForDisplayRow(display, row, time);
     setCursorTime(time);
     setCursorLocked(true);
+    setFocusedChannel(row);
+    setCursorAmplitude(values?.[sample] ?? 0);
     if (activeTool === "seizure" && !pointer.moved) {
       if (markOnset === null) {
         setMarkOnset(time);
@@ -1699,7 +2240,7 @@ export default function Home() {
       } else if (time <= markOnset) {
         setToast("Offset must be after onset");
       } else {
-        addAnnotation(LABEL_BY_ID.get("ictal")!, markOnset, time);
+        addAnnotation(LABEL_BY_ID.get("ictal")!, markOnset, time, "native", row);
         setMarkOnset(null);
         setActiveTool("cursor");
       }
@@ -1712,6 +2253,16 @@ export default function Home() {
     }
   };
 
+  const onWavePointerCancel = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (pointerRef.current?.pointerId !== event.pointerId) return;
+    pointerRef.current = null;
+    pendingCursorRef.current = null;
+    if (cursorFrameRef.current !== null) {
+      window.cancelAnimationFrame(cursorFrameRef.current);
+      cursorFrameRef.current = null;
+    }
+  };
+
   const onLabelDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const labelId = event.dataTransfer.getData("application/x-neurotrace-label");
@@ -1719,7 +2270,16 @@ export default function Home() {
     if (!label) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const time = timeFromPointer(event, canvas, event.altKey);
+    const canvasRect = canvas.getBoundingClientRect();
+    if (event.clientX < canvasRect.left || event.clientX > canvasRect.right
+      || event.clientY < canvasRect.top + CHANNEL_RAIL_HEADER_HEIGHT
+      || event.clientY > canvasRect.bottom) {
+      setDragGhost(null);
+      setToast("Drop labels directly on a waveform row");
+      return;
+    }
+    const row = clamp(Math.floor(clamp((event.clientY - canvasRect.top - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, canvasRect.height - CHANNEL_RAIL_HEADER_HEIGHT), 0, .999999) * Math.max(1, display.data.length)), 0, Math.max(0, display.data.length - 1));
+    const time = timeFromPointer(event, canvas, row, event.altKey);
     const intent: PlacementIntent = label.geometry === "session"
       ? "native"
       : label.category === "Context"
@@ -1729,15 +2289,26 @@ export default function Home() {
         : selection
           ? "windowed"
           : "instance";
-    addAnnotation(label, selection?.start ?? time, selection?.end, intent);
+    setFocusedChannel(row);
+    addAnnotation(label, selection?.start ?? time, selection?.end, intent, row);
     setDragGhost(null);
   };
 
   const onLabelDragOver = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
     const labelId = event.dataTransfer.types.includes("application/x-neurotrace-label") ? "drag" : "";
     const canvas = canvasRef.current;
-    if (labelId && canvas) setDragGhost((current) => ({ labelId: current?.labelId ?? "", time: timeFromPointer(event, canvas, event.altKey) }));
+    if (labelId && canvas) {
+      const canvasRect = canvas.getBoundingClientRect();
+      if (event.clientX < canvasRect.left || event.clientX > canvasRect.right
+        || event.clientY < canvasRect.top + CHANNEL_RAIL_HEADER_HEIGHT
+        || event.clientY > canvasRect.bottom) {
+        setDragGhost(null);
+        return;
+      }
+      event.preventDefault();
+      const row = clamp(Math.floor(clamp((event.clientY - canvasRect.top - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, canvasRect.height - CHANNEL_RAIL_HEADER_HEIGHT), 0, .999999) * Math.max(1, display.data.length)), 0, Math.max(0, display.data.length - 1));
+      setDragGhost((current) => ({ labelId: current?.labelId ?? "", time: timeFromPointer(event, canvas, row, event.altKey) }));
+    }
   };
 
   useEffect(() => {
@@ -1756,7 +2327,7 @@ export default function Home() {
       if (drag.mode === "move" && drag.originals.length > 1) {
         const dragSampleRate = drag.original.channelScope
           ? meta.sampleRates[drag.original.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
-          : display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
+          : sourceRateForDisplayRow(display, meta, focusedChannel);
         const snappedDelta = snapTime(drag.original.start + delta, snapMode, dragSampleRate) - drag.original.start;
         const earliest = Math.min(...drag.originals.map((item) => item.start));
         const latest = Math.max(...drag.originals.map((item) => item.end));
@@ -1776,7 +2347,7 @@ export default function Home() {
       const originalGeometry = annotationGeometry(drag.original);
       const dragSampleRate = drag.original.channelScope
         ? meta.sampleRates[drag.original.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
-        : display.sampleRates[focusedChannel] ?? primarySampleRate(meta);
+        : sourceRateForDisplayRow(display, meta, focusedChannel);
       let geometry = originalGeometry;
       let track = drag.original.track;
       if (drag.mode === "move" && ["instance", "windowed"].includes(drag.original.track)) {
@@ -1858,7 +2429,7 @@ export default function Home() {
       window.removeEventListener("pointerup", onUp);
       if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
     };
-  }, [display.sampleRates, focusedChannel, meta, snapMode, timebase]);
+  }, [display, focusedChannel, meta, snapMode, timebase]);
 
   const startAnnotationDrag = (event: ReactPointerEvent, item: Annotation, mode: "move" | "start" | "end") => {
     event.preventDefault();
@@ -1966,7 +2537,9 @@ export default function Home() {
   const onViewerWheel = useCallback((event: WheelEvent) => {
     const viewer = viewerRef.current;
     if (!viewer) return;
-    const rect = viewer.getBoundingClientRect();
+    const viewerRect = viewer.getBoundingClientRect();
+    const canvasShell = event.target instanceof Element ? event.target.closest(".canvas-shell") : null;
+    const rect = canvasShell?.getBoundingClientRect() ?? viewerRect;
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault();
       const anchor = viewStart + clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * timebase;
@@ -2078,38 +2651,62 @@ export default function Home() {
     let restoredBadChannels: number[] = [];
     let restoredReviewer: string | null = null;
     let restoredRecordingType = nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG";
-    try {
-      const projectJson = localStorage.getItem(`neurotrace:project:${nextKey}`);
-      if (projectJson) {
-        const project = JSON.parse(projectJson) as {
-          annotations?: unknown;
-          candidates?: Candidate[];
-          activeCandidate?: number;
-          badChannels?: number[];
-          reviewer?: string;
-          recordingType?: string;
-        };
-        restored = migrateAnnotationList(project.annotations, nextMeta.durationSec, nextMeta.channelLabels.length);
-        if (Array.isArray(project.candidates)) {
-          restoredCandidates = migrateCandidateList(project.candidates, nextMeta.durationSec);
-          if (Number.isInteger(project.activeCandidate) && restoredCandidates.length) {
-            restoredActiveCandidate = clamp(project.activeCandidate as number, 0, restoredCandidates.length - 1);
-          }
-        }
-        if (Array.isArray(project.badChannels)) {
-          restoredBadChannels = project.badChannels.filter((index) => Number.isInteger(index) && index >= 0 && index < nextMeta.channelLabels.length);
-        }
-        if (typeof project.reviewer === "string") restoredReviewer = project.reviewer;
-        if (typeof project.recordingType === "string") restoredRecordingType = project.recordingType;
-      } else {
-        const cached = localStorage.getItem(`neurotrace:draft:${nextKey}`);
-        if (cached) restored = migrateAnnotationList(JSON.parse(cached), nextMeta.durationSec, nextMeta.channelLabels.length);
-      }
-    } catch {
+    let recoveryWarning: string | null = null;
+    const draftKey = `neurotrace:draft:${nextKey}`;
+    const restoreDraft = () => {
+      const cached = localStorage.getItem(draftKey);
+      if (!cached) return false;
+      restored = parseRecoveryDraft(cached, nextMeta.durationSec, nextMeta.channelLabels.length);
+      return true;
+    };
+    const preserveUnreadableRecovery = (kind: "project" | "draft", raw: string) => {
       try {
-        const cached = localStorage.getItem(`neurotrace:draft:${nextKey}`);
-        if (cached) restored = migrateAnnotationList(JSON.parse(cached), nextMeta.durationSec, nextMeta.channelLabels.length);
-      } catch { /* local recovery is optional */ }
+        localStorage.setItem(`neurotrace:unreadable-${kind}:${nextKey}:${Date.now()}`, raw);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let projectJson: string | null = null;
+    let recoveryReadable = true;
+    try {
+      projectJson = localStorage.getItem(`neurotrace:project:${nextKey}`);
+    } catch {
+      recoveryReadable = false;
+      recoveryWarning = "Local recovery is unavailable in this browser. This recording opened without recovered labels.";
+    }
+    if (!recoveryReadable) {
+      // The recording can still open; the status message tells the reviewer that recovery was skipped.
+    } else if (projectJson) {
+      try {
+        const project = parseRecoveryProject(projectJson, nextMeta.durationSec, nextMeta.channelLabels.length);
+        restored = project.annotations;
+        restoredCandidates = project.candidates;
+        restoredActiveCandidate = project.activeCandidate;
+        restoredBadChannels = project.badChannels;
+        restoredReviewer = project.reviewer;
+        if (project.recordingType) restoredRecordingType = project.recordingType;
+      } catch {
+        const preserved = preserveUnreadableRecovery("project", projectJson);
+        try {
+          const usedDraft = restoreDraft();
+          recoveryWarning = usedDraft
+            ? `The saved project could not be verified${preserved ? " and was preserved" : ""}; valid draft labels were recovered instead.`
+            : `The saved project could not be verified${preserved ? " and was preserved" : ""}; this recording opened without recovered labels.`;
+        } catch {
+          const cached = localStorage.getItem(draftKey);
+          if (cached) preserveUnreadableRecovery("draft", cached);
+          recoveryWarning = `Saved project and draft labels could not be verified${preserved ? "; the project was preserved for support" : ""}. This recording opened without recovered labels.`;
+        }
+      }
+    } else {
+      try {
+        restoreDraft();
+      } catch {
+        const cached = localStorage.getItem(draftKey);
+        const preserved = cached ? preserveUnreadableRecovery("draft", cached) : false;
+        recoveryWarning = `Saved draft labels could not be verified${preserved ? " and were preserved for support" : ""}. This recording opened without recovered labels.`;
+      }
     }
     if (activeSessionIdRef.current !== targetSessionId) {
       throw new Error("The active session changed while the recording was opening. Load it again in the intended tab.");
@@ -2124,9 +2721,15 @@ export default function Home() {
     setRawSourceHash(contentHash);
     setSourceHash(interpretationHash);
     setSourceInterpretation(interpretation ?? null);
-    setSelectedChannels(new Set(nextMeta.channelLabels.slice(0, 18).map((_, index) => index)));
+    const recommendedChannels = (Array.isArray(nextMeta.recommendedDisplayChannels)
+      ? nextMeta.recommendedDisplayChannels
+      : nextMeta.channelLabels.slice(0, 18).map((_, index) => index))
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < nextMeta.channelLabels.length);
+    setSelectedChannels(new Set(recommendedChannels));
     setBadChannels(new Set(restoredBadChannels));
-    setDisplay({ data: [], labels: [], sampleRates: [], sourceIndices: [], primarySourceIndices: [], warnings: [] });
+    rawWindowCacheRef.current = [];
+    processedWindowCacheRef.current = [];
+    setDisplay(EMPTY_DISPLAY);
     setViewStart(0);
     setCursorTime(0);
     setCursorLocked(false);
@@ -2135,18 +2738,19 @@ export default function Home() {
     setActiveTool("cursor");
     setAnnotationDragPreview(null);
     setTimebase(Math.min(20, Math.max(5, nextMeta.durationSec)));
+    setExpandedChannels(recommendedChannels.length > 10);
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setRecordingType(restoredRecordingType);
-    if (restoredReviewer) setReviewer(restoredReviewer);
+    setReviewer(restoredReviewer ?? "");
     setAnnotations(restored);
     undoRef.current = [];
     redoRef.current = [];
-    setToast(restored.length
+    setToast(recoveryWarning ?? (restored.length
       ? `Recovered ${restored.length} labels and local review state`
-      : `${nextMeta.format} recording ready — ${nextMeta.channelLabels.length} channels${nextMeta.warnings.length ? ` · ${nextMeta.warnings.length} source warning${nextMeta.warnings.length === 1 ? "" : "s"}` : ""}`);
+      : `${nextMeta.format} recording ready — ${nextMeta.channelLabels.length} channels${nextMeta.warnings.length ? ` · ${nextMeta.warnings.length} source warning${nextMeta.warnings.length === 1 ? "" : "s"}` : ""}`));
     setShowImport(false);
     return true;
   }, [activeSessionId, applySessionSnapshot, storeActiveSession]);
@@ -2220,6 +2824,12 @@ export default function Home() {
 
   const confirmDatImport = async () => {
     if (!pendingDat || importBusyRef.current) return;
+    if (!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0)
+      || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0)
+      || !Number.isFinite(datMapping.physicalScale) || !(datMapping.physicalScale > 0)) {
+      setToast("Confirm a positive sample rate, whole-number channel count, and positive signal scale");
+      return;
+    }
     importBusyRef.current = true;
     setImportBusy(true);
     try {
@@ -2466,6 +3076,8 @@ export default function Home() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
@@ -2477,7 +3089,8 @@ export default function Home() {
       }
       if (event.key === "Escape" && modalOpen) {
         event.preventDefault();
-        if (showHelp) setShowHelp(false);
+        if (confirmCommit.length) setConfirmCommit([]);
+        else if (showHelp) setShowHelp(false);
         else if (showSettings) setShowSettings(false);
         else if (showChannels) setShowChannels(false);
         else if (showSessionMap) setShowSessionMap(false);
@@ -2485,18 +3098,10 @@ export default function Home() {
         else if (showAnnotationEditor) setShowAnnotationEditor(false);
         else if (queueDetailEntry) setQueueDetailTarget(null);
         else if (showImport && !importBusy) setShowImport(false);
-        else if (confirmCommit.length) setConfirmCommit([]);
-        setSelectedAnnotationId(null);
-        setSelectedAnnotationIds(new Set());
-        setSelection(null);
-        setMarkOnset(null);
-        setCursorLocked(false);
-        setDragGhost(null);
-        setShowSessionContextPicker(false);
-        setActiveTool("cursor");
         return;
       }
       if (modalOpen) return;
+      if (interactiveTarget) return;
       if (zoomModifier && (zoomInKey || zoomOutKey)) {
         event.preventDefault();
         event.stopPropagation();
@@ -2528,14 +3133,15 @@ export default function Home() {
         if (event.key === "?") setShowHelp(true);
         return;
       }
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select")) return;
       const lower = event.key.toLowerCase();
       if ((event.metaKey || event.ctrlKey) && lower === "z") {
         event.preventDefault();
         if (event.shiftKey) redo();
         else undo();
-      } else if (event.key === "ArrowLeft") {
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === "ArrowLeft") {
         event.preventDefault();
         if (selectedAnnotationIds.size) moveSelectedAnnotations(-1, event.shiftKey);
         else setViewStartSafe((value) => value - (event.shiftKey ? 10 : 1));
@@ -2556,7 +3162,7 @@ export default function Home() {
       } else if (lower === controlBindings.ictalOffset && markOnset !== null) {
         if (cursorTime > markOnset) { addAnnotation(LABEL_BY_ID.get("ictal")!, markOnset, cursorTime); setMarkOnset(null); setActiveTool("cursor"); }
         else setToast("Offset must be after onset");
-      } else if (lower === controlBindings.commit || event.key === "Enter" || event.code === "Space") {
+      } else if (lower === controlBindings.commit || ((event.key === "Enter" || event.code === "Space") && target === canvasRef.current)) {
         if (event.code === "Space") event.preventDefault();
         commitSelected();
       } else if ((event.key === "Delete" || event.key === "Backspace") && selectedAnnotationIds.size) {
@@ -2843,27 +3449,27 @@ export default function Home() {
             <div className="overview-time"><span>00:00</span><span>{formatClock(meta.durationSec / 2)}</span><span>{formatClock(meta.durationSec)}</span></div>
           </div>
 
-          <div ref={viewerRef} className={`signal-and-tracks ${spectrogramOpen ? "with-spectrogram" : ""}`} onDragOver={onLabelDragOver} onDrop={onLabelDrop} onDragLeave={() => setDragGhost(null)}>
+          <div ref={viewerRef} className={`signal-and-tracks ${spectrogramOpen ? "with-spectrogram" : ""}`}>
             <div className={`waveform-wrap ${expandedChannels ? "channel-scroll-mode" : ""}`} style={{ "--channel-content-height": `${Math.max(245, display.labels.length * 60 + 28)}px` } as React.CSSProperties}>
               <div className="channel-rail" style={{ gridTemplateRows: `repeat(${Math.max(1, display.labels.length)}, 1fr)` }}>
                 <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 <button className={`channel-layout-button ${expandedChannels ? "active" : ""}`} aria-label={`${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`} aria-pressed={expandedChannels} title={`${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`} onClick={() => setExpandedChannels((value) => !value)}>E</button>
-                {display.labels.map((label, index) => <button key={`${label}-${index}`} className={focusedChannel === index ? "focused" : ""} aria-pressed={focusedChannel === index} onClick={() => setFocusedChannel(index)}><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0)}</span></button>)}
+                {display.labels.map((label, index) => <button key={`${label}-${index}`} className={focusedChannel === index ? "focused" : ""} aria-pressed={focusedChannel === index} onClick={() => setFocusedChannel(index)}><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>)}
               </div>
-              <div className="canvas-shell">
-                <canvas ref={canvasRef} aria-label="EEG waveform" onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} />
+              <div className="canvas-shell" onDragOver={onLabelDragOver} onDrop={onLabelDrop} onDragLeave={() => setDragGhost(null)}>
+                <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label="Interactive EEG waveform. Use the pointer to pin a time or select a window." onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
                 {selection && <div className="wave-selection" style={{
-                  left: `${((Math.max(viewStart, selection.start) - viewStart) / timebase) * 100}%`,
-                  width: `${Math.max(0, ((Math.min(viewStart + timebase, selection.end) - Math.max(viewStart, selection.start)) / timebase) * 100)}%`,
+                  left: `${((Math.max(display.viewStart, selection.start) - display.viewStart) / timebase) * 100}%`,
+                  width: `${Math.max(0, ((Math.min(display.viewStart + timebase, selection.end) - Math.max(display.viewStart, selection.start)) / timebase) * 100)}%`,
                 }} />}
-                {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
-                {loadingSignal && <div className="signal-loading"><span /> Reading signal window…</div>}
-                {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
+                {cursorLocked && cursorTime >= display.viewStart && cursorTime <= display.viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
+                {loadingSignal && <div className="signal-loading"><span /> Preparing signal window…</div>}
+                {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
                 {!display.data.length && !loadingSignal && <div className="no-channels"><strong>No visible channels</strong><span>Use CH+ to choose channels.</span></div>}
               </div>
             </div>
 
-            {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={viewStart} cursor={cursorTime} label={display.labels[focusedChannel] || "Focused channel"} />}
+            {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={display.startSecs[focusedChannel] ?? display.viewStart} cursor={cursorTime} label={display.labels[focusedChannel] || "Focused channel"} />}
 
             {bottomTracksOpen && <div
               className={`timeline ${annotationSelectionBox ? "box-selecting" : ""}`}
@@ -2906,8 +3512,8 @@ export default function Home() {
           </div>
 
           <footer className="command-strip">
-            <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{display.labels[focusedChannel] ?? "—"}</span><span>{formatAmplitude(cursorAmplitude)}</span><span>sample {Math.round(cursorTime * (display.sampleRates[focusedChannel] ?? primarySampleRate(meta))).toLocaleString()}</span></div>
-            <div className="command-status"><span className="status-dot" /><span className="command-status-text">{toast}</span></div>
+            <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{display.labels[focusedChannel] ?? "—"}</span><span>{formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}</span><span>source sample {Math.round(cursorTime * sourceRateForDisplayRow(display, meta, focusedChannel)).toLocaleString()}</span></div>
+            <div className="command-status" role="status" aria-live="polite" aria-atomic="true"><span className="status-dot" /><span className="command-status-text">{toast}</span></div>
             {selectedAnnotationIds.size > 0 && <div className="annotation-command-actions">
               {selectedAnnotationIds.size === 1 && selectedAnnotation
                 ? <button onClick={() => setShowAnnotationEditor(true)}>Edit label</button>
@@ -2976,14 +3582,16 @@ export default function Home() {
             <div><span className="file-type">DAT</span><div><strong>{pendingDat.name}</strong><small>Signed int16 · little-endian</small></div></div>
             <p>{pendingLegacyMeta ? `Companion MAT metadata found ${pendingLegacyMeta.channelLabels.length || pendingLegacyMeta.channelCount || 0} channels and ${pendingLegacyMeta.events.length} timestamped events. Every timing and scale value remains unverified until you confirm it here.` : "Enter and confirm the raw binary layout. Zero means the timing/channel mapping is still unknown; the recording cannot open until those fields are verified."}</p>
             <div className="mapper-fields"><label><span>Sample rate</span><input type="number" value={datMapping.sampleRate} onChange={(event) => setDatMapping((current) => ({ ...current, sampleRate: Number(event.target.value) }))} /><small>Hz</small></label><label><span>Channels</span><input type="number" value={datMapping.channelCount} onChange={(event) => setDatMapping((current) => ({ ...current, channelCount: Number(event.target.value) }))} /></label><label><span>Scale</span><input type="number" step="0.001" value={datMapping.physicalScale} onChange={(event) => setDatMapping((current) => ({ ...current, physicalScale: Number(event.target.value) }))} /><small>µV/count</small></label></div>
-            <button className="button primary wide" disabled={!(datMapping.sampleRate > 0) || !(datMapping.channelCount > 0) || !Number.isFinite(datMapping.physicalScale)} onClick={confirmDatImport}>Confirm mapping &amp; open DAT</button>
+            <button className="button primary wide" disabled={!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0) || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0) || !Number.isFinite(datMapping.physicalScale) || !(datMapping.physicalScale > 0)} onClick={confirmDatImport}>Confirm mapping &amp; open DAT</button>
           </div>}
           <div className="format-cards"><div><strong>EDF / EDF+</strong><span>Calibrated signals, channel metadata, full recording timeline</span></div><div><strong>MAT v5</strong><span>Automatic largest-matrix detection with sampling-rate discovery</span></div><div><strong>MAT + DAT</strong><span>Manual binary confirmation for legacy Buzcode sessions</span></div></div>
           <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Hospital deployment still requires institutional privacy, security, and validation review.</p></div>
         </div>
       </div>}
 
-      {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal"><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but the QC engine found an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => setConfirmCommit([])}>Return to label</button><button className="button primary" onClick={() => commitSelected(true)}>Commit with advisory</button></div></div></div>}
+      {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Commit advisory" tabIndex={-1}><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but the QC engine found an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => setConfirmCommit([])}>Return to label</button><button className="button primary" onClick={() => {
+        if (commitSelected(true)) setShowAnnotationEditor(false);
+      }}>Commit with advisory</button></div></div></div>}
 
       {showChannels && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowChannels(false); }}>
         <div className="modal channel-modal" role="dialog" aria-modal="true" aria-label="Channel controls" tabIndex={-1}>
@@ -3155,11 +3763,9 @@ export default function Home() {
             <label className="confidence-field"><span>Confidence <strong>{selectedAnnotation.confidence}%</strong></span><input type="range" min="0" max="100" value={selectedAnnotation.confidence} onChange={(event) => updateAnnotation(selectedAnnotation.id, { confidence: Number(event.target.value) }, false)} /></label>
             <label className="form-field"><span>Clinical / review note</span><textarea rows={4} placeholder="Evidence, uncertainty, or rationale…" value={selectedAnnotation.notes} onChange={(event) => updateAnnotation(selectedAnnotation.id, { notes: event.target.value }, false)} /></label>
             <div className="inspector-actions"><button className="button primary" onClick={() => {
-              commitSelected();
-              setShowAnnotationEditor(false);
+              if (commitSelected()) setShowAnnotationEditor(false);
             }}>{selectedAnnotation.status === "committed" ? "Save revision" : "Commit label"}</button><button className="icon-danger" onClick={() => {
-              deleteAnnotation(selectedAnnotation.id);
-              setShowAnnotationEditor(false);
+              if (deleteAnnotation(selectedAnnotation.id)) setShowAnnotationEditor(false);
             }} title="Delete annotation" aria-label="Delete annotation">🗑</button></div>
             <div className="snapshot-note"><span>DISPLAY SNAPSHOT</span><strong>{montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average ref" : "Recorded ref"} · {filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz} Hz notch` : "Raw"}</strong><small>Stored with the exported revision; raw samples remain unchanged.</small></div>
           </div>
@@ -3202,36 +3808,74 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label }: { data?: F
       const width = rect.width;
       const height = rect.height;
       ctx.fillStyle = "#071216"; ctx.fillRect(0, 0, width, height);
-      const windowSize = Math.min(256, 2 ** Math.floor(Math.log2(Math.max(32, sampleRate))));
-      const frames = Math.min(90, Math.max(12, Math.floor((data.length - windowSize) / Math.max(1, windowSize / 4))));
-      const hop = Math.max(1, Math.floor((data.length - windowSize) / Math.max(1, frames - 1)));
+      if (sampleRate < 2) {
+        ctx.fillStyle = "rgba(235,245,243,.55)";
+        ctx.font = "10px ui-monospace, monospace";
+        ctx.fillText("Spectrum unavailable below 2 Hz", 8, 12);
+        return;
+      }
+      const nominalWindowSize = Math.min(256, 2 ** Math.floor(Math.log2(Math.max(32, sampleRate))));
+      const windowSize = Math.max(1, Math.min(data.length, nominalWindowSize));
+      const targetHop = Math.max(1, Math.floor(windowSize / 4));
+      const possibleFrames = Math.max(1, Math.floor((data.length - windowSize) / targetHop) + 1);
+      const frames = Math.min(90, possibleFrames);
+      const hop = frames > 1
+        ? Math.max(1, Math.floor((data.length - windowSize) / (frames - 1)))
+        : 1;
       const maxHz = Math.min(150, sampleRate / 2);
       const bins = 56;
-      const powers: number[][] = Array.from({ length: bins }, () => Array(frames).fill(0));
+      const powers: number[][] = Array.from({ length: bins }, () => Array(frames).fill(Number.NaN));
       for (let frame = 0; frame < frames; frame += 1) {
-        const offset = frame * hop;
+        const offset = Math.min(Math.max(0, data.length - windowSize), frame * hop);
+        let finiteSamples = 0;
+        let mean = 0;
+        for (let sample = 0; sample < windowSize; sample += 1) {
+          const value = data[offset + sample];
+          if (!Number.isFinite(value)) continue;
+          mean += value;
+          finiteSamples += 1;
+        }
+        if (finiteSamples / windowSize < .75) continue;
+        mean /= finiteSamples;
+        const coverageGain = windowSize / finiteSamples;
         for (let bin = 0; bin < bins; bin += 1) {
           const frequency = Math.exp(Math.log(1) + (bin / (bins - 1)) * Math.log(Math.max(1.01, maxHz)));
           let re = 0; let im = 0;
           for (let sample = 0; sample < windowSize; sample += 1) {
-            const value = data[offset + sample] ?? 0;
+            const sourceValue = data[offset + sample];
+            if (!Number.isFinite(sourceValue)) continue;
+            const value = sourceValue - mean;
             const hann = 0.5 - 0.5 * Math.cos((2 * Math.PI * sample) / Math.max(1, windowSize - 1));
             const angle = (2 * Math.PI * frequency * sample) / sampleRate;
             re += value * hann * Math.cos(angle);
             im -= value * hann * Math.sin(angle);
           }
+          re *= coverageGain;
+          im *= coverageGain;
           powers[bin][frame] = Math.log10(re * re + im * im + 1e-9);
         }
       }
-      const flat = powers.flat().sort((a, b) => a - b);
+      const flat = powers.flat().filter(Number.isFinite).sort((a, b) => a - b);
+      if (!flat.length) {
+        ctx.fillStyle = "rgba(235,245,243,.55)";
+        ctx.font = "10px ui-monospace, monospace";
+        ctx.fillText("No sufficiently complete signal frames", 8, 12);
+        return;
+      }
       const low = flat[Math.floor(flat.length * 0.08)] ?? 0;
       const high = flat[Math.floor(flat.length * 0.97)] ?? low + 1;
       for (let bin = 0; bin < bins; bin += 1) for (let frame = 0; frame < frames; frame += 1) {
-        const value = clamp((powers[bin][frame] - low) / Math.max(1e-6, high - low), 0, 1);
-        const hue = 220 - value * 170;
-        ctx.fillStyle = `hsl(${hue} 76% ${18 + value * 48}%)`;
         const x = (frame / frames) * width;
         const y = height - ((bin + 1) / bins) * height;
+        const power = powers[bin][frame];
+        if (!Number.isFinite(power)) {
+          ctx.fillStyle = "rgba(243,187,95,.06)";
+          ctx.fillRect(x, y, width / frames + 1, height / bins + 1);
+          continue;
+        }
+        const value = clamp((power - low) / Math.max(1e-6, high - low), 0, 1);
+        const hue = 220 - value * 170;
+        ctx.fillStyle = `hsl(${hue} 76% ${18 + value * 48}%)`;
         ctx.fillRect(x, y, width / frames + 1, height / bins + 1);
       }
       ctx.strokeStyle = "rgba(255,255,255,.28)";
@@ -3249,7 +3893,7 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label }: { data?: F
   }, [data, sampleRate]);
   const duration = data?.length && sampleRate ? data.length / sampleRate : 1;
   const cursorLeft = clamp(((cursor - start) / duration) * 100, 0, 100);
-  return <div className="spectrogram-panel"><div className="spectrogram-label"><strong>{label}</strong><span>1–{Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only</span></div><div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div></div>;
+  return <div className="spectrogram-panel"><div className="spectrogram-label"><strong>{label}</strong><span>{sampleRate >= 2 ? `1–${Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only` : "Sampling rate below 2 Hz"}</span></div><div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div></div>;
 }
 
 function QcPanel({ issues, annotations, badChannels, meta, recoveryStatus, onSelect }: { issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }>; annotations: Annotation[]; badChannels: Set<number>; meta: RecordingMeta; recoveryStatus: "saved" | "error"; onSelect: (id: string) => void }) {
@@ -3295,7 +3939,7 @@ function SessionMap({
     { id: "windowed", label: "ePhys window labels", matches: (item) => item.track === "windowed" },
     { id: "instance", label: "ePhys instance labels", matches: (item) => item.track === "instance" },
   ];
-  return <div className="modal-backdrop map-backdrop"><div className="session-map-modal">
+  return <div className="modal-backdrop map-backdrop"><div className="session-map-modal" role="dialog" aria-modal="true" aria-label="Session map and quality review" tabIndex={-1}>
     <header><div><span className="modal-eyebrow">MODEL-READY SESSION MAP</span><h2>{patientLabel(meta)} <i>/</i> {recordingLabel(meta)}</h2><p>{meta.channelLabels.length} channels · {formatClock(meta.durationSec)} · {primarySampleRate(meta)} Hz</p></div><button onClick={onClose} aria-label="Close session map">×</button></header>
     <div className="session-map-tabs" role="tablist" aria-label="Session review views">
       <button role="tab" aria-selected={tab === "map"} className={tab === "map" ? "active" : ""} onClick={() => onTabChange("map")}>Session map</button>

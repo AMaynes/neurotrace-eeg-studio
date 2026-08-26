@@ -370,7 +370,7 @@ test("reattaches non-passive waveform wheel controls after a blank session loads
 
   const listenerStart = page.indexOf('viewer.addEventListener("wheel"');
   const listenerEffectStart = page.lastIndexOf("useEffect(() => {", listenerStart);
-  const listenerEffectEnd = page.indexOf("\n\n  useEffect", listenerStart);
+  const listenerEffectEnd = page.indexOf("const selectCandidate", listenerStart);
   assert.ok(listenerEffectStart >= 0 && listenerEffectEnd > listenerStart, "the wheel listener lifecycle is present");
   const listenerEffect = page.slice(listenerEffectStart, listenerEffectEnd);
   assert.match(listenerEffect, /viewerRef\.current/);
@@ -391,7 +391,7 @@ test("resizes context from its top edge, with upward drag expanding the track", 
 
   const resizeRead = page.indexOf("const resize = contextResizeRef.current");
   const resizeEffectStart = page.lastIndexOf("useEffect(() => {", resizeRead);
-  const resizeEffectEnd = page.indexOf("\n\n  const jumpTo", resizeRead);
+  const resizeEffectEnd = page.indexOf("const jumpTo", resizeRead);
   assert.ok(resizeEffectStart >= 0 && resizeEffectEnd > resizeRead, "the context resize lifecycle is present");
   const resizeEffect = page.slice(resizeEffectStart, resizeEffectEnd);
   assert.match(
@@ -547,8 +547,9 @@ test("opens queue-item details with complete notes and context", async () => {
 
 test("does not tint the waveform for whole-session labels", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const drawStart = page.lastIndexOf("for (const item of annotations)", page.indexOf("const rows = Math.max(1, display.data.length)"));
-  const drawEnd = page.indexOf("const rows =", drawStart);
+  const canvasDrawStart = page.indexOf("const displayStart = display.viewStart");
+  const drawStart = page.indexOf("for (const item of annotations)", canvasDrawStart);
+  const drawEnd = page.indexOf("const traceOrder", drawStart);
   const shading = page.slice(drawStart, drawEnd);
 
   assert.match(shading, /const geometry = annotationGeometry\(item\)/);
@@ -562,7 +563,8 @@ test("does not tint the waveform for whole-session labels", async () => {
 test("refreshes signal windows during panning instead of debouncing until scrolling stops", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const effectStart = page.lastIndexOf("useEffect(() => {", page.indexOf("const requestId = ++displayRequestIdRef.current"));
-  const effectEnd = page.indexOf("\n\n  useEffect", page.indexOf("const requestId = ++displayRequestIdRef.current"));
+  const playbackGuard = page.indexOf("if (!hasRecording || !playing)", page.indexOf("const requestId = ++displayRequestIdRef.current"));
+  const effectEnd = page.lastIndexOf("useEffect(() => {", playbackGuard);
   assert.ok(effectStart >= 0 && effectEnd > effectStart, "signal-window refresh effect is present");
   const effect = page.slice(effectStart, effectEnd);
   assert.match(effect, /displayRefreshPendingRef\.current\s*=\s*refreshWindow/, "each pan position replaces the pending read immediately");
@@ -657,7 +659,9 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /const plotHeight\s*=\s*Math\.max\(1,\s*height\s*-\s*plotTop\)/);
   assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channel/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
-  assert.match(draw, /baselineSum[\s\S]*?baselineCount[\s\S]*?max\s*-\s*baseline/, "each trace is centered on its display-window baseline");
+  assert.match(draw, /robustTraceBaseline\(values\)[\s\S]*?max\s*-\s*baseline/, "each trace is centered on a robust display-window baseline");
+  assert.match(draw, /if \(!Number\.isFinite\(value\)\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");
+  assert.match(draw, /const traceOrder[\s\S]*?focusedChannel/, "the focused trace is drawn last for readability");
 
   const pointerStart = page.indexOf("const onWavePointerDown");
   const pointerEnd = page.indexOf("const onWavePointerUp", pointerStart);
@@ -673,11 +677,15 @@ test("filters padded signal data and crops back to the requested viewport", asyn
   const refresh = page.slice(refreshStart, refreshEnd);
 
   assert.match(refresh, /filterPadSec/);
-  assert.match(refresh, /paddedStart\s*=\s*Math\.max\(0,\s*viewStart\s*-\s*filterPadSec\)/);
-  assert.match(refresh, /paddedEnd\s*=\s*Math\.min\(meta\.durationSec,\s*viewStart\s*\+\s*timebase\s*\+\s*filterPadSec\)/);
-  assert.match(refresh, /source\.getWindow\(paddedStart/);
-  assert.match(refresh, /applyDisplayFilters\(windowData\.data/);
-  assert.match(refresh, /cropStart[\s\S]*?channel\.slice\(/, "filter settling samples are removed before rendering");
+  assert.match(refresh, /processingPadSec\s*=\s*filterPadSec\s*\+\s*groupDelayPadSec/);
+  assert.match(refresh, /requiredStart\s*=\s*Math\.max\(0,\s*viewStart\s*-\s*processingPadSec\)/);
+  assert.match(refresh, /requiredEnd\s*=\s*Math\.min\(meta\.durationSec,\s*viewStart\s*\+\s*timebase\s*\+\s*processingPadSec\)/);
+  assert.match(refresh, /rawWindowCacheRef\.current\.find/, "adjacent pans reuse a bounded raw window cache");
+  assert.match(refresh, /source\.getWindow\(cacheStart/);
+  assert.match(refresh, /applyDisplayFilters\(\[sourceChannel\]/);
+  assert.match(refresh, /prepareClinicalDisplaySignals/, "clinical display preparation is applied before the viewport crop");
+  assert.match(refresh, /cropStart[\s\S]*?channel\.subarray\(/, "filter settling samples are removed before rendering");
+  assert.match(refresh, /requestId\s*!==\s*displayRequestIdRef\.current/, "stale processing work cannot overwrite the newest pan");
 });
 
 test("uses every available context lane before compressing overlapping labels", async () => {

@@ -2,7 +2,6 @@
 
 - [ ] Benchmark representative 1-hour, 12-hour, 24-hour, and 2 GB EDF/DAT recordings across scalp EEG and high-channel-count iEEG; record cold-load, integrity-scan, pan, zoom, filter, and peak-memory budgets.
 - [ ] Add browser-level regression tests for waveform selection, timeline box selection, group movement, deletion, wheel panning, trackpad zooming, and channel scrolling.
-- [ ] Commit a reproducible GitHub Pages build-and-release workflow so the canonical public deployment no longer depends on temporary out-of-tree build configuration.
 - [ ] Complete an institutional privacy and network validation that verifies recording bytes never leave the device, reviews browser-local annotation persistence, and defines approved handling of exported bundles.
 - [ ] Move full-file hashing and MAT parsing/decompression into cancellable workers so large imports cannot monopolize the browser’s main UI thread.
 

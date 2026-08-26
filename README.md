@@ -17,6 +17,38 @@ npm run dev
 
 The development server prints the local URL after startup.
 
+### Reproducible GitHub Pages release
+
+The canonical static release is built directly from the `source` branch without a
+server adapter:
+
+```bash
+npm ci
+npm run check
+```
+
+`npm run check` type-checks and lints the source, builds both supported targets,
+and tests the generated Pages artifact. To produce only the static artifact, run
+`npm run build:pages`; it recreates `pages-dist/` with `index.html`, hashed
+JavaScript and CSS under `assets/`, and `og.png`. All runtime asset references are
+document-relative so the output works at the GitHub project path as well as from a
+local static server.
+
+The release flow is intentionally explicit:
+
+1. Check out the exact `source` commit intended for release and run `npm ci`.
+2. Run `npm run check`; do not release if any check fails.
+3. In a clean `main` worktree, replace only the generated deployment snapshot
+   (`index.html`, the complete `assets/` directory, and `og.png`) with the contents
+   of `pages-dist/`.
+4. Serve the `main` worktree with an ordinary static file server and smoke-test
+   loading, recording import, navigation, and annotation recovery.
+5. Commit that snapshot on `main` and push `main` only after the smoke test passes.
+
+`app/pages-client.tsx`, `index.html`, and `vite.pages.config.ts` are the committed
+source of this artifact. Generated files in `pages-dist/` and the deployed bundle
+on `main` must not be hand-edited.
+
 ## System Overview
 
 The browser owns the active recording and annotation state. `app/page.tsx` coordinates the interface and session workflow, `app/eeg-core.ts` parses recordings and supplies time-bounded signal windows, and `app/source-integrity.ts` computes a stable source fingerprint. Annotation recovery uses browser-local storage; exports are assembled and downloaded locally.
@@ -78,7 +110,6 @@ The Node test suite covers signal integrity, source hashing, server rendering, a
 - MATLAB v7.3/HDF5 is not decoded in the browser.
 - Large MAT v5 files can exhaust browser memory because they are decoded eagerly.
 - EDF/DAT window reads currently consume complete records or frames even when only some channels are visible; hiding channels reduces conversion and display work more than file I/O.
-- The canonical GitHub Pages release path is not yet fully reproducible from the committed repository alone.
 - This application has not completed institutional clinical deployment validation.
 
 ## Dependencies

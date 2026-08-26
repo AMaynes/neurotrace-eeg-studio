@@ -39,6 +39,8 @@ export interface RecordingMeta {
   sampleRates: number[];
   /** Nominal/default display rate (the first signal rate for mixed-rate EDF). */
   sampleRate: number;
+  /** Conservative source-channel indices recommended for the initial display. */
+  recommendedDisplayChannels?: number[];
   byteLength?: number;
   patientId?: string;
   recordingId?: string;
@@ -55,6 +57,8 @@ export interface WindowData {
   data: Float32Array[];
   /** One sample rate for each returned channel. */
   sampleRates: number[];
+  /** Absolute time of the first returned sample for each channel. */
+  channelStartSecs: number[];
   startSec: number;
   durationSec: number;
   channelIndices: number[];
@@ -152,10 +156,12 @@ function makeWindowResult(
   request: NormalizedWindow,
   data: Float32Array[],
   sampleRates?: number[],
+  channelStartSecs?: number[],
 ): WindowData {
   return {
     data,
     sampleRates: sampleRates ?? request.channelIndices.map((index) => meta.sampleRates[index]),
+    channelStartSecs: channelStartSecs ?? request.channelIndices.map(() => request.startSec),
     startSec: request.startSec,
     durationSec: request.durationSec,
     channelIndices: request.channelIndices,
@@ -294,7 +300,13 @@ export class DemoSource implements SignalSource {
 
     // Yield once for large synthetic windows so React can paint pending UI.
     if (data.some((channel) => channel.length > 250_000)) await Promise.resolve();
-    return makeWindowResult(this.meta, request, data, sampleRates);
+    return makeWindowResult(
+      this.meta,
+      request,
+      data,
+      sampleRates,
+      sampleRates.map((sampleRate) => Math.floor(request.startSec * sampleRate) / sampleRate),
+    );
   }
 }
 
@@ -340,6 +352,46 @@ export interface EDFHeader {
 }
 
 const latin1Decoder = new TextDecoder("windows-1252");
+const utf8Decoder = new TextDecoder("utf-8");
+
+export interface EDFUnitNormalization {
+  /** Unit exposed to the display and exported window metadata. */
+  unit: string;
+  /** Multiplier applied after EDF digital-to-physical calibration. */
+  scale: number;
+  isVoltage: boolean;
+}
+
+/**
+ * Normalizes common EDF voltage dimensions to microvolts. EDF allows a free
+ * text physical-dimension field, so unknown and non-voltage units are kept
+ * verbatim rather than guessed.
+ */
+export function normalizeEDFPhysicalDimension(dimension: string): EDFUnitNormalization {
+  const preserved = dimension.trim() || "a.u.";
+  const canonical = preserved
+    .normalize("NFKC")
+    .replace(/[\u00b5\u03bc]/g, "u")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+  const scale = canonical === "v"
+    ? 1_000_000
+    : canonical === "mv"
+      ? 1_000
+      : canonical === "uv"
+        ? 1
+        : canonical === "nv"
+          ? 0.001
+          : undefined;
+  return scale === undefined
+    ? { unit: preserved, scale: 1, isVoltage: false }
+    : { unit: "µV", scale, isVoltage: true };
+}
+
+function hasUsableEDFCalibration(signal: EDFSignalHeader): boolean {
+  return signal.digitalMaximum !== signal.digitalMinimum
+    && signal.physicalMaximum !== signal.physicalMinimum;
+}
 
 function decodeFixed(bytes: Uint8Array, start: number, length: number): string {
   return latin1Decoder.decode(bytes.subarray(start, start + length)).replace(/\0/g, "").trim();
@@ -408,6 +460,12 @@ export async function parseEDFHeader(file: File): Promise<EDFHeader> {
   const startTimeText = decodeFixed(fixedBytes, 176, 8);
   const headerBytes = parseInteger(decodeFixed(fixedBytes, 184, 8), "header byte count");
   const reserved = decodeFixed(fixedBytes, 192, 44);
+  if (reserved.toUpperCase().startsWith("EDF+D")) {
+    throw new SignalFileError(
+      "UNSUPPORTED_FORMAT",
+      "EDF+D discontinuous recordings are not yet supported because flattening record gaps would make waveform and annotation times disagree. Convert to continuous EDF+C or preserve the discontinuity timeline before review.",
+    );
+  }
   const declaredDataRecordCount = parseInteger(
     decodeFixed(fixedBytes, 236, 8),
     "data record count",
@@ -462,6 +520,9 @@ export async function parseEDFHeader(file: File): Promise<EDFHeader> {
     if (digitalMaximum === digitalMinimum) {
       warnings.push(`Signal "${label || index + 1}" has identical digital minimum and maximum; raw digital values will be shown.`);
     }
+    if (physicalMaximum === physicalMinimum) {
+      warnings.push(`Signal "${label || index + 1}" has identical physical minimum and maximum; raw digital values will be shown because its physical calibration is invalid.`);
+    }
     const signal: EDFSignalHeader = {
       index,
       label: label || `Signal ${index + 1}`,
@@ -503,9 +564,6 @@ export async function parseEDFHeader(file: File): Promise<EDFHeader> {
   const upperReserved = reserved.toUpperCase();
   const isEDFPlus = upperReserved.startsWith("EDF+C") || upperReserved.startsWith("EDF+D") || signals.some((signal) => signal.isAnnotation);
   const isDiscontinuous = upperReserved.startsWith("EDF+D");
-  if (isDiscontinuous) {
-    warnings.push("EDF+D discontinuities are displayed on a contiguous record-time axis; annotation timekeeping may contain gaps.");
-  }
 
   return {
     version,
@@ -572,7 +630,7 @@ export async function parseEDFAnnotations(file: File, header: EDFHeader): Promis
       for (const signal of annotationSignals) {
         const start = recordOffset + signal.byteOffsetInRecord;
         const end = start + signal.samplesPerRecord * 2;
-        events.push(...parseEdfTalText(latin1Decoder.decode(bytes.subarray(start, end))));
+        events.push(...parseEdfTalText(utf8Decoder.decode(bytes.subarray(start, end))));
       }
     }
   }
@@ -588,21 +646,104 @@ export async function parseEDFAnnotations(file: File, header: EDFHeader): Promis
   return { events: [...deduplicated.values()].sort((a, b) => a.timeSec - b.timeSec || a.label.localeCompare(b.label)), warnings };
 }
 
+const MAX_RECOMMENDED_DISPLAY_CHANNELS = 18;
+const MAX_PLAUSIBLE_EEG_SPAN_UV = 100_000;
+
+function isObviousAuxiliaryEDFSignal(signal: EDFSignalHeader): boolean {
+  const label = signal.label
+    .trim()
+    .replace(/^EEG\s+/i, "")
+    .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
+    .trim();
+  return /^(?:BIO|MISC)(?:\s|$)/i.test(signal.label.trim())
+    || /^(?:AUX|ECG|EKG|EMG|EOG|RESP|RESPIRATION|TRIG|TRIGGER|DC\d*|E|ABD|SPO2|ETCO2|PULSE|CO2WAVE)$/i.test(label);
+}
+
+function isLikelyEEGEDFSignal(signal: EDFSignalHeader): boolean {
+  if (/^EEG(?:\s|$)/i.test(signal.label.trim())) return true;
+  const label = signal.label
+    .trim()
+    .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
+    .replace(/[\s_-]/g, "");
+  return /^(?:FP\d|FPZ|F\d|FZ|FC\d|C\d|CZ|T\d|TP\d|P\d|PZ|O\d|OZ|A\d|M\d)$/i.test(label)
+    || /^[A-Z]{1,6}\d{1,3}$/i.test(label);
+}
+
+function recommendEDFDisplayChannels(
+  displaySignals: readonly EDFSignalHeader[],
+  unitScaleBySignalIndex: readonly number[],
+  warnings: string[],
+): number[] {
+  const suspiciousCalibration: string[] = [];
+  const candidates = displaySignals.map((signal, displayIndex) => {
+    const normalization = normalizeEDFPhysicalDimension(signal.physicalDimension);
+    const calibrated = hasUsableEDFCalibration(signal);
+    const normalizedSpan = Math.abs(signal.physicalMaximum - signal.physicalMinimum)
+      * unitScaleBySignalIndex[signal.index];
+    const plausibleSpan = calibrated && (!normalization.isVoltage || normalizedSpan <= MAX_PLAUSIBLE_EEG_SPAN_UV);
+    if (calibrated && normalization.isVoltage && !plausibleSpan) suspiciousCalibration.push(signal.label);
+    return {
+      displayIndex,
+      isVoltage: normalization.isVoltage,
+      isLikelyEEG: isLikelyEEGEDFSignal(signal),
+      isAuxiliary: isObviousAuxiliaryEDFSignal(signal),
+      calibrated,
+      plausibleSpan,
+    };
+  });
+
+  if (suspiciousCalibration.length) {
+    warnings.push(
+      `Initial display recommendation omitted ${suspiciousCalibration.length} channel(s) with normalized physical spans above ${MAX_PLAUSIBLE_EEG_SPAN_UV.toLocaleString("en-US")} µV: ${suspiciousCalibration.join(", ")}. They remain available in the channel list; verify their calibration before use.`,
+    );
+  }
+
+  const safe = candidates.filter((candidate) => candidate.calibrated && !candidate.isAuxiliary && candidate.plausibleSpan);
+  if (!safe.length) {
+    warnings.push("No channels met the conservative initial-display calibration and signal-type checks; no channels were selected automatically. Every source channel remains available for manual review.");
+    return [];
+  }
+  const preferredVoltageEEG = safe.filter((candidate) => candidate.isVoltage && candidate.isLikelyEEG);
+  const preferredVoltage = safe.filter((candidate) => candidate.isVoltage);
+  const recommendation = preferredVoltageEEG.length
+    ? preferredVoltageEEG
+    : preferredVoltage.length
+      ? preferredVoltage
+      : safe;
+  return recommendation
+    .slice(0, MAX_RECOMMENDED_DISPLAY_CHANNELS)
+    .map((candidate) => candidate.displayIndex);
+}
+
 export class EDFSource implements SignalSource {
   readonly meta: RecordingMeta;
   readonly header: EDFHeader;
   readonly events: SourceEvent[];
   private readonly file: File;
   private readonly displaySignals: EDFSignalHeader[];
+  private readonly physicalUnitScaleBySignalIndex: number[];
 
   private constructor(file: File, header: EDFHeader, events: SourceEvent[], annotationWarnings: string[]) {
     this.file = file;
     this.header = header;
     this.events = events;
     this.displaySignals = header.signals.filter((signal) => !signal.isAnnotation);
+    this.physicalUnitScaleBySignalIndex = header.signals.map(
+      (signal) => normalizeEDFPhysicalDimension(signal.physicalDimension).scale,
+    );
     if (this.displaySignals.length === 0) {
       throw new SignalFileError("INVALID_HEADER", "The EDF contains an annotation channel but no displayable signal channels.");
     }
+    const warnings = [...header.warnings, ...annotationWarnings];
+    const recommendedDisplayChannels = recommendEDFDisplayChannels(
+      this.displaySignals,
+      this.physicalUnitScaleBySignalIndex,
+      warnings,
+    );
+    const channelUnits = this.displaySignals.map((signal) =>
+      !hasUsableEDFCalibration(signal)
+        ? "count"
+        : normalizeEDFPhysicalDimension(signal.physicalDimension).unit);
     this.meta = {
       id: deterministicId(`${file.name}:${file.size}:${file.lastModified}`, "rec"),
       name: file.name,
@@ -611,16 +752,17 @@ export class EDFSource implements SignalSource {
       durationSec: header.dataRecordCount * header.dataRecordDurationSec,
       channelCount: this.displaySignals.length,
       channelLabels: this.displaySignals.map((signal) => signal.label),
-      channelUnits: this.displaySignals.map((signal) => signal.physicalDimension),
-      units: this.displaySignals.map((signal) => signal.physicalDimension),
+      channelUnits,
+      units: channelUnits,
       sampleRates: this.displaySignals.map((signal) => signal.sampleRate),
       sampleRate: this.displaySignals[0].sampleRate,
+      recommendedDisplayChannels,
       byteLength: file.size,
       patientId: header.patientIdentification.split(/\s+/)[0] || undefined,
       recordingId: header.recordingIdentification || undefined,
       startedAt: header.startedAt,
       startDateTime: header.startedAt?.toISOString(),
-      warnings: [...header.warnings, ...annotationWarnings],
+      warnings,
       assumptions: header.startedAt ? ["EDF start clock timezone is not specified; preserved as source-local wall time."] : [],
       details: {
         dataRecords: header.dataRecordCount,
@@ -653,7 +795,13 @@ export class EDFSource implements SignalSource {
       return { first, end, output: new Float32Array(Math.max(0, end - first)) };
     });
     if (request.durationSec === 0 || selected.length === 0) {
-      return makeWindowResult(this.meta, request, sampleRanges.map((range) => range.output));
+      return makeWindowResult(
+        this.meta,
+        request,
+        sampleRanges.map((range) => range.output),
+        selected.map((signal) => signal.sampleRate),
+        sampleRanges.map((range, index) => range.first / selected[index].sampleRate),
+      );
     }
 
     const firstRecord = Math.floor(request.startSec / this.header.dataRecordDurationSec);
@@ -681,18 +829,23 @@ export class EDFSource implements SignalSource {
 
           const digitalSpan = signal.digitalMaximum - signal.digitalMinimum;
           const physicalSpan = signal.physicalMaximum - signal.physicalMinimum;
-          const usePhysicalScaling = digitalSpan !== 0 && Number.isFinite(physicalSpan);
+          const usePhysicalScaling = digitalSpan !== 0
+            && physicalSpan !== 0
+            && Number.isFinite(physicalSpan);
           const scale = usePhysicalScaling ? physicalSpan / digitalSpan : 1;
           const offset = usePhysicalScaling
             ? signal.physicalMinimum - signal.digitalMinimum * scale
             : 0;
+          const unitScale = usePhysicalScaling
+            ? this.physicalUnitScaleBySignalIndex[signal.index]
+            : 1;
           for (let sample = copyFirst; sample < copyEnd; sample += 1) {
             const inRecord = sample - recordFirstSample;
             const digital = view.getInt16(
               localRecordByte + signal.byteOffsetInRecord + inRecord * 2,
               true,
             );
-            range.output[sample - range.first] = digital * scale + offset;
+            range.output[sample - range.first] = (digital * scale + offset) * unitScale;
           }
         });
       }
@@ -703,6 +856,7 @@ export class EDFSource implements SignalSource {
       request,
       sampleRanges.map((range) => range.output),
       selected.map((signal) => signal.sampleRate),
+      sampleRanges.map((range, index) => range.first / selected[index].sampleRate),
     );
   }
 }
@@ -816,7 +970,8 @@ export class RawDatSource implements SignalSource {
     const endSample = Math.min(this.totalSamples, Math.ceil(request.endSec * sampleRate));
     const sampleCount = Math.max(0, endSample - firstSample);
     const outputs = request.channelIndices.map(() => new Float32Array(sampleCount));
-    if (sampleCount === 0 || outputs.length === 0) return makeWindowResult(this.meta, request, outputs);
+    const channelStartSecs = request.channelIndices.map(() => firstSample / sampleRate);
+    if (sampleCount === 0 || outputs.length === 0) return makeWindowResult(this.meta, request, outputs, undefined, channelStartSecs);
 
     const bytesPerFrame = this.meta.channelCount * 2;
     const framesPerChunk = Math.max(1, Math.floor((8 * 1024 * 1024) / bytesPerFrame));
@@ -833,7 +988,7 @@ export class RawDatSource implements SignalSource {
         });
       }
     }
-    return makeWindowResult(this.meta, request, outputs);
+    return makeWindowResult(this.meta, request, outputs, undefined, channelStartSecs);
   }
 }
 
@@ -1570,8 +1725,372 @@ export class MatSource implements SignalSource {
     const firstSample = Math.floor(request.startSec * sampleRate);
     const endSample = Math.min(this.data[0]?.length ?? 0, Math.ceil(request.endSec * sampleRate));
     const data = request.channelIndices.map((channelIndex) => this.data[channelIndex].slice(firstSample, endSample));
-    return makeWindowResult(this.meta, request, data);
+    return makeWindowResult(
+      this.meta,
+      request,
+      data,
+      undefined,
+      request.channelIndices.map(() => firstSample / sampleRate),
+    );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Clinical display decimation and raw synchronized-dropout detection
+// ---------------------------------------------------------------------------
+
+export type ClinicalDecimationFactor = 1 | 2;
+
+export interface ClinicalDisplayTrace {
+  data: Float32Array;
+  sampleRate: number;
+  factor: ClinicalDecimationFactor;
+  /** Local input offset retained first so factor-2 output stays on global even samples. */
+  retainedInputSampleOffset: 0 | 1;
+  /** Recording-global source sample represented by output sample zero. */
+  outputStartSampleIndex: number;
+  /** Output sample-zero offset relative to this input window's source origin. */
+  outputStartOffsetSec: number;
+  /** Fixed input-rate delay removed before the 2× output is retained. */
+  compensatedGroupDelaySamples: number;
+  /** Time correction for the retained filtered samples before pairing with source time. */
+  retainedSampleTimeCorrectionSec: number;
+}
+
+export interface ClinicalDisplaySignals {
+  data: Float32Array[];
+  sampleRates: number[];
+  factors: ClinicalDecimationFactor[];
+  retainedInputSampleOffsets: Array<0 | 1>;
+  outputStartSampleIndices: number[];
+  outputStartOffsetSecs: number[];
+  compensatedGroupDelaySamples: number[];
+  retainedSampleTimeCorrectionSec: number[];
+}
+
+const CLINICAL_FIR_ORDER = 96;
+const CLINICAL_FIR_TAPS = CLINICAL_FIR_ORDER + 1;
+const CLINICAL_FIR_GROUP_DELAY = CLINICAL_FIR_ORDER / 2;
+const CLINICAL_FIR_KAISER_BETA = 5.65;
+const CLINICAL_PASSBAND_EDGE_HZ = 200;
+const clinicalFirCache = new Map<number, Float64Array>();
+
+function modifiedBesselI0(value: number): number {
+  const squaredQuarter = value * value / 4;
+  let sum = 1;
+  let term = 1;
+  for (let order = 1; order < 100; order += 1) {
+    term *= squaredQuarter / (order * order);
+    sum += term;
+    if (Math.abs(term) <= Math.abs(sum) * Number.EPSILON) break;
+  }
+  return sum;
+}
+
+/** Returns the exact conditional factor specified for clinical display traces. */
+export function clinicalDecimationFactor(
+  sampleRate: number,
+  sampleCount: number,
+  pixelCount: number,
+): ClinicalDecimationFactor {
+  if (!(sampleRate > 0) || !Number.isFinite(sampleRate)) {
+    throw new Error("Clinical display sample rate must be positive and finite.");
+  }
+  if (!Number.isInteger(sampleCount) || sampleCount < 0) {
+    throw new Error("Clinical display sample count must be a non-negative integer.");
+  }
+  if (!(pixelCount > 0) || !Number.isFinite(pixelCount)) {
+    throw new Error("Clinical display pixel count must be positive and finite.");
+  }
+  const resolutionFactor = Math.min(2, Math.floor(sampleCount / Math.max(1, Math.floor(pixelCount))));
+  return sampleRate / 4 >= 250 && resolutionFactor >= 2 ? 2 : 1;
+}
+
+/**
+ * Designs Sean's fixed 96th-order, 97-tap fir1-equivalent Kaiser low-pass.
+ * Coefficients are symmetric and normalized to unity DC gain.
+ */
+export function designClinicalDecimationFir(sampleRate: number): Float64Array {
+  if (!(sampleRate > 0) || !Number.isFinite(sampleRate) || sampleRate / 4 < 250) {
+    throw new Error("Clinical 2× display decimation requires a source rate of at least 1000 Hz.");
+  }
+  const cached = clinicalFirCache.get(sampleRate);
+  if (cached) return cached.slice();
+
+  const stopbandEdgeHz = Math.min(245, sampleRate / 4 - 5);
+  if (!(stopbandEdgeHz > CLINICAL_PASSBAND_EDGE_HZ)) {
+    throw new Error("Clinical display decimation has no valid 200 Hz-to-stopband transition.");
+  }
+  const cutoffHz = (CLINICAL_PASSBAND_EDGE_HZ + stopbandEdgeHz) / 2;
+  const cutoffCyclesPerSample = cutoffHz / sampleRate;
+  const windowDenominator = modifiedBesselI0(CLINICAL_FIR_KAISER_BETA);
+  const coefficients = new Float64Array(CLINICAL_FIR_TAPS);
+  let dcGain = 0;
+
+  for (let tap = 0; tap < CLINICAL_FIR_TAPS; tap += 1) {
+    const centeredTap = tap - CLINICAL_FIR_GROUP_DELAY;
+    const ideal = centeredTap === 0
+      ? 2 * cutoffCyclesPerSample
+      : Math.sin(2 * Math.PI * cutoffCyclesPerSample * centeredTap) / (Math.PI * centeredTap);
+    const windowPosition = centeredTap / CLINICAL_FIR_GROUP_DELAY;
+    const window = modifiedBesselI0(
+      CLINICAL_FIR_KAISER_BETA * Math.sqrt(Math.max(0, 1 - windowPosition * windowPosition)),
+    ) / windowDenominator;
+    coefficients[tap] = ideal * window;
+    dcGain += coefficients[tap];
+  }
+  for (let tap = 0; tap < coefficients.length; tap += 1) coefficients[tap] /= dcGain;
+  clinicalFirCache.set(sampleRate, coefficients.slice());
+  return coefficients;
+}
+
+/**
+ * Applies a single causal FIR pass, removes its known 48-input-sample delay,
+ * and retains every second sample. Negative-time and post-EOF filter state is
+ * exactly zero. A full recording beginning at global sample zero retains
+ * ceil(N / 2) samples; subwindows retain every global even sample they contain.
+ */
+export function decimateClinicalDisplayTrace(
+  input: Float32Array,
+  sampleRate: number,
+  pixelCount: number,
+  sourceStartSampleIndex = 0,
+): ClinicalDisplayTrace {
+  if (!Number.isSafeInteger(sourceStartSampleIndex) || sourceStartSampleIndex < 0) {
+    throw new Error("Clinical display source start sample index must be a non-negative safe integer.");
+  }
+  const factor = clinicalDecimationFactor(sampleRate, input.length, pixelCount);
+  if (factor === 1) {
+    return {
+      data: input,
+      sampleRate,
+      factor,
+      retainedInputSampleOffset: 0,
+      outputStartSampleIndex: sourceStartSampleIndex,
+      outputStartOffsetSec: 0,
+      compensatedGroupDelaySamples: 0,
+      retainedSampleTimeCorrectionSec: 0,
+    };
+  }
+
+  const coefficients = designClinicalDecimationFir(sampleRate);
+  const retainedInputSampleOffset: 0 | 1 = sourceStartSampleIndex % 2 === 0 ? 0 : 1;
+  const outputLength = Math.max(0, Math.ceil((input.length - retainedInputSampleOffset) / 2));
+  const output = new Float32Array(outputLength);
+  for (let outputIndex = 0; outputIndex < outputLength; outputIndex += 1) {
+    const filteredSample = CLINICAL_FIR_GROUP_DELAY
+      + retainedInputSampleOffset
+      + outputIndex * 2;
+    let value = 0;
+    let finite = true;
+    for (let tap = 0; tap < coefficients.length; tap += 1) {
+      const sourceIndex = filteredSample - tap;
+      if (sourceIndex < 0 || sourceIndex >= input.length) continue;
+      const sourceValue = input[sourceIndex];
+      if (!Number.isFinite(sourceValue)) {
+        finite = false;
+        break;
+      }
+      value += coefficients[tap] * sourceValue;
+    }
+    output[outputIndex] = finite ? value : Number.NaN;
+  }
+  return {
+    data: output,
+    sampleRate: sampleRate / 2,
+    factor,
+    retainedInputSampleOffset,
+    outputStartSampleIndex: sourceStartSampleIndex + retainedInputSampleOffset,
+    outputStartOffsetSec: retainedInputSampleOffset / sampleRate,
+    compensatedGroupDelaySamples: CLINICAL_FIR_GROUP_DELAY,
+    retainedSampleTimeCorrectionSec: -CLINICAL_FIR_GROUP_DELAY / sampleRate,
+  };
+}
+
+/** Applies the clinical rule independently to mixed-rate raw/display channels. */
+export function prepareClinicalDisplaySignals(
+  data: readonly Float32Array[],
+  sampleRates: readonly number[],
+  pixelCount: number,
+  sourceStartSampleIndices?: readonly number[],
+): ClinicalDisplaySignals {
+  if (data.length !== sampleRates.length) {
+    throw new Error(`Expected ${data.length} sample rates, received ${sampleRates.length}.`);
+  }
+  if (sourceStartSampleIndices && sourceStartSampleIndices.length !== data.length) {
+    throw new Error(`Expected ${data.length} source start sample indices, received ${sourceStartSampleIndices.length}.`);
+  }
+  const traces = data.map((channel, index) =>
+    decimateClinicalDisplayTrace(
+      channel,
+      sampleRates[index],
+      pixelCount,
+      sourceStartSampleIndices?.[index] ?? 0,
+    ),
+  );
+  return {
+    data: traces.map((trace) => trace.data),
+    sampleRates: traces.map((trace) => trace.sampleRate),
+    factors: traces.map((trace) => trace.factor),
+    retainedInputSampleOffsets: traces.map((trace) => trace.retainedInputSampleOffset),
+    outputStartSampleIndices: traces.map((trace) => trace.outputStartSampleIndex),
+    outputStartOffsetSecs: traces.map((trace) => trace.outputStartOffsetSec),
+    compensatedGroupDelaySamples: traces.map((trace) => trace.compensatedGroupDelaySamples),
+    retainedSampleTimeCorrectionSec: traces.map((trace) => trace.retainedSampleTimeCorrectionSec),
+  };
+}
+
+export interface RawFlatlineInterval {
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  minimumFlatChannelCount: number;
+  totalChannelCount: number;
+}
+
+export interface RawFlatlineDetectionOptions {
+  startSec?: number;
+  /** Optional absolute origin for each channel when raw windows are offset. */
+  channelStartSecs?: readonly number[];
+  thresholdFraction?: number;
+  minimumDurationSec?: number;
+  absoluteTolerance?: number;
+}
+
+interface ChannelFlatlineInterval {
+  startSec: number;
+  endSec: number;
+}
+
+/**
+ * Detects intervals where at least 80% of raw source channels remain unchanged
+ * together for at least 250 ms. NaNs break a channel's run and all supplied
+ * channels remain in the threshold denominator, which is conservative for
+ * missing data and mixed sample rates.
+ */
+export function detectRawSynchronizedFlatlines(
+  data: readonly Float32Array[],
+  sampleRates: readonly number[],
+  options: RawFlatlineDetectionOptions = {},
+): RawFlatlineInterval[] {
+  if (data.length !== sampleRates.length) {
+    throw new Error(`Expected ${data.length} sample rates, received ${sampleRates.length}.`);
+  }
+  if (options.channelStartSecs && options.channelStartSecs.length !== data.length) {
+    throw new Error(`Expected ${data.length} channel start times, received ${options.channelStartSecs.length}.`);
+  }
+  if (data.length === 0) return [];
+  const thresholdFraction = options.thresholdFraction ?? 0.8;
+  const minimumDurationSec = options.minimumDurationSec ?? 0.25;
+  const absoluteTolerance = options.absoluteTolerance ?? 0;
+  const startSec = options.startSec ?? 0;
+  if (!(thresholdFraction > 0 && thresholdFraction <= 1) || !Number.isFinite(thresholdFraction)) {
+    throw new Error("Raw flatline threshold fraction must be greater than zero and at most one.");
+  }
+  if (!(minimumDurationSec >= 0) || !Number.isFinite(minimumDurationSec)) {
+    throw new Error("Raw flatline minimum duration must be non-negative and finite.");
+  }
+  if (!(absoluteTolerance >= 0) || !Number.isFinite(absoluteTolerance)) {
+    throw new Error("Raw flatline tolerance must be non-negative and finite.");
+  }
+  if (!Number.isFinite(startSec)) throw new Error("Raw flatline start time must be finite.");
+  if (options.channelStartSecs?.some((channelStartSec) => !Number.isFinite(channelStartSec))) {
+    throw new Error("Raw flatline channel start times must be finite.");
+  }
+
+  const intervals: ChannelFlatlineInterval[] = [];
+  data.forEach((channel, channelIndex) => {
+    const sampleRate = sampleRates[channelIndex];
+    const channelStartSec = options.channelStartSecs?.[channelIndex] ?? startSec;
+    if (!(sampleRate > 0) || !Number.isFinite(sampleRate)) {
+      throw new Error(`Sample rate for channel ${channelIndex + 1} must be positive and finite.`);
+    }
+    let runStartSample = -1;
+    for (let sample = 1; sample < channel.length; sample += 1) {
+      const previous = channel[sample - 1];
+      const current = channel[sample];
+      const unchanged = Number.isFinite(previous)
+        && Number.isFinite(current)
+        && Math.abs(current - previous) <= absoluteTolerance;
+      if (unchanged) {
+        if (runStartSample < 0) runStartSample = sample - 1;
+      } else if (runStartSample >= 0) {
+        const runEndSample = sample - 1;
+        if ((runEndSample - runStartSample) / sampleRate >= minimumDurationSec) {
+          intervals.push({
+            startSec: channelStartSec + runStartSample / sampleRate,
+            endSec: channelStartSec + runEndSample / sampleRate,
+          });
+        }
+        runStartSample = -1;
+      }
+    }
+    if (runStartSample >= 0) {
+      const runEndSample = channel.length - 1;
+      if ((runEndSample - runStartSample) / sampleRate >= minimumDurationSec) {
+        intervals.push({
+          startSec: channelStartSec + runStartSample / sampleRate,
+          endSec: channelStartSec + runEndSample / sampleRate,
+        });
+      }
+    }
+  });
+  if (!intervals.length) return [];
+
+  const events = intervals.flatMap((interval) => [
+    { timeSec: interval.startSec, delta: 1 },
+    { timeSec: interval.endSec, delta: -1 },
+  ]).sort((first, second) => first.timeSec - second.timeSec || first.delta - second.delta);
+  const requiredChannels = Math.ceil(data.length * thresholdFraction);
+  const output: RawFlatlineInterval[] = [];
+  let activeChannels = 0;
+  let eventIndex = 0;
+  let regionStart: number | undefined;
+  let regionEnd = 0;
+  let regionMinimum = Number.POSITIVE_INFINITY;
+
+  while (eventIndex < events.length) {
+    const segmentStart = events[eventIndex].timeSec;
+    while (eventIndex < events.length && events[eventIndex].timeSec === segmentStart) {
+      activeChannels += events[eventIndex].delta;
+      eventIndex += 1;
+    }
+    const segmentEnd = events[eventIndex]?.timeSec;
+    const isQualifyingSegment = segmentEnd !== undefined
+      && segmentEnd > segmentStart
+      && activeChannels >= requiredChannels;
+    if (isQualifyingSegment) {
+      if (regionStart === undefined) regionStart = segmentStart;
+      regionEnd = segmentEnd;
+      regionMinimum = Math.min(regionMinimum, activeChannels);
+    } else if (regionStart !== undefined) {
+      const durationSec = regionEnd - regionStart;
+      if (durationSec >= minimumDurationSec) {
+        output.push({
+          startSec: regionStart,
+          endSec: regionEnd,
+          durationSec,
+          minimumFlatChannelCount: regionMinimum,
+          totalChannelCount: data.length,
+        });
+      }
+      regionStart = undefined;
+      regionMinimum = Number.POSITIVE_INFINITY;
+    }
+  }
+  if (regionStart !== undefined) {
+    const durationSec = regionEnd - regionStart;
+    if (durationSec >= minimumDurationSec) {
+      output.push({
+        startSec: regionStart,
+        endSec: regionEnd,
+        durationSec,
+        minimumFlatChannelCount: regionMinimum,
+        totalChannelCount: data.length,
+      });
+    }
+  }
+  return output;
 }
 
 // ---------------------------------------------------------------------------
@@ -1720,6 +2239,8 @@ export interface MontageResult {
   labels: string[];
   /** Optional compatibility field; callers may retain source window rates. */
   sampleRates?: number[];
+  /** Absolute time represented by sample zero of each returned channel. */
+  sampleStartSecs?: number[];
   /** Original zero-based source indices contributing to each derived channel. */
   sourceIndices: number[][];
   /** Source index represented by the row before any reference contribution. */
@@ -1774,6 +2295,7 @@ export function buildMontage(
   mode: MontageMode,
   badChannels: BadChannelSet = new Set<number | string>(),
   sampleRates?: readonly number[],
+  sampleStartSecs?: readonly number[],
 ): MontageResult {
   if (data.length !== labels.length) {
     throw new Error(`Montage received ${data.length} signals but ${labels.length} labels.`);
@@ -1781,18 +2303,26 @@ export function buildMontage(
   if (sampleRates && sampleRates.length !== data.length) {
     throw new Error(`Montage received ${data.length} signals but ${sampleRates.length} sample rates.`);
   }
+  if (sampleStartSecs && sampleStartSecs.length !== data.length) {
+    throw new Error(`Montage received ${data.length} signals but ${sampleStartSecs.length} sample start times.`);
+  }
+  if (sampleStartSecs?.some((startSec) => !Number.isFinite(startSec))) {
+    throw new Error("Montage sample start times must be finite.");
+  }
   const validIndices = data
     .map((_, index) => index)
     .filter((index) => !channelIsBad(index, labels[index], badChannels));
   const warnings: string[] = [];
 
   if (mode === "referential") {
+    const allIndices = data.map((_, index) => index);
     return {
-      data: validIndices.map((index) => data[index].slice()),
-      labels: validIndices.map((index) => labels[index]),
-      sampleRates: sampleRates ? validIndices.map((index) => sampleRates[index]) : undefined,
-      sourceIndices: validIndices.map((index) => [index]),
-      primarySourceIndices: validIndices,
+      data: allIndices.map((index) => data[index]),
+      labels: allIndices.map((index) => labels[index]),
+      sampleRates: sampleRates ? allIndices.map((index) => sampleRates[index]) : undefined,
+      sampleStartSecs: sampleStartSecs ? allIndices.map((index) => sampleStartSecs[index]) : undefined,
+      sourceIndices: allIndices.map((index) => [index]),
+      primarySourceIndices: allIndices,
       mode,
       warnings,
     };
@@ -1801,15 +2331,29 @@ export function buildMontage(
   if (mode === "average" || mode === "average-reference") {
     if (validIndices.length === 0) {
       warnings.push("No usable channels remain after bad-channel exclusion.");
-      return { data: [], labels: [], sourceIndices: [], primarySourceIndices: [], mode, warnings };
+      return {
+        data: [],
+        labels: [],
+        sampleStartSecs: sampleStartSecs ? [] : undefined,
+        sourceIndices: [],
+        primarySourceIndices: [],
+        mode,
+        warnings,
+      };
     }
     const sampleCount = data[validIndices[0]].length;
     const referenceRate = sampleRates?.[validIndices[0]];
+    const referenceStartSec = sampleStartSecs?.[validIndices[0]];
     if (referenceRate !== undefined && validIndices.some((index) => Math.abs((sampleRates?.[index] ?? referenceRate) - referenceRate) > 1e-9)) {
       throw new Error("Average reference requires equal sampling rates. Resample mixed-rate EDF channels first.");
     }
     if (validIndices.some((index) => data[index].length !== sampleCount)) {
       throw new Error("Average reference requires equal-length channels. Resample mixed-rate EDF channels first.");
+    }
+    if (referenceStartSec !== undefined && validIndices.some(
+      (index) => Math.abs((sampleStartSecs?.[index] ?? referenceStartSec) - referenceStartSec) > 1e-9,
+    )) {
+      throw new Error("Average reference requires channels with aligned sample start times.");
     }
     const average = new Float64Array(sampleCount);
     const counts = new Uint32Array(sampleCount);
@@ -1839,6 +2383,9 @@ export function buildMontage(
       data: output,
       labels: validIndices.map((index) => `${labels[index]} (CAR)`),
       sampleRates: referenceRate === undefined ? undefined : validIndices.map(() => referenceRate),
+      sampleStartSecs: referenceStartSec === undefined
+        ? undefined
+        : validIndices.map(() => referenceStartSec),
       sourceIndices: validIndices.map(() => [...validIndices]),
       primarySourceIndices: validIndices,
       mode,
@@ -1858,6 +2405,7 @@ export function buildMontage(
   const outputLabels: string[] = [];
   const sourceIndices: number[][] = [];
   const primarySourceIndices: number[] = [];
+  const outputSampleStartSecs: number[] = [];
   for (const contacts of groups.values()) {
     contacts.sort((a, b) => a.contact - b.contact || a.sourceIndex - b.sourceIndex);
     for (let index = 0; index < contacts.length - 1; index += 1) {
@@ -1874,6 +2422,14 @@ export function buildMontage(
         warnings.push(`${first.actualLabel}–${second.actualLabel} was omitted because ${firstRate} Hz and ${secondRate} Hz channels cannot be subtracted without resampling.`);
         continue;
       }
+      const firstStartSec = sampleStartSecs?.[first.sourceIndex];
+      const secondStartSec = sampleStartSecs?.[second.sourceIndex];
+      if (firstStartSec !== undefined
+        && secondStartSec !== undefined
+        && Math.abs(firstStartSec - secondStartSec) > 1e-9) {
+        warnings.push(`${first.actualLabel}–${second.actualLabel} was omitted because their sample start times (${firstStartSec} s and ${secondStartSec} s) are not aligned.`);
+        continue;
+      }
       const sampleCount = Math.min(firstData.length, secondData.length);
       if (firstData.length !== secondData.length) {
         warnings.push(`${first.actualLabel}–${second.actualLabel} was clipped to the shorter equal-rate window.`);
@@ -1887,6 +2443,7 @@ export function buildMontage(
       outputLabels.push(`${first.actualLabel}–${second.actualLabel}`);
       sourceIndices.push([first.sourceIndex, second.sourceIndex]);
       primarySourceIndices.push(first.sourceIndex);
+      if (firstStartSec !== undefined) outputSampleStartSecs.push(firstStartSec);
     }
   }
   if (outputData.length === 0) {
@@ -1896,6 +2453,7 @@ export function buildMontage(
     data: outputData,
     labels: outputLabels,
     sampleRates: sampleRates ? primarySourceIndices.map((index) => sampleRates[index]) : undefined,
+    sampleStartSecs: sampleStartSecs ? outputSampleStartSecs : undefined,
     sourceIndices,
     primarySourceIndices,
     mode,
@@ -1949,11 +2507,23 @@ export function deterministicId(seed: string, prefix = "id"): string {
   return `${safePrefix}-${(hash >>> 0).toString(36).padStart(7, "0")}`;
 }
 
-let generatedIdCounter = 0;
-
-/** Deterministic, monotonic IDs for ephemeral client-side annotations. */
+/** Collision-resistant IDs remain safe when recovered annotations survive a reload. */
 export function makeId(prefix = "ann"): string {
-  generatedIdCounter += 1;
   const safePrefix = prefix.replace(/[^a-z0-9_-]/gi, "-") || "id";
-  return `${safePrefix}-${generatedIdCounter.toString(36).padStart(6, "0")}`;
+  const cryptoObject = globalThis.crypto;
+  if (typeof cryptoObject?.randomUUID === "function") {
+    return `${safePrefix}-${cryptoObject.randomUUID()}`;
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof cryptoObject?.getRandomValues === "function") {
+    cryptoObject.getRandomValues(bytes);
+  } else {
+    // Last-resort compatibility path for older non-secure browser contexts.
+    const timestamp = Date.now();
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256) ^ (timestamp >>> (index % 6 * 8));
+    }
+  }
+  const randomText = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  return `${safePrefix}-${Date.now().toString(36)}-${randomText}`;
 }
