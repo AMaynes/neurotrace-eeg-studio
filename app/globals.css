@@ -425,7 +425,8 @@ textarea:focus-visible {
 .channel-rail button.focused { background: #10252a; color: var(--mint); box-shadow: inset -2px 0 0 var(--mint); }
 .channel-rail strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .channel-rail span { color: #51676d; font: 6px ui-monospace, monospace; }
-.canvas-shell { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.canvas-column { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.canvas-shell { position: absolute; inset: 0; min-width: 0; min-height: 0; overflow: hidden; }
 .canvas-shell canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
 .wave-selection { position: absolute; top: 0; bottom: 0; border: 1px dashed rgba(87, 223, 183, .82); background: rgba(87, 223, 183, .12); pointer-events: none; z-index: 3; }
 .wave-cursor { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; z-index: 5; }
@@ -499,6 +500,8 @@ textarea:focus-visible {
 .command-status { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 7px; color: #94a8ac; white-space: nowrap; overflow: hidden; }
 .command-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-dot { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--mint); }
+.verification-cancel { flex: 0 0 auto; height: 22px; padding: 0 7px; border: 1px solid #45645e; border-radius: 4px; background: #142722; color: #b6d7cf; cursor: pointer; font-size: 8px; }
+.verification-cancel:hover { border-color: var(--mint); color: var(--mint); }
 .strip-actions { display: flex; align-items: center; gap: 4px; }
 .strip-actions button { height: 23px; border: 1px solid #243b42; border-radius: 4px; background: #102027; color: #8fa4a8; cursor: pointer; font: 7px ui-monospace, monospace; }
 .strip-actions button span { margin-left: 4px; font-family: Inter, sans-serif; }
@@ -1365,9 +1368,17 @@ textarea:focus-visible {
   scrollbar-gutter: stable;
 }
 .waveform-wrap.channel-scroll-mode .channel-rail,
-.waveform-wrap.channel-scroll-mode .canvas-shell {
+.waveform-wrap.channel-scroll-mode .canvas-column {
   height: var(--channel-content-height);
   min-height: var(--channel-content-height);
+}
+.waveform-wrap.channel-scroll-mode .canvas-column { overflow: visible; }
+.waveform-wrap.channel-scroll-mode .canvas-shell {
+  position: sticky;
+  top: 0;
+  right: 0;
+  bottom: auto;
+  min-height: 1px;
 }
 .channel-rail button.focused {
   background: rgba(87, 223, 183, .12);

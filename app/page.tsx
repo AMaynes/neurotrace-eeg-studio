@@ -7,7 +7,8 @@
  *
  * Architectural Relationships
  * Called by: The root application route through app/layout.tsx.
- * Calls: Browser signal sources in eeg-core.ts and source hashing in source-integrity.ts.
+ * Calls: Browser signal sources in eeg-core.ts plus display-processing and
+ * source-integrity workers for CPU-heavy clinical preparation and hashing.
  *
  * External Resources
  * Browser File/Blob APIs, localStorage, Canvas 2D, and public/og.png via layout metadata.
@@ -35,24 +36,25 @@ import {
   MatSource,
   RawDatSource,
   anatomicalChannelGroup,
-  applyDisplayFilters,
   buildMontage,
   clinicalDecimationFactor,
   confineTraceYToRow,
+  detectEnvelopeSynchronizedFlatlines,
   detectRawSynchronizedFlatlines,
   formatClock,
   LEGACY_RAW_COUNTS_PER_ROW,
   makeId,
   orderAnatomicalChannelIndices,
   parseLegacyMatMetadata,
-  prepareClinicalDisplaySignals,
   type DisplayFilterSettings,
   type LegacyMatMetadata,
   type MontageMode,
   type RecordingMeta,
   type SignalSource,
 } from "./eeg-core";
+import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
 import { sha256Blob } from "./source-integrity";
+import { verifySourceOffThread } from "./source-integrity-worker-client";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -196,6 +198,14 @@ type SessionTab = {
 
 type DisplayWindow = {
   data: Float32Array[];
+  /** Exact source extrema retained per display-time bucket for overview drawing. */
+  envelopes: Array<{
+    minima: Float32Array;
+    maxima: Float32Array;
+    gaps: Uint8Array;
+    startSec: number;
+    bucketDurationSec: number;
+  } | null>;
   labels: string[];
   sampleRates: number[];
   sourceSampleRates: number[];
@@ -229,6 +239,20 @@ type ProcessedWindowCache = {
   sampleRates: number[];
   channelStartSecs: number[];
   factors: Array<1 | 2>;
+  byteLength: number;
+};
+
+type EnvelopeWindowCache = {
+  source: SignalSource;
+  channelKey: string;
+  startSec: number;
+  endSec: number;
+  data: Float32Array[];
+  minima: Float32Array[];
+  maxima: Float32Array[];
+  gaps: Uint8Array[];
+  bucketDurationSec: number;
+  channelUnits: string[];
   byteLength: number;
 };
 
@@ -621,6 +645,7 @@ const DEFAULT_FILTERS: DisplayFilterSettings = {
 
 const EMPTY_DISPLAY: DisplayWindow = {
   data: [],
+  envelopes: [],
   labels: [],
   sampleRates: [],
   sourceSampleRates: [],
@@ -634,6 +659,8 @@ const EMPTY_DISPLAY: DisplayWindow = {
 };
 
 const RAW_WINDOW_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
+const ENVELOPE_CACHE_BUDGET_BYTES = 32 * 1024 * 1024;
+const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
 const CANVAS_PIXEL_BUDGET = 8_000_000;
 
 const DEFAULT_CONTROLS: ControlBindings = {
@@ -811,10 +838,6 @@ function boundedCanvasScale(width: number, height: number, requestedScale: numbe
   return Math.min(Math.max(0.1, requestedScale), 2, Math.sqrt(CANVAS_PIXEL_BUDGET / safeArea));
 }
 
-function yieldDisplayWork() {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-}
-
 function sourceRateForDisplayRow(display: DisplayWindow, meta: RecordingMeta, row: number) {
   return display.sourceSampleRates[row]
     ?? meta.sampleRates[display.primarySourceIndices[row]]
@@ -825,6 +848,14 @@ function sourceRateForDisplayRow(display: DisplayWindow, meta: RecordingMeta, ro
 function sampleIndexForDisplayRow(display: DisplayWindow, row: number, timeSec: number) {
   const values = display.data[row];
   if (!values?.length) return 0;
+  const envelope = display.envelopes[row];
+  if (envelope && envelope.bucketDurationSec > 0) {
+    return clamp(
+      Math.floor((timeSec - envelope.startSec) / envelope.bucketDurationSec),
+      0,
+      values.length - 1,
+    );
+  }
   const sampleRate = display.sampleRates[row];
   const startSec = display.startSecs[row] ?? display.viewStart;
   if (!(sampleRate > 0) || !Number.isFinite(sampleRate)) return 0;
@@ -936,8 +967,11 @@ export default function Home() {
   const sessionSnapshotsRef = useRef<Map<string, SessionWorkspaceSnapshot>>(new Map());
   const activeSessionIdRef = useRef("initial-session");
   const importBusyRef = useRef(false);
+  const sourceVerificationRef = useRef(false);
+  const sourceVerificationAbortRef = useRef<AbortController | null>(null);
   const flushSessionRef = useRef<() => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveformScrollRef = useRef<HTMLDivElement>(null);
   const overviewRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -951,14 +985,20 @@ export default function Home() {
   const redoRef = useRef<AnnotationHistorySnapshot[]>([]);
   const pointerRef = useRef<{ pointerId: number; startX: number; startTime: number; moved: boolean } | null>(null);
   const wheelFrameRef = useRef<number | null>(null);
+  const zoomWheelFrameRef = useRef<number | null>(null);
+  const channelScrollFrameRef = useRef<number | null>(null);
   const wheelDeltaRef = useRef(0);
   const wheelWidthRef = useRef(1);
+  const zoomWheelDeltaRef = useRef(0);
+  const zoomWheelAnchorRef = useRef(0);
   const displayRequestIdRef = useRef(0);
   const displayAppliedRequestIdRef = useRef(0);
+  const displayAbortRef = useRef<AbortController | null>(null);
   const displayRefreshPendingRef = useRef<(() => Promise<void>) | null>(null);
   const displayRefreshActiveRef = useRef(false);
   const rawWindowCacheRef = useRef<RawWindowCache[]>([]);
   const processedWindowCacheRef = useRef<ProcessedWindowCache[]>([]);
+  const envelopeWindowCacheRef = useRef<EnvelopeWindowCache[]>([]);
   const cursorFrameRef = useRef<number | null>(null);
   const pendingCursorRef = useRef<{ time: number; row: number; amplitude: number; selection?: { start: number; end: number } } | null>(null);
   const contextResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -1001,6 +1041,8 @@ export default function Home() {
   const [focusedChannel, setFocusedChannel] = useState(0);
   const [display, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
   const [waveformWidth, setWaveformWidth] = useState(1);
+  const [channelScrollOffset, setChannelScrollOffset] = useState(0);
+  const [channelViewportHeight, setChannelViewportHeight] = useState(245);
   const [loadingSignal, setLoadingSignal] = useState(false);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [annotationDragPreview, setAnnotationDragPreview] = useState<{ patches: Record<string, AnnotationDragPatch> } | null>(null);
@@ -1023,6 +1065,7 @@ export default function Home() {
   const [activeCandidate, setActiveCandidate] = useState(0);
   const [toast, setToast] = useState("Blank session ready — load a recording");
   const [importBusy, setImportBusy] = useState(false);
+  const [verifyingSource, setVerifyingSource] = useState(false);
   const [dragGhost, setDragGhost] = useState<{ labelId: string; time: number } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -1130,9 +1173,19 @@ export default function Home() {
     ? candidates.find((item) => item.id === queueDetailTarget.id) ?? null
     : null;
   const queueDetailLabel = queueDetailAnnotation ? LABEL_BY_ID.get(queueDetailAnnotation.labelId) : null;
-  const sourceHashDisplay = sourceHash.startsWith("demo:")
+  const sourceHashDisplay = verifyingSource
+    ? "Verifying…"
+    : sourceHash.startsWith("demo:")
     ? sourceHash
     : `${sourceHash.slice(0, 8)}…${sourceHash.slice(-4)}`;
+  const reviewReady = hasRecording && !verifyingSource;
+
+  const cancelSourceVerification = useCallback(() => {
+    const controller = sourceVerificationAbortRef.current;
+    if (!controller) return;
+    controller.abort(new DOMException("Source verification canceled", "AbortError"));
+    setToast("Canceling source verification…");
+  }, []);
 
   useLayoutEffect(() => {
     annotationsRef.current = annotations;
@@ -1225,7 +1278,7 @@ export default function Home() {
       undo: undoRef.current,
       redo: redoRef.current,
     };
-    if (snapshot.hasRecording) {
+    if (snapshot.hasRecording && !sourceVerificationRef.current) {
       try {
         localStorage.setItem(`neurotrace:draft:${snapshot.sessionKey}`, JSON.stringify(snapshot.annotations));
         localStorage.setItem(`neurotrace:project:${snapshot.sessionKey}`, JSON.stringify({
@@ -1260,14 +1313,25 @@ export default function Home() {
     return () => window.removeEventListener("pagehide", flush);
   }, []);
 
+  useEffect(() => () => {
+    sourceVerificationAbortRef.current?.abort();
+    displayAbortRef.current?.abort();
+  }, []);
+
   const applySessionSnapshot = useCallback((snapshot: SessionWorkspaceSnapshot) => {
     if (wheelFrameRef.current !== null) window.cancelAnimationFrame(wheelFrameRef.current);
+    if (zoomWheelFrameRef.current !== null) window.cancelAnimationFrame(zoomWheelFrameRef.current);
+    if (channelScrollFrameRef.current !== null) window.cancelAnimationFrame(channelScrollFrameRef.current);
     if (cursorFrameRef.current !== null) window.cancelAnimationFrame(cursorFrameRef.current);
     if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
     wheelFrameRef.current = null;
+    zoomWheelFrameRef.current = null;
+    channelScrollFrameRef.current = null;
     cursorFrameRef.current = null;
     dragFrameRef.current = null;
     wheelDeltaRef.current = 0;
+    zoomWheelDeltaRef.current = 0;
+    setChannelScrollOffset(0);
     pointerRef.current = null;
     pendingCursorRef.current = null;
     contextResizeRef.current = null;
@@ -1287,6 +1351,7 @@ export default function Home() {
     setFocusedChannel(snapshot.focusedChannel);
     rawWindowCacheRef.current = [];
     processedWindowCacheRef.current = [];
+    envelopeWindowCacheRef.current = [];
     setDisplay(EMPTY_DISPLAY);
     setAnnotations(snapshot.annotations);
     setSelectedAnnotationId(snapshot.selectedAnnotationId);
@@ -1440,6 +1505,10 @@ export default function Home() {
   }, [setTimeWindow, timebase]);
 
   const commitMutation = useCallback((mutator: (current: Annotation[]) => Annotation[]) => {
+    if (sourceVerificationRef.current) {
+      setToast("Source verification is still running — browsing is available, review edits unlock when it completes");
+      return;
+    }
     const current = annotationsRef.current;
     undoRef.current.push({
       annotations: current,
@@ -1506,6 +1575,10 @@ export default function Home() {
   ) => {
     if (!hasRecording) {
       setToast("Load a recording before placing labels");
+      return;
+    }
+    if (sourceVerificationRef.current) {
+      setToast("Source verification is still running — review edits unlock when it completes");
       return;
     }
     const samplingRate = sourceRateForDisplayRow(display, meta, targetRow);
@@ -1880,6 +1953,10 @@ export default function Home() {
   }, [candidates, meta.durationSec, timebase]);
 
   const commitAnnotation = useCallback((targetAnnotation: Annotation | null, force = false, advanceAfter = false) => {
+    if (sourceVerificationRef.current) {
+      setToast("Source verification must finish before a revision can be committed");
+      return false;
+    }
     if (!targetAnnotation) return false;
     const blockers: string[] = [];
     const advisories: string[] = [];
@@ -1998,7 +2075,7 @@ export default function Home() {
     commitAnnotation(selectedAnnotation, force, advanceAfter), [commitAnnotation, selectedAnnotation]);
 
   useEffect(() => {
-    if (!hasRecording) return;
+    if (!hasRecording || verifyingSource) return;
     const timer = window.setTimeout(() => {
       try {
         localStorage.setItem(`neurotrace:draft:${sessionKey}`, JSON.stringify(annotations));
@@ -2022,9 +2099,12 @@ export default function Home() {
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, hasRecording, recordingType, reviewer, sessionKey, sourceInterpretation]);
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, hasRecording, recordingType, reviewer, sessionKey, sourceInterpretation, verifyingSource]);
 
   useEffect(() => {
+    displayAbortRef.current?.abort();
+    const abortController = new AbortController();
+    displayAbortRef.current = abortController;
     const requestId = ++displayRequestIdRef.current;
     const source = sourceRef.current;
     const selectedIndices = [...selectedChannels].sort((a, b) => a - b);
@@ -2041,13 +2121,28 @@ export default function Home() {
       }
       setLoadingSignal(true);
       try {
+        const requiresClinicalPreparation = indices.some((index) => {
+          const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
+          return clinicalDecimationFactor(
+            sampleRate,
+            Math.max(0, Math.ceil(sampleRate * timebase)),
+            Math.max(1, waveformWidth),
+          ) === 2;
+        });
+        const useEnvelopePath = !filters.enabled
+          && montage === "referential"
+          && !spectrogramOpen
+          && !requiresClinicalPreparation
+          && typeof source.getEnvelopeWindow === "function"
+          && indices.some((index) =>
+            (meta.sampleRates[index] ?? primarySampleRate(meta)) * timebase > Math.max(2, waveformWidth * 1.5));
         const filterPadSec = filters.enabled
           ? Math.min(12, Math.max(2, filters.highPassHz > 0 ? 3 / filters.highPassHz : 2))
           : 0;
         // The fixed 48-sample FIR delay exists only for channels eligible for
         // Sean's 2x display decimator. Applying it to a 0.1 Hz auxiliary row,
         // for example, would unnecessarily load hundreds of extra seconds.
-        const groupDelayPadSec = Math.max(0, ...indices.map((index) => {
+        const groupDelayPadSec = useEnvelopePath ? 0 : Math.max(0, ...indices.map((index) => {
           const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
           return sampleRate >= 1000 ? 48 / sampleRate : 0;
         }));
@@ -2056,7 +2151,10 @@ export default function Home() {
         const requiredEnd = Math.min(meta.durationSec, viewStart + timebase + processingPadSec);
         const byteRate = indices.reduce((sum, index) => sum + Math.max(1, meta.sampleRates[index] ?? primarySampleRate(meta)) * Float32Array.BYTES_PER_ELEMENT, 0);
         const requiredDuration = Math.max(0, requiredEnd - requiredStart);
-        const budgetDuration = RAW_WINDOW_CACHE_BUDGET_BYTES / Math.max(1, byteRate);
+        const storageByteRate = (meta.byteLength ?? 0) / Math.max(1e-9, meta.durationSec);
+        const budgetDuration = useEnvelopePath
+          ? SOURCE_READ_AHEAD_BUDGET_BYTES / Math.max(1, storageByteRate)
+          : RAW_WINDOW_CACHE_BUDGET_BYTES / Math.max(1, byteRate);
         const desiredDuration = Math.max(requiredDuration, Math.min(budgetDuration, requiredDuration + timebase * 2));
         const extraDuration = Math.max(0, desiredDuration - requiredDuration);
         let cacheStart = Math.max(0, requiredStart - extraDuration / 2);
@@ -2064,6 +2162,120 @@ export default function Home() {
         if (cacheEnd - cacheStart < desiredDuration) {
           if (cacheStart === 0) cacheEnd = Math.min(meta.durationSec, desiredDuration);
           else if (cacheEnd === meta.durationSec) cacheStart = Math.max(0, meta.durationSec - desiredDuration);
+        }
+
+        if (useEnvelopePath && source.getEnvelopeWindow) {
+          const requiredBucketDuration = timebase / Math.max(1, waveformWidth);
+          let envelopeWindow = envelopeWindowCacheRef.current.find((entry) =>
+            entry.source === source
+            && entry.channelKey === channelKey
+            && entry.startSec <= viewStart + 1e-9
+            && entry.endSec >= viewStart + timebase - 1e-9
+            && entry.bucketDurationSec <= requiredBucketDuration * 1.05);
+          let envelopeWindowIsCached = Boolean(envelopeWindow);
+          if (envelopeWindow) {
+            envelopeWindowCacheRef.current = [
+              ...envelopeWindowCacheRef.current.filter((entry) => entry !== envelopeWindow),
+              envelopeWindow,
+            ];
+          } else {
+            const cacheDuration = Math.max(1e-9, cacheEnd - cacheStart);
+            const maxBucketsByBudget = Math.max(
+              1,
+              Math.floor(ENVELOPE_CACHE_BUDGET_BYTES / Math.max(1, indices.length * 13)),
+            );
+            const bucketCount = clamp(
+              Math.ceil((cacheDuration / Math.max(1e-9, timebase)) * Math.max(1, waveformWidth)),
+              1,
+              Math.min(12_000, maxBucketsByBudget),
+            );
+            const envelopeData = await source.getEnvelopeWindow(
+              cacheStart,
+              cacheDuration,
+              bucketCount,
+              indices,
+              { signal: abortController.signal },
+            );
+            if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+            const byteLength = envelopeData.data.reduce((sum, channel) => sum + channel.byteLength, 0)
+              + envelopeData.minima.reduce((sum, channel) => sum + channel.byteLength, 0)
+              + envelopeData.maxima.reduce((sum, channel) => sum + channel.byteLength, 0)
+              + envelopeData.gaps.reduce((sum, channel) => sum + channel.byteLength, 0);
+            envelopeWindow = {
+              source,
+              channelKey,
+              startSec: envelopeData.startSec,
+              endSec: envelopeData.startSec + envelopeData.durationSec,
+              data: envelopeData.data,
+              minima: envelopeData.minima,
+              maxima: envelopeData.maxima,
+              gaps: envelopeData.gaps,
+              bucketDurationSec: envelopeData.bucketDurationSec,
+              channelUnits: envelopeData.channelUnits,
+              byteLength,
+            };
+            if (byteLength <= ENVELOPE_CACHE_BUDGET_BYTES) {
+              envelopeWindowCacheRef.current.push(envelopeWindow);
+              envelopeWindowIsCached = true;
+              let cachedBytes = envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
+              while (cachedBytes > ENVELOPE_CACHE_BUDGET_BYTES && envelopeWindowCacheRef.current.length) {
+                const removed = envelopeWindowCacheRef.current.shift();
+                if (removed === envelopeWindow) envelopeWindowIsCached = false;
+                cachedBytes -= removed?.byteLength ?? 0;
+              }
+            }
+          }
+
+          const firstBucket = clamp(
+            Math.floor((viewStart - envelopeWindow.startSec) / envelopeWindow.bucketDurationSec + 1e-9),
+            0,
+            envelopeWindow.data[0]?.length ?? 0,
+          );
+          const lastBucket = clamp(
+            Math.ceil((viewStart + timebase - envelopeWindow.startSec) / envelopeWindow.bucketDurationSec - 1e-9),
+            firstBucket + 1,
+            envelopeWindow.data[0]?.length ?? firstBucket + 1,
+          );
+          const envelopeStartSec = envelopeWindow.startSec + firstBucket * envelopeWindow.bucketDurationSec;
+          const crop = <T extends Float32Array | Uint8Array>(channel: T): T => (
+            envelopeWindowIsCached
+              ? channel.subarray(firstBucket, lastBucket)
+              : channel.slice(firstBucket, lastBucket)
+          ) as T;
+          const data = envelopeWindow.data.map(crop);
+          const envelopes = data.map((_, position) => ({
+            minima: crop(envelopeWindow.minima[position]),
+            maxima: crop(envelopeWindow.maxima[position]),
+            gaps: crop(envelopeWindow.gaps[position]),
+            startSec: envelopeStartSec,
+            bucketDurationSec: envelopeWindow.bucketDurationSec,
+          }));
+          const flatlineRegions = detectEnvelopeSynchronizedFlatlines(
+            envelopes.map((entry) => entry.minima),
+            envelopes.map((entry) => entry.maxima),
+            envelopes.map((entry) => entry.gaps),
+            envelopeWindow.bucketDurationSec,
+            { startSec: envelopeStartSec, thresholdFraction: .8, minimumDurationSec: .25 },
+          ).map((region) => ({ startSec: region.startSec, endSec: region.endSec }));
+          const effectiveRate = 1 / envelopeWindow.bucketDurationSec;
+          displayAppliedRequestIdRef.current = requestId;
+          setDisplay({
+            data,
+            envelopes,
+            labels: indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`),
+            sampleRates: indices.map(() => effectiveRate),
+            sourceSampleRates: indices.map((index) => meta.sampleRates[index] ?? primarySampleRate(meta)),
+            startSecs: indices.map(() => envelopeStartSec),
+            units: envelopeWindow.channelUnits,
+            sourceIndices: indices.map((index) => [index]),
+            primarySourceIndices: indices,
+            warnings: [],
+            viewStart,
+            flatlineRegions,
+          });
+          setFocusedChannel((current) => clamp(current, 0, Math.max(0, indices.length - 1)));
+          setLoadingSignal(false);
+          return;
         }
 
         let rawWindow = rawWindowCacheRef.current.find((entry) =>
@@ -2077,8 +2289,13 @@ export default function Home() {
             rawWindow,
           ];
         } else {
-          const windowData = await source.getWindow(cacheStart, Math.max(0, cacheEnd - cacheStart), indices);
-          if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+          const windowData = await source.getWindow(
+            cacheStart,
+            Math.max(0, cacheEnd - cacheStart),
+            indices,
+            { signal: abortController.signal },
+          );
+          if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
           const byteLength = windowData.data.reduce((sum, channel) => sum + channel.byteLength, 0);
           const flatlineRegions = detectRawSynchronizedFlatlines(windowData.data, windowData.sampleRates, {
             startSec: windowData.startSec,
@@ -2129,37 +2346,23 @@ export default function Home() {
             processed,
           ];
         } else {
-          const processedData: Float32Array[] = [];
-          const processedRates: number[] = [];
-          const processedStartSecs: number[] = [];
-          const factors: Array<1 | 2> = [];
-          let samplesSinceYield = 0;
-          for (let position = 0; position < rawWindow.data.length; position += 1) {
-            const sourceChannel = rawWindow.data[position];
+          const sourceStartSampleIndices = rawWindow.data.map((_, position) => {
             const sourceRate = rawWindow.sampleRates[position];
-            const filteredChannel = filters.enabled
-              ? applyDisplayFilters([sourceChannel], [sourceRate], filters)[0]
-              : sourceChannel;
-            const sourceStartSampleIndex = Math.round(
-              (rawWindow.channelStartSecs[position] ?? rawWindow.startSec) * sourceRate,
-            );
-            const prepared = prepareClinicalDisplaySignals(
-              [filteredChannel],
-              [sourceRate],
-              processingPixelCount,
-              [sourceStartSampleIndex],
-            );
-            processedData.push(prepared.data[0]);
-            processedRates.push(prepared.sampleRates[0]);
-            processedStartSecs.push(prepared.outputStartSampleIndices[0] / sourceRate);
-            factors.push(prepared.factors[0]);
-            samplesSinceYield += sourceChannel.length;
-            if (samplesSinceYield >= 100_000) {
-              samplesSinceYield = 0;
-              await yieldDisplayWork();
-              if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
-            }
-          }
+            return Math.round((rawWindow.channelStartSecs[position] ?? rawWindow.startSec) * sourceRate);
+          });
+          const prepared = await processDisplaySignalsOffThread({
+            data: rawWindow.data,
+            sampleRates: rawWindow.sampleRates,
+            filters,
+            pixelCount: processingPixelCount,
+            sourceStartSampleIndices,
+          }, { signal: abortController.signal });
+          if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+          const processedData = prepared.data;
+          const processedRates = prepared.sampleRates;
+          const processedStartSecs = prepared.outputStartSampleIndices.map((sampleIndex, position) =>
+            sampleIndex / rawWindow.sampleRates[position]);
+          const factors = prepared.factors;
           const byteLength = processedData.reduce((sum, channel) => sum + channel.byteLength, 0);
           processed = {
             raw: rawWindow,
@@ -2247,6 +2450,7 @@ export default function Home() {
         displayAppliedRequestIdRef.current = requestId;
         setDisplay({
           data: montageResult.data,
+          envelopes: montageResult.data.map(() => null),
           labels: montageResult.labels,
           sampleRates,
           sourceSampleRates,
@@ -2261,6 +2465,7 @@ export default function Home() {
         setFocusedChannel((current) => clamp(current, 0, Math.max(0, montageResult.labels.length - 1)));
         setLoadingSignal(false);
       } catch (error) {
+        if (abortController.signal.aborted) return;
         if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
         displayAppliedRequestIdRef.current = requestId;
         setLoadingSignal(false);
@@ -2282,7 +2487,8 @@ export default function Home() {
       };
       void pumpLatestWindow();
     }
-  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, timebase, viewStart, waveformWidth]);
+    return () => abortController.abort();
+  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, spectrogramOpen, timebase, viewStart, waveformWidth]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -2355,8 +2561,11 @@ export default function Home() {
       }
 
       const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
-      const plotHeight = Math.max(1, height - plotTop);
-      const rowHeight = plotHeight / channelRowLayout.totalUnits;
+      const plotHeight = expandedChannels
+        ? Math.max(1, channelRowLayout.totalUnits * 60)
+        : Math.max(1, height - plotTop);
+      const rowHeight = expandedChannels ? 60 : plotHeight / channelRowLayout.totalUnits;
+      const rowScrollOffset = expandedChannels ? channelScrollOffset : 0;
 
       if (activeCandidateItem && activeCandidateItem.time >= displayStart && activeCandidateItem.time <= displayEnd) {
         const eventX = ((activeCandidateItem.time - displayStart) / timebase) * width;
@@ -2373,8 +2582,9 @@ export default function Home() {
       }
 
       for (let channel = 0; channel < display.data.length; channel += 1) {
-        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel];
+        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel] - rowScrollOffset;
         const center = rowTop + rowHeight * 0.5;
+        if (rowTop + rowHeight < plotTop || rowTop > height) continue;
         if (channelRowLayout.groupStarts.has(channel)) {
           context.strokeStyle = "rgba(87, 223, 183, .22)";
           context.beginPath(); context.moveTo(0, rowTop - rowHeight * 2); context.lineTo(width, rowTop - rowHeight * 2); context.stroke();
@@ -2420,8 +2630,9 @@ export default function Home() {
         const values = display.data[channel];
         const sampleRate = display.sampleRates[channel] ?? 1;
         const rowStartSec = display.startSecs[channel] ?? displayStart;
-        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel];
+        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel] - rowScrollOffset;
         const center = rowTop + rowHeight * 0.5;
+        if (rowTop + rowHeight < plotTop || rowTop > height) continue;
         if (!values.length || !(sampleRate > 0)) continue;
         const scale = legacyRawCountDisplay
           ? (rowHeight * gain) / LEGACY_RAW_COUNTS_PER_ROW
@@ -2434,7 +2645,45 @@ export default function Home() {
         context.clip();
         context.strokeStyle = selected ? "rgba(242, 255, 251, 1)" : "rgba(218, 235, 232, .72)";
         context.lineWidth = selected ? 1.25 : 0.85;
-        if (values.length <= Math.max(2, width * 1.5)) {
+        const envelope = display.envelopes[channel];
+        if (envelope) {
+          const baseline = robustTraceBaseline(values);
+          context.save();
+          context.globalAlpha = selected ? .72 : .42;
+          context.beginPath();
+          for (let bucket = 0; bucket < values.length; bucket += 1) {
+            const minimum = envelope.minima[bucket];
+            const maximum = envelope.maxima[bucket];
+            if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
+            const bucketTime = envelope.startSec + (bucket + .5) * envelope.bucketDurationSec;
+            const x = ((bucketTime - displayStart) / timebase) * width;
+            if (x < -1 || x > width + 1) continue;
+            const confinedMaximum = confineTraceYToRow(center - (maximum - baseline) * scale, rowTop, rowHeight);
+            const confinedMinimum = confineTraceYToRow(center - (minimum - baseline) * scale, rowTop, rowHeight);
+            if (confinedMaximum.overflow || confinedMinimum.overflow) overflow = true;
+            context.moveTo(x, confinedMaximum.y);
+            context.lineTo(x, confinedMinimum.y);
+          }
+          context.stroke();
+          context.restore();
+          context.beginPath();
+          let connected = false;
+          for (let bucket = 0; bucket < values.length; bucket += 1) {
+            const value = values[bucket];
+            if (!Number.isFinite(value) || envelope.gaps[bucket]) {
+              connected = false;
+              continue;
+            }
+            const bucketTime = envelope.startSec + (bucket + .5) * envelope.bucketDurationSec;
+            const x = ((bucketTime - displayStart) / timebase) * width;
+            if (x < -1 || x > width + 1) continue;
+            const { y } = confineTraceYToRow(center - (value - baseline) * scale, rowTop, rowHeight);
+            if (connected) context.lineTo(x, y);
+            else context.moveTo(x, y);
+            connected = true;
+          }
+          context.stroke();
+        } else if (values.length <= Math.max(2, width * 1.5)) {
           const baseline = robustTraceBaseline(values);
           context.beginPath();
           let connected = false;
@@ -2539,25 +2788,27 @@ export default function Home() {
           : (rowHeight * 0.36 * gain) / 100;
         const barValue = (legacyRawCountDisplay ? 5_000 : 100) / gain;
         const x = Math.max(18, width - 34);
-        const y = plotTop + rowHeight * (channelRowLayout.rowStartUnits[scaleRow] + .5);
+        const y = plotTop + rowHeight * (channelRowLayout.rowStartUnits[scaleRow] + .5) - rowScrollOffset;
         const halfHeight = barValue * scale * .5;
-        context.strokeStyle = "rgba(87, 223, 183, .95)";
-        context.lineWidth = 1.25;
-        context.beginPath();
-        context.moveTo(x, y - halfHeight); context.lineTo(x, y + halfHeight);
-        context.moveTo(x - 4, y - halfHeight); context.lineTo(x + 4, y - halfHeight);
-        context.moveTo(x - 4, y + halfHeight); context.lineTo(x + 4, y + halfHeight);
-        context.stroke();
-        context.fillStyle = "rgba(155, 225, 207, .92)";
-        context.textAlign = "right";
-        context.textBaseline = "middle";
-        context.fillText(
-          legacyRawCountDisplay
-            ? `${Math.round(barValue).toLocaleString()} counts`
-            : formatAmplitude(barValue, display.units[scaleRow] || "a.u."),
-          x - 7,
-          y,
-        );
+        if (y + halfHeight >= plotTop && y - halfHeight <= height) {
+          context.strokeStyle = "rgba(87, 223, 183, .95)";
+          context.lineWidth = 1.25;
+          context.beginPath();
+          context.moveTo(x, y - halfHeight); context.lineTo(x, y + halfHeight);
+          context.moveTo(x - 4, y - halfHeight); context.lineTo(x + 4, y - halfHeight);
+          context.moveTo(x - 4, y + halfHeight); context.lineTo(x + 4, y + halfHeight);
+          context.stroke();
+          context.fillStyle = "rgba(155, 225, 207, .92)";
+          context.textAlign = "right";
+          context.textBaseline = "middle";
+          context.fillText(
+            legacyRawCountDisplay
+              ? `${Math.round(barValue).toLocaleString()} counts`
+              : formatAmplitude(barValue, display.units[scaleRow] || "a.u."),
+            x - 7,
+            y,
+          );
+        }
       }
 
       if (markOnset !== null) {
@@ -2571,7 +2822,7 @@ export default function Home() {
     };
     waveDrawRef.current = draw;
     draw();
-  }, [activeCandidateItem, annotations, channelRowLayout, display, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase]);
+  }, [activeCandidateItem, annotations, channelRowLayout, channelScrollOffset, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2584,6 +2835,48 @@ export default function Home() {
     observer.observe(canvas);
     return () => observer.disconnect();
   }, []);
+
+  const updateExpandedChannelViewport = useCallback(() => {
+    const container = waveformScrollRef.current;
+    if (!container) return;
+    if (channelScrollFrameRef.current !== null) return;
+    channelScrollFrameRef.current = window.requestAnimationFrame(() => {
+      channelScrollFrameRef.current = null;
+      setChannelScrollOffset(expandedChannels ? container.scrollTop : 0);
+      setChannelViewportHeight(Math.max(1, container.clientHeight));
+    });
+  }, [expandedChannels]);
+
+  useLayoutEffect(() => {
+    const container = waveformScrollRef.current;
+    if (!container) return;
+    if (!expandedChannels) container.scrollTop = 0;
+    const update = () => {
+      setChannelScrollOffset(expandedChannels ? container.scrollTop : 0);
+      setChannelViewportHeight(Math.max(1, container.clientHeight));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [expandedChannels]);
+
+  const channelRowFromClientY = useCallback((clientY: number, rect: DOMRect) => {
+    const localY = clientY - rect.top;
+    if (localY < CHANNEL_RAIL_HEADER_HEIGHT || localY > rect.height) return null;
+    if (expandedChannels) {
+      const liveScrollTop = waveformScrollRef.current?.scrollTop ?? channelScrollOffset;
+      const contentY = liveScrollTop + localY - CHANNEL_RAIL_HEADER_HEIGHT;
+      return channelRowFromFraction(
+        channelRowLayout,
+        contentY / Math.max(1, channelRowLayout.totalUnits * 60),
+      );
+    }
+    return channelRowFromFraction(
+      channelRowLayout,
+      (localY - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT),
+    );
+  }, [channelRowLayout, channelScrollOffset, expandedChannels]);
 
   const timeFromPointer = useCallback((event: { clientX: number }, element: HTMLElement, row: number, bypass = false) => {
     const rect = element.getBoundingClientRect();
@@ -2600,8 +2893,7 @@ export default function Home() {
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || loadingSignal || !display.data.length) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
-    const row = channelRowFromFraction(channelRowLayout, (event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight);
+    const row = channelRowFromClientY(event.clientY, rect);
     if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
     const values = display.data[row];
@@ -2617,8 +2909,7 @@ export default function Home() {
   const onWavePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!pointerRef.current || pointerRef.current.pointerId !== event.pointerId) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
-    const row = channelRowFromFraction(channelRowLayout, (event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight);
+    const row = channelRowFromClientY(event.clientY, rect);
     if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
     const values = display.data[row];
@@ -2656,8 +2947,7 @@ export default function Home() {
     }
     pendingCursorRef.current = null;
     const rect = event.currentTarget.getBoundingClientRect();
-    const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
-    const hitRow = channelRowFromFraction(channelRowLayout, (event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight);
+    const hitRow = channelRowFromClientY(event.clientY, rect);
     if (hitRow === null && !pointer.moved) {
       setToast("Click directly on a waveform row");
       return;
@@ -2715,10 +3005,7 @@ export default function Home() {
       setToast("Drop labels directly on a waveform row");
       return;
     }
-    const row = channelRowFromFraction(
-      channelRowLayout,
-      (event.clientY - canvasRect.top - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, canvasRect.height - CHANNEL_RAIL_HEADER_HEIGHT),
-    );
+    const row = channelRowFromClientY(event.clientY, canvasRect);
     if (row === null) {
       setDragGhost(null);
       setToast("Drop labels on a channel row, not in an anatomical group gap");
@@ -2751,10 +3038,7 @@ export default function Home() {
         return;
       }
       event.preventDefault();
-      const row = channelRowFromFraction(
-        channelRowLayout,
-        (event.clientY - canvasRect.top - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, canvasRect.height - CHANNEL_RAIL_HEADER_HEIGHT),
-      );
+      const row = channelRowFromClientY(event.clientY, canvasRect);
       if (row === null) {
         setDragGhost(null);
         return;
@@ -3005,8 +3289,18 @@ export default function Home() {
     const rect = canvasShell?.getBoundingClientRect() ?? viewerRect;
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault();
-      const anchor = viewStart + clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * timebase;
-      zoomTimeWindow(event.deltaY < 0 ? "in" : "out", anchor);
+      zoomWheelDeltaRef.current += event.deltaY;
+      zoomWheelAnchorRef.current = viewStart
+        + clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * timebase;
+      if (zoomWheelFrameRef.current === null) {
+        zoomWheelFrameRef.current = window.requestAnimationFrame(() => {
+          const boundedDelta = clamp(zoomWheelDeltaRef.current, -120, 120);
+          zoomWheelDeltaRef.current = 0;
+          zoomWheelFrameRef.current = null;
+          const factor = Math.exp(boundedDelta * Math.log(1.25) / 120);
+          setTimeWindow(timebase * factor, zoomWheelAnchorRef.current);
+        });
+      }
       return;
     }
     const overExpandedChannels = expandedChannels
@@ -3027,7 +3321,7 @@ export default function Home() {
       wheelFrameRef.current = null;
       setViewStartSafe((current) => current + seconds);
     });
-  }, [expandedChannels, setViewStartSafe, timebase, viewStart, zoomTimeWindow]);
+  }, [expandedChannels, setTimeWindow, setViewStartSafe, timebase, viewStart]);
 
   useLayoutEffect(() => {
     viewerWheelRef.current = onViewerWheel;
@@ -3044,6 +3338,8 @@ export default function Home() {
 
   useEffect(() => () => {
     if (wheelFrameRef.current !== null) window.cancelAnimationFrame(wheelFrameRef.current);
+    if (zoomWheelFrameRef.current !== null) window.cancelAnimationFrame(zoomWheelFrameRef.current);
+    if (channelScrollFrameRef.current !== null) window.cancelAnimationFrame(channelScrollFrameRef.current);
     if (cursorFrameRef.current !== null) window.cancelAnimationFrame(cursorFrameRef.current);
   }, []);
 
@@ -3184,22 +3480,91 @@ export default function Home() {
   const loadSource = useCallback(async (source: SignalSource, file: File, interpretation?: Record<string, unknown>) => {
     const targetSessionId = activeSessionId;
     const nextMeta = sourceMeta(source);
+    storeActiveSession();
+    const previousSnapshot = sessionSnapshotsRef.current.get(targetSessionId);
+    sourceVerificationAbortRef.current?.abort(new DOMException("Source verification superseded", "AbortError"));
+    const verificationAbortController = new AbortController();
+    sourceVerificationAbortRef.current = verificationAbortController;
+    const ensureVerificationActive = () => {
+      if (!verificationAbortController.signal.aborted) return;
+      throw verificationAbortController.signal.reason
+        ?? new DOMException("Source verification canceled", "AbortError");
+    };
+    const recommendedChannels = (Array.isArray(nextMeta.recommendedDisplayChannels)
+      ? nextMeta.recommendedDisplayChannels
+      : nextMeta.channelLabels.slice(0, 18).map((_, index) => index))
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < nextMeta.channelLabels.length);
+
+    // Install a read-only preview immediately. The exact content identity and
+    // any matching recovery project attach only after the worker finishes.
+    sourceVerificationRef.current = true;
+    setVerifyingSource(true);
+    sourceRef.current = source;
+    setHasRecording(true);
+    setMeta(nextMeta);
+    setSessionKey(`verifying:${nextMeta.id}`);
+    setRawSourceHash("");
+    setSourceHash("");
+    setSourceInterpretation(interpretation ?? null);
+    setSelectedChannels(new Set(recommendedChannels));
+    setBadChannels(new Set());
+    rawWindowCacheRef.current = [];
+    processedWindowCacheRef.current = [];
+    envelopeWindowCacheRef.current = [];
+    setDisplay(EMPTY_DISPLAY);
+    setViewStart(0);
+    setGain(1);
+    setMontage("referential");
+    setFilters({ ...DEFAULT_FILTERS });
+    setCursorTime(0);
+    setCursorLocked(false);
+    setSelection(null);
+    setMarkOnset(null);
+    setActiveTool("cursor");
+    setAnnotationDragPreview(null);
+    setTimebase(Math.min(20, Math.max(5, nextMeta.durationSec)));
+    setExpandedChannels(recommendedChannels.length > 10);
+    setCandidates([]);
+    setActiveCandidate(0);
+    setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
+    setRecordingType(nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG");
+    setReviewer("");
+    annotationsRef.current = [];
+    setAnnotations([]);
+    undoRef.current = [];
+    redoRef.current = [];
+    setShowImport(false);
+
     let lastProgressBucket = -1;
-    setToast("Computing full source SHA-256…");
-    const contentHash = await sha256Blob(file, {
-      onProgress: (bytesHashed, totalBytes) => {
-        const bucket = totalBytes ? Math.floor((bytesHashed / totalBytes) * 10) : 10;
-        if (bucket !== lastProgressBucket) {
-          lastProgressBucket = bucket;
-          setToast(`Verifying source integrity… ${Math.min(100, bucket * 10)}%`);
-        }
-      },
-    });
+    setToast("Waveform preview ready — verifying full source integrity…");
+    let contentHash: string;
+    try {
+      const verification = await verifySourceOffThread(file, {
+        edfHeader: source instanceof EDFSource ? source.header : undefined,
+        signal: verificationAbortController.signal,
+        onProgress: (bytesHashed, totalBytes) => {
+          const bucket = totalBytes ? Math.floor((bytesHashed / totalBytes) * 10) : 10;
+          if (bucket !== lastProgressBucket) {
+            lastProgressBucket = bucket;
+            setToast(`Waveform ready · verifying source integrity… ${Math.min(100, bucket * 10)}%`);
+          }
+        },
+      });
+      ensureVerificationActive();
+      contentHash = verification.hash;
+      if (source instanceof EDFSource && verification.edfAnnotations) {
+        source.applyVerifiedAnnotations(
+          verification.edfAnnotations.events,
+          verification.edfAnnotations.warnings,
+        );
+      }
     const identityInterpretation = sourceIdentityInterpretation(interpretation);
     const interpretationMaterial = identityInterpretation ? JSON.stringify(identityInterpretation) : undefined;
     const interpretationHash = interpretationMaterial
       ? await sha256Blob(new Blob([`neurotrace-interpretation-v1\n${contentHash}\n${interpretationMaterial}`]))
       : contentHash;
+    ensureVerificationActive();
     const nextKey = interpretationHash.slice(0, 32);
     let legacyRecoveryKey: string | null = null;
     if (identityInterpretation?.kind === "raw-int16-le"
@@ -3208,13 +3573,18 @@ export default function Home() {
       const legacyHash = await sha256Blob(new Blob([
         `neurotrace-interpretation-v1\n${contentHash}\n${JSON.stringify(legacyIdentity)}`,
       ]));
+      ensureVerificationActive();
       legacyRecoveryKey = legacyHash.slice(0, 32);
     }
     const duplicateEntry = [...sessionSnapshotsRef.current.entries()].find(([id, snapshot]) =>
       id !== targetSessionId && snapshot.hasRecording && snapshot.sourceHash === interpretationHash);
     if (duplicateEntry) {
-      storeActiveSession();
       const [duplicateId, duplicateSnapshot] = duplicateEntry;
+      if (sourceVerificationAbortRef.current === verificationAbortController) {
+        sourceVerificationAbortRef.current = null;
+      }
+      sourceVerificationRef.current = false;
+      setVerifyingSource(false);
       setActiveSessionId(duplicateId);
       applySessionSnapshot(duplicateSnapshot);
       setToast("That recording is already open — switched to its existing session");
@@ -3301,51 +3671,38 @@ export default function Home() {
     if (activeSessionIdRef.current !== targetSessionId) {
       throw new Error("The active session changed while the recording was opening. Load it again in the intended tab.");
     }
-    sourceRef.current = source;
-    setHasRecording(true);
+    sourceVerificationRef.current = false;
+    if (sourceVerificationAbortRef.current === verificationAbortController) {
+      sourceVerificationAbortRef.current = null;
+    }
+    setVerifyingSource(false);
     setSessionTabs((current) => current.map((tab) => tab.id === targetSessionId
       ? { ...tab, title: shortFileName(nextMeta.name.replace(/\.[^.]+$/, ""), 22), hasRecording: true, recoveryStatus: "saved" }
       : tab));
-    setMeta(nextMeta);
     setSessionKey(nextKey);
     setRawSourceHash(contentHash);
     setSourceHash(interpretationHash);
     setSourceInterpretation(applyMatlabExportIdentity(interpretation, restoredMatlabExportIdentity) ?? null);
-    const recommendedChannels = (Array.isArray(nextMeta.recommendedDisplayChannels)
-      ? nextMeta.recommendedDisplayChannels
-      : nextMeta.channelLabels.slice(0, 18).map((_, index) => index))
-      .filter((index) => Number.isInteger(index) && index >= 0 && index < nextMeta.channelLabels.length);
-    setSelectedChannels(new Set(recommendedChannels));
     setBadChannels(new Set(restoredBadChannels));
-    rawWindowCacheRef.current = [];
-    processedWindowCacheRef.current = [];
-    setDisplay(EMPTY_DISPLAY);
-    setViewStart(0);
-    setGain(1);
-    setMontage("referential");
-    setFilters({ ...DEFAULT_FILTERS });
-    setCursorTime(0);
-    setCursorLocked(false);
-    setSelection(null);
-    setMarkOnset(null);
-    setActiveTool("cursor");
-    setAnnotationDragPreview(null);
-    setTimebase(Math.min(20, Math.max(5, nextMeta.durationSec)));
-    setExpandedChannels(recommendedChannels.length > 10);
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
-    setSelectedAnnotationId(null);
-    setSelectedAnnotationIds(new Set());
     setRecordingType(restoredRecordingType);
     setReviewer(restoredReviewer ?? "");
+    annotationsRef.current = restored;
     setAnnotations(restored);
-    undoRef.current = [];
-    redoRef.current = [];
     setToast(recoveryWarning ?? (restored.length
       ? `Recovered ${restored.length} labels and local review state`
       : `${nextMeta.format} recording ready — ${nextMeta.channelLabels.length} channels${nextMeta.warnings.length ? ` · ${nextMeta.warnings.length} source warning${nextMeta.warnings.length === 1 ? "" : "s"}` : ""}`));
-    setShowImport(false);
     return { restoredCandidates, restoredActiveCandidate };
+    } catch (error) {
+      if (sourceVerificationAbortRef.current === verificationAbortController) {
+        sourceVerificationAbortRef.current = null;
+      }
+      sourceVerificationRef.current = false;
+      setVerifyingSource(false);
+      if (previousSnapshot && activeSessionIdRef.current === targetSessionId) applySessionSnapshot(previousSnapshot);
+      throw error;
+    }
   }, [activeSessionId, applySessionSnapshot, storeActiveSession]);
 
   const importFiles = async (files: File[]) => {
@@ -3361,33 +3718,48 @@ export default function Home() {
         ? files.find((file) => /\.mat$/i.test(file.name) && file.name.replace(/\.mat$/i, "").toLowerCase() === datStem)
         : files.find((file) => /\.mat$/i.test(file.name));
       if (edf) {
-        const source = await EDFSource.create(edf);
+        const source = await EDFSource.create(edf, { parseAnnotations: false });
         const opened = await loadSource(source, edf);
         if (!opened) return;
-        const importedCandidates = source.events
-          .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
-          .filter((event) => isLegacySeizureCandidate(event.label))
-          .map((event, index): Candidate => ({
-            id: `edf-cand-${index}-${Math.round(event.timeSec * 1000)}`,
-            time: event.timeSec,
-            label: event.label,
-            source: "bronze",
-            status: "queued",
-            confidence: 0,
-            ictalChannels: "",
-            legacyConfidence: "",
-            reviewerInitials: "",
-            badChannels: "",
-          }));
-        if (importedCandidates.length) {
-          const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
-          const resumeCandidate = queue.candidates[queue.activeIndex];
-          setCandidates(queue.candidates);
-          setActiveCandidate(queue.activeIndex);
-          setViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
-          setCursorTime(resumeCandidate.time);
-          setCursorLocked(true);
-        }
+        const hasAnnotationChannels = source.header.signals.some((signal) => signal.isAnnotation);
+        if (hasAnnotationChannels) setToast("Waveform ready — indexing EDF+ annotations in the background");
+        window.setTimeout(() => {
+          void source.loadAnnotations().then(() => {
+            if (sourceRef.current !== source) return;
+            const importedCandidates = source.events
+              .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
+              .filter((event) => isLegacySeizureCandidate(event.label))
+              .map((event, index): Candidate => ({
+                id: `edf-cand-${index}-${Math.round(event.timeSec * 1000)}`,
+                time: event.timeSec,
+                label: event.label,
+                source: "bronze",
+                status: "queued",
+                confidence: 0,
+                ictalChannels: "",
+                legacyConfidence: "",
+                reviewerInitials: "",
+                badChannels: "",
+              }));
+            if (importedCandidates.length) {
+              const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
+              const resumeCandidate = queue.candidates[queue.activeIndex];
+              setCandidates(queue.candidates);
+              setActiveCandidate(queue.activeIndex);
+              setViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
+              setCursorTime(resumeCandidate.time);
+              setCursorLocked(true);
+              setToast(`${importedCandidates.length} EDF+ source event${importedCandidates.length === 1 ? "" : "s"} indexed`);
+            } else if (hasAnnotationChannels) {
+              setToast("EDF+ annotation index complete — no seizure-keyword events found");
+            }
+          }).catch((error: unknown) => {
+            if (sourceRef.current !== source) return;
+            const message = error instanceof Error ? error.message : "EDF+ annotations could not be indexed";
+            if (!source.meta.warnings.includes(message)) source.meta.warnings.push(message);
+            setToast(`Waveform remains available · ${message}`);
+          });
+        }, 0);
       } else if (dat) {
         let legacyMetadata: LegacyMatMetadata | null = null;
         const companionPath = portablePathParts(mat?.webkitRelativePath || mat?.name || "");
@@ -3452,7 +3824,7 @@ export default function Home() {
     setImportBusy(true);
     try {
       const companionMatHash = pendingLegacyMatFile
-        ? await sha256Blob(pendingLegacyMatFile)
+        ? (await verifySourceOffThread(pendingLegacyMatFile)).hash
         : null;
       const companionPath = portablePathParts(pendingLegacyMatFile?.webkitRelativePath || pendingLegacyMatFile?.name || "");
       const datPath = portablePathParts(pendingDat.webkitRelativePath || pendingDat.name);
@@ -3548,6 +3920,10 @@ export default function Home() {
   };
 
   const exportBundle = () => {
+    if (sourceVerificationRef.current) {
+      setToast("Source verification must finish before export");
+      return;
+    }
     if (meta.details?.discontinuous === true) {
       setSessionMapTab("qc");
       setShowSessionMap(true);
@@ -4083,7 +4459,7 @@ export default function Home() {
               <strong>Session Labels</strong>
               <span>{sessionContextAnnotations.length}</span>
               <div className="session-context-menu-wrap">
-                <button className="sidebar-add-button" disabled={!hasRecording} aria-label="Add session label" title="Add entire-session context" onClick={() => setShowSessionContextPicker((value) => !value)}>＋</button>
+                <button className="sidebar-add-button" disabled={!reviewReady} aria-label="Add session label" title={verifyingSource ? "Review edits unlock after source verification" : "Add entire-session context"} onClick={() => setShowSessionContextPicker((value) => !value)}>＋</button>
                 {showSessionContextPicker && <div className="session-context-picker" role="menu" aria-label="Entire-session context labels">
                   <strong>Add entire-session context</strong>
                   {entireSessionContexts.map((label) => <button key={label.id} role="menuitem" onClick={() => {
@@ -4225,7 +4601,12 @@ export default function Home() {
           </div>
 
           <div ref={viewerRef} className={`signal-and-tracks ${spectrogramOpen ? "with-spectrogram" : ""}`}>
-            <div className={`waveform-wrap ${expandedChannels ? "channel-scroll-mode" : ""}`} style={{ "--channel-content-height": `${Math.max(245, channelRowLayout.totalUnits * 60 + 28)}px` } as React.CSSProperties}>
+            <div
+              ref={waveformScrollRef}
+              className={`waveform-wrap ${expandedChannels ? "channel-scroll-mode" : ""}`}
+              style={{ "--channel-content-height": `${Math.max(245, channelRowLayout.totalUnits * 60 + 28)}px` } as React.CSSProperties}
+              onScroll={updateExpandedChannelViewport}
+            >
               <div className="channel-rail" style={{ gridTemplateRows: `repeat(${channelRowLayout.totalUnits}, 1fr)` }}>
                 <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 <button className={`channel-layout-button ${expandedChannels ? "active" : ""}`} aria-label={`${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`} aria-pressed={expandedChannels} title={`${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`} onClick={() => setExpandedChannels((value) => !value)}>E</button>
@@ -4237,16 +4618,24 @@ export default function Home() {
                   onClick={() => setFocusedChannel(index)}
                 ><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>)}
               </div>
-              <div className="canvas-shell" onDragOver={onLabelDragOver} onDrop={onLabelDrop} onDragLeave={() => setDragGhost(null)}>
-                <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label="Interactive EEG waveform. Use the pointer to pin a time or select a window." onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
-                {selection && <div className="wave-selection" style={{
-                  left: `${((Math.max(display.viewStart, selection.start) - display.viewStart) / timebase) * 100}%`,
-                  width: `${Math.max(0, ((Math.min(display.viewStart + timebase, selection.end) - Math.max(display.viewStart, selection.start)) / timebase) * 100)}%`,
-                }} />}
-                {cursorLocked && cursorTime >= display.viewStart && cursorTime <= display.viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
-                {loadingSignal && <div className="signal-loading"><span /> Preparing signal window…</div>}
-                {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
-                {!display.data.length && !loadingSignal && <div className="no-channels"><strong>No visible channels</strong><span>Use CH+ to choose channels.</span></div>}
+              <div className="canvas-column">
+                <div
+                  className="canvas-shell"
+                  style={expandedChannels ? { height: channelViewportHeight } : undefined}
+                  onDragOver={onLabelDragOver}
+                  onDrop={onLabelDrop}
+                  onDragLeave={() => setDragGhost(null)}
+                >
+                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label="Interactive EEG waveform. Use the pointer to pin a time or select a window." onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
+                  {selection && <div className="wave-selection" style={{
+                    left: `${((Math.max(display.viewStart, selection.start) - display.viewStart) / timebase) * 100}%`,
+                    width: `${Math.max(0, ((Math.min(display.viewStart + timebase, selection.end) - Math.max(display.viewStart, selection.start)) / timebase) * 100)}%`,
+                  }} />}
+                  {cursorLocked && cursorTime >= display.viewStart && cursorTime <= display.viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
+                  {loadingSignal && <div className="signal-loading"><span /> Preparing signal window…</div>}
+                  {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
+                  {!display.data.length && !loadingSignal && <div className="no-channels"><strong>No visible channels</strong><span>Use CH+ to choose channels.</span></div>}
+                </div>
               </div>
             </div>
 
@@ -4294,7 +4683,7 @@ export default function Home() {
 
           <footer className="command-strip">
             <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{display.labels[focusedChannel] ?? "—"}</span><span>{formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}</span><span>source sample {Math.round(cursorTime * sourceRateForDisplayRow(display, meta, focusedChannel)).toLocaleString()}</span></div>
-            <div className="command-status" role="status" aria-live="polite" aria-atomic="true"><span className="status-dot" /><span className="command-status-text">{toast}</span></div>
+            <div className="command-status" role="status" aria-live="polite" aria-atomic="true"><span className="status-dot" /><span className="command-status-text">{toast}</span>{verifyingSource && <button className="verification-cancel" onClick={cancelSourceVerification}>Cancel load</button>}</div>
             {selectedAnnotationIds.size > 0 && <div className="annotation-command-actions">
               {selectedAnnotationIds.size === 1 && selectedAnnotation
                 ? <button onClick={() => setShowAnnotationEditor(true)}>Edit label</button>
@@ -4318,7 +4707,7 @@ export default function Home() {
             <h2>Context Labels</h2>
             <p className="palette-kind">Context palette · click = instance · selected span = window</p>
             <div className="compact-context-only">
-              {rightContextLabels.map((label) => <button key={label.id} className="compact-palette-button context" disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => {
+              {rightContextLabels.map((label) => <button key={label.id} className="compact-palette-button context" disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
                   event.dataTransfer.setData("application/x-neurotrace-label", label.id);
                   event.dataTransfer.effectAllowed = "copy";
                   setDragGhost({ labelId: label.id, time: cursorTime });
@@ -4336,7 +4725,7 @@ export default function Home() {
                   .map((id) => LABEL_BY_ID.get(id))
                   .filter((label): label is LabelDefinition => label !== undefined && !label.hidden && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
                 if (!group.length) return null;
-                return <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{group.map((label) => <button className="compact-palette-button" key={label.id} disabled={!hasRecording} draggable={hasRecording} onDragStart={(event) => {
+                return <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{group.map((label) => <button className="compact-palette-button" key={label.id} disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
                   event.dataTransfer.setData("application/x-neurotrace-label", label.id);
                   event.dataTransfer.effectAllowed = "copy";
                   setDragGhost({ labelId: label.id, time: cursorTime });
@@ -4490,7 +4879,7 @@ export default function Home() {
             <div><span>Patient</span><strong>{effectivePatientLabel}</strong></div>
             <div><span>Session</span><strong>{recordingLabel(meta)}</strong></div>
             <div><span>Recording start</span><strong>{formatSessionStart(meta.startedAt)}</strong></div>
-            <div><span>Source integrity</span><strong className="hash-text" title={sourceHash}>{sourceHashDisplay}</strong></div>
+            <div><span>Source integrity</span><strong className="hash-text" title={verifyingSource ? "Full source SHA-256 verification is in progress" : sourceHash}>{sourceHashDisplay}</strong></div>
             <div><span>Source channels</span><strong>{meta.channelLabels.length}</strong></div>
             <div><span>Quality excluded</span><strong>{badChannels.size}</strong></div>
             <label><span>Reviewer initials</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>

@@ -51,7 +51,7 @@ on `main` must not be hand-edited.
 
 ## System Overview
 
-The browser owns the active recording and annotation state. `app/page.tsx` coordinates the interface and session workflow, `app/eeg-core.ts` parses recordings and supplies time-bounded signal windows, and `app/source-integrity.ts` computes a stable source fingerprint. Annotation recovery uses browser-local storage; exports are assembled and downloaded locally.
+The browser owns the active recording and annotation state. `app/page.tsx` coordinates the interface and session workflow, `app/eeg-core.ts` parses recordings and supplies time-bounded signal windows and zoomed-out display envelopes, and the source-integrity modules compute a stable source fingerprint off the main UI thread. Annotation recovery uses browser-local storage; exports are assembled and downloaded locally.
 
 EDF and raw DAT recordings remain file-backed after import. The viewer requests only the records or frames needed for the current time window. MATLAB v5 recordings are decoded into memory because compressed MATLAB elements are not independently seekable.
 
@@ -59,7 +59,7 @@ See [STRUCTURE.md](STRUCTURE.md) for the authoritative repository map and [TODO.
 
 ## Recording Ingestion
 
-- **EDF and EDF+:** Header metadata is parsed first. Signal data is read from the local `File` in bounded time windows. EDF+ annotation records are scanned; seizure-keyword events are imported into the source-event review queue.
+- **EDF and EDF+:** Header metadata is parsed first, so a read-only waveform preview can open without waiting for the full file scan. Signal data is read from the local `File` in bounded time windows. A background pass verifies the exact SHA-256 identity and extracts EDF+ annotation records together; seizure-keyword events are then imported into the source-event review queue. Review edits and export remain locked until verification finishes.
 - **MATLAB v5:** The largest viable numeric signal matrix is decoded in memory. Compressed elements are supported.
 - **Legacy MAT + DAT:** The MAT companion supplies recoverable session metadata while the signed-int16 little-endian DAT remains file-backed. With no verified calibration, samples stay in raw ADC counts and use the MATLAB reviewer’s 15,000-count channel spacing; an optional confirmed µV/count value enables calibrated display units.
 
@@ -83,7 +83,7 @@ GitHub Pages receives normal requests for the application’s static HTML, JavaS
 
 ## Performance Characteristics
 
-Every imported source receives a complete SHA-256 integrity pass in 4 MiB chunks. Initial verification therefore scales linearly with file size. EDF+ import also scans data records for embedded annotations.
+Every imported source receives a complete SHA-256 integrity pass in bounded chunks. Verification still scales linearly with file size, but it runs in a worker after the file-backed preview opens, leaving navigation responsive. EDF+ annotation extraction shares that same sequential pass rather than rereading the recording.
 
 For uniform 16-bit EDF/DAT recordings, approximate source size is:
 
@@ -91,7 +91,7 @@ For uniform 16-bit EDF/DAT recordings, approximate source size is:
 bytes ≈ 2 × channel_count × sample_rate_hz × duration_seconds
 ```
 
-After import, EDF/DAT navigation is windowed: total recording length has little effect on an individual seek, while channel count, sampling rate, visible-window duration, filters, and montage determine the work per refresh. MAT v5 import time and memory scale with the complete decoded matrix.
+After import, EDF/DAT navigation is windowed: total recording length has little effect on an individual seek. Unfiltered referential views use bounded min/max envelopes when more source samples are visible than the canvas can represent and no clinical FIR/2× preparation is required. Higher-rate clinical preparation, filters, and derived montages retain the MATLAB-compatible signal path but run in a cancellable worker. Adjacent windows are cached under fixed memory budgets, superseded reads are canceled, wheel zoom is frame-coalesced, and expanded channel mode draws only visible rows. MAT v5 import time and memory scale with the complete decoded matrix.
 
 Measured large-file budgets are tracked in [TODO.md](TODO.md); do not present implementation-level complexity estimates as benchmark results.
 
@@ -111,7 +111,7 @@ The Node test suite covers signal integrity, source hashing, server rendering, a
 
 - MATLAB v7.3/HDF5 is not decoded in the browser.
 - Large MAT v5 files can exhaust browser memory because they are decoded eagerly.
-- EDF/DAT window reads currently consume complete records or frames even when only some channels are visible; hiding channels reduces conversion and display work more than file I/O.
+- EDF window reads consume complete records and interleaved DAT reads consume complete frames even when only some channels are visible; display envelopes bound conversion and rendering work, but hiding channels still reduces less file I/O than it does display work.
 - This application has not completed institutional clinical deployment validation.
 
 ## Dependencies

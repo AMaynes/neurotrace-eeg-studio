@@ -195,16 +195,26 @@ test("mixed-rate interaction keeps channel provenance and sample timing", async 
   const drop = section(page, "const onLabelDrop", "useEffect(() => {");
   assert.match(drop, /clientY\s*<\s*canvasRect\.top\s*\+\s*CHANNEL_RAIL_HEADER_HEIGHT/);
   assert.match(drop, /addAnnotation\(label,[\s\S]*?intent,\s*row\)/);
-  assert.match(page, /className="canvas-shell"\s+onDragOver=\{onLabelDragOver\}\s+onDrop=\{onLabelDrop\}/);
+  assert.match(page, /className="canvas-shell"[\s\S]{0,320}?onDragOver=\{onLabelDragOver\}[\s\S]{0,100}?onDrop=\{onLabelDrop\}/);
   assert.doesNotMatch(page, /className=\{`signal-and-tracks[^>]+onDrop=\{onLabelDrop\}/);
 });
 
 test("large-window memory and missing-data rendering stay bounded and explicit", async () => {
   const page = await pageSource();
   const refresh = section(page, "const refreshWindow", "const timer = window.setInterval");
+  assert.match(page, /displayAbortRef\.current\?\.abort\(\)/);
+  assert.match(refresh, /typeof source\.getEnvelopeWindow\s*===\s*"function"/);
+  assert.match(refresh, /const requiresClinicalPreparation[\s\S]*?clinicalDecimationFactor/);
+  assert.match(refresh, /&&\s*!requiresClinicalPreparation/);
+  assert.match(refresh, /SOURCE_READ_AHEAD_BUDGET_BYTES/);
+  assert.match(refresh, /ENVELOPE_CACHE_BUDGET_BYTES/);
+  assert.match(refresh, /maxBucketsByBudget/);
+  assert.match(refresh, /detectEnvelopeSynchronizedFlatlines/);
+  assert.match(refresh, /processDisplaySignalsOffThread/);
+  assert.match(refresh, /requestId\s*!==\s*displayRequestIdRef\.current/);
   assert.match(refresh, /rawOwnerIsCached\s*=\s*rawWindowCacheRef\.current\.includes\(rawWindow\)/);
   assert.match(refresh, /if\s*\(rawOwnerIsCached[\s\S]*?!duplicatesRaw/);
-  assert.match(refresh, /sourceStartSampleIndex[\s\S]*?prepareClinicalDisplaySignals[\s\S]*?outputStartSampleIndices/);
+  assert.match(refresh, /sourceStartSampleIndices[\s\S]*?processDisplaySignalsOffThread[\s\S]*?outputStartSampleIndices/);
 
   const baseline = section(page, "function robustTraceBaseline", "function boundedCanvasScale");
   assert.match(baseline, /for\s*\(let index\s*=\s*0;\s*index\s*<\s*values\.length/);
@@ -216,4 +226,37 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(spectrum, /if\s*\(!Number\.isFinite\(sourceValue\)\)\s*continue/);
   assert.match(spectrum, /powers\.flat\(\)\.filter\(Number\.isFinite\)/);
   assert.match(spectrum, /No sufficiently complete signal frames/);
+
+  const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
+  assert.match(drawing, /if\s*\(rowTop\s*\+\s*rowHeight\s*<\s*plotTop\s*\|\|\s*rowTop\s*>\s*height\)\s*continue/);
+  assert.match(drawing, /display\.envelopes\[channel\]/);
+
+  const hitTesting = section(page, "const channelRowFromClientY", "const timeFromPointer");
+  assert.match(hitTesting, /waveformScrollRef\.current\?\.scrollTop/);
+  assert.match(hitTesting, /channelRowLayout\.totalUnits\s*\*\s*60/);
+  assert.match(page, /const envelope\s*=\s*display\.envelopes\[row\][\s\S]*?Math\.floor/);
+});
+
+test("large source verification stays off the UI thread and combines EDF hashing with TAL extraction", async () => {
+  const page = await pageSource();
+  const client = await readFile(new URL("../app/source-integrity-worker-client.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../app/source-hash-worker.ts", import.meta.url), "utf8");
+  const displayClient = await readFile(new URL("../app/display-processing-worker-client.ts", import.meta.url), "utf8");
+  const displayWorker = await readFile(new URL("../app/display-processing-worker.ts", import.meta.url), "utf8");
+
+  assert.match(client, /new Worker\(new URL\("\.\/source-hash-worker\.ts",\s*import\.meta\.url\)/);
+  assert.match(client, /worker\.terminate\(\)/);
+  assert.match(client, /options\.signal\?\.addEventListener\("abort"/);
+  assert.match(client, /annotationSignals\.map/);
+  assert.match(worker, /const sha256\s*=\s*new IncrementalSha256\(\)/);
+  assert.match(worker, /events\.push\(\.\.\.parseEdfTalText/);
+  assert.match(worker, /for\s*\(let offset\s*=\s*declaredDataEnd;\s*offset\s*<\s*blob\.size/);
+  assert.match(worker, /hash:\s*sha256\.hexDigest\(\)/);
+  assert.match(page, /sourceVerificationAbortRef\.current/);
+  assert.match(page, /className="verification-cancel"/);
+  assert.match(page, /verifySourceOffThread\(pendingLegacyMatFile\)/);
+  assert.match(displayClient, /new Worker\(new URL\("\.\/display-processing-worker\.ts",\s*import\.meta\.url\)/);
+  assert.match(displayClient, /options\.signal\?\.addEventListener\("abort"/);
+  assert.match(displayWorker, /applyDisplayFilters/);
+  assert.match(displayWorker, /prepareClinicalDisplaySignals/);
 });

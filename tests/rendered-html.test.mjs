@@ -283,7 +283,14 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(load, /const targetSessionId\s*=\s*activeSessionId/);
   assert.match(load, /tab\.id\s*===\s*targetSessionId/);
   assert.match(load, /title:\s*shortFileName/);
-  assert.ok(load.indexOf("await sha256Blob(file") < load.indexOf("sourceRef.current = source"), "source identity is verified before the active source changes");
+  const previewIndex = load.indexOf("sourceRef.current = source");
+  const verificationIndex = load.indexOf("await verifySourceOffThread(file");
+  assert.ok(previewIndex >= 0 && verificationIndex > previewIndex, "a read-only waveform preview opens before full source verification finishes");
+  assert.match(load, /sourceVerificationRef\.current\s*=\s*true/);
+  assert.match(load, /edfHeader:\s*source\s+instanceof\s+EDFSource\s*\?\s*source\.header\s*:\s*undefined/);
+  assert.match(load, /signal:\s*verificationAbortController\.signal/);
+  assert.ok(load.indexOf("setSourceHash(interpretationHash)") > verificationIndex, "verified source identity attaches only after the worker completes");
+  assert.ok(load.indexOf("setSessionTabs((current)") > verificationIndex, "tab identity is not replaced until verification succeeds");
   assert.match(load, /activeSessionIdRef\.current\s*!==\s*targetSessionId/);
   assert.match(load, /duplicateEntry[\s\S]*?applySessionSnapshot\(duplicateSnapshot\)[\s\S]*?return false/);
 
@@ -362,7 +369,7 @@ test("reattaches non-passive waveform wheel controls after a blank session loads
   const wheelHandler = page.slice(wheelHandlerStart, wheelHandlerEnd);
   assert.match(wheelHandler, /event\.preventDefault\(\)/, "browser page zoom and scrolling are intercepted over the recording");
   assert.match(wheelHandler, /event\.ctrlKey\s*\|\|\s*event\.metaKey/, "trackpad pinch and modified wheel gestures enter time zoom");
-  assert.match(wheelHandler, /zoomTimeWindow\(/, "pinch changes the EEG time window");
+  assert.match(wheelHandler, /zoomWheelFrameRef[\s\S]*?requestAnimationFrame[\s\S]*?setTimeWindow\(/, "pinch zoom is coalesced to one EEG time-window update per frame");
   assert.match(wheelHandler, /event\.deltaX/);
   assert.match(wheelHandler, /event\.deltaY/);
   assert.match(wheelHandler, /overExpandedChannels[\s\S]*?Math\.abs\(event\.deltaY\)\s*>\s*Math\.abs\(event\.deltaX\)[\s\S]*?return/, "vertical gestures scroll expanded channels natively");
@@ -645,6 +652,7 @@ test("highlights a focused channel and provides compact or vertically scrollable
   assert.match(page, /--channel-content-height/);
   assert.match(page, /aria-pressed=\{expandedChannels\}/);
   assert.match(css, /\.waveform-wrap\.channel-scroll-mode[\s\S]*?height:\s*0[\s\S]*?overflow-y:\s*scroll/);
+  assert.match(css, /\.waveform-wrap\.channel-scroll-mode \.canvas-column\s*\{\s*overflow:\s*visible/);
   assert.match(css, /\.channel-rail button\.focused/);
 });
 
@@ -656,8 +664,8 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   const drawEnd = page.indexOf("if (markOnset !== null)", drawStart);
   const draw = page.slice(drawStart, drawEnd);
   assert.match(draw, /const plotTop\s*=\s*CHANNEL_RAIL_HEADER_HEIGHT/);
-  assert.match(draw, /const plotHeight\s*=\s*Math\.max\(1,\s*height\s*-\s*plotTop\)/);
-  assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channelRowLayout\.rowStartUnits\[channel\]/);
+  assert.match(draw, /const plotHeight\s*=\s*expandedChannels[\s\S]*?Math\.max\(1,\s*height\s*-\s*plotTop\)/);
+  assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channelRowLayout\.rowStartUnits\[channel\]\s*-\s*rowScrollOffset/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
   assert.match(draw, /context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)[\s\S]*?context\.clip\(\)/, "each channel is clipped to its exact row without a minimum-height bleed");
   assert.ok((draw.match(/confineTraceYToRow\(/g) ?? []).length >= 4, "direct, envelope, and midpoint paths hard-limit trace coordinates to the row");
@@ -665,18 +673,20 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
   assert.match(draw, /if\s*\(rowHeight\s*>=\s*2\)[\s\S]*?context\.strokeRect/, "focused-row borders are omitted when a compact row is too short to contain the stroke");
   assert.match(page, /const ANATOMICAL_GROUP_GAP_ROWS\s*=\s*4/);
-  assert.match(page, /channelRowFromFraction\(channelRowLayout/);
+  assert.match(page, /channelRowFromFraction\(\s*channelRowLayout/);
   assert.match(draw, /robustTraceBaseline\(values\)[\s\S]*?max\s*-\s*baseline/, "each trace is centered on a robust display-window baseline");
   assert.match(draw, /if \(!Number\.isFinite\(value\)\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");
   assert.match(draw, /const traceOrder[\s\S]*?focusedChannel/, "the focused trace is drawn last for readability");
   assert.match(draw, /legacyRawCountDisplay[\s\S]*?LEGACY_RAW_COUNTS_PER_ROW/, "uncalibrated legacy DAT uses MATLAB's raw-count row spacing");
   assert.match(draw, /barValue\s*=\s*\(legacyRawCountDisplay\s*\?\s*5_000\s*:\s*100\)\s*\/\s*gain/, "the scale bar stays inside one row as gain changes");
 
-  const pointerStart = page.indexOf("const onWavePointerDown");
-  const pointerEnd = page.indexOf("const onWavePointerUp", pointerStart);
-  const pointer = page.slice(pointerStart, pointerEnd);
-  assert.equal((pointer.match(/rect\.height\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/g) ?? []).length, 2);
-  assert.equal((pointer.match(/event\.clientY\s*-\s*rect\.top\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/g) ?? []).length, 2);
+  const hitStart = page.indexOf("const channelRowFromClientY");
+  const hitEnd = page.indexOf("const timeFromPointer", hitStart);
+  const hit = page.slice(hitStart, hitEnd);
+  assert.match(hit, /liveScrollTop\s*\+\s*localY\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/);
+  assert.match(hit, /channelRowLayout\.totalUnits\s*\*\s*60/);
+  assert.match(hit, /rect\.height\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/);
+  assert.match(page, /const row\s*=\s*channelRowFromClientY\(event\.clientY,\s*rect\)/);
 });
 
 test("filters padded signal data and crops back to the requested viewport", async () => {
@@ -690,9 +700,9 @@ test("filters padded signal data and crops back to the requested viewport", asyn
   assert.match(refresh, /requiredStart\s*=\s*Math\.max\(0,\s*viewStart\s*-\s*processingPadSec\)/);
   assert.match(refresh, /requiredEnd\s*=\s*Math\.min\(meta\.durationSec,\s*viewStart\s*\+\s*timebase\s*\+\s*processingPadSec\)/);
   assert.match(refresh, /rawWindowCacheRef\.current\.find/, "adjacent pans reuse a bounded raw window cache");
-  assert.match(refresh, /source\.getWindow\(cacheStart/);
-  assert.match(refresh, /applyDisplayFilters\(\[sourceChannel\]/);
-  assert.match(refresh, /prepareClinicalDisplaySignals/, "clinical display preparation is applied before the viewport crop");
+  assert.match(refresh, /source\.getWindow\(\s*cacheStart/);
+  assert.match(refresh, /processDisplaySignalsOffThread/, "clinical display preparation runs off-thread before the viewport crop");
+  assert.match(refresh, /sourceStartSampleIndices/);
   assert.match(refresh, /cropStart[\s\S]*?channel\.subarray\(/, "filter settling samples are removed before rendering");
   assert.match(refresh, /requestId\s*!==\s*displayRequestIdRef\.current/, "stale processing work cannot overwrite the newest pan");
 });

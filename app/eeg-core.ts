@@ -66,13 +66,38 @@ export interface WindowData {
   channelUnits: string[];
 }
 
+export interface SignalReadOptions {
+  /** Stops a superseded file-backed read between bounded chunks. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Screen-resolution extrema for a contiguous time window. Each bucket keeps
+ * both polarities, so zoomed-out EEG does not alias a spike into an average.
+ * `data` contains the bucket midpoint for cursor/readout compatibility.
+ */
+export interface EnvelopeWindowData extends WindowData {
+  minima: Float32Array[];
+  maxima: Float32Array[];
+  gaps: Uint8Array[];
+  bucketDurationSec: number;
+}
+
 export interface SignalSource {
   readonly meta: RecordingMeta;
   getWindow(
     startSec: number,
     durationSec: number,
     channelIndices?: readonly number[],
+    options?: SignalReadOptions,
   ): Promise<WindowData>;
+  getEnvelopeWindow?(
+    startSec: number,
+    durationSec: number,
+    bucketCount: number,
+    channelIndices?: readonly number[],
+    options?: SignalReadOptions,
+  ): Promise<EnvelopeWindowData>;
 }
 
 /** MATLAB's legacy DAT viewer separates neighboring raw traces by 15,000 ADC counts. */
@@ -281,7 +306,9 @@ export class DemoSource implements SignalSource {
     startSec: number,
     durationSec: number,
     channelIndices?: readonly number[],
+    options: SignalReadOptions = {},
   ): Promise<WindowData> {
+    throwIfSignalReadAborted(options.signal);
     const request = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
     const sampleRates = request.channelIndices.map((index) => this.meta.sampleRates[index]);
     const data = request.channelIndices.map((channelIndex, outputIndex) => {
@@ -614,7 +641,7 @@ export async function parseEDFHeader(file: File): Promise<EDFHeader> {
 /** Alias for callers that prefer conventional mixed-case naming. */
 export const parseEdfHeader = parseEDFHeader;
 
-function parseEdfTalText(text: string): SourceEvent[] {
+export function parseEdfTalText(text: string): SourceEvent[] {
   const events: SourceEvent[] = [];
   for (const tal of text.split("\0")) {
     if (!tal) continue;
@@ -638,18 +665,25 @@ function parseEdfTalText(text: string): SourceEvent[] {
   return events;
 }
 
-export async function parseEDFAnnotations(file: File, header: EDFHeader): Promise<{ events: SourceEvent[]; warnings: string[] }> {
+export async function parseEDFAnnotations(
+  file: File,
+  header: EDFHeader,
+  options: SignalReadOptions = {},
+): Promise<{ events: SourceEvent[]; warnings: string[] }> {
   const annotationSignals = header.signals.filter((signal) => signal.isAnnotation);
   if (!annotationSignals.length) return { events: [], warnings: [] };
   const events: SourceEvent[] = [];
   const warnings: string[] = [];
   const recordsPerChunk = Math.max(1, Math.floor((4 * 1024 * 1024) / Math.max(1, header.bytesPerDataRecord)));
+  throwIfSignalReadAborted(options.signal);
 
   for (let firstRecord = 0; firstRecord < header.dataRecordCount; firstRecord += recordsPerChunk) {
+    throwIfSignalReadAborted(options.signal);
     const recordCount = Math.min(recordsPerChunk, header.dataRecordCount - firstRecord);
     const byteStart = header.headerBytes + firstRecord * header.bytesPerDataRecord;
     const byteEnd = byteStart + recordCount * header.bytesPerDataRecord;
     const bytes = new Uint8Array(await file.slice(byteStart, byteEnd).arrayBuffer());
+    throwIfSignalReadAborted(options.signal);
     for (let localRecord = 0; localRecord < recordCount; localRecord += 1) {
       const recordOffset = localRecord * header.bytesPerDataRecord;
       for (const signal of annotationSignals) {
@@ -740,6 +774,11 @@ function recommendEDFDisplayChannels(
     .map((candidate) => candidate.displayIndex);
 }
 
+export interface EDFSourceOptions {
+  /** Defaults to true. Large interactive imports can defer this full-file pass. */
+  parseAnnotations?: boolean;
+}
+
 export class EDFSource implements SignalSource {
   readonly meta: RecordingMeta;
   readonly header: EDFHeader;
@@ -747,11 +786,20 @@ export class EDFSource implements SignalSource {
   private readonly file: File;
   private readonly displaySignals: EDFSignalHeader[];
   private readonly physicalUnitScaleBySignalIndex: number[];
+  private annotationsLoaded: boolean;
+  private annotationLoadPromise: Promise<readonly SourceEvent[]> | null = null;
 
-  private constructor(file: File, header: EDFHeader, events: SourceEvent[], annotationWarnings: string[]) {
+  private constructor(
+    file: File,
+    header: EDFHeader,
+    events: SourceEvent[],
+    annotationWarnings: string[],
+    annotationsLoaded: boolean,
+  ) {
     this.file = file;
     this.header = header;
     this.events = events;
+    this.annotationsLoaded = annotationsLoaded;
     this.displaySignals = header.signals.filter((signal) => !signal.isAnnotation);
     this.physicalUnitScaleBySignalIndex = header.signals.map(
       (signal) => normalizeEDFPhysicalDimension(signal.physicalDimension).scale,
@@ -798,17 +846,50 @@ export class EDFSource implements SignalSource {
     };
   }
 
-  static async create(file: File): Promise<EDFSource> {
+  static async create(file: File, options: EDFSourceOptions = {}): Promise<EDFSource> {
     const header = await parseEDFHeader(file);
-    const annotations = await parseEDFAnnotations(file, header);
-    return new EDFSource(file, header, annotations.events, annotations.warnings);
+    const shouldParseAnnotations = options.parseAnnotations !== false;
+    const annotations = shouldParseAnnotations
+      ? await parseEDFAnnotations(file, header)
+      : { events: [], warnings: [] };
+    return new EDFSource(file, header, annotations.events, annotations.warnings, shouldParseAnnotations);
+  }
+
+  async loadAnnotations(options: SignalReadOptions = {}): Promise<readonly SourceEvent[]> {
+    if (this.annotationsLoaded) return this.events;
+    if (this.annotationLoadPromise) return this.annotationLoadPromise;
+    this.annotationLoadPromise = parseEDFAnnotations(this.file, this.header, options)
+      .then((annotations) => {
+        this.events.splice(0, this.events.length, ...annotations.events);
+        for (const warning of annotations.warnings) {
+          if (!this.meta.warnings.includes(warning)) this.meta.warnings.push(warning);
+        }
+        this.annotationsLoaded = true;
+        return this.events;
+      })
+      .catch((error) => {
+        this.annotationLoadPromise = null;
+        throw error;
+      });
+    return this.annotationLoadPromise;
+  }
+
+  applyVerifiedAnnotations(events: readonly SourceEvent[], warnings: readonly string[] = []) {
+    this.events.splice(0, this.events.length, ...events);
+    for (const warning of warnings) {
+      if (!this.meta.warnings.includes(warning)) this.meta.warnings.push(warning);
+    }
+    this.annotationsLoaded = true;
+    this.annotationLoadPromise = Promise.resolve(this.events);
   }
 
   async getWindow(
     startSec: number,
     durationSec: number,
     channelIndices?: readonly number[],
+    options: SignalReadOptions = {},
   ): Promise<WindowData> {
+    throwIfSignalReadAborted(options.signal);
     const request = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
     const selected = request.channelIndices.map((index) => this.displaySignals[index]);
     const sampleRanges = selected.map((signal) => {
@@ -838,10 +919,12 @@ export class EDFSource implements SignalSource {
     const recordsPerChunk = Math.max(1, Math.floor((8 * 1024 * 1024) / this.header.bytesPerDataRecord));
 
     for (let chunkRecord = firstRecord; chunkRecord < lastRecordExclusive; chunkRecord += recordsPerChunk) {
+      throwIfSignalReadAborted(options.signal);
       const chunkEndRecord = Math.min(lastRecordExclusive, chunkRecord + recordsPerChunk);
       const byteStart = this.header.headerBytes + chunkRecord * this.header.bytesPerDataRecord;
       const byteEnd = this.header.headerBytes + chunkEndRecord * this.header.bytesPerDataRecord;
       const view = new DataView(await this.file.slice(byteStart, byteEnd).arrayBuffer());
+      throwIfSignalReadAborted(options.signal);
 
       for (let record = chunkRecord; record < chunkEndRecord; record += 1) {
         const localRecordByte = (record - chunkRecord) * this.header.bytesPerDataRecord;
@@ -883,6 +966,71 @@ export class EDFSource implements SignalSource {
       selected.map((signal) => signal.sampleRate),
       sampleRanges.map((range, index) => range.first / selected[index].sampleRate),
     );
+  }
+
+  async getEnvelopeWindow(
+    startSec: number,
+    durationSec: number,
+    bucketCount: number,
+    channelIndices?: readonly number[],
+    options: SignalReadOptions = {},
+  ): Promise<EnvelopeWindowData> {
+    validateEnvelopeBucketCount(bucketCount);
+    throwIfSignalReadAborted(options.signal);
+    const request = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
+    const selected = request.channelIndices.map((index) => this.displaySignals[index]);
+    const accumulators = selected.map(() => makeEnvelopeAccumulator(bucketCount));
+    if (request.durationSec === 0 || selected.length === 0) {
+      return makeEnvelopeWindowResult(this.meta, request, accumulators, bucketCount);
+    }
+
+    const firstRecord = Math.floor(request.startSec / this.header.dataRecordDurationSec);
+    const lastRecordExclusive = Math.min(
+      this.header.dataRecordCount,
+      Math.ceil(request.endSec / this.header.dataRecordDurationSec),
+    );
+    const recordsPerChunk = Math.max(1, Math.floor((4 * 1024 * 1024) / this.header.bytesPerDataRecord));
+
+    for (let chunkRecord = firstRecord; chunkRecord < lastRecordExclusive; chunkRecord += recordsPerChunk) {
+      throwIfSignalReadAborted(options.signal);
+      const chunkEndRecord = Math.min(lastRecordExclusive, chunkRecord + recordsPerChunk);
+      const byteStart = this.header.headerBytes + chunkRecord * this.header.bytesPerDataRecord;
+      const byteEnd = this.header.headerBytes + chunkEndRecord * this.header.bytesPerDataRecord;
+      const view = new DataView(await this.file.slice(byteStart, byteEnd).arrayBuffer());
+      throwIfSignalReadAborted(options.signal);
+
+      for (let record = chunkRecord; record < chunkEndRecord; record += 1) {
+        const localRecordByte = (record - chunkRecord) * this.header.bytesPerDataRecord;
+        selected.forEach((signal, selectedIndex) => {
+          const recordFirstSample = record * signal.samplesPerRecord;
+          const copyFirst = Math.max(Math.floor(request.startSec * signal.sampleRate), recordFirstSample);
+          const copyEnd = Math.min(
+            Math.ceil(request.endSec * signal.sampleRate),
+            recordFirstSample + signal.samplesPerRecord,
+          );
+          if (copyEnd <= copyFirst) return;
+
+          const digitalSpan = signal.digitalMaximum - signal.digitalMinimum;
+          const physicalSpan = signal.physicalMaximum - signal.physicalMinimum;
+          const usePhysicalScaling = digitalSpan !== 0 && physicalSpan !== 0 && Number.isFinite(physicalSpan);
+          const scale = usePhysicalScaling ? physicalSpan / digitalSpan : 1;
+          const offset = usePhysicalScaling ? signal.physicalMinimum - signal.digitalMinimum * scale : 0;
+          const unitScale = usePhysicalScaling ? this.physicalUnitScaleBySignalIndex[signal.index] : 1;
+          for (let sample = copyFirst; sample < copyEnd; sample += 1) {
+            const sampleTime = sample / signal.sampleRate;
+            const bucket = Math.min(
+              bucketCount - 1,
+              Math.floor(((sampleTime - request.startSec) / request.durationSec) * bucketCount),
+            );
+            const inRecord = sample - recordFirstSample;
+            const digital = view.getInt16(localRecordByte + signal.byteOffsetInRecord + inRecord * 2, true);
+            addEnvelopeSample(accumulators[selectedIndex], bucket, (digital * scale + offset) * unitScale);
+          }
+        });
+      }
+    }
+
+    return makeEnvelopeWindowResult(this.meta, request, accumulators, bucketCount);
   }
 }
 
@@ -999,7 +1147,9 @@ export class RawDatSource implements SignalSource {
     startSec: number,
     durationSec: number,
     channelIndices?: readonly number[],
+    options: SignalReadOptions = {},
   ): Promise<WindowData> {
+    throwIfSignalReadAborted(options.signal);
     const request = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
     const sampleRate = this.meta.sampleRates[0];
     const firstSample = Math.floor(request.startSec * sampleRate);
@@ -1012,9 +1162,11 @@ export class RawDatSource implements SignalSource {
     const bytesPerFrame = this.meta.channelCount * 2;
     const framesPerChunk = Math.max(1, Math.floor((8 * 1024 * 1024) / bytesPerFrame));
     for (let chunkStart = firstSample; chunkStart < endSample; chunkStart += framesPerChunk) {
+      throwIfSignalReadAborted(options.signal);
       const chunkEnd = Math.min(endSample, chunkStart + framesPerChunk);
       const byteStart = chunkStart * bytesPerFrame;
       const view = new DataView(await this.file.slice(byteStart, chunkEnd * bytesPerFrame).arrayBuffer());
+      throwIfSignalReadAborted(options.signal);
       for (let sample = chunkStart; sample < chunkEnd; sample += 1) {
         const localFrameByte = (sample - chunkStart) * bytesPerFrame;
         request.channelIndices.forEach((channelIndex, outputIndex) => {
@@ -1025,6 +1177,52 @@ export class RawDatSource implements SignalSource {
       }
     }
     return makeWindowResult(this.meta, request, outputs, undefined, channelStartSecs);
+  }
+
+  async getEnvelopeWindow(
+    startSec: number,
+    durationSec: number,
+    bucketCount: number,
+    channelIndices?: readonly number[],
+    options: SignalReadOptions = {},
+  ): Promise<EnvelopeWindowData> {
+    validateEnvelopeBucketCount(bucketCount);
+    throwIfSignalReadAborted(options.signal);
+    const request = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
+    const sampleRate = this.meta.sampleRates[0];
+    const firstSample = Math.floor(request.startSec * sampleRate);
+    const endSample = Math.min(this.totalSamples, Math.ceil(request.endSec * sampleRate));
+    const accumulators = request.channelIndices.map(() => makeEnvelopeAccumulator(bucketCount));
+    if (firstSample >= endSample || accumulators.length === 0) {
+      return makeEnvelopeWindowResult(this.meta, request, accumulators, bucketCount);
+    }
+
+    const bytesPerFrame = this.meta.channelCount * 2;
+    const framesPerChunk = Math.max(1, Math.floor((4 * 1024 * 1024) / bytesPerFrame));
+    for (let chunkStart = firstSample; chunkStart < endSample; chunkStart += framesPerChunk) {
+      throwIfSignalReadAborted(options.signal);
+      const chunkEnd = Math.min(endSample, chunkStart + framesPerChunk);
+      const byteStart = chunkStart * bytesPerFrame;
+      const view = new DataView(await this.file.slice(byteStart, chunkEnd * bytesPerFrame).arrayBuffer());
+      throwIfSignalReadAborted(options.signal);
+      for (let sample = chunkStart; sample < chunkEnd; sample += 1) {
+        const sampleTime = sample / sampleRate;
+        const bucket = Math.min(
+          bucketCount - 1,
+          Math.floor(((sampleTime - request.startSec) / request.durationSec) * bucketCount),
+        );
+        const localFrameByte = (sample - chunkStart) * bytesPerFrame;
+        request.channelIndices.forEach((channelIndex, outputIndex) => {
+          const digital = view.getInt16(localFrameByte + channelIndex * 2, true);
+          addEnvelopeSample(
+            accumulators[outputIndex],
+            bucket,
+            digital * this.scale[channelIndex] + this.physicalOffset[channelIndex],
+          );
+        });
+      }
+    }
+    return makeEnvelopeWindowResult(this.meta, request, accumulators, bucketCount);
   }
 }
 
@@ -1943,6 +2141,84 @@ export function decimateClinicalDisplayTrace(
   };
 }
 
+function throwIfSignalReadAborted(signal: AbortSignal | undefined) {
+  if (!signal?.aborted) return;
+  if (signal.reason !== undefined) throw signal.reason;
+  const error = new Error("Signal read was superseded");
+  error.name = "AbortError";
+  throw error;
+}
+
+function validateEnvelopeBucketCount(bucketCount: number) {
+  if (!Number.isSafeInteger(bucketCount) || bucketCount <= 0) {
+    throw new SignalFileError("INVALID_WINDOW", "Envelope bucket count must be a positive whole number.");
+  }
+}
+
+type EnvelopeAccumulator = {
+  minima: Float32Array;
+  maxima: Float32Array;
+  gaps: Uint8Array;
+  data: Float32Array;
+};
+
+function makeEnvelopeAccumulator(bucketCount: number): EnvelopeAccumulator {
+  const minima = new Float32Array(bucketCount);
+  const maxima = new Float32Array(bucketCount);
+  const data = new Float32Array(bucketCount);
+  minima.fill(Number.POSITIVE_INFINITY);
+  maxima.fill(Number.NEGATIVE_INFINITY);
+  data.fill(Number.NaN);
+  return { minima, maxima, gaps: new Uint8Array(bucketCount), data };
+}
+
+function addEnvelopeSample(accumulator: EnvelopeAccumulator, bucket: number, value: number) {
+  if (bucket < 0 || bucket >= accumulator.data.length) return;
+  if (!Number.isFinite(value)) {
+    accumulator.gaps[bucket] = 1;
+    return;
+  }
+  accumulator.minima[bucket] = Math.min(accumulator.minima[bucket], value);
+  accumulator.maxima[bucket] = Math.max(accumulator.maxima[bucket], value);
+}
+
+function finishEnvelopeAccumulator(accumulator: EnvelopeAccumulator) {
+  for (let bucket = 0; bucket < accumulator.data.length; bucket += 1) {
+    const minimum = accumulator.minima[bucket];
+    const maximum = accumulator.maxima[bucket];
+    if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) {
+      accumulator.gaps[bucket] = 1;
+      accumulator.minima[bucket] = Number.NaN;
+      accumulator.maxima[bucket] = Number.NaN;
+      continue;
+    }
+    accumulator.data[bucket] = (minimum + maximum) / 2;
+  }
+}
+
+function makeEnvelopeWindowResult(
+  meta: RecordingMeta,
+  request: NormalizedWindow,
+  accumulators: EnvelopeAccumulator[],
+  bucketCount: number,
+): EnvelopeWindowData {
+  accumulators.forEach(finishEnvelopeAccumulator);
+  const effectiveRate = request.durationSec > 0 ? bucketCount / request.durationSec : 0;
+  return {
+    ...makeWindowResult(
+      meta,
+      request,
+      accumulators.map((entry) => entry.data),
+      request.channelIndices.map(() => effectiveRate),
+      request.channelIndices.map(() => request.startSec),
+    ),
+    minima: accumulators.map((entry) => entry.minima),
+    maxima: accumulators.map((entry) => entry.maxima),
+    gaps: accumulators.map((entry) => entry.gaps),
+    bucketDurationSec: request.durationSec > 0 ? request.durationSec / bucketCount : 0,
+  };
+}
+
 /** Applies the clinical rule independently to mixed-rate raw/display channels. */
 export function prepareClinicalDisplaySignals(
   data: readonly Float32Array[],
@@ -1991,6 +2267,123 @@ export interface RawFlatlineDetectionOptions {
   thresholdFraction?: number;
   minimumDurationSec?: number;
   absoluteTolerance?: number;
+}
+
+export interface EnvelopeFlatlineDetectionOptions {
+  startSec?: number;
+  thresholdFraction?: number;
+  minimumDurationSec?: number;
+  absoluteTolerance?: number;
+}
+
+/**
+ * Conservatively detects synchronized flat source intervals from exact
+ * per-bucket extrema. A bucket is flat only when its finite minimum and
+ * maximum match, and adjacent buckets merge only while enough channels keep
+ * the same value across their boundary. Partially flat buckets and stepwise
+ * signals are therefore never promoted to one long dropout.
+ */
+export function detectEnvelopeSynchronizedFlatlines(
+  minima: readonly Float32Array[],
+  maxima: readonly Float32Array[],
+  gaps: readonly Uint8Array[],
+  bucketDurationSec: number,
+  options: EnvelopeFlatlineDetectionOptions = {},
+): RawFlatlineInterval[] {
+  if (minima.length !== maxima.length || minima.length !== gaps.length) {
+    throw new Error("Envelope flatline arrays must have matching channel counts.");
+  }
+  if (!minima.length) return [];
+  if (!(bucketDurationSec > 0) || !Number.isFinite(bucketDurationSec)) {
+    throw new Error("Envelope bucket duration must be positive and finite.");
+  }
+  const bucketCount = minima[0].length;
+  if (maxima.some((channel) => channel.length !== bucketCount)
+    || minima.some((channel) => channel.length !== bucketCount)
+    || gaps.some((channel) => channel.length !== bucketCount)) {
+    throw new Error("Envelope flatline channels must have matching bucket counts.");
+  }
+  const thresholdFraction = options.thresholdFraction ?? 0.8;
+  const minimumDurationSec = options.minimumDurationSec ?? 0.25;
+  const absoluteTolerance = options.absoluteTolerance ?? 0;
+  const startSec = options.startSec ?? 0;
+  if (!(thresholdFraction > 0 && thresholdFraction <= 1) || !Number.isFinite(thresholdFraction)) {
+    throw new Error("Envelope flatline threshold fraction must be greater than zero and at most one.");
+  }
+  if (!(minimumDurationSec >= 0) || !Number.isFinite(minimumDurationSec)) {
+    throw new Error("Envelope flatline minimum duration must be non-negative and finite.");
+  }
+  if (!(absoluteTolerance >= 0) || !Number.isFinite(absoluteTolerance)) {
+    throw new Error("Envelope flatline tolerance must be non-negative and finite.");
+  }
+  if (!Number.isFinite(startSec)) throw new Error("Envelope flatline start time must be finite.");
+
+  const requiredChannels = Math.ceil(minima.length * thresholdFraction);
+  const output: RawFlatlineInterval[] = [];
+  let runStartBucket = -1;
+  let runMinimum = Number.POSITIVE_INFINITY;
+  let previousFlat = new Uint8Array(minima.length);
+  let previousValues = new Float32Array(minima.length);
+  const finishRun = (endBucketExclusive: number) => {
+    if (runStartBucket < 0) return;
+    const durationSec = (endBucketExclusive - runStartBucket) * bucketDurationSec;
+    if (durationSec >= minimumDurationSec) {
+      output.push({
+        startSec: startSec + runStartBucket * bucketDurationSec,
+        endSec: startSec + endBucketExclusive * bucketDurationSec,
+        durationSec,
+        minimumFlatChannelCount: runMinimum,
+        totalChannelCount: minima.length,
+      });
+    }
+    runStartBucket = -1;
+    runMinimum = Number.POSITIVE_INFINITY;
+  };
+
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    const currentFlat = new Uint8Array(minima.length);
+    const currentValues = new Float32Array(minima.length);
+    let flatChannels = 0;
+    for (let channel = 0; channel < minima.length; channel += 1) {
+      const minimum = minima[channel][bucket];
+      const maximum = maxima[channel][bucket];
+      if (!gaps[channel][bucket]
+        && Number.isFinite(minimum)
+        && Number.isFinite(maximum)
+        && Math.abs(maximum - minimum) <= absoluteTolerance) {
+        currentFlat[channel] = 1;
+        currentValues[channel] = (minimum + maximum) / 2;
+        flatChannels += 1;
+      }
+    }
+    let continuousChannels = 0;
+    if (bucket > 0) {
+      for (let channel = 0; channel < minima.length; channel += 1) {
+        if (previousFlat[channel]
+          && currentFlat[channel]
+          && Math.abs(currentValues[channel] - previousValues[channel]) <= absoluteTolerance) {
+          continuousChannels += 1;
+        }
+      }
+    }
+    const bucketQualifies = flatChannels >= requiredChannels;
+    const canExtend = runStartBucket >= 0
+      && bucketQualifies
+      && continuousChannels >= requiredChannels;
+    if (canExtend) {
+      runMinimum = Math.min(runMinimum, continuousChannels);
+    } else {
+      finishRun(bucket);
+      if (bucketQualifies) {
+        runStartBucket = bucket;
+        runMinimum = flatChannels;
+      }
+    }
+    previousFlat = currentFlat;
+    previousValues = currentValues;
+  }
+  finishRun(bucketCount);
+  return output;
 }
 
 interface ChannelFlatlineInterval {

@@ -24,6 +24,7 @@ import {
   confineTraceYToRow,
   decimateClinicalDisplayTrace,
   designClinicalDecimationFir,
+  detectEnvelopeSynchronizedFlatlines,
   detectRawSynchronizedFlatlines,
   makeId,
   normalizeEDFPhysicalDimension,
@@ -209,6 +210,78 @@ test("decodes EDF+ TAL labels as UTF-8", async () => {
   assert.deepEqual(source.events, [
     { label, timeSec: 0.5, durationSec: undefined, source: "edf+" },
   ]);
+
+  const deferred = await EDFSource.create(file, { parseAnnotations: false });
+  assert.deepEqual(deferred.events, []);
+  await deferred.loadAnnotations();
+  assert.deepEqual(deferred.events, source.events);
+});
+
+test("file-backed overview envelopes retain both polarities with pixel-bounded output", async () => {
+  const channelZero = [0, 2, 100, -50, 4, 6, 8, 10];
+  const channelOne = [20, 18, 16, 14, 12, 10, -30, 40];
+  const bytes = new Uint8Array(channelZero.length * 2 * 2);
+  const view = new DataView(bytes.buffer);
+  channelZero.forEach((value, sample) => {
+    view.setInt16((sample * 2) * 2, value, true);
+    view.setInt16((sample * 2 + 1) * 2, channelOne[sample], true);
+  });
+  const source = await RawDatSource.create(new File([bytes], "overview.dat"), {
+    sampleRate: 8,
+    channelCount: 2,
+    physicalScale: 1,
+  });
+  const envelope = await source.getEnvelopeWindow(0, 1, 2, [1, 0]);
+  assert.deepEqual([...envelope.minima[0]], [14, -30]);
+  assert.deepEqual([...envelope.maxima[0]], [20, 40]);
+  assert.deepEqual([...envelope.minima[1]], [-50, 4]);
+  assert.deepEqual([...envelope.maxima[1]], [100, 10]);
+  assert.deepEqual([...envelope.gaps[0]], [0, 0]);
+  assert.deepEqual([...envelope.data[1]], [25, 7]);
+  assert.equal(envelope.data[0].length, 2);
+  assert.equal(envelope.bucketDurationSec, 0.5);
+
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    source.getEnvelopeWindow(0, 1, 2, [0], { signal: controller.signal }),
+    (error) => error?.name === "AbortError",
+  );
+});
+
+test("overview extrema preserve synchronized flatline QC conservatively", () => {
+  const minima = [
+    new Float32Array([1, 2, 2, 4]),
+    new Float32Array([5, 6, 6, 8]),
+    new Float32Array([9, 10, 10, 12]),
+    new Float32Array([13, 14, 15, 16]),
+    new Float32Array([17, 18, 18, 20]),
+  ];
+  const maxima = minima.map((channel) => channel.slice());
+  maxima[3][2] = 16;
+  const gaps = minima.map(() => new Uint8Array(4));
+  const regions = detectEnvelopeSynchronizedFlatlines(minima, maxima, gaps, 0.25, {
+    startSec: 10,
+    thresholdFraction: 0.8,
+    minimumDurationSec: 0.5,
+  });
+  assert.deepEqual(regions, [{
+    startSec: 10.25,
+    endSec: 10.75,
+    durationSec: 0.5,
+    minimumFlatChannelCount: 4,
+    totalChannelCount: 5,
+  }]);
+
+  gaps[0][1] = 1;
+  gaps[1][1] = 1;
+  gaps[0][2] = 1;
+  gaps[1][2] = 1;
+  assert.deepEqual(detectEnvelopeSynchronizedFlatlines(minima, maxima, gaps, 0.25, {
+    startSec: 10,
+    thresholdFraction: 0.8,
+    minimumDurationSec: 0.5,
+  }), []);
 });
 
 test("rejects EDF+D rather than flattening discontinuous record time", async () => {
