@@ -16,13 +16,18 @@ import test from "node:test";
 
 import {
   EDFSource,
+  LEGACY_RAW_COUNTS_PER_ROW,
+  RawDatSource,
+  anatomicalChannelGroup,
   buildMontage,
   clinicalDecimationFactor,
+  confineTraceYToRow,
   decimateClinicalDisplayTrace,
   designClinicalDecimationFir,
   detectRawSynchronizedFlatlines,
   makeId,
   normalizeEDFPhysicalDimension,
+  orderAnatomicalChannelIndices,
   parseEDFHeader,
   prepareClinicalDisplaySignals,
 } from "../app/eeg-core.ts";
@@ -416,4 +421,57 @@ test("referential montage retains QC-marked channels while derived montages excl
   );
   assert.equal(misalignedBipolar.data.length, 0);
   assert.match(misalignedBipolar.warnings.join("\n"), /sample start times.*not aligned/i);
+});
+
+test("orders legacy contact channels left then right while applying MATLAB group exclusions", () => {
+  const labels = ["RA1", "ECG1", "LA1", "LB2", "RB1", "F3", "X1"];
+  assert.deepEqual(labels.map(anatomicalChannelGroup), ["RA", null, "LA", "LB", "RB", null, "X"]);
+  assert.deepEqual(orderAnatomicalChannelIndices(labels), [2, 3, 0, 4, 6, 1, 5]);
+  assert.equal(anatomicalChannelGroup("EEG LA1-REF–EEG LA2-REF"), "LA");
+  assert.equal(anatomicalChannelGroup("Fp1-Fp2"), "FP");
+});
+
+test("confines extreme waveform coordinates to exactly one channel row", () => {
+  assert.equal(LEGACY_RAW_COUNTS_PER_ROW, 15_000);
+  assert.deepEqual(confineTraceYToRow(12, 10, 5), { y: 12, overflow: false });
+  assert.deepEqual(confineTraceYToRow(-1_000_000, 10, 5), { y: 10, overflow: true });
+  assert.deepEqual(confineTraceYToRow(1_000_000, 10, 5), { y: 15, overflow: true });
+  assert.deepEqual(confineTraceYToRow(99, 10, .2), { y: 10.2, overflow: true });
+  assert.deepEqual(confineTraceYToRow(Number.NEGATIVE_INFINITY, 10, 5), { y: 10, overflow: true });
+  assert.deepEqual(confineTraceYToRow(Number.POSITIVE_INFINITY, 10, 5), { y: 15, overflow: true });
+  assert.deepEqual(confineTraceYToRow(Number.NaN, 10, 5), { y: 12.5, overflow: true });
+  assert.throws(() => confineTraceYToRow(10, 0, 0), /positive height/i);
+});
+
+test("uncalibrated raw DAT remains in source counts", async () => {
+  const bytes = new Uint8Array(4);
+  const view = new DataView(bytes.buffer);
+  view.setInt16(0, 12_345, true);
+  view.setInt16(2, -12_345, true);
+  const source = await RawDatSource.create(new File([bytes], "legacy.dat"), {
+    sampleRate: 2,
+    channelCount: 1,
+  });
+  const window = await source.getWindow(0, 1, [0]);
+  assert.equal(source.meta.channelUnits[0], "a.u.");
+  assert.deepEqual([...window.data[0]], [12_345, -12_345]);
+  assert.match(source.meta.warnings.join("\n"), /raw digital counts/i);
+});
+
+test("calibrated raw DAT applies a strictly positive microvolt scale", async () => {
+  const bytes = new Uint8Array(4);
+  const view = new DataView(bytes.buffer);
+  view.setInt16(0, 1_000, true);
+  view.setInt16(2, -1_000, true);
+  const file = new File([bytes], "calibrated.dat");
+  const source = await RawDatSource.create(file, {
+    sampleRate: 2,
+    channelCount: 1,
+    physicalScale: .195,
+  });
+  const window = await source.getWindow(0, 1, [0]);
+  assert.equal(source.meta.channelUnits[0], "µV");
+  assert.deepEqual([...window.data[0]], [195, -195]);
+  await assert.rejects(() => RawDatSource.create(file, { sampleRate: 2, channelCount: 1, physicalScale: 0 }), /positive finite/i);
+  await assert.rejects(() => RawDatSource.create(file, { sampleRate: 2, channelCount: 1, physicalScale: [1, -1] }), /positive finite/i);
 });

@@ -34,12 +34,16 @@ import {
   EDFSource,
   MatSource,
   RawDatSource,
+  anatomicalChannelGroup,
   applyDisplayFilters,
   buildMontage,
   clinicalDecimationFactor,
+  confineTraceYToRow,
   detectRawSynchronizedFlatlines,
   formatClock,
+  LEGACY_RAW_COUNTS_PER_ROW,
   makeId,
+  orderAnatomicalChannelIndices,
   parseLegacyMatMetadata,
   prepareClinicalDisplaySignals,
   type DisplayFilterSettings,
@@ -144,6 +148,32 @@ type Candidate = {
   status: "active" | "queued" | "reviewed" | "skipped" | "conflict";
   confidence: number;
   uncertainty?: number;
+  /** Optional MATLAB-review compatibility fields. */
+  ictalChannels?: string;
+  legacyConfidence?: "" | "1" | "2" | "3";
+  reviewedAt?: string;
+  reviewerInitials?: string;
+  badChannels?: string;
+};
+
+type AnnotationHistorySnapshot = {
+  annotations: Annotation[];
+  candidates: Candidate[];
+  activeCandidate: number;
+};
+
+type MatlabExportIdentity = {
+  patientId: string;
+  matPath: string;
+  dataDirectory: string;
+  datFile: string;
+};
+
+type RawDatMapping = {
+  sampleRate: number;
+  channelCount: number;
+  /** Blank preserves the headerless file as raw ADC counts. */
+  physicalScale: number | "";
 };
 
 type ControlBindings = {
@@ -232,8 +262,8 @@ type SessionWorkspaceSnapshot = {
   rawSourceHash: string;
   sourceInterpretation: Record<string, unknown> | null;
   recoveryStatus: "saved" | "error";
-  undo: Annotation[][];
-  redo: Annotation[][];
+  undo: AnnotationHistorySnapshot[];
+  redo: AnnotationHistorySnapshot[];
 };
 
 const LABELS: LabelDefinition[] = [
@@ -269,6 +299,8 @@ const LABELS: LabelDefinition[] = [
 
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
 const CHANNEL_RAIL_HEADER_HEIGHT = 28;
+const ANATOMICAL_GROUP_GAP_ROWS = 4;
+const LEGACY_SEIZURE_EVENT_TERMS = ["sz", "seiz", "tonic", "eeg onset", "ictal"] as const;
 const PALETTE_BUTTON_NAMES: Record<string, string> = {
   preictal: "Pre",
   ictal: "Ictal",
@@ -288,6 +320,11 @@ const PALETTE_BUTTON_NAMES: Record<string, string> = {
 function annotationGeometry(annotation: Pick<Annotation, "geometry" | "labelId">): Geometry {
   const geometry = annotation.geometry ?? LABEL_BY_ID.get(annotation.labelId)?.geometry ?? "point";
   return geometry === "window" ? "interval" : geometry;
+}
+
+function isLegacySeizureCandidate(label: string) {
+  const normalized = label.trim().toLowerCase();
+  return LEGACY_SEIZURE_EVENT_TERMS.some((term) => normalized.includes(term));
 }
 
 function normalizeAnnotationGeometry(annotation: Annotation, durationSec: number): Annotation {
@@ -430,6 +467,13 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
     return [{
       ...candidate,
       label: candidate.label.trim(),
+      ictalChannels: typeof candidate.ictalChannels === "string" ? candidate.ictalChannels : "",
+      legacyConfidence: ["1", "2", "3"].includes(candidate.legacyConfidence ?? "")
+        ? candidate.legacyConfidence
+        : "",
+      reviewedAt: typeof candidate.reviewedAt === "string" ? candidate.reviewedAt : undefined,
+      reviewerInitials: typeof candidate.reviewerInitials === "string" ? candidate.reviewerInitials : "",
+      badChannels: typeof candidate.badChannels === "string" ? normalizeChannelList(candidate.badChannels) : "",
       confidence: Math.round(clamp(
         Number.isFinite(candidate.confidence)
           ? candidate.confidence
@@ -443,6 +487,43 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
   });
 }
 
+function reconcileCandidateQueue(imported: Candidate[], restored: Candidate[], restoredActiveCandidate: number) {
+  const importedIds = new Set(imported.map((candidate) => candidate.id));
+  const restoredTerminalDecisions = restored.filter((candidate) =>
+    ["reviewed", "skipped", "conflict"].includes(candidate.status) && !importedIds.has(candidate.id));
+  const merged = [...imported.map((candidate) => {
+    const prior = restored.find((item) => item.id === candidate.id);
+    return prior ? {
+      ...candidate,
+      status: prior.status,
+      confidence: prior.confidence,
+      ictalChannels: prior.ictalChannels ?? "",
+      legacyConfidence: prior.legacyConfidence ?? "",
+      reviewedAt: prior.reviewedAt,
+      reviewerInitials: prior.reviewerInitials ?? "",
+      badChannels: prior.badChannels ?? "",
+    } : candidate;
+  }), ...restoredTerminalDecisions]
+    .sort((left, right) => left.time - right.time || left.id.localeCompare(right.id));
+  const restoredActiveId = restored[restoredActiveCandidate]?.id
+    ?? restored.find((item) => item.status === "active")?.id;
+  let activeIndex = restoredActiveId
+    ? merged.findIndex((item) => item.id === restoredActiveId && !["reviewed", "skipped", "conflict"].includes(item.status))
+    : -1;
+  if (activeIndex < 0) {
+    activeIndex = merged.findIndex((item) => !["reviewed", "skipped", "conflict"].includes(item.status));
+  }
+  if (activeIndex < 0 && merged.length) activeIndex = clamp(restoredActiveCandidate, 0, merged.length - 1);
+  return {
+    candidates: merged.map((item, index) => {
+      if (index === activeIndex && (item.status === "queued" || item.status === "active")) return { ...item, status: "active" as const };
+      if (index !== activeIndex && item.status === "active") return { ...item, status: "queued" as const };
+      return item;
+    }),
+    activeIndex: Math.max(0, activeIndex),
+  };
+}
+
 type RecoveredProject = {
   annotations: Annotation[];
   candidates: Candidate[];
@@ -450,6 +531,7 @@ type RecoveredProject = {
   badChannels: number[];
   reviewer: string | null;
   recordingType: string | null;
+  matlabExportIdentity: MatlabExportIdentity | null;
 };
 
 function hasValidRecoveryBounds(value: unknown, durationSec: number): boolean {
@@ -503,6 +585,16 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
   }
   if (project.reviewer !== undefined && typeof project.reviewer !== "string") throw new Error("Project reviewer is invalid");
   if (project.recordingType !== undefined && typeof project.recordingType !== "string") throw new Error("Project recording type is invalid");
+  if (project.matlabExportIdentity !== undefined && (
+    !project.matlabExportIdentity
+    || typeof project.matlabExportIdentity !== "object"
+    || Array.isArray(project.matlabExportIdentity)
+  )) throw new Error("Project MATLAB export identity is invalid");
+  const rawMatlabExportIdentity = project.matlabExportIdentity as Record<string, unknown> | undefined;
+  if (rawMatlabExportIdentity && ["patientId", "matPath", "dataDirectory", "datFile"].some((key) =>
+    rawMatlabExportIdentity[key] !== undefined && typeof rawMatlabExportIdentity[key] !== "string")) {
+    throw new Error("Project MATLAB export identity fields are invalid");
+  }
 
   return {
     annotations,
@@ -511,6 +603,12 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
     badChannels,
     reviewer: typeof project.reviewer === "string" ? project.reviewer : null,
     recordingType: typeof project.recordingType === "string" ? project.recordingType : null,
+    matlabExportIdentity: rawMatlabExportIdentity ? {
+      patientId: typeof rawMatlabExportIdentity.patientId === "string" ? rawMatlabExportIdentity.patientId : "",
+      matPath: typeof rawMatlabExportIdentity.matPath === "string" ? rawMatlabExportIdentity.matPath : "",
+      dataDirectory: typeof rawMatlabExportIdentity.dataDirectory === "string" ? rawMatlabExportIdentity.dataDirectory : "",
+      datFile: typeof rawMatlabExportIdentity.datFile === "string" ? rawMatlabExportIdentity.datFile : "",
+    } : null,
   };
 }
 
@@ -575,6 +673,109 @@ function formatAmplitude(value: number, unit = "µV") {
   if (unit === "µV" && abs >= 1000) return `${(value / 1000).toFixed(2)} mV`;
   const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2;
   return `${value.toFixed(digits)} ${unit || "a.u."}`;
+}
+
+function formatRelativeTime(value: number) {
+  if (!Number.isFinite(value)) return "—";
+  if (Math.abs(value) < .0005) return "0.000 s";
+  return `${value > 0 ? "+" : "−"}${Math.abs(value).toFixed(3)} s`;
+}
+
+function normalizeChannelList(value: string) {
+  return value
+    .split(/[,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(",");
+}
+
+function formatMatlabTimestamp(value: string | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function portablePathParts(value: string) {
+  const normalized = value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const parts = normalized.split("/").filter(Boolean);
+  return {
+    path: normalized,
+    directory: parts.slice(0, -1).join("/"),
+    fileName: parts.at(-1) ?? "",
+    topDirectory: parts.length > 1 ? parts[0] : "",
+  };
+}
+
+function sourceIdentityInterpretation(interpretation: Record<string, unknown> | undefined) {
+  if (!interpretation) return undefined;
+  const exportOnlyKeys = new Set([
+    "patient_id_hint",
+    "companion_mat_name",
+    "companion_mat_path",
+    "dat_file_name",
+    "dat_file_base",
+    "data_dir_hint",
+    "display_amplitude_mode",
+  ]);
+  return Object.fromEntries(Object.entries(interpretation).filter(([key]) => !exportOnlyKeys.has(key)));
+}
+
+function matlabExportIdentityFromInterpretation(interpretation: Record<string, unknown> | null | undefined): MatlabExportIdentity | null {
+  if (interpretation?.kind !== "raw-int16-le") return null;
+  const stringValue = (key: string) => typeof interpretation[key] === "string" ? interpretation[key] as string : "";
+  return {
+    patientId: stringValue("patient_id_hint"),
+    matPath: stringValue("companion_mat_path") || stringValue("companion_mat_name"),
+    dataDirectory: stringValue("data_dir_hint"),
+    datFile: stringValue("dat_file_base") || stringValue("dat_file_name").replace(/\.dat$/i, ""),
+  };
+}
+
+function applyMatlabExportIdentity(
+  interpretation: Record<string, unknown> | undefined,
+  identity: MatlabExportIdentity | null,
+): Record<string, unknown> | undefined {
+  if (!interpretation || !identity || interpretation.kind !== "raw-int16-le") return interpretation;
+  return {
+    ...interpretation,
+    patient_id_hint: identity.patientId || null,
+    companion_mat_path: identity.matPath || null,
+    data_dir_hint: identity.dataDirectory || null,
+    dat_file_base: identity.datFile || null,
+  };
+}
+
+type ChannelRowLayout = {
+  rowStartUnits: number[];
+  totalUnits: number;
+  groupStarts: Set<number>;
+};
+
+function buildChannelRowLayout(labels: readonly string[], anatomicalSpacing: boolean): ChannelRowLayout {
+  const rowStartUnits: number[] = [];
+  const groupStarts = new Set<number>();
+  let units = 0;
+  let previousGroup: string | null = null;
+  labels.forEach((label, index) => {
+    const group = anatomicalSpacing ? anatomicalChannelGroup(label) : null;
+    if (index > 0 && group && previousGroup && group !== previousGroup) {
+      units += ANATOMICAL_GROUP_GAP_ROWS;
+      groupStarts.add(index);
+    }
+    rowStartUnits.push(units);
+    units += 1;
+    previousGroup = group;
+  });
+  return { rowStartUnits, totalUnits: Math.max(1, units), groupStarts };
+}
+
+function channelRowFromFraction(layout: ChannelRowLayout, fraction: number) {
+  if (!Number.isFinite(fraction) || fraction < 0 || fraction >= 1) return null;
+  const unit = fraction * layout.totalUnits;
+  const row = layout.rowStartUnits.findIndex((start) => unit >= start && unit < start + 1);
+  return row >= 0 ? row : null;
 }
 
 function robustTraceBaseline(values: Float32Array, maximumSamples = 257) {
@@ -744,8 +945,10 @@ export default function Home() {
   const viewerWheelRef = useRef<(event: WheelEvent) => void>(() => {});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const annotationsRef = useRef<Annotation[]>([]);
-  const undoRef = useRef<Annotation[][]>([]);
-  const redoRef = useRef<Annotation[][]>([]);
+  const candidatesRef = useRef<Candidate[]>([]);
+  const activeCandidateIndexRef = useRef(0);
+  const undoRef = useRef<AnnotationHistorySnapshot[]>([]);
+  const redoRef = useRef<AnnotationHistorySnapshot[]>([]);
   const pointerRef = useRef<{ pointerId: number; startX: number; startTime: number; moved: boolean } | null>(null);
   const wheelFrameRef = useRef<number | null>(null);
   const wheelDeltaRef = useRef(0);
@@ -840,8 +1043,11 @@ export default function Home() {
   const [pendingDat, setPendingDat] = useState<File | null>(null);
   const [pendingLegacyMatFile, setPendingLegacyMatFile] = useState<File | null>(null);
   const [pendingLegacyMeta, setPendingLegacyMeta] = useState<LegacyMatMetadata | null>(null);
-  const [datMapping, setDatMapping] = useState({ sampleRate: 0, channelCount: 0, physicalScale: 1 });
+  const [selectedLegacyEventIndices, setSelectedLegacyEventIndices] = useState<Set<number>>(new Set());
+  const [datMapping, setDatMapping] = useState<RawDatMapping>({ sampleRate: 0, channelCount: 0, physicalScale: "" });
+  const [legacyExportHints, setLegacyExportHints] = useState({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
   const [confirmCommit, setConfirmCommit] = useState<string[]>([]);
+  const [commitAdvanceAfter, setCommitAdvanceAfter] = useState(false);
   const [reviewer, setReviewer] = useState("");
   const [sourceHash, setSourceHash] = useState("");
   const [rawSourceHash, setRawSourceHash] = useState("");
@@ -849,10 +1055,35 @@ export default function Home() {
   const [recoveryStatus, setRecoveryStatus] = useState<"saved" | "error">("saved");
   const [controlBindings, setControlBindings] = useState<ControlBindings>(DEFAULT_CONTROLS);
 
+  const activeCandidateItem = candidates[activeCandidate] ?? null;
+  const activeCandidateAnnotation = activeCandidateItem
+    ? [...annotations].reverse().find((item) => item.candidateId === activeCandidateItem.id
+      && item.labelId === "ictal"
+      && (activeCandidateItem.status !== "reviewed" || item.status === "committed")) ?? null
+    : null;
+  const candidateDecisionLocked = activeCandidateItem
+    ? ["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)
+    : false;
+  const activeMatlabExportIdentity = matlabExportIdentityFromInterpretation(sourceInterpretation);
+  const effectivePatientLabel = activeMatlabExportIdentity?.patientId.trim() || patientLabel(meta);
+  const pendingLegacyCandidateEvents = useMemo(() => (pendingLegacyMeta?.events ?? [])
+    .map((event, sourceIndex) => ({ event, sourceIndex }))
+    .filter(({ event }) => isLegacySeizureCandidate(event.label)), [pendingLegacyMeta]);
+  const legacyAnatomicalLayout = meta.format === "raw-int16-le" && meta.channelLabels.length >= 100;
+  const legacyRawCountDisplay = meta.format === "raw-int16-le"
+    && sourceInterpretation?.display_amplitude_mode === "legacy-raw-counts";
+  const datPhysicalScaleValid = datMapping.physicalScale === ""
+    || (Number.isFinite(datMapping.physicalScale) && datMapping.physicalScale > 0);
+  const channelRowLayout = useMemo(
+    () => buildChannelRowLayout(display.labels, legacyAnatomicalLayout),
+    [display.labels, legacyAnatomicalLayout],
+  );
+  const activeCandidateOnset = activeCandidateAnnotation?.start ?? markOnset;
+  const activeCandidateOffset = activeCandidateAnnotation?.end ?? null;
   const selectedAnnotation = annotations.find((item) => item.id === selectedAnnotationId) ?? null;
   const selectedGeometry = selectedAnnotation ? annotationGeometry(selectedAnnotation) : null;
+  const selectedCandidateDecisionLocked = Boolean(selectedAnnotation?.candidateId && selectedAnnotation.status === "committed");
   const instanceQueueEntries = useMemo(() => {
-    const linkedCandidateIds = new Set(annotations.flatMap((item) => item.candidateId ? [item.candidateId] : []));
     const annotationEntries = annotations
       .filter((item) => item.track === "instance" || (item.track === "context" && annotationGeometry(item) !== "session"))
       .map((item) => ({
@@ -863,9 +1094,9 @@ export default function Home() {
         detail: item.track === "context" ? "Context event" : "Instance label",
         status: item.status,
         confidence: Math.round(clamp(item.confidence, 0, 100)),
+        locked: Boolean(item.candidateId && item.status === "committed"),
       }));
     const candidateEntries = candidates
-      .filter((item) => !linkedCandidateIds.has(item.id))
       .map((item) => ({
         kind: "candidate" as const,
         id: item.id,
@@ -874,6 +1105,7 @@ export default function Home() {
         detail: "File event",
         status: item.status,
         confidence: item.confidence,
+        locked: ["reviewed", "skipped", "conflict"].includes(item.status),
       }));
     return [...annotationEntries, ...candidateEntries].sort((a, b) => a.time - b.time || a.label.localeCompare(b.label));
   }, [annotations, candidates]);
@@ -905,6 +1137,11 @@ export default function Home() {
   useLayoutEffect(() => {
     annotationsRef.current = annotations;
   }, [annotations]);
+
+  useLayoutEffect(() => {
+    candidatesRef.current = candidates;
+    activeCandidateIndexRef.current = activeCandidate;
+  }, [activeCandidate, candidates]);
 
   useLayoutEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -999,6 +1236,7 @@ export default function Home() {
           badChannels: snapshot.badChannels,
           reviewer: snapshot.reviewer,
           recordingType: snapshot.recordingType,
+          matlabExportIdentity: matlabExportIdentityFromInterpretation(snapshot.sourceInterpretation),
           savedAt: new Date().toISOString(),
         }));
         snapshot.recoveryStatus = "saved";
@@ -1078,10 +1316,13 @@ export default function Home() {
     setPendingDat(null);
     setPendingLegacyMatFile(null);
     setPendingLegacyMeta(null);
-    setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: 1 });
+    setSelectedLegacyEventIndices(new Set());
+    setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: "" });
+    setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
     setShowImport(false);
     setShowFilters(false);
     setConfirmCommit([]);
+    setCommitAdvanceAfter(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
     undoRef.current = snapshot.undo;
     redoRef.current = snapshot.redo;
@@ -1199,12 +1440,17 @@ export default function Home() {
   }, [setTimeWindow, timebase]);
 
   const commitMutation = useCallback((mutator: (current: Annotation[]) => Annotation[]) => {
-    setAnnotations((current) => {
-      undoRef.current.push(current);
-      if (undoRef.current.length > 100) undoRef.current.shift();
-      redoRef.current = [];
-      return mutator(current);
+    const current = annotationsRef.current;
+    undoRef.current.push({
+      annotations: current,
+      candidates: candidatesRef.current,
+      activeCandidate: activeCandidateIndexRef.current,
     });
+    if (undoRef.current.length > 100) undoRef.current.shift();
+    redoRef.current = [];
+    const next = mutator(current);
+    annotationsRef.current = next;
+    setAnnotations(next);
   }, []);
 
   const undo = useCallback(() => {
@@ -1213,8 +1459,17 @@ export default function Home() {
       setToast("Nothing to undo");
       return;
     }
-    redoRef.current.push(annotationsRef.current);
-    setAnnotations(previous);
+    redoRef.current.push({
+      annotations: annotationsRef.current,
+      candidates: candidatesRef.current,
+      activeCandidate: activeCandidateIndexRef.current,
+    });
+    annotationsRef.current = previous.annotations;
+    candidatesRef.current = previous.candidates;
+    activeCandidateIndexRef.current = previous.activeCandidate;
+    setAnnotations(previous.annotations);
+    setCandidates(previous.candidates);
+    setActiveCandidate(previous.activeCandidate);
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setToast("Last annotation change undone");
@@ -1226,8 +1481,17 @@ export default function Home() {
       setToast("Nothing to redo");
       return;
     }
-    undoRef.current.push(annotationsRef.current);
-    setAnnotations(next);
+    undoRef.current.push({
+      annotations: annotationsRef.current,
+      candidates: candidatesRef.current,
+      activeCandidate: activeCandidateIndexRef.current,
+    });
+    annotationsRef.current = next.annotations;
+    candidatesRef.current = next.candidates;
+    activeCandidateIndexRef.current = next.activeCandidate;
+    setAnnotations(next.annotations);
+    setCandidates(next.candidates);
+    setActiveCandidate(next.activeCandidate);
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setToast("Annotation change restored");
@@ -1277,13 +1541,14 @@ export default function Home() {
       return;
     }
     const activeSourceCandidate = candidates[activeCandidate];
-    const candidateMatches = geometry !== "session" && activeSourceCandidate && activeSourceCandidate.status !== "skipped" && activeSourceCandidate.status !== "conflict" && (
-      geometry === "point"
-        ? Math.abs(activeSourceCandidate.time - start) <= 1
-        : explicitEnd !== undefined
+    const candidateMatches = label.id === "ictal"
+      && geometry !== "session"
+      && activeSourceCandidate
+      && ["active", "queued"].includes(activeSourceCandidate.status)
+      && (activeTool === "seizure"
+        || (explicitEnd !== undefined
           ? activeSourceCandidate.time >= start && activeSourceCandidate.time <= end
-          : Math.abs(activeSourceCandidate.time - start) <= 1
-    );
+          : Math.abs(activeSourceCandidate.time - start) <= 1));
     const next = normalizeAnnotationGeometry({
       id: makeId("ann"),
       labelId: label.id,
@@ -1320,8 +1585,11 @@ export default function Home() {
       }).length
       : 0;
     commitMutation((current) => {
-      if (!sleepOverlapCount) return [...current, next];
-      const adjusted = current.flatMap((item) => {
+      const currentWithoutPreviousCandidateDraft = candidateMatches
+        ? current.filter((item) => !(item.candidateId === activeSourceCandidate.id && item.labelId === "ictal" && item.status === "draft"))
+        : current;
+      if (!sleepOverlapCount) return [...currentWithoutPreviousCandidateDraft, next];
+      const adjusted = currentWithoutPreviousCandidateDraft.flatMap((item) => {
         const existing = LABEL_BY_ID.get(item.labelId);
         if (existing?.category !== "Sleep stage"
           || item.track !== "windowed"
@@ -1362,7 +1630,7 @@ export default function Home() {
       : geometry === "interval" && explicitEnd !== undefined
         ? `${label.name} applied to ${formatClock(next.start, true)}–${formatClock(next.end, true)} — draft`
         : `${label.name} placed at ${formatClock(next.start, true)} — draft`);
-  }, [activeCandidate, candidates, commitMutation, display, focusedChannel, hasRecording, meta, montage, reviewer, snapMode]);
+  }, [activeCandidate, activeTool, candidates, commitMutation, display, focusedChannel, hasRecording, meta, montage, reviewer, snapMode]);
 
   const placePaletteLabel = useCallback((label: LabelDefinition) => {
     if (!hasRecording) {
@@ -1385,7 +1653,24 @@ export default function Home() {
     addAnnotation(label, selection?.start ?? cursorTime, selection?.end, intent);
   }, [addAnnotation, cursorLocked, cursorTime, hasRecording, selection]);
 
-  const updateAnnotation = useCallback((id: string, patch: Partial<Annotation>, withHistory = true) => {
+  const reopenCandidateReviews = useCallback((candidateIds: ReadonlySet<string>) => {
+    if (!candidateIds.size) return;
+    setCandidates((items) => items.map((item, index) => candidateIds.has(item.id) && item.status === "reviewed"
+      ? { ...item, status: index === activeCandidate ? "active" : "queued", reviewedAt: undefined }
+      : item));
+  }, [activeCandidate]);
+
+  const updateAnnotation = useCallback((id: string, patch: Partial<Annotation>, withHistory = true, allowCandidateReopen = false) => {
+    const previous = annotationsRef.current.find((item) => item.id === id);
+    if (!previous) return false;
+    if (previous.candidateId && previous.status === "committed" && !allowCandidateReopen) {
+      setToast("This accepted source event is locked — use Revise marks in the source-event review bar first");
+      return false;
+    }
+    const reopenedCandidateIds = new Set<string>();
+    if (previous?.candidateId && previous.status === "committed" && patch.status !== "committed") {
+      reopenedCandidateIds.add(previous.candidateId);
+    }
     const apply = (current: Annotation[]) => current.map((item) => {
       if (item.id !== id) return item;
       const next = {
@@ -1398,8 +1683,14 @@ export default function Home() {
       return normalizeAnnotationGeometry(next, meta.durationSec);
     });
     if (withHistory) commitMutation(apply);
-    else setAnnotations(apply);
-  }, [commitMutation, meta.durationSec]);
+    else {
+      const next = apply(annotationsRef.current);
+      annotationsRef.current = next;
+      setAnnotations(next);
+    }
+    reopenCandidateReviews(reopenedCandidateIds);
+    return true;
+  }, [commitMutation, meta.durationSec, reopenCandidateReviews]);
 
   const updateQueueConfidence = useCallback((kind: "annotation" | "candidate", id: string, value: number) => {
     const confidence = Math.round(clamp(Number.isFinite(value) ? value : 0, 0, 100));
@@ -1407,7 +1698,9 @@ export default function Home() {
       updateAnnotation(id, { confidence });
       return;
     }
-    setCandidates((items) => items.map((item) => item.id === id ? { ...item, confidence } : item));
+    setCandidates((items) => items.map((item) => item.id === id && !["reviewed", "skipped", "conflict"].includes(item.status)
+      ? { ...item, confidence }
+      : item));
   }, [updateAnnotation]);
 
   const confirmAnnotationDeletion = useCallback((items: Annotation[]) => {
@@ -1421,6 +1714,10 @@ export default function Home() {
   const deleteAnnotation = useCallback((id: string) => {
     const removed = annotationsRef.current.find((item) => item.id === id);
     if (!removed) return false;
+    if (removed.candidateId && removed.status === "committed") {
+      setToast("Accepted source-event marks are locked — use Revise marks before deleting them");
+      return false;
+    }
     if (!confirmAnnotationDeletion([removed])) {
       setToast("Deletion canceled — the committed label is unchanged");
       return false;
@@ -1443,6 +1740,10 @@ export default function Home() {
     if (!ids.size) return false;
     const removed = annotationsRef.current.filter((item) => ids.has(item.id));
     if (!removed.length) return false;
+    if (removed.some((item) => item.candidateId && item.status === "committed")) {
+      setToast("Accepted source-event marks are locked — use Revise marks before deleting them");
+      return false;
+    }
     if (!confirmAnnotationDeletion(removed)) {
       setToast("Deletion canceled — committed labels are unchanged");
       return false;
@@ -1466,6 +1767,10 @@ export default function Home() {
     const ids = selectedAnnotationIds;
     const movable = annotationsRef.current.filter((item) => ids.has(item.id) && annotationGeometry(item) !== "session");
     if (!movable.length) return;
+    if (movable.some((item) => item.candidateId && item.status === "committed")) {
+      setToast("Accepted source-event marks are locked — reopen the decision before moving them");
+      return;
+    }
     const anchor = movable.find((item) => item.id === selectedAnnotationId) ?? movable[0];
     const sampleRate = anchor.channelScope
       ? meta.sampleRates[anchor.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
@@ -1480,6 +1785,7 @@ export default function Home() {
       return;
     }
     const changedAt = new Date().toISOString();
+    const reopenedCandidateIds = new Set(movable.flatMap((item) => item.candidateId && item.status === "committed" ? [item.candidateId] : []));
     commitMutation((current) => current.map((item) => ids.has(item.id) && annotationGeometry(item) !== "session"
       ? normalizeAnnotationGeometry({
         ...item,
@@ -1490,8 +1796,9 @@ export default function Home() {
         updatedAt: changedAt,
       }, meta.durationSec)
       : item));
+    reopenCandidateReviews(reopenedCandidateIds);
     setToast(`${movable.length} selected label${movable.length === 1 ? "" : "s"} moved ${direction < 0 ? "left" : "right"}`);
-  }, [commitMutation, display, focusedChannel, meta, selectedAnnotationId, selectedAnnotationIds, snapMode]);
+  }, [commitMutation, display, focusedChannel, meta, reopenCandidateReviews, selectedAnnotationId, selectedAnnotationIds, snapMode]);
 
   const qcIssues = useMemo(() => {
     const issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }> = [];
@@ -1524,6 +1831,11 @@ export default function Home() {
         issues.push({ level: "warning", text: "Epileptiform spike is missing valid source-channel provenance", annotationId: item.id });
       }
     }
+    for (const candidate of candidates) {
+      if (candidate.status === "reviewed" && !annotations.some((item) => item.candidateId === candidate.id && item.labelId === "ictal" && item.status === "committed")) {
+        issues.push({ level: "warning", text: `Reviewed source event ${candidate.label} has no committed ictal interval` });
+      }
+    }
     const ictal = annotations.filter((item) => item.labelId === "ictal");
     for (const item of ictal) {
       if (item.end - item.start < 3) issues.push({ level: "warning", text: `Ictal interval is ${(item.end - item.start).toFixed(1)} s (<3 s)`, annotationId: item.id });
@@ -1543,66 +1855,100 @@ export default function Home() {
     return issues;
   }, [annotations, badChannels, candidates, display.warnings, meta.assumptions, meta.channelLabels.length, meta.durationSec, meta.warnings, recoveryStatus]);
 
-  const commitSelected = useCallback((force = false) => {
-    if (!selectedAnnotation) return false;
+  const advanceFromCandidate = useCallback((candidateId: string) => {
+    const currentIndex = candidates.findIndex((item) => item.id === candidateId);
+    const unresolved = (item: Candidate) => item.id !== candidateId && !["reviewed", "skipped", "conflict"].includes(item.status);
+    let nextIndex = candidates.findIndex((item, index) => index > currentIndex && unresolved(item));
+    if (nextIndex < 0) nextIndex = candidates.findIndex(unresolved);
+    if (nextIndex < 0) return null;
+    const next = candidates[nextIndex];
+    setActiveCandidate(nextIndex);
+    setCandidates((items) => items.map((item, index) => {
+      if (index === nextIndex && (item.status === "queued" || item.status === "active")) return { ...item, status: "active" };
+      if (index !== nextIndex && item.status === "active") return { ...item, status: "queued" };
+      return item;
+    }));
+    setViewStart(clamp(next.time - timebase / 2, 0, Math.max(0, meta.durationSec - timebase)));
+    setCursorTime(next.time);
+    setCursorLocked(true);
+    setSelection(null);
+    setMarkOnset(null);
+    setActiveTool("cursor");
+    setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
+    return next;
+  }, [candidates, meta.durationSec, timebase]);
+
+  const commitAnnotation = useCallback((targetAnnotation: Annotation | null, force = false, advanceAfter = false) => {
+    if (!targetAnnotation) return false;
     const blockers: string[] = [];
     const advisories: string[] = [];
-    const geometry = annotationGeometry(selectedAnnotation);
-    if (!Number.isFinite(selectedAnnotation.start) || !Number.isFinite(selectedAnnotation.end)) {
+    const geometry = annotationGeometry(targetAnnotation);
+    const commitReviewer = (targetAnnotation.candidateId ? reviewer : targetAnnotation.reviewer || reviewer).trim().toUpperCase();
+    if (!Number.isFinite(targetAnnotation.start) || !Number.isFinite(targetAnnotation.end)) {
       blockers.push("Start and end times must be valid numbers.");
     } else {
-      if (selectedAnnotation.start < 0 || selectedAnnotation.end > meta.durationSec) blockers.push("The label must stay inside the recording.");
-      if (selectedAnnotation.end < selectedAnnotation.start) blockers.push("Offset must follow onset.");
-      if (geometry !== "point" && selectedAnnotation.end <= selectedAnnotation.start) blockers.push("A timed label must have a duration greater than zero.");
-      if (geometry === "point" && selectedAnnotation.end !== selectedAnnotation.start) blockers.push("A single-moment label must have matching start and end times.");
+      if (targetAnnotation.start < 0 || targetAnnotation.end > meta.durationSec) blockers.push("The label must stay inside the recording.");
+      if (targetAnnotation.end < targetAnnotation.start) blockers.push("Offset must follow onset.");
+      if (geometry !== "point" && targetAnnotation.end <= targetAnnotation.start) blockers.push("A timed label must have a duration greater than zero.");
+      if (geometry === "point" && targetAnnotation.end !== targetAnnotation.start) blockers.push("A single-moment label must have matching start and end times.");
     }
-    if (!selectedAnnotation.reviewer.trim()) blockers.push("Reviewer initials are required before committing.");
-    if (selectedAnnotation.labelId === "spikes" && (
-      !selectedAnnotation.channelScope
-      || !Number.isInteger(selectedAnnotation.channelScope.primarySourceIndex)
-      || selectedAnnotation.channelScope.primarySourceIndex < 0
-      || selectedAnnotation.channelScope.primarySourceIndex >= meta.channelLabels.length
-      || !selectedAnnotation.channelScope.sourceIndices.length
-      || selectedAnnotation.channelScope.sourceIndices.some((index) => !Number.isInteger(index) || index < 0 || index >= meta.channelLabels.length)
-      || !selectedAnnotation.channelScope.sourceIndices.includes(selectedAnnotation.channelScope.primarySourceIndex)
+    if (!commitReviewer) blockers.push("Reviewer initials are required before committing.");
+    if (targetAnnotation.labelId === "spikes" && (
+      !targetAnnotation.channelScope
+      || !Number.isInteger(targetAnnotation.channelScope.primarySourceIndex)
+      || targetAnnotation.channelScope.primarySourceIndex < 0
+      || targetAnnotation.channelScope.primarySourceIndex >= meta.channelLabels.length
+      || !targetAnnotation.channelScope.sourceIndices.length
+      || targetAnnotation.channelScope.sourceIndices.some((index) => !Number.isInteger(index) || index < 0 || index >= meta.channelLabels.length)
+      || !targetAnnotation.channelScope.sourceIndices.includes(targetAnnotation.channelScope.primarySourceIndex)
     )) blockers.push("Epileptiform spikes require a valid source-channel scope.");
     if (blockers.length) {
       setConfirmCommit([]);
+      setCommitAdvanceAfter(false);
       setToast(`Cannot commit: ${blockers[0]}`);
       return false;
     }
-    if (selectedAnnotation.labelId === "ictal" && selectedAnnotation.end - selectedAnnotation.start < 3) advisories.push("Ictal duration is under 3 seconds.");
-    const duplicate = annotations.some((item) => item.id !== selectedAnnotation.id && item.labelId === "ictal" && selectedAnnotation.labelId === "ictal" && Math.abs(item.start - selectedAnnotation.start) < 30);
+    if (targetAnnotation.labelId === "ictal" && targetAnnotation.end - targetAnnotation.start < 3) advisories.push("Ictal duration is under 3 seconds.");
+    const duplicate = annotations.some((item) => item.id !== targetAnnotation.id
+      && item.status === "committed"
+      && item.labelId === "ictal"
+      && targetAnnotation.labelId === "ictal"
+      && Math.abs(item.start - targetAnnotation.start) < 30);
     if (duplicate) advisories.push("Another ictal onset exists within 30 seconds.");
     if (advisories.length && !force) {
       setConfirmCommit(advisories);
+      setCommitAdvanceAfter(advanceAfter);
+      setSelectedAnnotationId(targetAnnotation.id);
+      setSelectedAnnotationIds(new Set([targetAnnotation.id]));
       return false;
     }
     const committedAt = new Date().toISOString();
-    updateAnnotation(selectedAnnotation.id, {
+    updateAnnotation(targetAnnotation.id, {
       status: "committed",
-      revisions: [...(selectedAnnotation.revisions ?? []), {
-        revision: selectedAnnotation.revision + 1,
+      reviewer: commitReviewer,
+      revisions: [...(targetAnnotation.revisions ?? []), {
+        revision: targetAnnotation.revision + 1,
         committedAt,
-        labelId: selectedAnnotation.labelId,
-        start: selectedAnnotation.start,
-        end: selectedAnnotation.end,
-        confidence: selectedAnnotation.confidence,
-        reviewer: selectedAnnotation.reviewer,
-        notes: selectedAnnotation.notes,
-        reliability: selectedAnnotation.reliability,
-        origin: selectedAnnotation.origin,
-        geometry: annotationGeometry(selectedAnnotation),
-        track: selectedAnnotation.track,
-        channels: [...selectedAnnotation.channels],
-        channelScope: selectedAnnotation.channelScope ? {
-          ...selectedAnnotation.channelScope,
-          sourceIndices: [...selectedAnnotation.channelScope.sourceIndices],
-          sourceLabels: [...selectedAnnotation.channelScope.sourceLabels],
+        labelId: targetAnnotation.labelId,
+        start: targetAnnotation.start,
+        end: targetAnnotation.end,
+        confidence: targetAnnotation.confidence,
+        reviewer: commitReviewer,
+        notes: targetAnnotation.notes,
+        reliability: targetAnnotation.reliability,
+        origin: targetAnnotation.origin,
+        geometry: annotationGeometry(targetAnnotation),
+        track: targetAnnotation.track,
+        channels: [...targetAnnotation.channels],
+        channelScope: targetAnnotation.channelScope ? {
+          ...targetAnnotation.channelScope,
+          sourceIndices: [...targetAnnotation.channelScope.sourceIndices],
+          sourceLabels: [...targetAnnotation.channelScope.sourceLabels],
         } : undefined,
         sourceHash,
         sourceContentHash: rawSourceHash,
-        candidateId: selectedAnnotation.candidateId,
+        candidateId: targetAnnotation.candidateId,
         displaySnapshot: {
           montage,
           filters: { ...filters },
@@ -1622,12 +1968,34 @@ export default function Home() {
       }],
     });
     setConfirmCommit([]);
-    if (selectedAnnotation.candidateId) {
-      setCandidates((items) => items.map((item) => item.id === selectedAnnotation.candidateId ? { ...item, status: "reviewed" } : item));
+    setCommitAdvanceAfter(false);
+    if (targetAnnotation.candidateId) {
+      const qualityBadChannels = normalizeChannelList([...badChannels]
+        .sort((left, right) => left - right)
+        .map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`)
+        .join(","));
+      setCandidates((items) => items.map((item) => item.id === targetAnnotation.candidateId
+        ? {
+          ...item,
+          status: "reviewed",
+          reviewedAt: committedAt,
+          reviewerInitials: commitReviewer,
+          badChannels: normalizeChannelList(item.badChannels || qualityBadChannels),
+          ictalChannels: normalizeChannelList(item.ictalChannels ?? ""),
+        }
+        : item));
     }
-    setToast(`Revision committed by ${selectedAnnotation.reviewer}`);
+    const next = advanceAfter && targetAnnotation.candidateId
+      ? advanceFromCandidate(targetAnnotation.candidateId)
+      : null;
+    setToast(next
+      ? `Saved by ${commitReviewer} · next event: ${next.label}`
+      : `Revision committed by ${commitReviewer}`);
     return true;
-  }, [annotations, badChannels, filters, gain, meta, montage, rawSourceHash, selectedAnnotation, selectedChannels, snapMode, sourceHash, sourceInterpretation, updateAnnotation]);
+  }, [advanceFromCandidate, annotations, badChannels, filters, gain, meta, montage, rawSourceHash, reviewer, selectedChannels, snapMode, sourceHash, sourceInterpretation, updateAnnotation]);
+
+  const commitSelected = useCallback((force = false, advanceAfter = false) =>
+    commitAnnotation(selectedAnnotation, force, advanceAfter), [commitAnnotation, selectedAnnotation]);
 
   useEffect(() => {
     if (!hasRecording) return;
@@ -1642,6 +2010,7 @@ export default function Home() {
           badChannels: [...badChannels],
           reviewer,
           recordingType,
+          matlabExportIdentity: matlabExportIdentityFromInterpretation(sourceInterpretation),
           savedAt: new Date().toISOString(),
         }));
         setRecoveryStatus("saved");
@@ -1653,12 +2022,15 @@ export default function Home() {
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, hasRecording, recordingType, reviewer, sessionKey]);
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, hasRecording, recordingType, reviewer, sessionKey, sourceInterpretation]);
 
   useEffect(() => {
     const requestId = ++displayRequestIdRef.current;
     const source = sourceRef.current;
-    const indices = [...selectedChannels].sort((a, b) => a - b);
+    const selectedIndices = [...selectedChannels].sort((a, b) => a - b);
+    const indices = meta.format === "raw-int16-le" && meta.channelLabels.length >= 100
+      ? orderAnatomicalChannelIndices(meta.channelLabels, selectedIndices)
+      : selectedIndices;
     const channelKey = indices.join(",");
     const refreshWindow = async () => {
       if (!hasRecording || !indices.length) {
@@ -1948,16 +2320,26 @@ export default function Home() {
       context.fillStyle = "#071216";
       context.fillRect(0, 0, width, height);
 
-      const secondsPerGrid = timebase <= 10 ? 1 : timebase <= 30 ? 2 : timebase <= 60 ? 5 : 10;
+      const secondsPerGrid = activeCandidateItem ? 1 : timebase <= 10 ? 1 : timebase <= 30 ? 2 : timebase <= 60 ? 5 : 10;
       context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
       context.textAlign = "center";
       context.textBaseline = "top";
-      for (let second = Math.ceil(displayStart / secondsPerGrid) * secondsPerGrid; second <= displayEnd; second += secondsPerGrid) {
+      const gridAnchor = activeCandidateItem?.time ?? 0;
+      const firstGridIndex = Math.ceil((displayStart - gridAnchor) / secondsPerGrid);
+      for (let gridIndex = firstGridIndex; ; gridIndex += 1) {
+        const second = gridAnchor + gridIndex * secondsPerGrid;
+        if (second > displayEnd + 1e-9) break;
         const x = ((second - displayStart) / timebase) * width;
-        context.strokeStyle = second % (secondsPerGrid * 5) === 0 ? "rgba(133,171,181,.20)" : "rgba(133,171,181,.09)";
+        context.strokeStyle = gridIndex % 5 === 0 ? "rgba(133,171,181,.20)" : "rgba(133,171,181,.09)";
         context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
         context.fillStyle = "rgba(167,190,197,.74)";
-        context.fillText(formatClock(second), x, 5);
+        context.fillText(
+          activeCandidateItem
+            ? formatRelativeTime(second - activeCandidateItem.time).replace(" s", "")
+            : formatClock(second),
+          x,
+          5,
+        );
       }
 
       for (const region of display.flatlineRegions) {
@@ -1972,18 +2354,38 @@ export default function Home() {
         context.textAlign = "center";
       }
 
-      const rows = Math.max(1, display.data.length);
       const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
       const plotHeight = Math.max(1, height - plotTop);
-      const rowHeight = plotHeight / rows;
+      const rowHeight = plotHeight / channelRowLayout.totalUnits;
+
+      if (activeCandidateItem && activeCandidateItem.time >= displayStart && activeCandidateItem.time <= displayEnd) {
+        const eventX = ((activeCandidateItem.time - displayStart) / timebase) * width;
+        context.save();
+        context.strokeStyle = "rgba(232, 240, 239, .9)";
+        context.lineWidth = 1.2;
+        context.setLineDash([6, 4]);
+        context.beginPath(); context.moveTo(eventX, plotTop); context.lineTo(eventX, height); context.stroke();
+        context.setLineDash([]);
+        context.fillStyle = "rgba(232, 240, 239, .94)";
+        context.textAlign = eventX > width - 150 ? "right" : "left";
+        context.fillText("SOURCE EVENT · 0.000 s", eventX + (eventX > width - 150 ? -5 : 5), plotTop + 4);
+        context.restore();
+      }
+
       for (let channel = 0; channel < display.data.length; channel += 1) {
-        const rowTop = plotTop + rowHeight * channel;
+        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel];
         const center = rowTop + rowHeight * 0.5;
+        if (channelRowLayout.groupStarts.has(channel)) {
+          context.strokeStyle = "rgba(87, 223, 183, .22)";
+          context.beginPath(); context.moveTo(0, rowTop - rowHeight * 2); context.lineTo(width, rowTop - rowHeight * 2); context.stroke();
+        }
         if (channel === focusedChannel) {
           context.fillStyle = "rgba(87, 223, 183, .065)";
           context.fillRect(0, rowTop, width, rowHeight);
-          context.strokeStyle = "rgba(87, 223, 183, .28)";
-          context.strokeRect(.5, rowTop + .5, width - 1, Math.max(1, rowHeight - 1));
+          if (rowHeight >= 2) {
+            context.strokeStyle = "rgba(87, 223, 183, .28)";
+            context.strokeRect(.5, rowTop + .5, width - 1, rowHeight - 1);
+          }
         }
         context.strokeStyle = "rgba(116,153,162,.11)";
         context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
@@ -2018,11 +2420,18 @@ export default function Home() {
         const values = display.data[channel];
         const sampleRate = display.sampleRates[channel] ?? 1;
         const rowStartSec = display.startSecs[channel] ?? displayStart;
-        const rowTop = plotTop + rowHeight * channel;
+        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel];
         const center = rowTop + rowHeight * 0.5;
         if (!values.length || !(sampleRate > 0)) continue;
-        const scale = (rowHeight * 0.36 * gain) / 100;
+        const scale = legacyRawCountDisplay
+          ? (rowHeight * gain) / LEGACY_RAW_COUNTS_PER_ROW
+          : (rowHeight * 0.36 * gain) / 100;
         const selected = channel === focusedChannel;
+        let overflow = false;
+        context.save();
+        context.beginPath();
+        context.rect(0, rowTop, width, rowHeight);
+        context.clip();
         context.strokeStyle = selected ? "rgba(242, 255, 251, 1)" : "rgba(218, 235, 232, .72)";
         context.lineWidth = selected ? 1.25 : 0.85;
         if (values.length <= Math.max(2, width * 1.5)) {
@@ -2037,7 +2446,9 @@ export default function Home() {
             }
             const sampleTime = rowStartSec + sample / sampleRate;
             const x = ((sampleTime - displayStart) / timebase) * width;
-            const y = center - (value - baseline) * scale;
+            const confined = confineTraceYToRow(center - (value - baseline) * scale, rowTop, rowHeight);
+            const y = confined.y;
+            if (confined.overflow) overflow = true;
             if (connected) context.lineTo(x, y);
             else context.moveTo(x, y);
             connected = true;
@@ -2085,8 +2496,11 @@ export default function Home() {
             // Preserve finite extrema in a partly missing pixel column, but
             // break the connecting centerline so a real gap is never bridged.
             if (!gaps[x]) midpoints[x] = (min + max) / 2;
-            context.moveTo(x + .5, center - (max - baseline) * scale);
-            context.lineTo(x + .5, center - (min - baseline) * scale);
+            const confinedMaximum = confineTraceYToRow(center - (max - baseline) * scale, rowTop, rowHeight);
+            const confinedMinimum = confineTraceYToRow(center - (min - baseline) * scale, rowTop, rowHeight);
+            if (confinedMaximum.overflow || confinedMinimum.overflow) overflow = true;
+            context.moveTo(x + .5, confinedMaximum.y);
+            context.lineTo(x + .5, confinedMinimum.y);
           }
           context.stroke();
           context.restore();
@@ -2098,21 +2512,34 @@ export default function Home() {
               connected = false;
               continue;
             }
-            const y = center - (value - baseline) * scale;
+            const { y } = confineTraceYToRow(center - (value - baseline) * scale, rowTop, rowHeight);
             if (connected) context.lineTo(x + .5, y);
             else context.moveTo(x + .5, y);
             connected = true;
           }
           context.stroke();
         }
+        context.restore();
+        if (overflow) {
+          const markerHalfHeight = Math.min(4, rowHeight * .4);
+          context.fillStyle = "rgba(255, 135, 120, .92)";
+          context.beginPath();
+          context.moveTo(width - 7, center - markerHalfHeight);
+          context.lineTo(width - 2, center);
+          context.lineTo(width - 7, center + markerHalfHeight);
+          context.closePath();
+          context.fill();
+        }
       }
 
       const scaleRow = clamp(focusedChannel, 0, Math.max(0, display.data.length - 1));
       if (display.data.length) {
-        const scale = (rowHeight * 0.36 * gain) / 100;
-        const barValue = 100;
+        const scale = legacyRawCountDisplay
+          ? (rowHeight * gain) / LEGACY_RAW_COUNTS_PER_ROW
+          : (rowHeight * 0.36 * gain) / 100;
+        const barValue = (legacyRawCountDisplay ? 5_000 : 100) / gain;
         const x = Math.max(18, width - 34);
-        const y = plotTop + rowHeight * (scaleRow + .5);
+        const y = plotTop + rowHeight * (channelRowLayout.rowStartUnits[scaleRow] + .5);
         const halfHeight = barValue * scale * .5;
         context.strokeStyle = "rgba(87, 223, 183, .95)";
         context.lineWidth = 1.25;
@@ -2124,7 +2551,13 @@ export default function Home() {
         context.fillStyle = "rgba(155, 225, 207, .92)";
         context.textAlign = "right";
         context.textBaseline = "middle";
-        context.fillText(formatAmplitude(barValue, display.units[scaleRow] || "a.u."), x - 7, y);
+        context.fillText(
+          legacyRawCountDisplay
+            ? `${Math.round(barValue).toLocaleString()} counts`
+            : formatAmplitude(barValue, display.units[scaleRow] || "a.u."),
+          x - 7,
+          y,
+        );
       }
 
       if (markOnset !== null) {
@@ -2138,7 +2571,7 @@ export default function Home() {
     };
     waveDrawRef.current = draw;
     draw();
-  }, [annotations, display, focusedChannel, gain, markOnset, timebase]);
+  }, [activeCandidateItem, annotations, channelRowLayout, display, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2158,18 +2591,18 @@ export default function Home() {
     const visibleStart = clamp(display.viewStart, 0, meta.durationSec);
     const visibleEnd = clamp(display.viewStart + timebase, visibleStart, meta.durationSec);
     return clamp(
-      snapTime(raw, snapMode, sourceRateForDisplayRow(display, meta, row), bypass),
+      snapTime(raw, activeTool === "seizure" ? "sample" : snapMode, sourceRateForDisplayRow(display, meta, row), bypass),
       visibleStart,
       visibleEnd,
     );
-  }, [display, meta, snapMode, timebase]);
+  }, [activeTool, display, meta, snapMode, timebase]);
 
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || loadingSignal || !display.data.length) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const rowCount = Math.max(1, display.data.length);
     const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
-    const row = clamp(Math.floor(clamp((event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight, 0, .999999) * rowCount), 0, Math.max(0, display.data.length - 1));
+    const row = channelRowFromFraction(channelRowLayout, (event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight);
+    if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
     const values = display.data[row];
     const sample = sampleIndexForDisplayRow(display, row, time);
@@ -2184,9 +2617,9 @@ export default function Home() {
   const onWavePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!pointerRef.current || pointerRef.current.pointerId !== event.pointerId) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const rowCount = Math.max(1, display.data.length);
     const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
-    const row = clamp(Math.floor(clamp((event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight, 0, .999999) * rowCount), 0, Math.max(0, display.data.length - 1));
+    const row = channelRowFromFraction(channelRowLayout, (event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight);
+    if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
     const values = display.data[row];
     const sample = sampleIndexForDisplayRow(display, row, time);
@@ -2223,9 +2656,13 @@ export default function Home() {
     }
     pendingCursorRef.current = null;
     const rect = event.currentTarget.getBoundingClientRect();
-    const rowCount = Math.max(1, display.data.length);
     const plotHeight = Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
-    const row = clamp(Math.floor(clamp((event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight, 0, .999999) * rowCount), 0, Math.max(0, display.data.length - 1));
+    const hitRow = channelRowFromFraction(channelRowLayout, (event.clientY - rect.top - CHANNEL_RAIL_HEADER_HEIGHT) / plotHeight);
+    if (hitRow === null && !pointer.moved) {
+      setToast("Click directly on a waveform row");
+      return;
+    }
+    const row = hitRow ?? clamp(focusedChannel, 0, Math.max(0, display.data.length - 1));
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
     const values = display.data[row];
     const sample = sampleIndexForDisplayRow(display, row, time);
@@ -2278,7 +2715,15 @@ export default function Home() {
       setToast("Drop labels directly on a waveform row");
       return;
     }
-    const row = clamp(Math.floor(clamp((event.clientY - canvasRect.top - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, canvasRect.height - CHANNEL_RAIL_HEADER_HEIGHT), 0, .999999) * Math.max(1, display.data.length)), 0, Math.max(0, display.data.length - 1));
+    const row = channelRowFromFraction(
+      channelRowLayout,
+      (event.clientY - canvasRect.top - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, canvasRect.height - CHANNEL_RAIL_HEADER_HEIGHT),
+    );
+    if (row === null) {
+      setDragGhost(null);
+      setToast("Drop labels on a channel row, not in an anatomical group gap");
+      return;
+    }
     const time = timeFromPointer(event, canvas, row, event.altKey);
     const intent: PlacementIntent = label.geometry === "session"
       ? "native"
@@ -2306,7 +2751,14 @@ export default function Home() {
         return;
       }
       event.preventDefault();
-      const row = clamp(Math.floor(clamp((event.clientY - canvasRect.top - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, canvasRect.height - CHANNEL_RAIL_HEADER_HEIGHT), 0, .999999) * Math.max(1, display.data.length)), 0, Math.max(0, display.data.length - 1));
+      const row = channelRowFromFraction(
+        channelRowLayout,
+        (event.clientY - canvasRect.top - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, canvasRect.height - CHANNEL_RAIL_HEADER_HEIGHT),
+      );
+      if (row === null) {
+        setDragGhost(null);
+        return;
+      }
       setDragGhost((current) => ({ labelId: current?.labelId ?? "", time: timeFromPointer(event, canvas, row, event.altKey) }));
     }
   };
@@ -2399,16 +2851,23 @@ export default function Home() {
       }
       const patches = pendingAnnotationDragRef.current;
       if (drag.moved && patches) {
-        undoRef.current.push(drag.snapshot);
+        undoRef.current.push({
+          annotations: drag.snapshot,
+          candidates: candidatesRef.current,
+          activeCandidate: activeCandidateIndexRef.current,
+        });
         if (undoRef.current.length > 100) undoRef.current.shift();
         redoRef.current = [];
         const changedAt = new Date().toISOString();
+        const reopenedCandidateIds = new Set(drag.originals.flatMap((item) =>
+          patches[item.id] && item.candidateId && item.status === "committed" ? [item.candidateId] : []));
         setAnnotations((current) => current.map((item) => {
           const patch = patches[item.id];
           return patch
             ? normalizeAnnotationGeometry({ ...item, ...patch, status: item.status === "committed" ? "draft" : item.status, revision: item.revision + 1, updatedAt: changedAt }, meta.durationSec)
             : item;
         }));
+        reopenCandidateReviews(reopenedCandidateIds);
         const primaryPatch = patches[drag.id];
         if (drag.originals.length > 1) {
           setToast(`${drag.originals.length} selected labels moved together`);
@@ -2429,7 +2888,7 @@ export default function Home() {
       window.removeEventListener("pointerup", onUp);
       if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
     };
-  }, [display, focusedChannel, meta, snapMode, timebase]);
+  }, [display, focusedChannel, meta, reopenCandidateReviews, snapMode, timebase]);
 
   const startAnnotationDrag = (event: ReactPointerEvent, item: Annotation, mode: "move" | "start" | "end") => {
     event.preventDefault();
@@ -2440,6 +2899,10 @@ export default function Home() {
       ? annotationsRef.current.filter((annotation) => selectedAnnotationIds.has(annotation.id) && annotationGeometry(annotation) !== "session")
       : [{ ...item }];
     if (!moveGroup) setSelectedAnnotationIds(new Set([item.id]));
+    if (originals.some((annotation) => annotation.candidateId && annotation.status === "committed")) {
+      setToast("Accepted source-event marks are locked — use Revise marks before dragging them");
+      return;
+    }
     if (annotationGeometry(item) === "session") {
       setToast("Entire-session labels always span the full recording");
       return;
@@ -2595,6 +3058,108 @@ export default function Home() {
     jumpTo(candidates[index].time);
   }, [candidates, jumpTo]);
 
+  const updateActiveCandidateReview = useCallback((patch: Partial<Pick<Candidate, "badChannels" | "ictalChannels" | "legacyConfidence" | "confidence">>) => {
+    if (!activeCandidateItem || ["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)) return;
+    setCandidates((items) => items.map((item) => item.id === activeCandidateItem.id ? { ...item, ...patch } : item));
+  }, [activeCandidateItem]);
+
+  const updateMatlabExportIdentity = useCallback((patch: Partial<MatlabExportIdentity>) => {
+    setSourceInterpretation((current) => {
+      const identity = matlabExportIdentityFromInterpretation(current);
+      if (!identity) return current;
+      return applyMatlabExportIdentity(current ?? undefined, { ...identity, ...patch }) ?? current;
+    });
+  }, []);
+
+  const beginActiveCandidateMarking = useCallback(() => {
+    if (!activeCandidateItem) return;
+    if (!reviewer.trim()) {
+      setToast("Enter reviewer initials before marking this source event");
+      return;
+    }
+    if (["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)
+      && !window.confirm("Reopen this completed source-event decision for revision? The next acceptance will record a new reviewer timestamp.")) {
+      setToast("Revision canceled — the completed source-event decision is unchanged");
+      return;
+    }
+    if (activeCandidateAnnotation?.status === "committed") {
+      updateAnnotation(activeCandidateAnnotation.id, { status: "draft" }, true, true);
+      setSelectedAnnotationId(activeCandidateAnnotation.id);
+      setSelectedAnnotationIds(new Set([activeCandidateAnnotation.id]));
+      setShowAnnotationEditor(true);
+      setToast("Decision reopened — edit the accepted interval, then save a new revision");
+      return;
+    }
+    if (activeCandidateAnnotation) {
+      commitMutation((items) => items.filter((item) => item.id !== activeCandidateAnnotation.id));
+    }
+    setCandidates((items) => items.map((item, index) => {
+      if (index === activeCandidate) return { ...item, status: "active", reviewedAt: undefined };
+      return item.status === "active" ? { ...item, status: "queued" } : item;
+    }));
+    jumpTo(activeCandidateItem.time);
+    setSelection(null);
+    setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
+    setMarkOnset(null);
+    setActiveTool("seizure");
+    setToast(`Source event ${activeCandidate + 1}/${candidates.length}: click seizure onset, then offset`);
+  }, [activeCandidate, activeCandidateAnnotation, activeCandidateItem, candidates.length, commitMutation, jumpTo, reviewer, updateAnnotation]);
+
+  const skipActiveCandidate = useCallback(() => {
+    if (!activeCandidateItem) return;
+    if (!reviewer.trim()) {
+      setToast("Enter reviewer initials before skipping this source event");
+      return;
+    }
+    commitMutation((items) => activeCandidateAnnotation?.status === "draft"
+      ? items.filter((item) => item.id !== activeCandidateAnnotation.id)
+      : items);
+    const reviewedAt = new Date().toISOString();
+    setCandidates((items) => items.map((item) =>
+      item.id === activeCandidateItem.id ? {
+        ...item,
+        status: "skipped",
+        reviewedAt,
+        reviewerInitials: reviewer.trim().toUpperCase(),
+        badChannels: "",
+      } : item));
+    setMarkOnset(null);
+    setActiveTool("cursor");
+    setSelection(null);
+    setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
+    const next = advanceFromCandidate(activeCandidateItem.id);
+    setToast(next ? `Skipped · next event: ${next.label}` : "Skipped · no unresolved source events remain");
+  }, [activeCandidateAnnotation, activeCandidateItem, advanceFromCandidate, commitMutation, reviewer]);
+
+  const acceptActiveCandidate = useCallback(() => {
+    if (!activeCandidateItem) return;
+    if (!reviewer.trim()) {
+      setToast("Enter reviewer initials before accepting this source event");
+      return;
+    }
+    if (!activeCandidateAnnotation) {
+      setToast("Mark onset and offset before accepting this source event");
+      return;
+    }
+    setSelectedAnnotationId(activeCandidateAnnotation.id);
+    setSelectedAnnotationIds(new Set([activeCandidateAnnotation.id]));
+    if (activeCandidateAnnotation.status === "committed") {
+      const latestRevision = activeCandidateAnnotation.revisions?.[activeCandidateAnnotation.revisions.length - 1];
+      setCandidates((items) => items.map((item) => item.id === activeCandidateItem.id ? {
+        ...item,
+        status: "reviewed",
+        reviewedAt: item.reviewedAt ?? latestRevision?.committedAt ?? activeCandidateAnnotation.updatedAt,
+        reviewerInitials: item.reviewerInitials || latestRevision?.reviewer || activeCandidateAnnotation.reviewer,
+      } : item));
+      const next = advanceFromCandidate(activeCandidateItem.id);
+      setToast(next ? `Accepted · next event: ${next.label}` : "Accepted · no unresolved source events remain");
+      return;
+    }
+    commitAnnotation(activeCandidateAnnotation, false, true);
+  }, [activeCandidateAnnotation, activeCandidateItem, advanceFromCandidate, commitAnnotation, reviewer]);
+
   const selectInstanceQueueEntry = useCallback((index: number) => {
     const entry = instanceQueueEntries[index];
     if (!entry) return;
@@ -2630,11 +3195,21 @@ export default function Home() {
         }
       },
     });
-    const interpretationMaterial = interpretation ? JSON.stringify(interpretation) : undefined;
+    const identityInterpretation = sourceIdentityInterpretation(interpretation);
+    const interpretationMaterial = identityInterpretation ? JSON.stringify(identityInterpretation) : undefined;
     const interpretationHash = interpretationMaterial
       ? await sha256Blob(new Blob([`neurotrace-interpretation-v1\n${contentHash}\n${interpretationMaterial}`]))
       : contentHash;
     const nextKey = interpretationHash.slice(0, 32);
+    let legacyRecoveryKey: string | null = null;
+    if (identityInterpretation?.kind === "raw-int16-le"
+      && identityInterpretation.physical_scale_uv_per_count === null) {
+      const legacyIdentity = { ...identityInterpretation, physical_scale_uv_per_count: 1 };
+      const legacyHash = await sha256Blob(new Blob([
+        `neurotrace-interpretation-v1\n${contentHash}\n${JSON.stringify(legacyIdentity)}`,
+      ]));
+      legacyRecoveryKey = legacyHash.slice(0, 32);
+    }
     const duplicateEntry = [...sessionSnapshotsRef.current.entries()].find(([id, snapshot]) =>
       id !== targetSessionId && snapshot.hasRecording && snapshot.sourceHash === interpretationHash);
     if (duplicateEntry) {
@@ -2651,13 +3226,20 @@ export default function Home() {
     let restoredBadChannels: number[] = [];
     let restoredReviewer: string | null = null;
     let restoredRecordingType = nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG";
+    let restoredMatlabExportIdentity: MatlabExportIdentity | null = null;
     let recoveryWarning: string | null = null;
+    let usedLegacyRecoveryKey = false;
     const draftKey = `neurotrace:draft:${nextKey}`;
     const restoreDraft = () => {
-      const cached = localStorage.getItem(draftKey);
-      if (!cached) return false;
-      restored = parseRecoveryDraft(cached, nextMeta.durationSec, nextMeta.channelLabels.length);
-      return true;
+      const keys = [draftKey, legacyRecoveryKey ? `neurotrace:draft:${legacyRecoveryKey}` : null].filter((key): key is string => Boolean(key));
+      for (const key of keys) {
+        const cached = localStorage.getItem(key);
+        if (!cached) continue;
+        restored = parseRecoveryDraft(cached, nextMeta.durationSec, nextMeta.channelLabels.length);
+        usedLegacyRecoveryKey = key !== draftKey;
+        return true;
+      }
+      return false;
     };
     const preserveUnreadableRecovery = (kind: "project" | "draft", raw: string) => {
       try {
@@ -2671,6 +3253,10 @@ export default function Home() {
     let recoveryReadable = true;
     try {
       projectJson = localStorage.getItem(`neurotrace:project:${nextKey}`);
+      if (!projectJson && legacyRecoveryKey) {
+        projectJson = localStorage.getItem(`neurotrace:project:${legacyRecoveryKey}`);
+        usedLegacyRecoveryKey = Boolean(projectJson);
+      }
     } catch {
       recoveryReadable = false;
       recoveryWarning = "Local recovery is unavailable in this browser. This recording opened without recovered labels.";
@@ -2686,6 +3272,7 @@ export default function Home() {
         restoredBadChannels = project.badChannels;
         restoredReviewer = project.reviewer;
         if (project.recordingType) restoredRecordingType = project.recordingType;
+        restoredMatlabExportIdentity = project.matlabExportIdentity;
       } catch {
         const preserved = preserveUnreadableRecovery("project", projectJson);
         try {
@@ -2708,6 +3295,9 @@ export default function Home() {
         recoveryWarning = `Saved draft labels could not be verified${preserved ? " and were preserved for support" : ""}. This recording opened without recovered labels.`;
       }
     }
+    if (usedLegacyRecoveryKey && !recoveryWarning) {
+      recoveryWarning = "Recovered prior DAT review state and migrated it to the unscaled raw-count display.";
+    }
     if (activeSessionIdRef.current !== targetSessionId) {
       throw new Error("The active session changed while the recording was opening. Load it again in the intended tab.");
     }
@@ -2720,7 +3310,7 @@ export default function Home() {
     setSessionKey(nextKey);
     setRawSourceHash(contentHash);
     setSourceHash(interpretationHash);
-    setSourceInterpretation(interpretation ?? null);
+    setSourceInterpretation(applyMatlabExportIdentity(interpretation, restoredMatlabExportIdentity) ?? null);
     const recommendedChannels = (Array.isArray(nextMeta.recommendedDisplayChannels)
       ? nextMeta.recommendedDisplayChannels
       : nextMeta.channelLabels.slice(0, 18).map((_, index) => index))
@@ -2731,6 +3321,9 @@ export default function Home() {
     processedWindowCacheRef.current = [];
     setDisplay(EMPTY_DISPLAY);
     setViewStart(0);
+    setGain(1);
+    setMontage("referential");
+    setFilters({ ...DEFAULT_FILTERS });
     setCursorTime(0);
     setCursorLocked(false);
     setSelection(null);
@@ -2752,7 +3345,7 @@ export default function Home() {
       ? `Recovered ${restored.length} labels and local review state`
       : `${nextMeta.format} recording ready — ${nextMeta.channelLabels.length} channels${nextMeta.warnings.length ? ` · ${nextMeta.warnings.length} source warning${nextMeta.warnings.length === 1 ? "" : "s"}` : ""}`));
     setShowImport(false);
-    return true;
+    return { restoredCandidates, restoredActiveCandidate };
   }, [activeSessionId, applySessionSnapshot, storeActiveSession]);
 
   const importFiles = async (files: File[]) => {
@@ -2773,6 +3366,7 @@ export default function Home() {
         if (!opened) return;
         const importedCandidates = source.events
           .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
+          .filter((event) => isLegacySeizureCandidate(event.label))
           .map((event, index): Candidate => ({
             id: `edf-cand-${index}-${Math.round(event.timeSec * 1000)}`,
             time: event.timeSec,
@@ -2780,33 +3374,57 @@ export default function Home() {
             source: "bronze",
             status: "queued",
             confidence: 0,
+            ictalChannels: "",
+            legacyConfidence: "",
+            reviewerInitials: "",
+            badChannels: "",
           }));
         if (importedCandidates.length) {
-          setCandidates((restored) => importedCandidates.map((candidate) => {
-            const prior = restored.find((item) => item.id === candidate.id);
-            return prior ? { ...candidate, status: prior.status, confidence: prior.confidence } : candidate;
-          }));
+          const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
+          const resumeCandidate = queue.candidates[queue.activeIndex];
+          setCandidates(queue.candidates);
+          setActiveCandidate(queue.activeIndex);
+          setViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
+          setCursorTime(resumeCandidate.time);
+          setCursorLocked(true);
         }
       } else if (dat) {
         let legacyMetadata: LegacyMatMetadata | null = null;
+        const companionPath = portablePathParts(mat?.webkitRelativePath || mat?.name || "");
+        const datPath = portablePathParts(dat.webkitRelativePath || dat.name);
+        setLegacyExportHints({
+          patientId: datPath.topDirectory || companionPath.topDirectory,
+          matPath: companionPath.path,
+          dataDirectory: datPath.directory || companionPath.directory,
+          datFile: datPath.fileName.replace(/\.dat$/i, ""),
+        });
         if (mat) {
           try {
             legacyMetadata = await parseLegacyMatMetadata(mat);
+            setSelectedLegacyEventIndices(new Set(legacyMetadata.events.flatMap((event, index) =>
+              isLegacySeizureCandidate(event.label) ? [index] : [])));
             setDatMapping({
               sampleRate: legacyMetadata?.sampleRate ?? 0,
               channelCount: legacyMetadata?.channelCount || legacyMetadata?.channelLabels.length || 0,
-              physicalScale: 1,
+              physicalScale: "",
             });
           } catch (error) {
+            setSelectedLegacyEventIndices(new Set());
             setToast(`Companion MAT needs manual mapping: ${error instanceof Error ? error.message : "metadata could not be read"}`);
           }
         }
-        if (!legacyMetadata) setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: 1 });
+        if (!legacyMetadata) {
+          setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: "" });
+          setSelectedLegacyEventIndices(new Set());
+        }
         setPendingDat(dat);
         setPendingLegacyMatFile(mat ?? null);
         setPendingLegacyMeta(legacyMetadata);
         setShowImport(true);
-        if (legacyMetadata) setToast(`Legacy MAT + DAT mapped — ${legacyMetadata.events.length} file event${legacyMetadata.events.length === 1 ? "" : "s"} found`);
+        if (legacyMetadata) {
+          const reviewableEvents = legacyMetadata.events.filter((event) => isLegacySeizureCandidate(event.label)).length;
+          setToast(`Legacy MAT + DAT mapped — ${reviewableEvents} seizure-keyword event${reviewableEvents === 1 ? "" : "s"} ready for review`);
+        }
         else if (!mat) setToast("Raw DAT detected — confirm channel mapping");
       } else if (mat) {
         await loadSource(await MatSource.create(mat), mat);
@@ -2826,8 +3444,8 @@ export default function Home() {
     if (!pendingDat || importBusyRef.current) return;
     if (!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0)
       || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0)
-      || !Number.isFinite(datMapping.physicalScale) || !(datMapping.physicalScale > 0)) {
-      setToast("Confirm a positive sample rate, whole-number channel count, and positive signal scale");
+      || !datPhysicalScaleValid) {
+      setToast("Confirm a positive sample rate and whole-number channel count; any supplied µV/count scale must be positive");
       return;
     }
     importBusyRef.current = true;
@@ -2836,48 +3454,91 @@ export default function Home() {
       const companionMatHash = pendingLegacyMatFile
         ? await sha256Blob(pendingLegacyMatFile)
         : null;
+      const companionPath = portablePathParts(pendingLegacyMatFile?.webkitRelativePath || pendingLegacyMatFile?.name || "");
+      const datPath = portablePathParts(pendingDat.webkitRelativePath || pendingDat.name);
+      const verifiedPhysicalScale = datMapping.physicalScale === "" ? undefined : datMapping.physicalScale;
       const source = await RawDatSource.create(pendingDat, {
-        ...datMapping,
+        sampleRate: datMapping.sampleRate,
+        channelCount: datMapping.channelCount,
+        physicalScale: verifiedPhysicalScale,
         channelLabels: pendingLegacyMeta?.channelLabels.length === datMapping.channelCount ? pendingLegacyMeta.channelLabels : undefined,
-        channelUnits: "µV",
+        channelUnits: verifiedPhysicalScale === undefined ? "ADC count" : "µV",
         warnings: [
           ...(pendingLegacyMeta?.warnings ?? []),
-          "Physical scale is reviewer-confirmed mapping metadata; the headerless DAT does not encode calibration.",
+          verifiedPhysicalScale === undefined
+            ? "No physical calibration was supplied; display sensitivity follows the MATLAB reviewer's 15,000-count row spacing."
+            : "Physical scale is reviewer-confirmed mapping metadata; the headerless DAT does not encode calibration.",
         ],
         assumptions: [
           `confirmed sample rate ${datMapping.sampleRate} Hz`,
           `confirmed channel count ${datMapping.channelCount}`,
-          `confirmed physical scale ${datMapping.physicalScale} µV/count`,
+          verifiedPhysicalScale === undefined
+            ? "unscaled signed int16 ADC counts"
+            : `confirmed physical scale ${verifiedPhysicalScale} µV/count`,
         ],
       });
       const interpretation = {
         kind: "raw-int16-le",
         companion_mat_sha256: companionMatHash,
+        companion_mat_name: pendingLegacyMatFile?.name ?? null,
+        companion_mat_path: legacyExportHints.matPath.trim() || companionPath.path || null,
+        dat_file_name: pendingDat.name,
+        dat_file_base: legacyExportHints.datFile.trim() || datPath.fileName.replace(/\.dat$/i, ""),
+        data_dir_hint: legacyExportHints.dataDirectory.trim() || datPath.directory || companionPath.directory || null,
+        patient_id_hint: legacyExportHints.patientId.trim() || datPath.topDirectory || companionPath.topDirectory || null,
         sample_rate_hz: datMapping.sampleRate,
         channel_count: datMapping.channelCount,
-        physical_scale_uv_per_count: datMapping.physicalScale,
+        physical_scale_uv_per_count: verifiedPhysicalScale ?? null,
+        display_amplitude_mode: verifiedPhysicalScale === undefined ? "legacy-raw-counts" : "calibrated-microvolts",
         layout: "sample-major channel-interleaved signed int16 little-endian",
       };
       const opened = await loadSource(source, pendingDat, interpretation);
       if (!opened) return;
-      if (pendingLegacyMeta?.events.length) {
+      if (pendingLegacyMeta?.events.length && datMapping.channelCount >= 100) {
         const importedCandidates = pendingLegacyMeta.events
-          .map((event, index): Candidate => ({
-            id: `cand-${index}-${Math.round(event.timeSec * 1000)}`,
+          .map((event, sourceIndex) => ({ event, sourceIndex }))
+          .filter(({ event }) => isLegacySeizureCandidate(event.label))
+          .filter(({ event }) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
+          .map((entry, candidateIndex) => ({ ...entry, candidateIndex }))
+          .filter(({ sourceIndex }) => selectedLegacyEventIndices.has(sourceIndex))
+          .map(({ event, candidateIndex }): Candidate => ({
+            id: `cand-${candidateIndex}-${Math.round(event.timeSec * 1000)}`,
             time: event.timeSec,
             label: event.label,
             source: "bronze",
             status: "queued",
             confidence: 0,
+            ictalChannels: "",
+            legacyConfidence: "",
+            reviewerInitials: "",
+            badChannels: "",
           }));
-        setCandidates((restored) => importedCandidates.map((candidate) => {
-          const prior = restored.find((item) => item.id === candidate.id);
-          return prior ? { ...candidate, status: prior.status, confidence: prior.confidence } : candidate;
-        }));
+        const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
+        if (queue.candidates.length) {
+          const resumeCandidate = queue.candidates[queue.activeIndex];
+          setCandidates(queue.candidates);
+          setActiveCandidate(queue.activeIndex);
+          setViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
+          setCursorTime(resumeCandidate.time);
+          setCursorLocked(true);
+          setToast(importedCandidates.length
+            ? `Ready to review ${importedCandidates.length} selected seizure-source event${importedCandidates.length === 1 ? "" : "s"}`
+            : `No new source events selected · preserved ${queue.candidates.length} prior decision record${queue.candidates.length === 1 ? "" : "s"}`);
+        } else {
+          setCandidates([]);
+          setActiveCandidate(0);
+          setToast("Recording opened, but no selected seizure-keyword events remain to review");
+        }
+      } else if (pendingLegacyMeta && datMapping.channelCount < 100) {
+        setCandidates([]);
+        setActiveCandidate(0);
+        setToast("Recording opened, but legacy candidate review is disabled because this session has fewer than 100 channels");
       }
       setPendingDat(null);
       setPendingLegacyMatFile(null);
       setPendingLegacyMeta(null);
+      setSelectedLegacyEventIndices(new Set());
+      setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Raw binary mapping failed");
     } finally {
@@ -2895,7 +3556,10 @@ export default function Home() {
     }
     const sampleRate = primarySampleRate(meta);
     const uniformSampleRate = meta.sampleRates.length > 0 && meta.sampleRates.every((rate) => Math.abs(rate - sampleRate) < 1e-9);
-    const patientId = patientLabel(meta);
+    const hintedPatientId = typeof sourceInterpretation?.patient_id_hint === "string"
+      ? sourceInterpretation.patient_id_hint.trim()
+      : "";
+    const patientId = hintedPatientId || patientLabel(meta);
     const recordingId = recordingLabel(meta);
     const base = recordingId.replace(/[^a-zA-Z0-9_-]+/g, "_");
     const committed = annotations.filter((item) => item.status === "committed");
@@ -2960,7 +3624,7 @@ export default function Home() {
         "unassigned",
       ].map(csvCell).join(","));
     }
-    const candidateEventsTsv = [["candidate_id", "source_event_time", "source_event_label", "status", "source", "confidence", "linked_annotation_ids", "linked_annotation_statuses", "relative_onsets", "relative_offsets"].join("\t"), ...candidates.map((candidate) => {
+    const candidateEventsTsv = [["candidate_id", "source_event_time", "source_event_label", "status", "source", "confidence", "matlab_confidence_score", "bad_channels", "ictal_channels", "reviewer_initials", "reviewed_at", "linked_annotation_ids", "linked_annotation_statuses", "relative_onsets", "relative_offsets"].join("\t"), ...candidates.map((candidate) => {
       const linked = annotations.filter((item) => item.candidateId === candidate.id);
       return [
         candidate.id,
@@ -2969,11 +3633,80 @@ export default function Home() {
         candidate.status,
         candidate.source,
         candidate.confidence,
+        candidate.legacyConfidence ?? "",
+        candidate.badChannels ?? "",
+        candidate.ictalChannels ?? "",
+        candidate.reviewerInitials ?? "",
+        candidate.reviewedAt ?? "",
         linked.map((item) => item.id).join("|"),
         linked.map((item) => item.status).join("|"),
         linked.map((item) => (item.start - candidate.time).toFixed(6)).join("|"),
         linked.map((item) => (item.end - candidate.time).toFixed(6)).join("|"),
       ].map(tsvCell).join("\t");
+    })].join("\n");
+    const matlabCompatibilityRows = [[
+      "patient_id",
+      "reviewer_initials",
+      "mat_path",
+      "data_dir",
+      "dat_file",
+      "event_label",
+      "event_time_original_sec",
+      "onset_relative_to_annotation_sec",
+      "onset_absolute_sec",
+      "offset_relative_to_annotation_sec",
+      "offset_absolute_sec",
+      "seizure_duration_sec",
+      "sampling_rate",
+      "n_channels",
+      "bad_channels",
+      "ictal_channels",
+      "confidence_score",
+      "review_status",
+      "review_timestamp",
+      "accepted",
+    ].join(","), ...candidates.filter((candidate) => candidate.status === "skipped" || (
+      candidate.status === "reviewed" && annotations.some((item) => item.candidateId === candidate.id && item.labelId === "ictal" && item.status === "committed")
+    )).map((candidate) => {
+      const linkedCandidates = [...annotations].reverse().filter((item) => item.candidateId === candidate.id && item.labelId === "ictal");
+      const linked = candidate.status === "reviewed"
+        ? linkedCandidates.find((item) => item.status === "committed")
+        : undefined;
+      const accepted = candidate.status === "reviewed" && linked?.status === "committed";
+      const reviewStatus = accepted ? "accepted" : "skipped";
+      const companionMatName = typeof sourceInterpretation?.companion_mat_path === "string" && sourceInterpretation.companion_mat_path
+        ? sourceInterpretation.companion_mat_path
+        : typeof sourceInterpretation?.companion_mat_name === "string"
+          ? sourceInterpretation.companion_mat_name
+          : "";
+      const sourceDataDirectory = typeof sourceInterpretation?.data_dir_hint === "string"
+        ? sourceInterpretation.data_dir_hint
+        : "";
+      const datFile = typeof sourceInterpretation?.dat_file_base === "string" && sourceInterpretation.dat_file_base
+        ? sourceInterpretation.dat_file_base
+        : meta.name.replace(/\.dat$/i, "");
+      return [
+        patientId,
+        candidate.reviewerInitials || linked?.reviewer || reviewer,
+        companionMatName,
+        sourceDataDirectory,
+        datFile,
+        candidate.label,
+        candidate.time.toFixed(6),
+        accepted && linked ? (linked.start - candidate.time).toFixed(6) : "NaN",
+        accepted && linked ? linked.start.toFixed(6) : "NaN",
+        accepted && linked ? (linked.end - candidate.time).toFixed(6) : "NaN",
+        accepted && linked ? linked.end.toFixed(6) : "NaN",
+        accepted && linked ? Math.max(0, linked.end - linked.start).toFixed(6) : "NaN",
+        sampleRate,
+        meta.channelLabels.length,
+        accepted ? normalizeChannelList(candidate.badChannels ?? "") || "NA" : "",
+        accepted ? normalizeChannelList(candidate.ictalChannels ?? "") || "NA" : "",
+        accepted ? candidate.legacyConfidence || "NA" : "",
+        reviewStatus,
+        formatMatlabTimestamp(candidate.reviewedAt ?? linked?.updatedAt),
+        accepted ? 1 : 0,
+      ].map(csvCell).join(",");
     })].join("\n");
     const recordingJson = JSON.stringify({
       patient_id: patientId,
@@ -3013,11 +3746,12 @@ export default function Home() {
       });
     }).join("\n");
     const qcReport = JSON.stringify({ generated_at: new Date().toISOString(), issues: qcIssues, bad_channels: [...badChannels].map((index) => meta.channelLabels[index]), drafts_excluded_from_events_tsv: annotations.filter((item) => item.status === "draft").length }, null, 2);
-    const manifest = JSON.stringify({ schema: "neurotrace-forecasting-manifest/1.1", patient: patientId, recording_type: recordingType, session: recordingId, files: ["events.tsv", "candidate_events.tsv", "channels.tsv", "recording.json", "annotations.jsonl", "windows.csv", "ontology.json", "qc_report.json"], leakage_guard: "Assign train/validation/test split by patient; current split is unassigned." }, null, 2);
-    const readme = "NeuroTrace model-ready annotation bundle\n\nRaw EEG is not included. Seconds are authoritative. Sample positions are only emitted when a universal or annotation-specific channel rate exists. Only committed labels appear in events.tsv; drafts and suggestions remain in annotations.jsonl for audit. candidate_events.tsv preserves source-event lineage and relative timing. Review recording.json and qc_report.json before training. Group dataset splits by patient to prevent leakage.\n";
+    const manifest = JSON.stringify({ schema: "neurotrace-forecasting-manifest/1.1", patient: patientId, recording_type: recordingType, session: recordingId, files: ["events.tsv", "candidate_events.tsv", "matlab_compatibility.csv", "channels.tsv", "recording.json", "annotations.jsonl", "windows.csv", "ontology.json", "qc_report.json"], leakage_guard: "Assign train/validation/test split by patient; current split is unassigned." }, null, 2);
+    const readme = "NeuroTrace model-ready annotation bundle\n\nRaw EEG is not included. Seconds are authoritative. Sample positions are only emitted when a universal or annotation-specific channel rate exists. Only committed labels appear in events.tsv; drafts and suggestions remain in annotations.jsonl for audit. candidate_events.tsv preserves source-event lineage and relative timing. matlab_compatibility.csv provides one row per completed source-event decision using the 20-column seizure_annotation_tool.m schema, including accepted/skipped status, event-relative marks, channel notes, and 1–3 confidence. Review recording.json and qc_report.json before training. Group dataset splits by patient to prevent leakage.\n";
     const zip = createStoredZip([
       { name: `${base}/events.tsv`, content: eventsTsv },
       { name: `${base}/candidate_events.tsv`, content: candidateEventsTsv },
+      { name: `${base}/matlab_compatibility.csv`, content: matlabCompatibilityRows },
       { name: `${base}/channels.tsv`, content: channelsTsv },
       { name: `${base}/recording.json`, content: recordingJson },
       { name: `${base}/annotations.jsonl`, content: annotationsJsonl },
@@ -3089,7 +3823,10 @@ export default function Home() {
       }
       if (event.key === "Escape" && modalOpen) {
         event.preventDefault();
-        if (confirmCommit.length) setConfirmCommit([]);
+        if (confirmCommit.length) {
+          setConfirmCommit([]);
+          setCommitAdvanceAfter(false);
+        }
         else if (showHelp) setShowHelp(false);
         else if (showSettings) setShowSettings(false);
         else if (showChannels) setShowChannels(false);
@@ -3156,7 +3893,13 @@ export default function Home() {
       } else if (lower === controlBindings.redo && event.shiftKey) {
         redo();
       } else if (lower === controlBindings.undo && !event.shiftKey) {
-        undo();
+        if (markOnset !== null) {
+          setMarkOnset(null);
+          setActiveTool("seizure");
+          setToast("Pending seizure onset removed");
+        } else {
+          undo();
+        }
       } else if (lower === controlBindings.ictalOnset) {
         setMarkOnset(cursorTime); setActiveTool("seizure"); setToast(`Onset placed at ${formatClock(cursorTime, true)} — press ${controlBindings.ictalOffset.toUpperCase()} at offset`);
       } else if (lower === controlBindings.ictalOffset && markOnset !== null) {
@@ -3164,7 +3907,14 @@ export default function Home() {
         else setToast("Offset must be after onset");
       } else if (lower === controlBindings.commit || ((event.key === "Enter" || event.code === "Space") && target === canvasRef.current)) {
         if (event.code === "Space") event.preventDefault();
-        commitSelected();
+        const selectedBelongsToActiveCandidate = !selectedAnnotation
+          || (selectedAnnotation.id === activeCandidateAnnotation?.id
+            && selectedAnnotation.candidateId === activeCandidateItem?.id
+            && selectedAnnotation.labelId === "ictal");
+        if (activeCandidateItem
+          && !["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)
+          && selectedBelongsToActiveCandidate) acceptActiveCandidate();
+        else commitSelected();
       } else if ((event.key === "Delete" || event.key === "Backspace") && selectedAnnotationIds.size) {
         event.preventDefault(); deleteSelectedAnnotations();
       } else if (lower === controlBindings.nextCandidate && instanceQueueEntries.length) {
@@ -3193,7 +3943,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [activeCandidate, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -3320,7 +4070,7 @@ export default function Home() {
           </section>
 
           <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
-            <span>Open Patient Info {hasRecording && `(${patientLabel(meta)})`}</span><b aria-hidden="true">↗</b>
+            <span>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
           </button>
 
           <button className="session-map-row" disabled={!hasRecording} onClick={() => {
@@ -3395,8 +4145,8 @@ export default function Home() {
                   <span className={`queue-status ${entry.status}`} />
                   <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
                 </button>
-                <label className="queue-confidence" title="Editable confidence percentage">
-                  <input type="number" min="0" max="100" step="1" value={entry.confidence} aria-label={`Confidence for ${entry.label}`} onChange={(event) => updateQueueConfidence(entry.kind, entry.id, Number(event.target.value))} />
+                <label className="queue-confidence" title={entry.locked ? "Reopen the source-event decision before editing confidence" : "Editable confidence percentage"}>
+                  <input type="number" min="0" max="100" step="1" disabled={entry.locked} value={entry.confidence} aria-label={`Confidence for ${entry.label}`} onChange={(event) => updateQueueConfidence(entry.kind, entry.id, Number(event.target.value))} />
                   <span>%</span>
                 </label>
                 <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
@@ -3435,6 +4185,31 @@ export default function Home() {
             <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to raw</button>
           </div>}
 
+          {hasRecording && activeCandidateItem && <section className="candidate-review-bar" aria-label="Source event review" data-review-status={activeCandidateItem.status}>
+            <div className="candidate-review-identity">
+              <span>Source event {activeCandidate + 1}/{candidates.length}</span>
+              <strong title={activeCandidateItem.label}>{activeCandidateItem.label}</strong>
+              <small>{formatClock(activeCandidateItem.time, true)} absolute · {activeCandidateItem.status}</small>
+            </div>
+            <div className="candidate-relative-times" aria-label="Event-relative seizure marks">
+              <span>ONSET <b>{activeCandidateOnset === null ? "—" : formatRelativeTime(activeCandidateOnset - activeCandidateItem.time)}</b></span>
+              <i />
+              <span>OFFSET <b>{activeCandidateOffset === null ? "—" : formatRelativeTime(activeCandidateOffset - activeCandidateItem.time)}</b></span>
+            </div>
+            <label className="candidate-review-field reviewer-field"><span>Reviewer</span><input value={reviewer} maxLength={12} placeholder="Initials" onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
+            <label className="candidate-review-field confidence-score"><span>Confidence</span><select disabled={candidateDecisionLocked} value={activeCandidateItem.legacyConfidence ?? ""} onChange={(event) => {
+              const value = event.target.value as Candidate["legacyConfidence"];
+              updateActiveCandidateReview({ legacyConfidence: value, confidence: value ? Number(value) * 33 + (value === "3" ? 1 : 0) : 0 });
+            }}><option value="">NA · Not rated</option><option value="1">1 · Low</option><option value="2">2 · Medium</option><option value="3">3 · High</option></select></label>
+            <label className="candidate-review-field bad-channel-field"><span>Bad channels (this event)</span><input disabled={candidateDecisionLocked} value={activeCandidateItem.badChannels ?? ""} placeholder="e.g. LA8,RA3" onChange={(event) => updateActiveCandidateReview({ badChannels: event.target.value })} /></label>
+            <label className="candidate-review-field ictal-channel-field"><span>Ictal channels (optional)</span><input disabled={candidateDecisionLocked} value={activeCandidateItem.ictalChannels ?? ""} placeholder="e.g. LA1-LA4" onChange={(event) => updateActiveCandidateReview({ ictalChannels: event.target.value })} /></label>
+            <div className="candidate-review-actions">
+              <button className={`button secondary ${activeTool === "seizure" ? "active" : ""}`} onClick={beginActiveCandidateMarking}>{activeTool === "seizure" ? markOnset === null ? "Click onset" : "Click offset" : activeCandidateAnnotation?.status === "committed" ? "Revise marks" : activeCandidateAnnotation ? "Redo marks" : "Mark onset / offset"}</button>
+              <button className="button primary" disabled={!activeCandidateAnnotation || activeCandidateItem.status === "skipped" || activeCandidateItem.status === "conflict"} onClick={acceptActiveCandidate}>Accept &amp; next</button>
+              <button className="button quiet" disabled={candidateDecisionLocked} onClick={skipActiveCandidate}>Skip</button>
+            </div>
+          </section>}
+
           {hasRecording ? <>
           <div className="overview-block">
             <div className="overview-label"><span>FULL SESSION</span><strong>{formatClock(viewStart)} — {formatClock(viewStart + timebase)}</strong></div>
@@ -3450,11 +4225,17 @@ export default function Home() {
           </div>
 
           <div ref={viewerRef} className={`signal-and-tracks ${spectrogramOpen ? "with-spectrogram" : ""}`}>
-            <div className={`waveform-wrap ${expandedChannels ? "channel-scroll-mode" : ""}`} style={{ "--channel-content-height": `${Math.max(245, display.labels.length * 60 + 28)}px` } as React.CSSProperties}>
-              <div className="channel-rail" style={{ gridTemplateRows: `repeat(${Math.max(1, display.labels.length)}, 1fr)` }}>
+            <div className={`waveform-wrap ${expandedChannels ? "channel-scroll-mode" : ""}`} style={{ "--channel-content-height": `${Math.max(245, channelRowLayout.totalUnits * 60 + 28)}px` } as React.CSSProperties}>
+              <div className="channel-rail" style={{ gridTemplateRows: `repeat(${channelRowLayout.totalUnits}, 1fr)` }}>
                 <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 <button className={`channel-layout-button ${expandedChannels ? "active" : ""}`} aria-label={`${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`} aria-pressed={expandedChannels} title={`${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`} onClick={() => setExpandedChannels((value) => !value)}>E</button>
-                {display.labels.map((label, index) => <button key={`${label}-${index}`} className={focusedChannel === index ? "focused" : ""} aria-pressed={focusedChannel === index} onClick={() => setFocusedChannel(index)}><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>)}
+                {display.labels.map((label, index) => <button
+                  key={`${label}-${index}`}
+                  className={`${focusedChannel === index ? "focused" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
+                  style={{ gridRow: `${channelRowLayout.rowStartUnits[index] + 1} / span 1` }}
+                  aria-pressed={focusedChannel === index}
+                  onClick={() => setFocusedChannel(index)}
+                ><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>)}
               </div>
               <div className="canvas-shell" onDragOver={onLabelDragOver} onDrop={onLabelDrop} onDragLeave={() => setDragGhost(null)}>
                 <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label="Interactive EEG waveform. Use the pointer to pin a time or select a window." onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
@@ -3580,17 +4361,38 @@ export default function Home() {
           <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat" onChange={(event: ChangeEvent<HTMLInputElement>) => importFiles([...(event.target.files ?? [])])} />
           {pendingDat && <div className="dat-mapper">
             <div><span className="file-type">DAT</span><div><strong>{pendingDat.name}</strong><small>Signed int16 · little-endian</small></div></div>
-            <p>{pendingLegacyMeta ? `Companion MAT metadata found ${pendingLegacyMeta.channelLabels.length || pendingLegacyMeta.channelCount || 0} channels and ${pendingLegacyMeta.events.length} timestamped events. Every timing and scale value remains unverified until you confirm it here.` : "Enter and confirm the raw binary layout. Zero means the timing/channel mapping is still unknown; the recording cannot open until those fields are verified."}</p>
-            <div className="mapper-fields"><label><span>Sample rate</span><input type="number" value={datMapping.sampleRate} onChange={(event) => setDatMapping((current) => ({ ...current, sampleRate: Number(event.target.value) }))} /><small>Hz</small></label><label><span>Channels</span><input type="number" value={datMapping.channelCount} onChange={(event) => setDatMapping((current) => ({ ...current, channelCount: Number(event.target.value) }))} /></label><label><span>Scale</span><input type="number" step="0.001" value={datMapping.physicalScale} onChange={(event) => setDatMapping((current) => ({ ...current, physicalScale: Number(event.target.value) }))} /><small>µV/count</small></label></div>
-            <button className="button primary wide" disabled={!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0) || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0) || !Number.isFinite(datMapping.physicalScale) || !(datMapping.physicalScale > 0)} onClick={confirmDatImport}>Confirm mapping &amp; open DAT</button>
+            <p>{pendingLegacyMeta ? `Companion MAT metadata found ${pendingLegacyMeta.channelLabels.length || pendingLegacyMeta.channelCount || 0} channels and ${pendingLegacyMeta.events.filter((event) => isLegacySeizureCandidate(event.label)).length} seizure-keyword events (${pendingLegacyMeta.events.length} total). ${datMapping.channelCount < 100 ? "As in the MATLAB reviewer, source-event review will be disabled below 100 channels. " : ""}Every timing and scale value remains unverified until you confirm it here.` : "Enter and confirm the raw binary layout. Zero means the timing/channel mapping is still unknown; the recording cannot open until those fields are verified."}</p>
+            <div className="mapper-fields"><label><span>Sample rate</span><input type="number" value={datMapping.sampleRate} onChange={(event) => setDatMapping((current) => ({ ...current, sampleRate: Number(event.target.value) }))} /><small>Hz</small></label><label><span>Channels</span><input type="number" value={datMapping.channelCount} onChange={(event) => setDatMapping((current) => ({ ...current, channelCount: Number(event.target.value) }))} /></label><label><span>Scale (optional)</span><input type="number" step="0.001" min="0.000001" placeholder="Raw counts" value={datMapping.physicalScale} onChange={(event) => setDatMapping((current) => ({ ...current, physicalScale: event.target.value === "" ? "" : Number(event.target.value) }))} /><small>µV/count</small></label></div>
+            <p className="dat-scale-note">Leave scale blank to match MATLAB&apos;s raw-count display with 15,000 counts between channel baselines. Enter a value only when the DAT calibration is known.</p>
+            {pendingLegacyMeta && <div className="legacy-export-hints">
+              <div><strong>MATLAB export identity</strong><small>Browsers hide absolute local paths. Confirm or paste these values if round-trip resume keys must match MATLAB exactly.</small></div>
+              <label><span>Patient ID</span><input value={legacyExportHints.patientId} placeholder="patient_id" onChange={(event) => setLegacyExportHints((current) => ({ ...current, patientId: event.target.value }))} /></label>
+              <label><span>MAT path</span><input value={legacyExportHints.matPath} placeholder="C:\\study\\session.mat" onChange={(event) => setLegacyExportHints((current) => ({ ...current, matPath: event.target.value }))} /></label>
+              <label><span>Data directory</span><input value={legacyExportHints.dataDirectory} placeholder="C:\\study" onChange={(event) => setLegacyExportHints((current) => ({ ...current, dataDirectory: event.target.value }))} /></label>
+              <label><span>DAT file</span><input value={legacyExportHints.datFile} placeholder="session" onChange={(event) => setLegacyExportHints((current) => ({ ...current, datFile: event.target.value }))} /></label>
+            </div>}
+            {pendingLegacyCandidateEvents.length > 0 && <fieldset className="legacy-event-picker" disabled={datMapping.channelCount < 100}>
+              <div className="legacy-event-picker-head"><span>Source events to review</span><div><button type="button" onClick={() => setSelectedLegacyEventIndices(new Set(pendingLegacyCandidateEvents.map(({ sourceIndex }) => sourceIndex)))}>All</button><button type="button" onClick={() => setSelectedLegacyEventIndices(new Set())}>None</button></div></div>
+              <div className="legacy-event-list">{pendingLegacyCandidateEvents.map(({ event: sourceEvent, sourceIndex }) => <label key={`${sourceIndex}-${sourceEvent.timeSec}`}>
+                <input type="checkbox" checked={selectedLegacyEventIndices.has(sourceIndex)} onChange={(event) => setSelectedLegacyEventIndices((current) => {
+                  const next = new Set(current);
+                  if (event.target.checked) next.add(sourceIndex);
+                  else next.delete(sourceIndex);
+                  return next;
+                })} />
+                <span>{formatClock(sourceEvent.timeSec, true)}</span><strong title={sourceEvent.label}>{sourceEvent.label}</strong>
+              </label>)}</div>
+              <small>{pendingLegacyCandidateEvents.filter(({ sourceIndex }) => selectedLegacyEventIndices.has(sourceIndex)).length} of {pendingLegacyCandidateEvents.length} selected</small>
+            </fieldset>}
+            <button className="button primary wide" disabled={!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0) || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0) || !datPhysicalScaleValid} onClick={confirmDatImport}>Confirm mapping &amp; open DAT</button>
           </div>}
           <div className="format-cards"><div><strong>EDF / EDF+</strong><span>Calibrated signals, channel metadata, full recording timeline</span></div><div><strong>MAT v5</strong><span>Automatic largest-matrix detection with sampling-rate discovery</span></div><div><strong>MAT + DAT</strong><span>Manual binary confirmation for legacy Buzcode sessions</span></div></div>
           <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Hospital deployment still requires institutional privacy, security, and validation review.</p></div>
         </div>
       </div>}
 
-      {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Commit advisory" tabIndex={-1}><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but the QC engine found an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => setConfirmCommit([])}>Return to label</button><button className="button primary" onClick={() => {
-        if (commitSelected(true)) setShowAnnotationEditor(false);
+      {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Commit advisory" tabIndex={-1}><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but the QC engine found an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => { setConfirmCommit([]); setCommitAdvanceAfter(false); }}>Return to label</button><button className="button primary" onClick={() => {
+        if (commitSelected(true, commitAdvanceAfter)) setShowAnnotationEditor(false);
       }}>Commit with advisory</button></div></div></div>}
 
       {showChannels && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowChannels(false); }}>
@@ -3639,6 +4441,7 @@ export default function Home() {
               ["Session tabs", "Each tab is an independent annotation workspace. Press + for a blank session, then load its recording."],
               ["Recording info", "Shows the source file and recording type. Open Patient Info for identifiers, reviewer, source integrity, replacement, and export controls."],
               ["Instance queue", "File events, instance labels, and non-session context events appear in time order. Select one or use the arrows to jump straight to it."],
+              ["Source-event review", "Seizure-keyword file events open around relative time zero. Enter reviewer initials, optionally rate confidence 1–3, mark onset then offset, and Accept or Skip to advance."],
               ["Signal tools", "Spectrum opens the focused-channel spectral view. Montage, filters, window, and gain only change the display; raw samples stay immutable."],
               ["CH+ channel manager", "Opens detected source channels. Toggle visibility and mark channel quality without losing source-channel provenance."],
               ["Waveform labeling", "Click once to pin a time, then click any ePhys label to create an instance there. Drag across time, then click a label to apply it to that exact window."],
@@ -3684,13 +4487,20 @@ export default function Home() {
           <h2>Patient Information</h2>
           <p>Recording identifiers and source details remain inside this local review workspace.</p>
           <div className="patient-info-grid">
-            <div><span>Patient</span><strong>{patientLabel(meta)}</strong></div>
+            <div><span>Patient</span><strong>{effectivePatientLabel}</strong></div>
             <div><span>Session</span><strong>{recordingLabel(meta)}</strong></div>
             <div><span>Recording start</span><strong>{formatSessionStart(meta.startedAt)}</strong></div>
             <div><span>Source integrity</span><strong className="hash-text" title={sourceHash}>{sourceHashDisplay}</strong></div>
             <div><span>Source channels</span><strong>{meta.channelLabels.length}</strong></div>
             <div><span>Quality excluded</span><strong>{badChannels.size}</strong></div>
             <label><span>Reviewer initials</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
+            {activeMatlabExportIdentity && <>
+              <div className="matlab-identity-note"><span>MATLAB export identity</span><strong>Editable without changing the recording recovery key</strong></div>
+              <label className="matlab-identity-field"><span>MATLAB patient ID</span><input value={activeMatlabExportIdentity.patientId} onChange={(event) => updateMatlabExportIdentity({ patientId: event.target.value })} /></label>
+              <label className="matlab-identity-field"><span>MAT path</span><input value={activeMatlabExportIdentity.matPath} onChange={(event) => updateMatlabExportIdentity({ matPath: event.target.value })} /></label>
+              <label className="matlab-identity-field"><span>Data directory</span><input value={activeMatlabExportIdentity.dataDirectory} onChange={(event) => updateMatlabExportIdentity({ dataDirectory: event.target.value })} /></label>
+              <label className="matlab-identity-field"><span>DAT file</span><input value={activeMatlabExportIdentity.datFile} onChange={(event) => updateMatlabExportIdentity({ datFile: event.target.value })} /></label>
+            </>}
           </div>
           <div className="patient-modal-actions">
             <button className="button secondary" onClick={() => {
@@ -3757,16 +4567,22 @@ export default function Home() {
             <span className={`revision-state ${selectedAnnotation.status}`}>{selectedAnnotation.status}</span>
           </div>
           <div className="inspector-form">
-            <div className="time-fields"><label><span>Start (s)</span><input type="number" step="0.001" value={selectedAnnotation.start} disabled={selectedGeometry === "session"} onChange={(event) => updateAnnotation(selectedAnnotation.id, { start: clamp(Number(event.target.value), 0, selectedGeometry === "interval" ? selectedAnnotation.end : meta.durationSec) })} /></label><label><span>End (s)</span><input type="number" step="0.001" value={selectedAnnotation.end} disabled={selectedGeometry !== "interval"} onChange={(event) => updateAnnotation(selectedAnnotation.id, { end: clamp(Number(event.target.value), selectedAnnotation.start, meta.durationSec) })} /></label></div>
+            {selectedCandidateDecisionLocked && <div className="candidate-editor-lock"><div><strong>Accepted source-event decision locked</strong><span>Reopen it through the review bar before changing marks or review metadata.</span></div><button className="button secondary" onClick={() => {
+              const candidateIndex = candidates.findIndex((candidate) => candidate.id === selectedAnnotation.candidateId);
+              if (candidateIndex >= 0) selectCandidate(candidateIndex);
+              setShowAnnotationEditor(false);
+              setToast("Use Revise marks to confirm reopening this accepted source event");
+            }}>Go to source event</button></div>}
+            <div className="time-fields"><label><span>Start (s)</span><input type="number" step="0.001" value={selectedAnnotation.start} disabled={selectedGeometry === "session" || selectedCandidateDecisionLocked} onChange={(event) => updateAnnotation(selectedAnnotation.id, { start: clamp(Number(event.target.value), 0, selectedGeometry === "interval" ? selectedAnnotation.end : meta.durationSec) })} /></label><label><span>End (s)</span><input type="number" step="0.001" value={selectedAnnotation.end} disabled={selectedGeometry !== "interval" || selectedCandidateDecisionLocked} onChange={(event) => updateAnnotation(selectedAnnotation.id, { end: clamp(Number(event.target.value), selectedAnnotation.start, meta.durationSec) })} /></label></div>
             <div className="duration-line"><span>{formatClock(selectedAnnotation.start, true)}</span><i /><span>{(selectedAnnotation.end - selectedAnnotation.start).toFixed(3)} s</span></div>
-            <label className="form-field"><span>Reviewer</span><input value={selectedAnnotation.reviewer} onChange={(event) => updateAnnotation(selectedAnnotation.id, { reviewer: event.target.value })} /></label>
-            <label className="confidence-field"><span>Confidence <strong>{selectedAnnotation.confidence}%</strong></span><input type="range" min="0" max="100" value={selectedAnnotation.confidence} onChange={(event) => updateAnnotation(selectedAnnotation.id, { confidence: Number(event.target.value) }, false)} /></label>
-            <label className="form-field"><span>Clinical / review note</span><textarea rows={4} placeholder="Evidence, uncertainty, or rationale…" value={selectedAnnotation.notes} onChange={(event) => updateAnnotation(selectedAnnotation.id, { notes: event.target.value }, false)} /></label>
+            <label className="form-field"><span>Reviewer</span><input disabled={selectedCandidateDecisionLocked} value={selectedAnnotation.reviewer} onChange={(event) => updateAnnotation(selectedAnnotation.id, { reviewer: event.target.value })} /></label>
+            <label className="confidence-field"><span>Confidence <strong>{selectedAnnotation.confidence}%</strong></span><input disabled={selectedCandidateDecisionLocked} type="range" min="0" max="100" value={selectedAnnotation.confidence} onChange={(event) => updateAnnotation(selectedAnnotation.id, { confidence: Number(event.target.value) }, false)} /></label>
+            <label className="form-field"><span>Clinical / review note</span><textarea disabled={selectedCandidateDecisionLocked} rows={4} placeholder="Evidence, uncertainty, or rationale…" value={selectedAnnotation.notes} onChange={(event) => updateAnnotation(selectedAnnotation.id, { notes: event.target.value }, false)} /></label>
             <div className="inspector-actions"><button className="button primary" onClick={() => {
               if (commitSelected()) setShowAnnotationEditor(false);
-            }}>{selectedAnnotation.status === "committed" ? "Save revision" : "Commit label"}</button><button className="icon-danger" onClick={() => {
+            }} disabled={selectedCandidateDecisionLocked}>{selectedAnnotation.status === "committed" ? "Save revision" : "Commit label"}</button><button className="icon-danger" onClick={() => {
               if (deleteAnnotation(selectedAnnotation.id)) setShowAnnotationEditor(false);
-            }} title="Delete annotation" aria-label="Delete annotation">🗑</button></div>
+            }} disabled={selectedCandidateDecisionLocked} title="Delete annotation" aria-label="Delete annotation">🗑</button></div>
             <div className="snapshot-note"><span>DISPLAY SNAPSHOT</span><strong>{montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average ref" : "Recorded ref"} · {filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz} Hz notch` : "Raw"}</strong><small>Stored with the exported revision; raw samples remain unchanged.</small></div>
           </div>
         </div>

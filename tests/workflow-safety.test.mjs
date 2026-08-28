@@ -17,13 +17,13 @@ function section(source, startText, endText) {
 
 test("commit bypass applies only to clinical advisories", async () => {
   const page = await pageSource();
-  const commit = section(page, "const commitSelected", "useEffect(() => {");
+  const commit = section(page, "const commitAnnotation", "const commitSelected");
 
   assert.match(commit, /const blockers:\s*string\[\]\s*=\s*\[\]/);
-  assert.match(commit, /Number\.isFinite\(selectedAnnotation\.start\)/);
-  assert.match(commit, /geometry\s*!==\s*"point"\s*&&\s*selectedAnnotation\.end\s*<=\s*selectedAnnotation\.start/);
-  assert.match(commit, /!selectedAnnotation\.reviewer\.trim\(\)[\s\S]*?blockers\.push/);
-  assert.match(commit, /selectedAnnotation\.labelId\s*===\s*"spikes"[\s\S]*?channelScope[\s\S]*?blockers\.push/);
+  assert.match(commit, /Number\.isFinite\(targetAnnotation\.start\)/);
+  assert.match(commit, /geometry\s*!==\s*"point"\s*&&\s*targetAnnotation\.end\s*<=\s*targetAnnotation\.start/);
+  assert.match(commit, /if\s*\(!commitReviewer\)\s*blockers\.push/);
+  assert.match(commit, /targetAnnotation\.labelId\s*===\s*"spikes"[\s\S]*?channelScope[\s\S]*?blockers\.push/);
   assert.match(commit, /if\s*\(blockers\.length\)[\s\S]*?return false/);
   assert.doesNotMatch(commit, /blockers\.length\s*&&\s*!force/);
   assert.match(commit, /if\s*\(advisories\.length\s*&&\s*!force\)/);
@@ -32,17 +32,59 @@ test("commit bypass applies only to clinical advisories", async () => {
   assert.match(commit, /status:\s*"committed"[\s\S]*?return true/);
 });
 
+test("source-event decisions remain synchronized and export the MATLAB-compatible schema", async () => {
+  const page = await pageSource();
+  assert.match(page, /targetAnnotation\.candidateId\s*\?\s*reviewer\s*:/, "review-bar initials are authoritative for source-event commits");
+  assert.match(page, /commitSelected\(true,\s*commitAdvanceAfter\)/, "an advisory commit preserves accept-and-advance intent");
+  assert.match(page, /const reopenCandidateReviews[\s\S]*?status:\s*index\s*===\s*activeCandidate\s*\?\s*"active"\s*:\s*"queued"/);
+  assert.match(page, /type AnnotationHistorySnapshot[\s\S]*?candidates:\s*Candidate\[\][\s\S]*?activeCandidate:\s*number/);
+  assert.match(page, /redoRef\.current\.push\(\{[\s\S]*?candidates:\s*candidatesRef\.current[\s\S]*?setCandidates\(previous\.candidates\)/);
+  const mutation = section(page, "const commitMutation", "const undo");
+  assert.doesNotMatch(mutation, /setAnnotations\(\(current\)/, "history side effects stay outside React state updaters");
+  assert.match(page, /currentWithoutPreviousCandidateDraft[\s\S]*?item\.candidateId\s*===\s*activeSourceCandidate\.id/);
+  assert.match(page, /selectedAnnotation\.id\s*===\s*activeCandidateAnnotation\?\.id/);
+  assert.match(page, /previous\.candidateId\s*&&\s*previous\.status\s*===\s*"committed"\s*&&\s*!allowCandidateReopen/);
+  assert.match(page, /updateAnnotation\(activeCandidateAnnotation\.id,\s*\{\s*status:\s*"draft"\s*\},\s*true,\s*true\)/);
+  assert.match(page, /Accepted source-event marks are locked[\s\S]*?use Revise marks before dragging them/);
+  assert.match(page, /selectedAnnotation\.candidateId\s*===\s*activeCandidateItem\?\.id/, "the global commit shortcut cannot accept a different selected annotation");
+  assert.match(page, /candidate\.status\s*===\s*"reviewed"\s*&&\s*linked\?\.status\s*===\s*"committed"/);
+  assert.match(page, /patient_id_hint/);
+  assert.match(page, /companion_mat_path/);
+  assert.match(page, /data_dir_hint/);
+  assert.match(page, /dat_file_base/);
+  assert.match(page, /candidateDecisionLocked[\s\S]*?disabled=\{candidateDecisionLocked\}/);
+  assert.match(page, /candidate\.status\s*===\s*"skipped"\s*\|\|\s*\([\s\S]*?item\.status\s*===\s*"committed"/);
+  for (const column of [
+    "patient_id",
+    "reviewer_initials",
+    "mat_path",
+    "data_dir",
+    "event_time_original_sec",
+    "onset_relative_to_annotation_sec",
+    "offset_relative_to_annotation_sec",
+    "seizure_duration_sec",
+    "ictal_channels",
+    "confidence_score",
+    "review_status",
+    "accepted",
+  ]) assert.match(page, new RegExp(`"${column}"`));
+});
+
 test("committed deletion is confirmed and canceled actions keep the editor open", async () => {
   const page = await pageSource();
   const deletion = section(page, "const confirmAnnotationDeletion", "const moveSelectedAnnotations");
   assert.match(deletion, /item\.status\s*===\s*"committed"/);
   assert.match(deletion, /window\.confirm/);
+  assert.match(deletion, /Accepted source-event marks are locked[\s\S]*?use Revise marks before deleting them/);
+  assert.match(deletion, /removed\.some\(\(item\)\s*=>\s*item\.candidateId\s*&&\s*item\.status\s*===\s*"committed"\)[\s\S]*?return false/);
   assert.match(deletion, /if\s*\(!confirmAnnotationDeletion\(\[removed\]\)\)[\s\S]*?return false/);
   assert.match(deletion, /if\s*\(!confirmAnnotationDeletion\(removed\)\)[\s\S]*?return false/);
 
   const editor = section(page, "{showAnnotationEditor &&", "{showSessionMap &&");
   assert.match(editor, /if\s*\(commitSelected\(\)\)\s*setShowAnnotationEditor\(false\)/);
   assert.match(editor, /if\s*\(deleteAnnotation\(selectedAnnotation\.id\)\)\s*setShowAnnotationEditor\(false\)/);
+  assert.match(editor, /Accepted source-event decision locked/);
+  assert.match(editor, /className="icon-danger"[\s\S]*?deleteAnnotation\(selectedAnnotation\.id\)[\s\S]*?disabled=\{selectedCandidateDecisionLocked\}\s+title="Delete annotation"/);
 });
 
 test("reviewer identity stays with its recording rather than a browser-wide preference", async () => {
@@ -91,20 +133,46 @@ test("recovery validates saved structures, preserves unreadable data, and falls 
   assert.match(load, /neurotrace:unreadable-/);
   assert.match(load, /const usedDraft\s*=\s*restoreDraft\(\)/);
   assert.match(load, /recoveryWarning/);
+  assert.match(page, /function sourceIdentityInterpretation[\s\S]*?patient_id_hint[\s\S]*?data_dir_hint/);
+  assert.match(page, /function sourceIdentityInterpretation[\s\S]*?display_amplitude_mode/);
+  assert.match(load, /sourceIdentityInterpretation\(interpretation\)/);
+  assert.match(load, /physical_scale_uv_per_count\s*===\s*null[\s\S]*?physical_scale_uv_per_count:\s*1[\s\S]*?legacyRecoveryKey/);
+  assert.match(load, /neurotrace:project:\$\{legacyRecoveryKey\}[\s\S]*?usedLegacyRecoveryKey/);
+  assert.match(load, /Recovered prior DAT review state and migrated it to the unscaled raw-count display/);
+  assert.match(page, /matlabExportIdentity:\s*matlabExportIdentityFromInterpretation\(sourceInterpretation\)/);
+  assert.match(load, /applyMatlabExportIdentity\(interpretation,\s*restoredMatlabExportIdentity\)/);
+  assert.match(page, /Editable without changing the recording recovery key/);
 });
 
-test("raw DAT confirmation rejects zero, negative, non-finite, and fractional mapping values", async () => {
+test("raw DAT requires valid dimensions while preserving an explicit raw-count mode", async () => {
   const page = await pageSource();
   const confirm = section(page, "const confirmDatImport", "const exportBundle");
   assert.match(confirm, /Number\.isFinite\(datMapping\.sampleRate\)/);
   assert.match(confirm, /datMapping\.sampleRate\s*>\s*0/);
   assert.match(confirm, /Number\.isInteger\(datMapping\.channelCount\)/);
-  assert.match(confirm, /Number\.isFinite\(datMapping\.physicalScale\)/);
-  assert.match(confirm, /datMapping\.physicalScale\s*>\s*0/);
+  assert.match(page, /datMapping\.physicalScale\s*===\s*""[\s\S]*?Number\.isFinite\(datMapping\.physicalScale\)[\s\S]*?datMapping\.physicalScale\s*>\s*0/);
+  assert.match(confirm, /const verifiedPhysicalScale\s*=\s*datMapping\.physicalScale\s*===\s*""\s*\?\s*undefined/);
+  assert.match(confirm, /channelUnits:\s*verifiedPhysicalScale\s*===\s*undefined\s*\?\s*"ADC count"\s*:\s*"µV"/);
+  assert.match(confirm, /display_amplitude_mode:\s*verifiedPhysicalScale\s*===\s*undefined\s*\?\s*"legacy-raw-counts"/);
+  assert.match(page, /Leave scale blank to match MATLAB&apos;s raw-count display with 15,000 counts between channel baselines/);
 
   const mapperButton = page.match(/<button className="button primary wide" disabled=\{([^}]+)\} onClick=\{confirmDatImport\}/)?.[1] ?? "";
   assert.match(mapperButton, /Number\.isInteger\(datMapping\.channelCount\)/);
-  assert.match(mapperButton, /datMapping\.physicalScale\s*>\s*0/);
+  assert.match(mapperButton, /datPhysicalScaleValid/);
+  const load = section(page, "const loadSource", "const importFiles");
+  assert.match(load, /setGain\(1\)[\s\S]*?setMontage\("referential"\)[\s\S]*?setFilters\(\{\s*\.\.\.DEFAULT_FILTERS\s*\}\)/);
+});
+
+test("legacy MAT review defaults seizure events into a selectable pre-review queue", async () => {
+  const page = await pageSource();
+  assert.match(page, /setSelectedLegacyEventIndices\(new Set\(legacyMetadata\.events\.flatMap/);
+  assert.match(page, /className="legacy-event-picker"/);
+  assert.match(page, /Source events to review/);
+  assert.match(page, /selectedLegacyEventIndices\.has\(sourceIndex\)/);
+  assert.match(page, /restoredTerminalDecisions/);
+  assert.match(page, /MATLAB export identity/);
+  assert.match(page, /Browsers hide absolute local paths/);
+  assert.match(page, /setActiveCandidate\(0\)[\s\S]*?no selected seizure-keyword events remain/);
 });
 
 test("mixed-rate interaction keeps channel provenance and sample timing", async () => {

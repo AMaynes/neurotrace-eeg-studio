@@ -491,7 +491,7 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   assert.match(entries, /item\.track\s*===\s*"context"/);
   assert.match(entries, /annotationGeometry\(item\)\s*!==\s*"session"/);
   assert.match(entries, /candidates/);
-  assert.match(entries, /linkedCandidateIds/, "reviewed file events are not duplicated beside their linked annotation");
+  assert.doesNotMatch(entries, /linkedCandidateIds/, "a source event stays navigable while its linked ictal interval is still a draft");
   assert.match(entries, /confidence:\s*Math\.round\(clamp\(item\.confidence,\s*0,\s*100\)\)/);
   assert.match(entries, /confidence:\s*item\.confidence/, "file-event confidence remains editable and persisted");
   assert.match(entries, /\.sort\(\(a,\s*b\)\s*=>\s*a\.time\s*-\s*b\.time/);
@@ -638,7 +638,7 @@ test("highlights a focused channel and provides compact or vertically scrollable
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /className=\{focusedChannel\s*===\s*index\s*\?\s*"focused"\s*:\s*""\}/);
+  assert.match(page, /className=\{`\$\{focusedChannel\s*===\s*index\s*\?\s*"focused"\s*:\s*""\}/);
   assert.match(page, /aria-pressed=\{focusedChannel\s*===\s*index\}/);
   assert.match(page, /setFocusedChannel\(index\)/);
   assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
@@ -652,16 +652,25 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /const CHANNEL_RAIL_HEADER_HEIGHT\s*=\s*28/);
 
-  const drawStart = page.indexOf("const rows = Math.max(1, display.data.length)");
+  const drawStart = page.indexOf("const plotTop = CHANNEL_RAIL_HEADER_HEIGHT");
   const drawEnd = page.indexOf("if (markOnset !== null)", drawStart);
   const draw = page.slice(drawStart, drawEnd);
   assert.match(draw, /const plotTop\s*=\s*CHANNEL_RAIL_HEADER_HEIGHT/);
   assert.match(draw, /const plotHeight\s*=\s*Math\.max\(1,\s*height\s*-\s*plotTop\)/);
-  assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channel/);
+  assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channelRowLayout\.rowStartUnits\[channel\]/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
+  assert.match(draw, /context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)[\s\S]*?context\.clip\(\)/, "each channel is clipped to its exact row without a minimum-height bleed");
+  assert.ok((draw.match(/confineTraceYToRow\(/g) ?? []).length >= 4, "direct, envelope, and midpoint paths hard-limit trace coordinates to the row");
+  assert.match(draw, /if\s*\(overflow\)[\s\S]*?context\.closePath\(\)/, "clipped excursions leave an overflow marker");
+  assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
+  assert.match(draw, /if\s*\(rowHeight\s*>=\s*2\)[\s\S]*?context\.strokeRect/, "focused-row borders are omitted when a compact row is too short to contain the stroke");
+  assert.match(page, /const ANATOMICAL_GROUP_GAP_ROWS\s*=\s*4/);
+  assert.match(page, /channelRowFromFraction\(channelRowLayout/);
   assert.match(draw, /robustTraceBaseline\(values\)[\s\S]*?max\s*-\s*baseline/, "each trace is centered on a robust display-window baseline");
   assert.match(draw, /if \(!Number\.isFinite\(value\)\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");
   assert.match(draw, /const traceOrder[\s\S]*?focusedChannel/, "the focused trace is drawn last for readability");
+  assert.match(draw, /legacyRawCountDisplay[\s\S]*?LEGACY_RAW_COUNTS_PER_ROW/, "uncalibrated legacy DAT uses MATLAB's raw-count row spacing");
+  assert.match(draw, /barValue\s*=\s*\(legacyRawCountDisplay\s*\?\s*5_000\s*:\s*100\)\s*\/\s*gain/, "the scale bar stays inside one row as gain changes");
 
   const pointerStart = page.indexOf("const onWavePointerDown");
   const pointerEnd = page.indexOf("const onWavePointerUp", pointerStart);
@@ -696,12 +705,20 @@ test("uses every available context lane before compressing overlapping labels", 
   assert.match(page, /clamp\(resize\.startHeight[\s\S]*?,\s*44,\s*420\)/, "the context surface can expand far enough for dense concurrent context");
 });
 
-test("does not render candidate controls or candidate marks", async () => {
+test("renders the source-event review loop and event-relative candidate marks", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.doesNotMatch(page, /activeCandidateItem|candidate-cursor|Suggested instance|skipActiveCandidate/);
-  assert.doesNotMatch(css, /map-candidate|candidate-mark|candidate-cursor/);
+  assert.match(page, /activeCandidateItem/);
+  assert.match(page, /SOURCE EVENT · 0\.000 s/);
+  assert.match(page, /className="candidate-review-bar"/);
+  assert.match(page, /Mark onset \/ offset/);
+  assert.match(page, /Accept &amp; next/);
+  assert.match(page, /skipActiveCandidate/);
+  assert.match(page, /NA · Not rated/);
+  assert.match(page, /formatRelativeTime\(activeCandidateOnset\s*-\s*activeCandidateItem\.time\)/);
+  assert.match(css, /\.candidate-review-bar\s*\{/);
+  assert.match(css, /\.candidate-relative-times\s*\{/);
 });

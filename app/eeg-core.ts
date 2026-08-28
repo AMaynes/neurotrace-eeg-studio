@@ -75,6 +75,31 @@ export interface SignalSource {
   ): Promise<WindowData>;
 }
 
+/** MATLAB's legacy DAT viewer separates neighboring raw traces by 15,000 ADC counts. */
+export const LEGACY_RAW_COUNTS_PER_ROW = 15_000;
+
+/**
+ * Defense-in-depth for waveform drawing. Canvas clipping remains the primary
+ * containment boundary, while this keeps even extreme path coordinates inside
+ * the channel row and reports that the source excursion overflowed it.
+ */
+export function confineTraceYToRow(y: number, rowTop: number, rowHeight: number) {
+  if (!Number.isFinite(rowTop) || !Number.isFinite(rowHeight) || !(rowHeight > 0)) {
+    throw new Error("Trace row geometry must be finite with a positive height.");
+  }
+  const rowBottom = rowTop + rowHeight;
+  if (!Number.isFinite(y)) {
+    return {
+      y: y === Number.NEGATIVE_INFINITY ? rowTop : y === Number.POSITIVE_INFINITY ? rowBottom : (rowTop + rowBottom) / 2,
+      overflow: true,
+    };
+  }
+  return {
+    y: Math.min(rowBottom, Math.max(rowTop, y)),
+    overflow: y < rowTop || y > rowBottom,
+  };
+}
+
 export interface SourceEvent {
   label: string;
   timeSec: number;
@@ -910,6 +935,12 @@ export class RawDatSource implements SignalSource {
     if (!Number.isInteger(options.channelCount) || options.channelCount <= 0) {
       throw new Error("Raw DAT channel count must be a positive integer.");
     }
+    if (options.physicalScale !== undefined) {
+      const scales = typeof options.physicalScale === "number" ? [options.physicalScale] : options.physicalScale;
+      if (scales.some((scale) => !Number.isFinite(scale) || !(scale > 0))) {
+        throw new Error("Raw DAT physical scale must contain only positive finite values.");
+      }
+    }
     this.file = file;
     this.scale = expandPerChannel(options.physicalScale, options.channelCount, 1, "physicalScale");
     this.physicalOffset = expandPerChannel(options.physicalOffset, options.channelCount, 0, "physicalOffset");
@@ -923,12 +954,14 @@ export class RawDatSource implements SignalSource {
     const units = typeof options.channelUnits === "string"
       ? labels.map(() => options.channelUnits as string)
       : Array.from({ length: options.channelCount }, (_, index) => options.channelUnits?.[index] || defaultUnit);
+    const anatomicalChannels = orderAnatomicalChannelIndices(labels)
+      .filter((index) => anatomicalChannelGroup(labels[index]) !== null);
     const warnings = [
       "Headerless DAT interpretation assumes sample-major, channel-interleaved signed 16-bit little-endian values. Confirm the mapping before clinical review.",
       ...(options.warnings ?? []),
     ];
     if (trailingBytes) warnings.push(`Ignored ${trailingBytes} trailing byte(s) that do not form a complete sample frame.`);
-    if (!options.physicalScale) warnings.push("No physical scale was supplied; raw digital counts are displayed as arbitrary units.");
+    if (options.physicalScale === undefined) warnings.push("No physical scale was supplied; raw digital counts are displayed as arbitrary units.");
 
     this.meta = {
       id: deterministicId(`${file.name}:${file.size}:${file.lastModified}:${options.sampleRate}:${options.channelCount}`, "rec"),
@@ -942,6 +975,9 @@ export class RawDatSource implements SignalSource {
       units,
       sampleRates: labels.map(() => options.sampleRate),
       sampleRate: options.sampleRate,
+      recommendedDisplayChannels: anatomicalChannels.length
+        ? anatomicalChannels
+        : labels.map((_, index) => index),
       byteLength: file.size,
       warnings,
       assumptions: ["signed int16", "little-endian", "sample-major channel interleave", ...(options.assumptions ?? [])],
@@ -2266,6 +2302,11 @@ const STANDARD_SCALP_LABELS = new Set([
   "P7", "P8", "PZ", "O1", "O2", "OZ", "A1", "A2", "M1", "M2",
 ]);
 
+const LEGACY_AUXILIARY_GROUPS = new Set([
+  "DC", "MARK", "E", "C", "EX", "F", "REF", "GND", "ECG", "EKG", "EMG",
+  "EOG", "TRIG", "SYNC", "AUX", "STI",
+]);
+
 interface ContactLabel {
   sourceIndex: number;
   actualLabel: string;
@@ -2286,7 +2327,47 @@ function parseContactLabel(label: string, sourceIndex: number): ContactLabel | n
   const contact = Number(match[2]);
   if (!Number.isSafeInteger(contact)) return null;
   const group = match[1].replace(/[\s_-]+/g, "").toUpperCase();
+  if (LEGACY_AUXILIARY_GROUPS.has(group)) return null;
   return { sourceIndex, actualLabel: label, group, contact };
+}
+
+/**
+ * Returns the anatomical depth-electrode group used by the legacy MATLAB
+ * reviewer. Bipolar display labels such as LA1–LA2 resolve to the same LA
+ * group, while the MATLAB reviewer's explicitly auxiliary groups return null.
+ */
+export function anatomicalChannelGroup(label: string): string | null {
+  const cleaned = label
+    .trim()
+    .replace(/^EEG\s+/i, "")
+    .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
+    .trim();
+  // Only the first contact establishes the group. This also handles derived
+  // labels such as "EEG LA1-REF–EEG LA2-REF" without confusing reference
+  // suffix hyphens with the bipolar separator.
+  const match = /^([A-Za-z]+)[\s_-]*(\d+)/.exec(cleaned);
+  if (!match) return null;
+  const group = match[1].replace(/[\s_-]+/g, "").toUpperCase();
+  if (LEGACY_AUXILIARY_GROUPS.has(group)) return null;
+  return group;
+}
+
+/**
+ * Reproduces the MATLAB reviewer's stable left/right/other ordering without
+ * changing the source-channel identity carried by each row.
+ */
+export function orderAnatomicalChannelIndices(
+  labels: readonly string[],
+  indices: readonly number[] = labels.map((_, index) => index),
+): number[] {
+  return indices
+    .map((sourceIndex, position) => {
+      const group = anatomicalChannelGroup(labels[sourceIndex] ?? "");
+      const side = group?.startsWith("L") ? 0 : group?.startsWith("R") ? 1 : group ? 2 : 3;
+      return { sourceIndex, position, side };
+    })
+    .sort((left, right) => left.side - right.side || left.position - right.position)
+    .map(({ sourceIndex }) => sourceIndex);
 }
 
 export function buildMontage(

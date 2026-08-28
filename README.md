@@ -59,17 +59,19 @@ See [STRUCTURE.md](STRUCTURE.md) for the authoritative repository map and [TODO.
 
 ## Recording Ingestion
 
-- **EDF and EDF+:** Header metadata is parsed first. Signal data is read from the local `File` in bounded time windows. EDF+ annotation records are scanned and imported into the instance queue.
+- **EDF and EDF+:** Header metadata is parsed first. Signal data is read from the local `File` in bounded time windows. EDF+ annotation records are scanned; seizure-keyword events are imported into the source-event review queue.
 - **MATLAB v5:** The largest viable numeric signal matrix is decoded in memory. Compressed elements are supported.
-- **Legacy MAT + DAT:** The MAT companion supplies recoverable session metadata while the signed-int16 little-endian DAT remains file-backed after the reviewer confirms its layout and physical scale.
+- **Legacy MAT + DAT:** The MAT companion supplies recoverable session metadata while the signed-int16 little-endian DAT remains file-backed. With no verified calibration, samples stay in raw ADC counts and use the MATLAB reviewer’s 15,000-count channel spacing; an optional confirmed µV/count value enables calibrated display units.
 
 MATLAB v7.3/HDF5 files must currently be converted to MATLAB v5 or EDF before import.
 
 ## Review and Export
 
-The workspace provides stacked min/max-envelope traces, recorded/average/bipolar montages, display-only filters, channel quality flags, a Nyquist-bounded spectrogram, exact-time labels, group selection and movement, interval handles, provenance, confidence, local draft recovery, undo/redo, an instance queue, QC checks, and a layered session map.
+The workspace provides stacked min/max-envelope traces, recorded/average/bipolar montages, display-only filters, channel quality flags, a Nyquist-bounded spectrogram, exact-time labels, group selection and movement, interval handles, provenance, confidence, local draft recovery, undo/redo, an instance queue, QC checks, and a layered session map. Depth contacts follow the legacy MATLAB reviewer’s left/right/other order and anatomical group spacing. Each waveform is clipped to its own row with an overflow indicator so artifacts cannot obscure neighboring channels.
 
-Exports are ZIP bundles containing BIDS-style events/channels tables, recording metadata, full annotation provenance, deterministic forecasting windows, an ontology, QC report, and dataset manifest. Raw EEG bytes are never included in the export.
+Seizure source events open in a 20-second event-relative viewport centered on time zero. The review bar supports onset/offset marking, reviewer initials, optional confidence 1–3 (`NA` when unrated), per-event bad/ictal-channel notes, Accept-and-advance, and auditable Skip decisions. Legacy MAT + DAT imports apply the MATLAB seizure-event keywords, let the reviewer choose candidate events before opening the recording, and enforce its 100-channel session threshold. Because browsers do not reveal absolute local file paths, the import confirmation includes editable patient/path fields for MATLAB-compatible resume and export keys.
+
+Exports are ZIP bundles containing BIDS-style events/channels tables, recording metadata, full annotation provenance, deterministic forecasting windows, an ontology, QC report, dataset manifest, and a decision-only `matlab_compatibility.csv` using the newer MATLAB tool’s 20-column schema. Raw EEG bytes are never included in the export.
 
 ## Privacy and Local State
 
