@@ -531,6 +531,18 @@ test("uncalibrated raw DAT remains in source counts", async () => {
   assert.match(source.meta.warnings.join("\n"), /raw digital counts/i);
 });
 
+test("large raw DAT sessions start with a responsive channel subset", async () => {
+  const channelLabels = Array.from({ length: 128 }, (_, index) => `LA${index + 1}`);
+  const source = await RawDatSource.create(new File([], "large-session.dat"), {
+    sampleRate: 1_250,
+    channelCount: channelLabels.length,
+    channelLabels,
+  });
+  assert.equal(source.meta.recommendedDisplayChannels?.length, 18);
+  assert.deepEqual(source.meta.recommendedDisplayChannels, Array.from({ length: 18 }, (_, index) => index));
+  assert.match(source.meta.warnings.join("\n"), /limited to 18 channels/i);
+});
+
 test("calibrated raw DAT applies a strictly positive microvolt scale", async () => {
   const bytes = new Uint8Array(4);
   const view = new DataView(bytes.buffer);

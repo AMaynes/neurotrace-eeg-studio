@@ -661,6 +661,7 @@ const EMPTY_DISPLAY: DisplayWindow = {
 const RAW_WINDOW_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 const ENVELOPE_CACHE_BUDGET_BYTES = 32 * 1024 * 1024;
 const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
+const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 const CANVAS_PIXEL_BUDGET = 8_000_000;
 
 const DEFAULT_CONTROLS: ControlBindings = {
@@ -2133,6 +2134,7 @@ export default function Home() {
           && montage === "referential"
           && !spectrogramOpen
           && !requiresClinicalPreparation
+          && waveformWidth >= MIN_WAVEFORM_WIDTH_FOR_ENVELOPE
           && typeof source.getEnvelopeWindow === "function"
           && indices.some((index) =>
             (meta.sampleRates[index] ?? primarySampleRate(meta)) * timebase > Math.max(2, waveformWidth * 1.5));
@@ -2331,13 +2333,43 @@ export default function Home() {
         }
         if (sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
 
-        const cacheDuration = Math.max(timebase, rawWindow.endSec - rawWindow.startSec);
-        const processingPixelCount = Math.max(1, waveformWidth * cacheDuration / Math.max(1e-9, timebase));
-        const expectedFactors = rawWindow.data.map((channel, index) =>
+        // Keep file read-ahead in the raw cache, but only filter/decimate the
+        // requested viewport plus its settling pad. Processing the full cache
+        // made a 100+ channel, 1 kHz DAT first paint hundreds of millions of
+        // unnecessary FIR operations.
+        const processingRanges = rawWindow.data.map((channel, position) => {
+          const sampleRate = rawWindow.sampleRates[position] ?? primarySampleRate(meta);
+          const channelStart = rawWindow.channelStartSecs[position] ?? rawWindow.startSec;
+          const firstSample = clamp(
+            Math.floor((requiredStart - channelStart) * sampleRate + 1e-9),
+            0,
+            channel.length,
+          );
+          const lastSample = clamp(
+            Math.max(firstSample + 1, Math.ceil((requiredEnd - channelStart) * sampleRate - 1e-9)),
+            firstSample,
+            channel.length,
+          );
+          return {
+            firstSample,
+            lastSample,
+            sourceStartSample: Math.round(channelStart * sampleRate) + firstSample,
+          };
+        });
+        const processingData = rawWindow.data.map((channel, position) => {
+          const range = processingRanges[position];
+          return channel.subarray(range.firstSample, range.lastSample);
+        });
+        const processingDuration = Math.max(1e-9, requiredEnd - requiredStart);
+        const processingPixelCount = Math.max(1, waveformWidth * processingDuration / Math.max(1e-9, timebase));
+        const expectedFactors = processingData.map((channel, index) =>
           clinicalDecimationFactor(rawWindow.sampleRates[index], channel.length, processingPixelCount));
+        const sourceStartSampleIndices = processingRanges.map((range) => range.sourceStartSample);
         const settingsKey = JSON.stringify({
           filters: filters.enabled ? filters : { enabled: false },
           factors: expectedFactors,
+          sourceStartSampleIndices,
+          sampleCounts: processingData.map((channel) => channel.length),
         });
         let processed = processedWindowCacheRef.current.find((entry) => entry.raw === rawWindow && entry.settingsKey === settingsKey);
         if (processed) {
@@ -2346,12 +2378,8 @@ export default function Home() {
             processed,
           ];
         } else {
-          const sourceStartSampleIndices = rawWindow.data.map((_, position) => {
-            const sourceRate = rawWindow.sampleRates[position];
-            return Math.round((rawWindow.channelStartSecs[position] ?? rawWindow.startSec) * sourceRate);
-          });
           const prepared = await processDisplaySignalsOffThread({
-            data: rawWindow.data,
+            data: processingData,
             sampleRates: rawWindow.sampleRates,
             filters,
             pixelCount: processingPixelCount,
@@ -2824,17 +2852,21 @@ export default function Home() {
     draw();
   }, [activeCandidateItem, annotations, channelRowLayout, channelScrollOffset, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const observer = new ResizeObserver(() => {
+    const measure = () => {
       const nextWidth = Math.max(1, Math.round(canvas.getBoundingClientRect().width));
       setWaveformWidth((current) => current === nextWidth ? current : nextWidth);
       waveDrawRef.current();
-    });
+    };
+    // The canvas is absent on the blank-session screen, so measure as soon as
+    // a recording mounts it instead of waiting for a later resize notification.
+    measure();
+    const observer = new ResizeObserver(measure);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, []);
+  }, [hasRecording]);
 
   const updateExpandedChannelViewport = useCallback(() => {
     const container = waveformScrollRef.current;

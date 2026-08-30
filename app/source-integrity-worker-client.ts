@@ -24,21 +24,34 @@ export type SourceVerificationOptions = Sha256BlobOptions & {
   edfHeader?: EDFHeader;
 };
 
+async function verifySourceDirectly(
+  blob: Blob,
+  options: SourceVerificationOptions,
+): Promise<SourceVerificationResult> {
+  const hash = await sha256Blob(blob, options);
+  const edfAnnotations = options.edfHeader && typeof File !== "undefined" && blob instanceof File
+    ? await parseEDFAnnotations(blob, options.edfHeader, { signal: options.signal })
+    : undefined;
+  return { hash, edfAnnotations };
+}
+
 export async function verifySourceOffThread(
   blob: Blob,
   options: SourceVerificationOptions = {},
 ): Promise<SourceVerificationResult> {
   if (typeof Worker === "undefined") {
-    const hash = await sha256Blob(blob, options);
-    const edfAnnotations = options.edfHeader && typeof File !== "undefined" && blob instanceof File
-      ? await parseEDFAnnotations(blob, options.edfHeader, { signal: options.signal })
-      : undefined;
-    return { hash, edfAnnotations };
+    return verifySourceDirectly(blob, options);
+  }
+
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL("./source-hash-worker.ts", import.meta.url), { type: "module" });
+  } catch {
+    return verifySourceDirectly(blob, options);
   }
 
   return new Promise<SourceVerificationResult>((resolve, reject) => {
     let settled = false;
-    const worker = new Worker(new URL("./source-hash-worker.ts", import.meta.url), { type: "module" });
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
@@ -54,6 +67,18 @@ export async function verifySourceOffThread(
         reject(error);
       }
     });
+    const fallbackToDirect = () => finish(() => {
+      if (options.signal?.aborted) {
+        if (options.signal.reason !== undefined) reject(options.signal.reason);
+        else {
+          const error = new Error("SHA-256 hashing was aborted");
+          error.name = "AbortError";
+          reject(error);
+        }
+        return;
+      }
+      void verifySourceDirectly(blob, options).then(resolve, reject);
+    });
     worker.onmessage = (event: MessageEvent<HashWorkerResponse>) => {
       const response = event.data;
       if (response.type === "progress") {
@@ -61,10 +86,13 @@ export async function verifySourceOffThread(
       } else if (response.type === "complete") {
         finish(() => resolve({ hash: response.hash, edfAnnotations: response.edfAnnotations }));
       } else {
-        finish(() => reject(new Error(response.message)));
+        fallbackToDirect();
       }
     };
-    worker.onerror = (event) => finish(() => reject(new Error(event.message || "Source hash worker failed")));
+    worker.onerror = (event) => {
+      event.preventDefault();
+      fallbackToDirect();
+    };
     if (options.signal?.aborted) {
       onAbort();
       return;
@@ -80,7 +108,11 @@ export async function verifySourceOffThread(
         byteLength: signal.samplesPerRecord * 2,
       })),
     } : undefined;
-    worker.postMessage({ blob, edfAnnotationPlan });
+    try {
+      worker.postMessage({ blob, edfAnnotationPlan });
+    } catch {
+      fallbackToDirect();
+    }
   });
 }
 

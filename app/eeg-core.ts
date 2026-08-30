@@ -1104,10 +1104,19 @@ export class RawDatSource implements SignalSource {
       : Array.from({ length: options.channelCount }, (_, index) => options.channelUnits?.[index] || defaultUnit);
     const anatomicalChannels = orderAnatomicalChannelIndices(labels)
       .filter((index) => anatomicalChannelGroup(labels[index]) !== null);
+    const displayCandidates = anatomicalChannels.length
+      ? anatomicalChannels
+      : labels.map((_, index) => index);
+    const recommendedDisplayChannels = displayCandidates.slice(0, MAX_RECOMMENDED_DISPLAY_CHANNELS);
     const warnings = [
       "Headerless DAT interpretation assumes sample-major, channel-interleaved signed 16-bit little-endian values. Confirm the mapping before clinical review.",
       ...(options.warnings ?? []),
     ];
+    if (displayCandidates.length > recommendedDisplayChannels.length) {
+      warnings.push(
+        `Initial display is limited to ${MAX_RECOMMENDED_DISPLAY_CHANNELS} channels for responsive loading; every mapped channel remains available through CH+.`,
+      );
+    }
     if (trailingBytes) warnings.push(`Ignored ${trailingBytes} trailing byte(s) that do not form a complete sample frame.`);
     if (options.physicalScale === undefined) warnings.push("No physical scale was supplied; raw digital counts are displayed as arbitrary units.");
 
@@ -1123,9 +1132,7 @@ export class RawDatSource implements SignalSource {
       units,
       sampleRates: labels.map(() => options.sampleRate),
       sampleRate: options.sampleRate,
-      recommendedDisplayChannels: anatomicalChannels.length
-        ? anatomicalChannels
-        : labels.map((_, index) => index),
+      recommendedDisplayChannels,
       byteLength: file.size,
       warnings,
       assumptions: ["signed int16", "little-endian", "sample-major channel interleave", ...(options.assumptions ?? [])],

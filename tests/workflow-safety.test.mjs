@@ -206,6 +206,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /typeof source\.getEnvelopeWindow\s*===\s*"function"/);
   assert.match(refresh, /const requiresClinicalPreparation[\s\S]*?clinicalDecimationFactor/);
   assert.match(refresh, /&&\s*!requiresClinicalPreparation/);
+  assert.match(refresh, /waveformWidth\s*>=\s*MIN_WAVEFORM_WIDTH_FOR_ENVELOPE/);
   assert.match(refresh, /SOURCE_READ_AHEAD_BUDGET_BYTES/);
   assert.match(refresh, /ENVELOPE_CACHE_BUDGET_BYTES/);
   assert.match(refresh, /maxBucketsByBudget/);
@@ -215,6 +216,8 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /rawOwnerIsCached\s*=\s*rawWindowCacheRef\.current\.includes\(rawWindow\)/);
   assert.match(refresh, /if\s*\(rawOwnerIsCached[\s\S]*?!duplicatesRaw/);
   assert.match(refresh, /sourceStartSampleIndices[\s\S]*?processDisplaySignalsOffThread[\s\S]*?outputStartSampleIndices/);
+  assert.match(refresh, /const processingData\s*=\s*rawWindow\.data\.map[\s\S]*?channel\.subarray/);
+  assert.match(refresh, /processDisplaySignalsOffThread\(\{\s*data:\s*processingData/);
 
   const baseline = section(page, "function robustTraceBaseline", "function boundedCanvasScale");
   assert.match(baseline, /for\s*\(let index\s*=\s*0;\s*index\s*<\s*values\.length/);
@@ -237,6 +240,15 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(page, /const envelope\s*=\s*display\.envelopes\[row\][\s\S]*?Math\.floor/);
 });
 
+test("measures the waveform after a recording mounts before choosing overview resolution", async () => {
+  const page = await pageSource();
+  const resize = section(page, "useLayoutEffect(() => {\n    const canvas = canvasRef.current", "const updateExpandedChannelViewport");
+  assert.match(resize, /const measure\s*=\s*\(\)\s*=>/);
+  assert.match(resize, /measure\(\);[\s\S]*?new ResizeObserver\(measure\)/);
+  assert.match(resize, /\},\s*\[hasRecording\]\);/);
+  assert.match(page, /const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE\s*=\s*64/);
+});
+
 test("large source verification stays off the UI thread and combines EDF hashing with TAL extraction", async () => {
   const page = await pageSource();
   const client = await readFile(new URL("../app/source-integrity-worker-client.ts", import.meta.url), "utf8");
@@ -247,6 +259,7 @@ test("large source verification stays off the UI thread and combines EDF hashing
   assert.match(client, /new Worker\(new URL\("\.\/source-hash-worker\.ts",\s*import\.meta\.url\)/);
   assert.match(client, /worker\.terminate\(\)/);
   assert.match(client, /options\.signal\?\.addEventListener\("abort"/);
+  assert.match(client, /fallbackToDirect[\s\S]*?verifySourceDirectly/);
   assert.match(client, /annotationSignals\.map/);
   assert.match(worker, /const sha256\s*=\s*new IncrementalSha256\(\)/);
   assert.match(worker, /events\.push\(\.\.\.parseEdfTalText/);
@@ -257,6 +270,7 @@ test("large source verification stays off the UI thread and combines EDF hashing
   assert.match(page, /verifySourceOffThread\(pendingLegacyMatFile\)/);
   assert.match(displayClient, /new Worker\(new URL\("\.\/display-processing-worker\.ts",\s*import\.meta\.url\)/);
   assert.match(displayClient, /options\.signal\?\.addEventListener\("abort"/);
+  assert.match(displayClient, /fallbackToDirect[\s\S]*?processDirectly/);
   assert.match(displayWorker, /applyDisplayFilters/);
   assert.match(displayWorker, /prepareClinicalDisplaySignals/);
 });

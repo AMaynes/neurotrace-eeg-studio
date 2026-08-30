@@ -51,11 +51,17 @@ export function processDisplaySignalsOffThread(
     return Promise.reject(options.signal.reason
       ?? new DOMException("Signal processing was superseded", "AbortError"));
   }
-  if (typeof Worker === "undefined") return Promise.resolve(processDirectly(request));
+  if (typeof Worker === "undefined") return Promise.resolve().then(() => processDirectly(request));
+
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL("./display-processing-worker.ts", import.meta.url), { type: "module" });
+  } catch {
+    return Promise.resolve().then(() => processDirectly(request));
+  }
 
   return new Promise<DisplayProcessingResult>((resolve, reject) => {
     let settled = false;
-    const worker = new Worker(new URL("./display-processing-worker.ts", import.meta.url), { type: "module" });
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
@@ -71,6 +77,20 @@ export function processDisplaySignalsOffThread(
         reject(error);
       }
     });
+    const fallbackToDirect = () => finish(() => {
+      if (options.signal?.aborted) {
+        if (options.signal.reason !== undefined) reject(options.signal.reason);
+        else {
+          const error = new Error("Signal processing was superseded");
+          error.name = "AbortError";
+          reject(error);
+        }
+        return;
+      }
+      Promise.resolve()
+        .then(() => processDirectly(request))
+        .then(resolve, reject);
+    });
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
       const response = event.data;
       if (response.type === "complete") {
@@ -84,12 +104,19 @@ export function processDisplaySignalsOffThread(
         finish(() => reject(new Error(response.message)));
       }
     };
-    worker.onerror = (event) => finish(() => reject(new Error(event.message || "Signal processing worker failed")));
+    worker.onerror = (event) => {
+      event.preventDefault();
+      fallbackToDirect();
+    };
     if (options.signal?.aborted) {
       onAbort();
       return;
     }
     options.signal?.addEventListener("abort", onAbort, { once: true });
-    worker.postMessage(request);
+    try {
+      worker.postMessage(request);
+    } catch {
+      fallbackToDirect();
+    }
   });
 }
