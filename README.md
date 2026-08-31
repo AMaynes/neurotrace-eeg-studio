@@ -19,8 +19,11 @@ The development server prints the local URL after startup.
 
 ### Reproducible GitHub Pages release
 
-The canonical static release is built directly from the `source` branch without a
-server adapter:
+`main` is the canonical project branch and the only routine push target. The
+`backup` branch is a point-in-time safety copy; it is not part of the normal
+development or deployment flow.
+
+The canonical static release is built from `main` without a server adapter:
 
 ```bash
 npm ci
@@ -34,20 +37,16 @@ JavaScript and CSS under `assets/`, and `og.png`. All runtime asset references a
 document-relative so the output works at the GitHub project path as well as from a
 local static server.
 
-The release flow is intentionally explicit:
+Every push to `main` runs the GitHub Pages workflow, which:
 
-1. Check out the exact `source` commit intended for release and run `npm ci`.
-2. Run `npm run check`; do not release if any check fails.
-3. In a clean `main` worktree, replace only the generated deployment snapshot
-   (`index.html`, the complete `assets/` directory, and `og.png`) with the contents
-   of `pages-dist/`.
-4. Serve the `main` worktree with an ordinary static file server and smoke-test
-   loading, recording import, navigation, and annotation recovery.
-5. Commit that snapshot on `main` and push `main` only after the smoke test passes.
+1. Installs the locked dependencies.
+2. Runs the complete type-check, lint, build, and test suite.
+3. Uploads `pages-dist/` as the exact GitHub Pages artifact.
+4. Publishes only after verification succeeds.
 
 `app/pages-client.tsx`, `index.html`, and `vite.pages.config.ts` are the committed
 source of this artifact. Generated files in `pages-dist/` and the deployed bundle
-on `main` must not be hand-edited.
+must not be hand-edited or committed.
 
 ## System Overview
 

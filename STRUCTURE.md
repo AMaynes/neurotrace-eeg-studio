@@ -4,6 +4,9 @@
 
 ```text
 neurotrace-eeg-studio/
+├── .github/
+│   └── workflows/
+│       └── deploy-pages.yml — Verifies `main`, builds the static artifact, and deploys GitHub Pages.
 ├── .openai/
 │   └── hosting.json — Retains the legacy Sites project identifier and optional logical storage bindings.
 ├── app/
@@ -61,6 +64,14 @@ Generated or local-only directories such as `node_modules/`, `dist/`, `pages-dis
 ---
 
 # Detailed Reference
+
+## `.github/`
+
+Contains GitHub automation only. Product behavior and provider-independent build logic must remain in the application and build configuration.
+
+### `.github/workflows/deploy-pages.yml`
+
+Runs the complete verification suite for every push to `main`, uploads `pages-dist/`, and deploys that exact artifact to GitHub Pages. `backup` does not trigger deployment.
 
 ## `.openai/`
 
