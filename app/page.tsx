@@ -196,6 +196,31 @@ type SessionTab = {
   recoveryStatus: "saved" | "error";
 };
 
+type ResourceCacheUsage = {
+  rawBytes: number;
+  rawEntries: number;
+  processedBytes: number;
+  processedEntries: number;
+  envelopeBytes: number;
+  envelopeEntries: number;
+};
+
+type BrowserResourceUsage = {
+  heapUsedBytes: number | null;
+  heapAllocatedBytes: number | null;
+  heapLimitBytes: number | null;
+  storageUsedBytes: number | null;
+  storageQuotaBytes: number | null;
+};
+
+type PerformanceWithMemory = Performance & {
+  memory?: {
+    usedJSHeapSize: number;
+    totalJSHeapSize: number;
+    jsHeapSizeLimit: number;
+  };
+};
+
 type DisplayWindow = {
   data: Float32Array[];
   /** Exact source extrema retained per display-time bucket for overview drawing. */
@@ -661,6 +686,7 @@ const EMPTY_DISPLAY: DisplayWindow = {
 const RAW_WINDOW_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 const ENVELOPE_CACHE_BUDGET_BYTES = 32 * 1024 * 1024;
 const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
+const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES;
 const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 const CANVAS_PIXEL_BUDGET = 8_000_000;
 
@@ -996,6 +1022,66 @@ function formatSessionStart(date?: Date) {
   return `${months[date.getUTCMonth()]} ${date.getUTCDate()}, ${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")} source clock`;
 }
 
+function formatByteCount(bytes: number | null | undefined) {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return "Unavailable";
+  if (bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function usagePercent(used: number | null, limit: number | null) {
+  if (used === null || limit === null || !(limit > 0)) return 0;
+  return clamp((used / limit) * 100, 0, 100);
+}
+
+function sourceReadProfile(format: RecordingMeta["format"], hasRecording: boolean) {
+  if (!hasRecording) {
+    return {
+      origin: "No recording loaded",
+      access: "Waiting for a local file",
+      detail: "Signal reads begin after an EDF, MAT, or MAT + DAT recording is selected.",
+    };
+  }
+  if (format === "edf" || format === "edf+") {
+    return {
+      origin: "Local browser file",
+      access: "On-demand EDF record slices",
+      detail: "Only the visible window and bounded read-ahead regions are read from the selected file.",
+    };
+  }
+  if (format === "raw-int16-le") {
+    return {
+      origin: "Local browser file",
+      access: "On-demand DAT frame slices",
+      detail: "Sample frames are read from the selected binary file as each visible window is requested.",
+    };
+  }
+  if (format === "mat-v5") {
+    return {
+      origin: "Local browser file",
+      access: "Decoded signal matrix in memory",
+      detail: "The selected MATLAB matrix is decoded once, then visible windows are read from browser memory.",
+    };
+  }
+  return {
+    origin: "Generated in this browser",
+    access: "Deterministic synthetic signal",
+    detail: "Demo samples are generated for the requested window without reading a recording file.",
+  };
+}
+
+function estimatedDecodedSourceBytes(meta: RecordingMeta) {
+  if (meta.format !== "mat-v5") return 0;
+  return meta.sampleRates.reduce((sum, sampleRate) => sum + Math.ceil(meta.durationSec * sampleRate) * Float32Array.BYTES_PER_ELEMENT, 0);
+}
+
 export default function Home() {
   const demoSource = useMemo(() => {
     return new DemoSource({ name: "blank-session", durationSec: 1, sampleRate: 256 });
@@ -1059,6 +1145,14 @@ export default function Home() {
     startClientY: number;
     selectedIds: Set<string>;
   } | null>(null);
+  const readResourceCacheUsage = useCallback((): ResourceCacheUsage => ({
+    rawBytes: rawWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0),
+    rawEntries: rawWindowCacheRef.current.length,
+    processedBytes: processedWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0),
+    processedEntries: processedWindowCacheRef.current.length,
+    envelopeBytes: envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0),
+    envelopeEntries: envelopeWindowCacheRef.current.length,
+  }), []);
 
   const [meta, setMeta] = useState<RecordingMeta>(() => sourceMeta(demoSource));
   const [hasRecording, setHasRecording] = useState(false);
@@ -1117,6 +1211,7 @@ export default function Home() {
   const [showImport, setShowImport] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [rightPanelView, setRightPanelView] = useState<"labels" | "resources">("labels");
   const [bottomTracksOpen, setBottomTracksOpen] = useState(true);
   const [contextTrackHeight, setContextTrackHeight] = useState(76);
   const [sessionLabelsHeight, setSessionLabelsHeight] = useState(145);
@@ -4421,6 +4516,11 @@ export default function Home() {
     { id: "instance", label: "ePhys Instance Labels" },
   ];
   const gridDivisions = timebase <= 30 ? Math.max(2, Math.ceil(timebase / 5)) : 10;
+  const resourcePanelActive = rightPanelOpen && rightPanelView === "resources";
+  const activeDisplayBytes = display.data.reduce((sum, channel) => sum + channel.byteLength, 0)
+    + display.envelopes.reduce((sum, envelope) => sum + (envelope
+      ? envelope.minima.byteLength + envelope.maxima.byteLength + envelope.gaps.byteLength
+      : 0), 0);
 
   return (
     <main className="neuro-app" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
@@ -4468,6 +4568,20 @@ export default function Home() {
           <button className="add-session-tab" disabled={importBusy} aria-label="Add blank session" title="Add blank session" onClick={createBlankSession}>+</button>
         </nav>
         <div className="top-actions utility-actions">
+          <button
+            className={`utility-button ${resourcePanelActive ? "active" : ""}`}
+            aria-label={resourcePanelActive ? "Show label panel" : "Show resource usage"}
+            aria-pressed={resourcePanelActive}
+            title={resourcePanelActive ? "Return to labels" : "Resource usage"}
+            onClick={() => {
+              if (resourcePanelActive) {
+                setRightPanelView("labels");
+                return;
+              }
+              setRightPanelView("resources");
+              setRightPanelOpen(true);
+            }}
+          ><span className="resource-glyph" aria-hidden="true"><i /><i /><i /></span></button>
           <button className="utility-button" aria-label="Open Help" title="Help" onClick={() => setShowHelp(true)}><span aria-hidden="true">?</span></button>
           <button className="utility-button" aria-label="Open Settings" title="Settings" onClick={() => setShowSettings(true)}><span className="settings-glyph" aria-hidden="true">⚙</span></button>
         </div>
@@ -4577,7 +4691,7 @@ export default function Home() {
           <div className="viewer-toolbar">
             <div className="panel-toggle-pair" aria-label="Workspace panels">
               <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title={`${leftPanelOpen ? "Hide" : "Show"} recording panel`} onClick={() => setLeftPanelOpen((value) => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
-              <button className={`panel-icon-button ${rightPanelOpen ? "active" : ""}`} aria-label={`${rightPanelOpen ? "Hide" : "Show"} right panel`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} context and label panel`} onClick={() => setRightPanelOpen((value) => !value)}><span className="panel-glyph right" aria-hidden="true"><i /><i /><i /></span></button>
+              <button className={`panel-icon-button ${rightPanelOpen ? "active" : ""}`} aria-label={`${rightPanelOpen ? "Hide" : "Show"} right panel`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} ${rightPanelView === "resources" ? "resource usage" : "context and label"} panel`} onClick={() => setRightPanelOpen((value) => !value)}><span className="panel-glyph right" aria-hidden="true"><i /><i /><i /></span></button>
               <button className={`panel-bottom-button ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} title={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} onClick={() => setBottomTracksOpen((value) => !value)}><span className="bottom-panel-glyph" aria-hidden="true"><i /><i /><i /></span></button>
             </div>
             <span className="toolbar-kicker">Signal tools</span>
@@ -4742,6 +4856,20 @@ export default function Home() {
         </section>
 
         <aside className="right-sidebar">
+          {rightPanelView === "resources" ? <ResourceUsagePanel
+            meta={meta}
+            hasRecording={hasRecording}
+            verifyingSource={verifyingSource}
+            sourceHash={sourceHash}
+            recoveryStatus={recoveryStatus}
+            viewStart={viewStart}
+            timebase={timebase}
+            visibleChannelCount={display.labels.length}
+            selectedChannelCount={selectedChannels.size}
+            openSessionCount={sessionTabs.length}
+            activeDisplayBytes={activeDisplayBytes}
+            readCacheUsage={readResourceCacheUsage}
+          /> : <>
           <div className="ontology-search-row">
             <input className="palette-search" aria-label="Search label ontology" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
           </div>
@@ -4777,6 +4905,7 @@ export default function Home() {
               })}
             </div>
           </section>
+          </>}
         </aside>
       </div>
 
@@ -5141,6 +5270,144 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label }: { data?: F
   const duration = data?.length && sampleRate ? data.length / sampleRate : 1;
   const cursorLeft = clamp(((cursor - start) / duration) * 100, 0, 100);
   return <div className="spectrogram-panel"><div className="spectrogram-label"><strong>{label}</strong><span>{sampleRate >= 2 ? `1–${Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only` : "Sampling rate below 2 Hz"}</span></div><div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div></div>;
+}
+
+function ResourceUsagePanel({
+  meta,
+  hasRecording,
+  verifyingSource,
+  sourceHash,
+  recoveryStatus,
+  viewStart,
+  timebase,
+  visibleChannelCount,
+  selectedChannelCount,
+  openSessionCount,
+  activeDisplayBytes,
+  readCacheUsage,
+}: {
+  meta: RecordingMeta;
+  hasRecording: boolean;
+  verifyingSource: boolean;
+  sourceHash: string;
+  recoveryStatus: "saved" | "error";
+  viewStart: number;
+  timebase: number;
+  visibleChannelCount: number;
+  selectedChannelCount: number;
+  openSessionCount: number;
+  activeDisplayBytes: number;
+  readCacheUsage: () => ResourceCacheUsage;
+}) {
+  const [browserUsage, setBrowserUsage] = useState<BrowserResourceUsage>({
+    heapUsedBytes: null,
+    heapAllocatedBytes: null,
+    heapLimitBytes: null,
+    storageUsedBytes: null,
+    storageQuotaBytes: null,
+  });
+  const [cacheUsage, setCacheUsage] = useState<ResourceCacheUsage>({
+    rawBytes: 0,
+    rawEntries: 0,
+    processedBytes: 0,
+    processedEntries: 0,
+    envelopeBytes: 0,
+    envelopeEntries: 0,
+  });
+
+  useEffect(() => {
+    let active = true;
+    const sampleBrowserUsage = async () => {
+      setCacheUsage(readCacheUsage());
+      const memory = (performance as PerformanceWithMemory).memory;
+      let storageEstimate: StorageEstimate | undefined;
+      try {
+        storageEstimate = await navigator.storage?.estimate?.();
+      } catch {
+        // Storage estimates are optional browser diagnostics.
+      }
+      if (!active) return;
+      setBrowserUsage({
+        heapUsedBytes: memory?.usedJSHeapSize ?? null,
+        heapAllocatedBytes: memory?.totalJSHeapSize ?? null,
+        heapLimitBytes: memory?.jsHeapSizeLimit ?? null,
+        storageUsedBytes: storageEstimate?.usage ?? null,
+        storageQuotaBytes: storageEstimate?.quota ?? null,
+      });
+    };
+    void sampleBrowserUsage();
+    const interval = window.setInterval(() => void sampleBrowserUsage(), 1500);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [readCacheUsage]);
+
+  const profile = sourceReadProfile(meta.format, hasRecording);
+  const signalCacheBytes = cacheUsage.rawBytes + cacheUsage.processedBytes + cacheUsage.envelopeBytes;
+  const cacheEntries = cacheUsage.rawEntries + cacheUsage.processedEntries + cacheUsage.envelopeEntries;
+  const decodedSourceBytes = estimatedDecodedSourceBytes(meta);
+  const integrityStatus = !hasRecording
+    ? "Idle"
+    : verifyingSource
+      ? "Verifying source"
+      : sourceHash
+        ? "Source verified"
+        : "Preview available";
+
+  return <section className="resource-panel" aria-label="Resource usage">
+    <header className="resource-panel-heading">
+      <div><span>LIVE DIAGNOSTICS</span><h2>Resource usage</h2><p>Browser memory and active signal reads</p></div>
+      <strong><i />LIVE</strong>
+    </header>
+
+    <section className="resource-heap-card">
+      <span>Browser JS heap</span>
+      <strong>{formatByteCount(browserUsage.heapUsedBytes)}</strong>
+      <small>{browserUsage.heapLimitBytes === null ? "Total heap is not exposed by this browser" : `of ${formatByteCount(browserUsage.heapLimitBytes)} limit`}</small>
+      <div className="resource-meter"><i style={{ width: `${usagePercent(browserUsage.heapUsedBytes, browserUsage.heapLimitBytes)}%` }} /></div>
+    </section>
+
+    <div className="resource-summary-grid">
+      <div><span>Signal cache</span><strong>{formatByteCount(signalCacheBytes)}</strong><small>{cacheEntries} cached window{cacheEntries === 1 ? "" : "s"}</small></div>
+      <div><span>Active view</span><strong>{formatByteCount(activeDisplayBytes)}</strong><small>{visibleChannelCount} rendered channel{visibleChannelCount === 1 ? "" : "s"}</small></div>
+      <div><span>Allocated heap</span><strong>{formatByteCount(browserUsage.heapAllocatedBytes)}</strong><small>Browser-managed</small></div>
+      <div><span>Site storage</span><strong>{formatByteCount(browserUsage.storageUsedBytes)}</strong><small>{browserUsage.storageQuotaBytes === null ? "Quota unavailable" : `${formatByteCount(browserUsage.storageQuotaBytes)} quota`}</small></div>
+    </div>
+
+    <section className="resource-detail-section">
+      <header><h3>Signal memory</h3><span>{usagePercent(signalCacheBytes, TOTAL_SIGNAL_CACHE_BUDGET_BYTES).toFixed(0)}% of cache ceiling</span></header>
+      <div className="resource-meter compact"><i style={{ width: `${usagePercent(signalCacheBytes, TOTAL_SIGNAL_CACHE_BUDGET_BYTES)}%` }} /></div>
+      <dl>
+        <div><dt>Raw windows <small>{cacheUsage.rawEntries}</small></dt><dd>{formatByteCount(cacheUsage.rawBytes)}</dd></div>
+        <div><dt>Processed windows <small>{cacheUsage.processedEntries}</small></dt><dd>{formatByteCount(cacheUsage.processedBytes)}</dd></div>
+        <div><dt>Overview envelopes <small>{cacheUsage.envelopeEntries}</small></dt><dd>{formatByteCount(cacheUsage.envelopeBytes)}</dd></div>
+        {decodedSourceBytes > 0 && <div><dt>Decoded MAT estimate</dt><dd>{formatByteCount(decodedSourceBytes)}</dd></div>}
+      </dl>
+    </section>
+
+    <section className="resource-detail-section source-read-section">
+      <header><h3>Reading from</h3><span>{hasRecording ? meta.format.toUpperCase() : "IDLE"}</span></header>
+      <div className="resource-source-file"><i>{hasRecording ? meta.format.replace("raw-int16-le", "DAT").toUpperCase() : "—"}</i><div><strong title={hasRecording ? meta.name : undefined}>{hasRecording ? meta.name : "No source selected"}</strong><span>{hasRecording ? formatByteCount(meta.byteLength) : "Choose a local recording"}</span></div></div>
+      <dl>
+        <div><dt>Origin</dt><dd>{profile.origin}</dd></div>
+        <div><dt>Access</dt><dd>{profile.access}</dd></div>
+        <div><dt>Visible window</dt><dd>{hasRecording ? `${formatClock(viewStart, true)}–${formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}` : "—"}</dd></div>
+        <div><dt>Channels</dt><dd>{hasRecording ? `${visibleChannelCount} shown · ${selectedChannelCount} selected` : "—"}</dd></div>
+        <div><dt>Integrity</dt><dd>{integrityStatus}</dd></div>
+        <div><dt>Network</dt><dd>Recording data is not uploaded</dd></div>
+      </dl>
+      <p>{profile.detail} Browsers expose the file name, not its full local path.</p>
+    </section>
+
+    <section className="resource-detail-section resource-session-section">
+      <header><h3>Workspace</h3><span>{openSessionCount} open tab{openSessionCount === 1 ? "" : "s"}</span></header>
+      <dl>
+        <div><dt>Local recovery</dt><dd className={recoveryStatus === "saved" ? "healthy" : "warning"}>{recoveryStatus === "saved" ? "Saved" : "Unavailable"}</dd></div>
+        <div><dt>Processing</dt><dd>{verifyingSource ? "Source verification" : "Ready"}</dd></div>
+      </dl>
+    </section>
+  </section>;
 }
 
 function QcPanel({ issues, annotations, badChannels, meta, recoveryStatus, onSelect }: { issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }>; annotations: Annotation[]; badChannels: Set<number>; meta: RecordingMeta; recoveryStatus: "saved" | "error"; onSelect: (id: string) => void }) {

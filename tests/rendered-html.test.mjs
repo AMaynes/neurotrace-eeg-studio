@@ -428,7 +428,7 @@ test("resizes context from its top edge, with upward drag expanding the track", 
   assert.doesNotMatch(handleRule, /\bbottom\s*:/, "the old bottom-edge resize affordance is removed");
 });
 
-test("keeps the right panel label-only and ordered like the ontology palette", async () => {
+test("keeps the right panel label view ordered like the ontology palette", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const sidebarStart = page.indexOf('<aside className="right-sidebar">');
   const sidebarEnd = page.indexOf("</aside>", sidebarStart);
@@ -442,6 +442,41 @@ test("keeps the right panel label-only and ordered like the ontology palette", a
   assert.ok(contextPosition > searchPosition, "context labels follow ontology search");
   assert.ok(ephysPosition > contextPosition, "ePhys labels follow context labels");
   assert.doesNotMatch(sidebar, /right-tabs|rightTab|<QcPanel|\bQC\b|inspector-section/, "QC and annotation inspection do not compete with the label palette");
+});
+
+test("toggles live resource usage from the control left of Help and Settings", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /const \[rightPanelView,\s*setRightPanelView\]\s*=\s*useState<"labels" \| "resources">\("labels"\)/);
+  const actionsStart = page.indexOf('<div className="top-actions utility-actions">');
+  const actionsEnd = page.indexOf("</div>", actionsStart);
+  const actions = page.slice(actionsStart, actionsEnd);
+  const resourcePosition = actions.indexOf("Show resource usage");
+  const helpPosition = actions.indexOf("Open Help");
+  const settingsPosition = actions.indexOf("Open Settings");
+  assert.ok(resourcePosition >= 0, "the resource control is present in the top-right utility group");
+  assert.ok(resourcePosition < helpPosition && helpPosition < settingsPosition, "resource usage sits immediately before Help and Settings");
+  assert.match(actions, /setRightPanelView\("resources"\)[\s\S]*?setRightPanelOpen\(true\)/);
+
+  const sidebarStart = page.indexOf('<aside className="right-sidebar">');
+  const sidebarEnd = page.indexOf("</aside>", sidebarStart);
+  const sidebar = page.slice(sidebarStart, sidebarEnd);
+  assert.match(sidebar, /rightPanelView\s*===\s*"resources"\s*\?\s*<ResourceUsagePanel/);
+
+  const resourcePanelStart = page.indexOf("function ResourceUsagePanel");
+  const resourcePanelEnd = page.indexOf("function QcPanel", resourcePanelStart);
+  const resourcePanel = page.slice(resourcePanelStart, resourcePanelEnd);
+  assert.match(resourcePanel, /performance as PerformanceWithMemory/);
+  assert.match(resourcePanel, /navigator\.storage/);
+  assert.match(resourcePanel, /Signal cache/);
+  assert.match(resourcePanel, /Reading from/);
+  assert.match(resourcePanel, /Recording data is not uploaded/);
+  assert.match(resourcePanel, /Browsers expose the file name, not its full local path/);
+  assert.match(css, /\.resource-panel\s*\{/);
+  assert.match(css, /\.resource-glyph\s*\{/);
 });
 
 test("moves QC into an accessible tab inside the Session Map dialog", async () => {
