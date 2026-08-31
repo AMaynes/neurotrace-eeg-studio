@@ -265,14 +265,19 @@ test("renders accessible session tabs and isolates each session workspace", asyn
     "the outgoing workspace is saved before the target workspace is restored",
   );
 
+  const blankSnapshotStart = page.indexOf("function blankSessionSnapshot");
+  const blankSnapshotEnd = page.indexOf("function primarySampleRate", blankSnapshotStart);
+  const blankSnapshot = page.slice(blankSnapshotStart, blankSnapshotEnd);
+  assert.match(blankSnapshot, /hasRecording:\s*false/);
+  assert.match(blankSnapshot, /annotations:\s*\[\]/);
+  assert.match(blankSnapshot, /candidates:\s*\[\]/);
+  assert.match(blankSnapshot, /selectedChannels:\s*\[\]/);
+  assert.match(blankSnapshot, /cursorLocked:\s*false/);
+
   const blankStart = page.indexOf("const createBlankSession");
-  const blankEnd = page.indexOf("const setViewStartSafe", blankStart);
+  const blankEnd = page.indexOf("const closeSession", blankStart);
   const blank = page.slice(blankStart, blankEnd);
-  assert.match(blank, /hasRecording:\s*false/);
-  assert.match(blank, /annotations:\s*\[\]/);
-  assert.match(blank, /candidates:\s*\[\]/);
-  assert.match(blank, /selectedChannels:\s*\[\]/);
-  assert.match(blank, /cursorLocked:\s*false/);
+  assert.match(blank, /blankSessionSnapshot\(demoSource,\s*id\)/);
   assert.match(blank, /sessionSnapshotsRef\.current\.set\(id,\s*snapshot\)/);
   assert.match(blank, /setSessionTabs\(\(current\)\s*=>\s*\[\.\.\.current/);
 
@@ -300,8 +305,19 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(close, /storeActiveSession\(\)/);
   assert.match(close, /recoveryStatus\s*===\s*"error"/);
   assert.match(close, /export it before closing/i);
+  assert.match(close, /remaining\.length\s*===\s*0/);
+  assert.match(close, /blankSessionSnapshot\(demoSource,\s*replacementId\)/);
+  assert.doesNotMatch(close, /sessionTabs\.length\s*<=\s*1/);
   assert.match(page, /className="session-tab-close"/);
+  assert.doesNotMatch(page, /disabled=\{importBusy\s*\|\|\s*sessionTabs\.length\s*<=\s*1\}/);
   assert.match(page, /window\.addEventListener\("pagehide",\s*flush\)/);
+
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const closeStylesStart = styles.indexOf(".session-tab-close {");
+  const closeStylesEnd = styles.indexOf(".add-session-tab", closeStylesStart);
+  const closeStyles = styles.slice(closeStylesStart, closeStylesEnd);
+  assert.match(closeStyles, /right:\s*7px/);
+  assert.doesNotMatch(closeStyles, /opacity:\s*0/);
 
   const importStart = page.indexOf("const importFiles");
   const importEnd = page.indexOf("const confirmDatImport", importStart);

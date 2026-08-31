@@ -942,6 +942,42 @@ function sourceMeta(source: SignalSource) {
   return source.meta;
 }
 
+function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspaceSnapshot {
+  return {
+    hasRecording: false,
+    source,
+    meta: sourceMeta(source),
+    sessionKey: `blank-${id}`,
+    recordingType: "Scalp EEG",
+    reviewer: "",
+    viewStart: 0,
+    timebase: 20,
+    gain: 1,
+    montage: "referential",
+    filters: { ...DEFAULT_FILTERS },
+    selectedChannels: [],
+    badChannels: [],
+    focusedChannel: 0,
+    annotations: [],
+    selectedAnnotationId: null,
+    selection: null,
+    cursorTime: 0,
+    cursorAmplitude: 0,
+    cursorLocked: false,
+    snapMode: "100ms",
+    spectrogramOpen: false,
+    expandedChannels: false,
+    candidates: [],
+    activeCandidate: 0,
+    sourceHash: "",
+    rawSourceHash: "",
+    sourceInterpretation: null,
+    recoveryStatus: "saved",
+    undo: [],
+    redo: [],
+  };
+}
+
 function primarySampleRate(meta: RecordingMeta) {
   return meta.sampleRates[0] ?? 1;
 }
@@ -1409,39 +1445,7 @@ export default function Home() {
     storeActiveSession();
     const id = makeId("session");
     const nextNumber = sessionTabs.length + 1;
-    const snapshot: SessionWorkspaceSnapshot = {
-      hasRecording: false,
-      source: demoSource,
-      meta: sourceMeta(demoSource),
-      sessionKey: `blank-${id}`,
-      recordingType: "Scalp EEG",
-      reviewer: "",
-      viewStart: 0,
-      timebase: 20,
-      gain: 1,
-      montage: "referential",
-      filters: { ...DEFAULT_FILTERS },
-      selectedChannels: [],
-      badChannels: [],
-      focusedChannel: 0,
-      annotations: [],
-      selectedAnnotationId: null,
-      selection: null,
-      cursorTime: 0,
-      cursorAmplitude: 0,
-      cursorLocked: false,
-      snapMode: "100ms",
-      spectrogramOpen: false,
-      expandedChannels: false,
-      candidates: [],
-      activeCandidate: 0,
-      sourceHash: "",
-      rawSourceHash: "",
-      sourceInterpretation: null,
-      recoveryStatus: "saved",
-      undo: [],
-      redo: [],
-    };
+    const snapshot = blankSessionSnapshot(demoSource, id);
     sessionSnapshotsRef.current.set(id, snapshot);
     setSessionTabs((current) => [...current, { id, title: `Session ${nextNumber}`, hasRecording: false, recoveryStatus: "saved" }]);
     setActiveSessionId(id);
@@ -1450,7 +1454,7 @@ export default function Home() {
   }, [applySessionSnapshot, demoSource, importBusy, sessionTabs.length, storeActiveSession]);
 
   const closeSession = useCallback((id: string) => {
-    if (importBusy || sessionTabs.length <= 1) return;
+    if (importBusy) return;
     if (id === activeSessionId) storeActiveSession();
     const closingSnapshot = sessionSnapshotsRef.current.get(id);
     if (closingSnapshot?.hasRecording && closingSnapshot.recoveryStatus === "error") {
@@ -1458,8 +1462,14 @@ export default function Home() {
       return;
     }
     const closingIndex = sessionTabs.findIndex((tab) => tab.id === id);
-    const remaining = sessionTabs.filter((tab) => tab.id !== id);
+    let remaining = sessionTabs.filter((tab) => tab.id !== id);
     sessionSnapshotsRef.current.delete(id);
+    if (remaining.length === 0) {
+      const replacementId = makeId("session");
+      const replacementSnapshot = blankSessionSnapshot(demoSource, replacementId);
+      sessionSnapshotsRef.current.set(replacementId, replacementSnapshot);
+      remaining = [{ id: replacementId, title: "Session 1", hasRecording: false, recoveryStatus: "saved" }];
+    }
     setSessionTabs(remaining);
     if (id !== activeSessionId) {
       setToast("Session tab closed; its local recovery remains available");
@@ -1471,7 +1481,7 @@ export default function Home() {
     setActiveSessionId(target.id);
     applySessionSnapshot(snapshot);
     setToast(snapshot.hasRecording ? "Session restored" : "Blank session ready — load a recording");
-  }, [activeSessionId, applySessionSnapshot, importBusy, sessionTabs, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, demoSource, importBusy, sessionTabs, storeActiveSession]);
 
   const updateControlBinding = useCallback((binding: keyof ControlBindings, value: string) => {
     setControlBindings((current) => {
@@ -4451,7 +4461,7 @@ export default function Home() {
                   onClick={() => switchSession(tab.id)}
                   title={`${tab.title}${tabRecovery === "error" ? " · local recovery unavailable" : tabHasRecording ? " · locally recoverable" : " · blank"}`}
                 ><span className={`session-tab-dot ${tabRecovery === "error" ? "error" : tabHasRecording ? "loaded" : "blank"}`} />{tab.title}</button>
-                <button className="session-tab-close" disabled={importBusy || sessionTabs.length <= 1} aria-label={`Close ${tab.title}`} title={sessionTabs.length <= 1 ? "At least one session stays open" : `Close ${tab.title}`} onClick={() => closeSession(tab.id)}>×</button>
+                <button className="session-tab-close" disabled={importBusy} aria-label={`Close ${tab.title}`} title={`Close ${tab.title}`} onClick={() => closeSession(tab.id)}>×</button>
               </div>;
             })}
           </div>

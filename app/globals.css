@@ -978,12 +978,9 @@ textarea:focus-visible {
   background: transparent;
   color: #60777d;
   cursor: pointer;
-  opacity: 0;
 }
-.session-tab-shell:hover .session-tab-close,
-.session-tab-shell:focus-within .session-tab-close { opacity: 1; }
 .session-tab-close:hover:not(:disabled) { background: #21343a; color: #dce7e7; }
-.session-tab-close:disabled { cursor: not-allowed; opacity: 0 !important; }
+.session-tab-close:disabled { cursor: not-allowed; opacity: .4; }
 
 .add-session-tab {
   width: 34px;
