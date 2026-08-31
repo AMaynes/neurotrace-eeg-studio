@@ -10,7 +10,7 @@
     "build": "vinext build",
     "build:pages": "vite build --config vite.pages.config.ts",
     "start": "vinext start",
-    "test": "npm run build && npm run build:pages && node --test tests/*.test.mjs",
+    "test": "npm run build && npm run build:pages && node --experimental-strip-types --test tests/*.test.mjs",
     "test:pages": "npm run build:pages && node --test tests/pages-release.test.mjs",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run lint && npm test",
