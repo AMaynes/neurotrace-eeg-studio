@@ -987,14 +987,15 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(page, /const row\s*=\s*channelRowFromClientY\(event\.clientY,\s*rect\)/);
 });
 
-test("renders wide recordings as a connected amplitude envelope with an activity ribbon", async () => {
+test("renders wide recordings with a clipped-voltage halo around out-of-range peaks", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const overviewStart = page.indexOf("function drawOverviewEnvelope");
   const overviewEnd = page.indexOf("function expectedEDFRecordBytes", overviewStart);
   const overview = page.slice(overviewStart, overviewEnd);
   assert.match(overview, /context\.closePath\(\)[\s\S]*?context\.fill\(\)/, "extrema form a connected filled silhouette");
-  assert.match(overview, /estimateEnvelopeActivityRate/);
-  assert.match(overview, /context\.fillRect\(left,\s*ribbonTop/, "activity is a thin time-aligned ribbon rather than vertical frequency strokes");
+  assert.match(overview, /gaussianClippingHaloIntensity/);
+  assert.match(overview, /visibleHalfRange[\s\S]*?visibleMinimum[\s\S]*?visibleMaximum/);
+  assert.match(overview, /context\.fillRect\(left,\s*ribbonTop/, "clipped peaks use a thin time-aligned indicator rather than vertical frequency strokes");
 
   const envelopeBranchStart = page.indexOf("if (envelope) {");
   const envelopeBranchEnd = page.indexOf("} else if (values.length", envelopeBranchStart);
@@ -1002,7 +1003,7 @@ test("renders wide recordings as a connected amplitude envelope with an activity
   assert.match(envelopeBranch, /drawOverviewEnvelope\(/);
   assert.doesNotMatch(envelopeBranch, /drawContinuousTrace\(/, "bucket midpoints are not connected into a fake low-frequency waveform");
   assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
-  assert.match(page, /Wide view: amplitude envelope \+ activity trend · zoom in for exact waveform and spectrum/);
+  assert.match(page, /green glow marks peaks beyond the visible µV range/);
 });
 
 test("filters padded signal data and crops back to the requested viewport", async () => {

@@ -18,6 +18,7 @@ import test from "node:test";
 import {
   envelopeTraceRenderMode,
   estimateEnvelopeActivityRate,
+  gaussianClippingHaloIntensity,
   maximumExtremaGroupsForBudget,
   measureEnvelopeTraceGeometry,
   measureRawTraceGeometry,
@@ -32,6 +33,37 @@ test("estimates sustained activity without calling a lone spike high frequency",
   assert.equal(estimateEnvelopeActivityRate(40, -10, 10, 10), 0.1);
   assert.equal(estimateEnvelopeActivityRate(40, 2, 2, 10), 0);
   assert.equal(estimateEnvelopeActivityRate(Number.NaN, -10, 10, 10), 0);
+});
+
+test("fades clipped-voltage indicators symmetrically around an out-of-range peak", () => {
+  const minima = new Float32Array(9).fill(-40);
+  const maxima = new Float32Array(9).fill(40);
+  maxima[4] = 140;
+  const gaps = new Uint8Array(9);
+  const intensity = (index) => gaussianClippingHaloIntensity(
+    minima,
+    maxima,
+    gaps,
+    index,
+    -100,
+    100,
+    50,
+    2,
+  );
+
+  assert.equal(intensity(4), 0.8);
+  assert.equal(intensity(3), intensity(5));
+  assert.equal(intensity(2), intensity(6));
+  assert.ok(intensity(4) > intensity(3));
+  assert.ok(intensity(3) > intensity(2));
+  assert.ok(intensity(2) > 0, "the indicator begins before and trails after the clipped peak");
+  gaps[3] = 1;
+  assert.equal(intensity(3), 0, "missing data interrupts the visual halo");
+  assert.equal(gaussianClippingHaloIntensity(minima, maxima, gaps, -1, -100, 100, 50), 0);
+  assert.throws(
+    () => gaussianClippingHaloIntensity(minima, new Float32Array(3), gaps, 0, -100, 100, 50),
+    /equal lengths/i,
+  );
 });
 
 const projection = {

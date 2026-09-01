@@ -254,7 +254,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   const spectrum = section(page, "function SpectrogramPanel", "function QcPanel");
   assert.match(spectrum, /computeSpectrogramOffThread/);
   assert.match(spectrum, /if\s*\(overview\s*\|\|/);
-  assert.match(spectrum, /Wide view: amplitude envelope \+ activity trend · zoom in for exact waveform and spectrum/);
+  assert.match(spectrum, /green glow marks peaks beyond the visible µV range/);
   assert.match(spectrogramCore, /finiteSamples\s*\/\s*windowSize\s*<\s*0\.75/);
   assert.match(spectrogramCore, /if\s*\(!Number\.isFinite\(sourceValue\)\)\s*continue/);
   assert.match(spectrum, /Array\.from\(powers\)\.filter\(Number\.isFinite\)/);
@@ -287,7 +287,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.equal(groupedExtrema.match(/context\.stroke\(\)/g)?.length, 1);
   assert.match(drawing, /drawOverviewEnvelope/);
   assert.match(overviewEnvelope, /context\.closePath\(\)[\s\S]*?context\.fill\(\)/);
-  assert.match(overviewEnvelope, /estimateEnvelopeActivityRate/);
+  assert.match(overviewEnvelope, /gaussianClippingHaloIntensity/);
   assert.match(overviewEnvelope, /context\.fillRect\(left,\s*ribbonTop/);
   assert.match(drawing, /cachedGeometry/);
   assert.match(page, /WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER\s*=\s*3\.25/);

@@ -80,7 +80,7 @@ import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   envelopeTraceRenderMode,
-  estimateEnvelopeActivityRate,
+  gaussianClippingHaloIntensity,
   maximumExtremaGroupsForBudget,
   measureEnvelopeTraceGeometry,
   measureRawTraceGeometry,
@@ -1116,7 +1116,6 @@ function drawOverviewEnvelope(
   context: CanvasRenderingContext2D,
   minima: ArrayLike<number>,
   maxima: ArrayLike<number>,
-  variation: ArrayLike<number> | undefined,
   startSec: number,
   bucketDurationSec: number,
   displayStart: number,
@@ -1189,20 +1188,24 @@ function drawOverviewEnvelope(
     runStart = runEnd;
   }
 
-  if (variation?.length === minima.length && rowHeight >= 4) {
+  if (rowHeight >= 4) {
     const ribbonTop = rowTop + rowHeight - Math.min(3, rowHeight * .08);
+    const visibleHalfRange = rowHeight / (2 * scale);
+    const visibleMinimum = baseline - visibleHalfRange;
+    const visibleMaximum = baseline + visibleHalfRange;
     for (let index = 0; index < minima.length; index += 1) {
       if (!isFiniteBucket(index)) continue;
-      const rate = estimateEnvelopeActivityRate(
-        variation[index],
-        minima[index],
-        maxima[index],
-        bucketDurationSec,
+      const intensity = gaussianClippingHaloIntensity(
+        minima,
+        maxima,
+        gaps,
+        index,
+        visibleMinimum,
+        visibleMaximum,
+        visibleHalfRange * .35,
       );
-      if (!(rate > 0)) continue;
-      const intensity = clamp(Math.log1p(rate) / Math.log1p(80), 0, 1);
-      const hue = 205 - intensity * 165;
-      context.fillStyle = `hsla(${hue} 82% 62% / ${.2 + intensity * .72})`;
+      if (intensity < .015) continue;
+      context.fillStyle = `hsla(142 76% 58% / ${.12 + intensity * .82})`;
       const left = xAtBoundary(index);
       const right = xAtBoundary(index + 1);
       context.fillRect(left, ribbonTop, Math.max(1, right - left), rowTop + rowHeight - ribbonTop);
@@ -3855,7 +3858,6 @@ export default function Home() {
             context,
             envelope.minima,
             envelope.maxima,
-            envelope.variation,
             envelope.startSec,
             envelope.bucketDurationSec,
             displayStart,
@@ -6904,7 +6906,7 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
         ctx.fillStyle = "#071216";
         ctx.fillRect(0, 0, width, height);
         const status = overview
-          ? "Wide view: amplitude envelope + activity trend · zoom in for exact waveform and spectrum"
+          ? "Wide view: green glow marks peaks beyond the visible µV range · zoom in for exact waveform and spectrum"
           : sampleRate < 2
           ? "Spectrum unavailable below 2 Hz"
           : computeError || (!spectrum ? "Computing spectrum…" : "");

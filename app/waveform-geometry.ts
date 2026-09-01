@@ -363,3 +363,49 @@ export function estimateEnvelopeActivityRate(
     || !(bucketDurationSec > 0)) return 0;
   return totalVariation / (2 * range * bucketDurationSec);
 }
+
+/**
+ * Returns a Gaussian-like halo around buckets whose extrema exceed the visible
+ * voltage range. Only true clipping seeds the halo; neighboring buckets merely
+ * receive its smooth lead-in or fade-out.
+ */
+export function gaussianClippingHaloIntensity(
+  minima: ArrayLike<number>,
+  maxima: ArrayLike<number>,
+  gaps: ArrayLike<number> | undefined,
+  targetIndex: number,
+  visibleMinimum: number,
+  visibleMaximum: number,
+  fullIntensityExcess: number,
+  sigmaBuckets = 2,
+) {
+  if (maxima.length !== minima.length || (gaps && gaps.length !== minima.length)) {
+    throw new Error("Clipping halo arrays must have equal lengths.");
+  }
+  if (!Number.isSafeInteger(targetIndex) || targetIndex < 0 || targetIndex >= minima.length) return 0;
+  if (gaps?.[targetIndex]) return 0;
+  if (!Number.isFinite(visibleMinimum)
+    || !Number.isFinite(visibleMaximum)
+    || !(visibleMaximum > visibleMinimum)
+    || !Number.isFinite(fullIntensityExcess)
+    || !(fullIntensityExcess > 0)
+    || !Number.isFinite(sigmaBuckets)
+    || !(sigmaBuckets > 0)) return 0;
+
+  const radius = Math.max(1, Math.ceil(sigmaBuckets * 3));
+  let halo = 0;
+  const first = Math.max(0, targetIndex - radius);
+  const last = Math.min(minima.length - 1, targetIndex + radius);
+  for (let sourceIndex = first; sourceIndex <= last; sourceIndex += 1) {
+    if (gaps?.[sourceIndex]) continue;
+    const minimum = minima[sourceIndex];
+    const maximum = maxima[sourceIndex];
+    if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
+    const excess = Math.max(0, maximum - visibleMaximum, visibleMinimum - minimum);
+    if (!(excess > 0)) continue;
+    const seed = Math.min(1, excess / fullIntensityExcess);
+    const distance = (targetIndex - sourceIndex) / sigmaBuckets;
+    halo = Math.max(halo, seed * Math.exp(-.5 * distance * distance));
+  }
+  return halo;
+}
