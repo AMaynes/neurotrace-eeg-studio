@@ -258,6 +258,15 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
   assert.match(drawing, /if\s*\(rowTop\s*\+\s*rowHeight\s*<\s*plotTop\s*\|\|\s*rowTop\s*>\s*height\)\s*continue/);
   assert.match(drawing, /display\.envelopes\[channel\]/);
+  assert.match(drawing, /waveformGeometryFitsBudget/);
+  assert.match(drawing, /maximumExtremaGroupsForBudget/);
+  assert.match(drawing, /drawGroupedExtrema/);
+  assert.match(drawing, /cachedGeometry/);
+  assert.match(page, /MAX_WAVEFORM_CANVAS_SCALE\s*=\s*1/);
+  assert.match(page, /getContext\("2d",\s*\{\s*alpha:\s*false,\s*desynchronized:\s*true\s*\}\)/);
+  assert.match(page, /context\.lineJoin\s*=\s*"bevel"/);
+  assert.match(page, /channelScrollOffsetRef\.current[\s\S]*?waveDrawRef\.current\(\)/);
+  assert.doesNotMatch(page, /setChannelScrollOffset/, "vertical channel scrolling repaints imperatively without a React render per frame");
 
   const hitTesting = section(page, "const channelRowFromClientY", "const timeFromPointer");
   assert.match(hitTesting, /waveformScrollRef\.current\?\.scrollTop/);

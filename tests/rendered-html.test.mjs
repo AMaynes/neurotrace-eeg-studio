@@ -423,7 +423,7 @@ test("toggles each loaded tab between the recording and file structure analysis"
     3,
     "returning to the recording remounts canvas measurement, frame diagnostics, and wheel controls",
   );
-  assert.match(page, /\[activeCandidateItem, activeSessionContentView,[^\]]+\]/, "returning to the recording redraws the waveform canvas");
+  assert.match(page, /\[activeCandidateTime, activeSessionContentView,[^\]]+\]/, "returning to the recording redraws the waveform canvas");
   assert.match(page, /\[activeSessionContentView, expandedChannels\]/, "returning to the recording restores channel viewport measurement");
   const panelStart = page.indexOf("function FileStructurePanel");
   const panelEnd = page.indexOf("function GeneralInfoPanel", panelStart);
@@ -595,7 +595,12 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(page, /height: `\$\{Math\.max\(0, inspectionRange\.bottom - inspectionRange\.top\) \* 100\}%`/);
   assert.match(page, /Drag a box to zoom its time range and inspect every channel inside it\./);
   assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
-  assert.match(page, /const selected = inspectionDragging \? isInspectionRowHighlighted\(channel\) : channel === focusedChannel/);
+  assert.match(page, /const selected = channel === focusedChannel/);
+  assert.doesNotMatch(
+    page,
+    /\[activeCandidateTime, activeSessionContentView,[^\]]*inspection(?:Dragging|Range)/,
+    "the DOM inspection rectangle updates without retracing busy waveform paths",
+  );
   assert.match(page, /const focused = !inspectionDragging && focusedChannel === index/);
   assert.match(page, /inspectionHighlighted \? "inspection-highlighted"/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
