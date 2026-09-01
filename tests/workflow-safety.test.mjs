@@ -288,6 +288,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(drawing, /drawOverviewEnvelope/);
   assert.match(overviewEnvelope, /context\.closePath\(\)[\s\S]*?context\.fill\(\)/);
   assert.match(overviewEnvelope, /gaussianClippingHaloIntensity/);
+  assert.match(overviewEnvelope, /showClippingHalo\s*&&\s*rowHeight\s*>=\s*4/);
   assert.match(overviewEnvelope, /context\.fillRect\(left,\s*ribbonTop/);
   assert.match(drawing, /cachedGeometry/);
   assert.match(page, /WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER\s*=\s*3\.25/);

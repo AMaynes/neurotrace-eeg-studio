@@ -994,6 +994,7 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   const overview = page.slice(overviewStart, overviewEnd);
   assert.match(overview, /context\.closePath\(\)[\s\S]*?context\.fill\(\)/, "extrema form a connected filled silhouette");
   assert.match(overview, /gaussianClippingHaloIntensity/);
+  assert.match(overview, /showClippingHalo\s*&&\s*rowHeight\s*>=\s*4/);
   assert.match(overview, /visibleHalfRange[\s\S]*?visibleMinimum[\s\S]*?visibleMaximum/);
   assert.match(overview, /context\.fillRect\(left,\s*ribbonTop/, "clipped peaks use a thin time-aligned indicator rather than vertical frequency strokes");
 
@@ -1001,6 +1002,7 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   const envelopeBranchEnd = page.indexOf("} else if (values.length", envelopeBranchStart);
   const envelopeBranch = page.slice(envelopeBranchStart, envelopeBranchEnd);
   assert.match(envelopeBranch, /drawOverviewEnvelope\(/);
+  assert.match(envelopeBranch, /envelopeWindowMatchesViewport\([\s\S]*?envelope\.startSec[\s\S]*?envelope\.bucketDurationSec[\s\S]*?values\.length[\s\S]*?displayStart[\s\S]*?timebase/);
   assert.doesNotMatch(envelopeBranch, /drawContinuousTrace\(/, "bucket midpoints are not connected into a fake low-frequency waveform");
   assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
   assert.match(page, /green glow marks peaks beyond the visible µV range/);

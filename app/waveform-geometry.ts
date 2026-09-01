@@ -409,3 +409,32 @@ export function gaussianClippingHaloIntensity(
   }
   return halo;
 }
+
+/**
+ * Prevents a prior overview from driving clipping indicators while an async
+ * zoom request is replacing it with extrema for the new viewport.
+ */
+export function envelopeWindowMatchesViewport(
+  envelopeStartSec: number,
+  bucketDurationSec: number,
+  bucketCount: number,
+  viewportStartSec: number,
+  viewportDurationSec: number,
+) {
+  if (!Number.isFinite(envelopeStartSec)
+    || !Number.isFinite(bucketDurationSec)
+    || !(bucketDurationSec > 0)
+    || !Number.isSafeInteger(bucketCount)
+    || bucketCount <= 0
+    || !Number.isFinite(viewportStartSec)
+    || !Number.isFinite(viewportDurationSec)
+    || !(viewportDurationSec > 0)) return false;
+  const envelopeDurationSec = bucketDurationSec * bucketCount;
+  const tolerance = Math.max(
+    1e-9,
+    Math.abs(viewportStartSec) * Number.EPSILON * 32,
+    viewportDurationSec * 1e-7,
+  );
+  return Math.abs(envelopeStartSec - viewportStartSec) <= tolerance
+    && Math.abs(envelopeDurationSec - viewportDurationSec) <= tolerance;
+}

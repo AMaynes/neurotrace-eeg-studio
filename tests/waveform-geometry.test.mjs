@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  envelopeWindowMatchesViewport,
   envelopeTraceRenderMode,
   estimateEnvelopeActivityRate,
   gaussianClippingHaloIntensity,
@@ -64,6 +65,15 @@ test("fades clipped-voltage indicators symmetrically around an out-of-range peak
     () => gaussianClippingHaloIntensity(minima, new Float32Array(3), gaps, 0, -100, 100, 50),
     /equal lengths/i,
   );
+});
+
+test("suppresses clipping halos until zoomed envelope coverage matches the viewport", () => {
+  assert.equal(envelopeWindowMatchesViewport(10, 0.5, 20, 10, 10), true);
+  assert.equal(envelopeWindowMatchesViewport(10 + 1e-8, 0.5, 20, 10, 10), true);
+  assert.equal(envelopeWindowMatchesViewport(10, 0.5, 20, 12, 10), false, "a stale pan origin cannot seed the halo");
+  assert.equal(envelopeWindowMatchesViewport(10, 0.5, 20, 10, 5), false, "a pre-zoom duration cannot seed the halo");
+  assert.equal(envelopeWindowMatchesViewport(10, 0.5, 10, 10, 10), false, "a coarse partial envelope cannot seed the halo");
+  assert.equal(envelopeWindowMatchesViewport(10, Number.NaN, 20, 10, 10), false);
 });
 
 const projection = {

@@ -79,6 +79,7 @@ import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
+  envelopeWindowMatchesViewport,
   envelopeTraceRenderMode,
   gaussianClippingHaloIntensity,
   maximumExtremaGroupsForBudget,
@@ -1127,6 +1128,7 @@ function drawOverviewEnvelope(
   baseline: number,
   scale: number,
   selected: boolean,
+  showClippingHalo: boolean,
   gaps?: ArrayLike<number>,
 ) {
   if (!minima.length || maxima.length !== minima.length) return false;
@@ -1188,7 +1190,7 @@ function drawOverviewEnvelope(
     runStart = runEnd;
   }
 
-  if (rowHeight >= 4) {
+  if (showClippingHalo && rowHeight >= 4) {
     const ribbonTop = rowTop + rowHeight - Math.min(3, rowHeight * .08);
     const visibleHalfRange = rowHeight / (2 * scale);
     const visibleMinimum = baseline - visibleHalfRange;
@@ -3869,6 +3871,13 @@ export default function Home() {
             baseline,
             scale,
             selected,
+            envelopeWindowMatchesViewport(
+              envelope.startSec,
+              envelope.bucketDurationSec,
+              values.length,
+              displayStart,
+              timebase,
+            ),
             envelope.gaps,
           );
         } else if (values.length <= Math.max(2, width * 1.5)) {
