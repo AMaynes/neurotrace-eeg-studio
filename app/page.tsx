@@ -89,17 +89,8 @@ import {
   clippingExcessIntensity,
   clippingSeverityColor,
   envelopeWindowMatchesViewport,
-  envelopeTraceRenderMode,
   gaussianClippingHaloIntensity,
-  maximumExtremaGroupsForBudget,
-  measureEnvelopeTraceGeometry,
-  measureRawTraceGeometry,
-  waveformGeometryFitsBudget,
   waveformOverviewColumnBudget,
-  visitGroupedWaveformExtrema,
-  type TraceGeometryProjection,
-  type WaveformGeometryBudget,
-  type WaveformGeometrySummary,
 } from "./waveform-geometry";
 import {
   composeVerticalViewport,
@@ -154,20 +145,6 @@ type WavePointerState = {
   startRow: number;
   moved: boolean;
 };
-type CachedPixelEnvelope = {
-  pixelColumns: number;
-  displayStart: number;
-  timebase: number;
-  rowStartSec: number;
-  sampleRate: number;
-  minima: Float64Array;
-  maxima: Float64Array;
-  gaps: Uint8Array;
-  midpoints: Float64Array;
-  baseline: number;
-};
-type CachedTraceGeometry = Array<{ key: string; summary: WaveformGeometrySummary }>;
-
 type LabelDefinition = {
   id: string;
   name: string;
@@ -1057,14 +1034,6 @@ const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 // prevents dense signals from multiplying antialiasing work by DPR squared.
 const CANVAS_PIXEL_BUDGET = 4_000_000;
 const MAX_WAVEFORM_CANVAS_SCALE = 1;
-const WAVEFORM_VIEW_STROKE_BUDGET_MULTIPLIER = 48;
-const WAVEFORM_MIN_ROW_STROKE_BUDGET_MULTIPLIER = 4;
-// A one-column-per-pixel envelope needs roughly three path commands per
-// column: min/max plus its continuous midpoint. Keep enough command headroom
-// for that ordinary clinical view; the independent stroke-length limit still
-// sends genuinely busy traces to the bounded extrema fallback.
-const WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER = 3.25;
-const WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER = 1.5;
 const MAX_REUSABLE_ENVELOPE_BUCKETS = 524_288;
 // A full-session index is an overview, not a replacement for exact local
 // windows. Keeping 32 source buckets per nominal display column is ample for
@@ -1221,203 +1190,6 @@ function drawContinuousTrace(
     connected = true;
   }
   context.stroke();
-  return overflow;
-}
-
-function drawGroupedExtrema(
-  context: CanvasRenderingContext2D,
-  minima: ArrayLike<number>,
-  maxima: ArrayLike<number>,
-  representatives: ArrayLike<number>,
-  maximumGroups: number,
-  startSec: number,
-  bucketDurationSec: number,
-  displayStart: number,
-  timebase: number,
-  width: number,
-  center: number,
-  rowTop: number,
-  rowHeight: number,
-  baseline: number,
-  scale: number,
-  alpha: number,
-  gaps?: ArrayLike<number>,
-) {
-  if (!minima.length
-    || maxima.length !== minima.length
-    || representatives.length !== minima.length
-    || maximumGroups < 1) return false;
-  let overflow = false;
-  const groups: Array<{
-    start: number;
-    end: number;
-    minimum: number;
-    maximum: number;
-    interrupted: boolean;
-    representativeMean: number;
-  }> = [];
-  visitGroupedWaveformExtrema(
-    minima,
-    maxima,
-    gaps,
-    maximumGroups,
-    (start, end, minimum, maximum, interrupted, representativeMean) => {
-      groups.push({ start, end, minimum, maximum, interrupted, representativeMean });
-    },
-  );
-  if (!groups.length) return false;
-
-  context.save();
-  context.globalAlpha = Math.min(1, alpha * 1.5);
-  context.beginPath();
-  const drawBoundary = (valueForGroup: (group: typeof groups[number]) => number) => {
-    let connected = false;
-    let previousGroupEnd: number | null = null;
-    for (const group of groups) {
-      const rawLeft = ((startSec + group.start * bucketDurationSec - displayStart) / timebase) * width;
-      const rawRight = ((startSec + group.end * bucketDurationSec - displayStart) / timebase) * width;
-      if (rawRight < -1 || rawLeft > width + 1) {
-        connected = false;
-        previousGroupEnd = group.end;
-        continue;
-      }
-      const rawY = center - (valueForGroup(group) - baseline) * scale;
-      if (traceYOverflowsRow(rawY, rowTop, rowHeight)) overflow = true;
-      const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
-      const left = clamp(rawLeft, 0, width);
-      const right = clamp(rawRight, 0, width);
-      if (!connected || previousGroupEnd !== group.start || group.interrupted) context.moveTo(left, y);
-      else context.lineTo(left, y);
-      context.lineTo(right, y);
-      connected = !group.interrupted;
-      previousGroupEnd = group.end;
-    }
-  };
-  // Preserve extrema as continuous upper/lower boundaries. Independent
-  // vertical whiskers read as artificial tick marks during intermediate zoom.
-  drawBoundary((group) => group.maximum);
-  drawBoundary((group) => group.minimum);
-
-  let representativeConnected = false;
-  let representativeGroupEnd: number | null = null;
-  for (const group of groups) {
-    if (representativeGroupEnd !== group.start) representativeConnected = false;
-    representativeGroupEnd = group.end;
-    if (group.interrupted) {
-      representativeConnected = false;
-      continue;
-    }
-    const groupTime = startSec + ((group.start + group.end) / 2) * bucketDurationSec;
-    const x = ((groupTime - displayStart) / timebase) * width;
-    if (x < -1 || x > width + 1) {
-      representativeConnected = false;
-      continue;
-    }
-    const rawY = center - (group.representativeMean - baseline) * scale;
-    const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
-    if (representativeConnected) context.lineTo(x, y);
-    else context.moveTo(x, y);
-    representativeConnected = true;
-  }
-  context.stroke();
-  context.restore();
-  return overflow;
-}
-
-function drawOverviewEnvelope(
-  context: CanvasRenderingContext2D,
-  minima: ArrayLike<number>,
-  maxima: ArrayLike<number>,
-  startSec: number,
-  bucketDurationSec: number,
-  displayStart: number,
-  timebase: number,
-  width: number,
-  center: number,
-  rowTop: number,
-  rowHeight: number,
-  baseline: number,
-  scale: number,
-  selected: boolean,
-  showClippingHalo: boolean,
-  gaps?: ArrayLike<number>,
-) {
-  if (!minima.length || maxima.length !== minima.length) return false;
-  let overflow = false;
-  const xAtCenter = (index: number) => (
-    (startSec + (index + .5) * bucketDurationSec - displayStart) / timebase
-  ) * width;
-  const xAtBoundary = (index: number) => (
-    (startSec + index * bucketDurationSec - displayStart) / timebase
-  ) * width;
-  const topAt = (index: number) => {
-    const raw = center - (maxima[index] - baseline) * scale;
-    if (traceYOverflowsRow(raw, rowTop, rowHeight)) overflow = true;
-    return confineTraceYValueToRow(raw, rowTop, rowHeight);
-  };
-  const bottomAt = (index: number) => {
-    const raw = center - (minima[index] - baseline) * scale;
-    if (traceYOverflowsRow(raw, rowTop, rowHeight)) overflow = true;
-    return confineTraceYValueToRow(raw, rowTop, rowHeight);
-  };
-  const isFiniteBucket = (index: number) => !gaps?.[index]
-    && Number.isFinite(minima[index])
-    && Number.isFinite(maxima[index]);
-
-  context.save();
-  for (let runStart = 0; runStart < minima.length;) {
-    while (runStart < minima.length && !isFiniteBucket(runStart)) runStart += 1;
-    if (runStart >= minima.length) break;
-    let runEnd = runStart + 1;
-    while (runEnd < minima.length && isFiniteBucket(runEnd)) runEnd += 1;
-
-    context.beginPath();
-    context.moveTo(xAtBoundary(runStart), topAt(runStart));
-    for (let index = runStart; index < runEnd; index += 1) {
-      context.lineTo(xAtCenter(index), topAt(index));
-    }
-    context.lineTo(xAtBoundary(runEnd), topAt(runEnd - 1));
-    context.lineTo(xAtBoundary(runEnd), bottomAt(runEnd - 1));
-    for (let index = runEnd - 1; index >= runStart; index -= 1) {
-      context.lineTo(xAtCenter(index), bottomAt(index));
-    }
-    context.lineTo(xAtBoundary(runStart), bottomAt(runStart));
-    context.closePath();
-    context.fillStyle = selected ? "rgba(87, 223, 183, .18)" : "rgba(164, 200, 199, .11)";
-    context.fill();
-
-    context.beginPath();
-    context.moveTo(xAtCenter(runStart), topAt(runStart));
-    for (let index = runStart + 1; index < runEnd; index += 1) {
-      context.lineTo(xAtCenter(index), topAt(index));
-    }
-    context.moveTo(xAtCenter(runStart), bottomAt(runStart));
-    for (let index = runStart + 1; index < runEnd; index += 1) {
-      context.lineTo(xAtCenter(index), bottomAt(index));
-    }
-    context.globalAlpha = selected ? .9 : .64;
-    context.stroke();
-    context.globalAlpha = 1;
-    runStart = runEnd;
-  }
-
-  if (showClippingHalo && rowHeight >= 4) {
-    drawSampleClippingRibbon(
-      context,
-      minima,
-      maxima,
-      gaps,
-      startSec,
-      bucketDurationSec,
-      displayStart,
-      timebase,
-      width,
-      rowTop,
-      rowHeight,
-      baseline,
-    );
-  }
-  context.restore();
   return overflow;
 }
 
@@ -1941,8 +1713,6 @@ export default function Home() {
   const waveformScrollRef = useRef<HTMLDivElement>(null);
   const channelScrollOffsetRef = useRef(0);
   const traceBaselineCacheRef = useRef<WeakMap<Float32Array, number>>(new WeakMap());
-  const traceGeometryCacheRef = useRef<WeakMap<Float32Array, CachedTraceGeometry>>(new WeakMap());
-  const pixelEnvelopeCacheRef = useRef<WeakMap<Float32Array, CachedPixelEnvelope>>(new WeakMap());
   const overviewRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -4171,42 +3941,12 @@ export default function Home() {
         if (channelSelectionActive && right === focusedChannel) return -1;
         return left - right;
       });
-      const visibleTraceCount = Math.max(1, traceOrder.reduce((count, channel) => {
-        const rowTop = rowTopForChannel(channel);
-        return count + Number(rowTop + rowHeight >= plotTop && rowTop <= height);
-      }, 0));
-      const traceGeometryBudget: WaveformGeometryBudget = {
-        maxCommands: Math.max(512, Math.floor(width * WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER)),
-        maxStrokeLengthPx: width * Math.max(
-          WAVEFORM_MIN_ROW_STROKE_BUDGET_MULTIPLIER,
-          WAVEFORM_VIEW_STROKE_BUDGET_MULTIPLIER / visibleTraceCount,
-        ),
-      };
-      const extremaGroupBudget = Math.max(
-        1,
-        Math.floor(width * WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER / visibleTraceCount),
-      );
       const cachedBaseline = (values: Float32Array) => {
         const cached = traceBaselineCacheRef.current.get(values);
         if (cached !== undefined) return cached;
         const baseline = robustTraceBaseline(values);
         traceBaselineCacheRef.current.set(values, baseline);
         return baseline;
-      };
-      const cachedGeometry = (
-        values: Float32Array,
-        key: string,
-        measure: () => WaveformGeometrySummary,
-      ) => {
-        const cached = traceGeometryCacheRef.current.get(values) ?? [];
-        const matching = cached.find((entry) => entry.key === key);
-        if (matching) return matching.summary;
-        const summary = measure();
-        traceGeometryCacheRef.current.set(values, [
-          ...cached.filter((entry) => entry.key !== key).slice(-1),
-          { key, summary },
-        ]);
-        return summary;
       };
       for (const channel of traceOrder) {
         const values = display.data[channel];
@@ -4222,12 +3962,6 @@ export default function Home() {
         const showMicrovoltClipping = !legacyRawCountDisplay
           && ["µv", "μv", "uv"].includes((display.units[channel] ?? "").trim().toLowerCase());
         const selected = channelSelectionActive && channel === focusedChannel;
-        const traceProjection: TraceGeometryProjection = {
-          widthPx: width,
-          rowHeightPx: rowHeight,
-          baseline: 0,
-          pixelsPerUnit: scale,
-        };
         let overflow = false;
         context.save();
         context.beginPath();
@@ -4277,59 +4011,23 @@ export default function Home() {
               baseline,
             );
           }
-        } else if (values.length <= Math.max(2, width * 1.5)) {
+        } else {
           const baseline = cachedBaseline(values);
-          const projection = { ...traceProjection, baseline };
-          const geometry = cachedGeometry(
+          overflow = drawContinuousTrace(
+            context,
             values,
-            `raw:${width}:${rowHeight}:${baseline}:${scale}`,
-            () => measureRawTraceGeometry(values, projection),
+            rowStartSec,
+            1 / sampleRate,
+            0,
+            displayStart,
+            timebase,
+            width,
+            center,
+            rowTop,
+            rowHeight,
+            baseline,
+            scale,
           );
-          // Derived montages reach this branch only after Nyquist-safe,
-          // pixel-bounded display preparation. Grouping them again turns
-          // high-amplitude bipolar/CAR traces into artificial stair steps.
-          const preserveDerivedMontageContinuity = montage !== "referential";
-          if (!preserveDerivedMontageContinuity
-            && !waveformGeometryFitsBudget(geometry, traceGeometryBudget)) {
-            const maximumGroups = Math.min(
-              extremaGroupBudget,
-              maximumExtremaGroupsForBudget(values.length, projection, traceGeometryBudget),
-            );
-            overflow = drawGroupedExtrema(
-              context,
-              values,
-              values,
-              values,
-              maximumGroups,
-              rowStartSec,
-              1 / sampleRate,
-              displayStart,
-              timebase,
-              width,
-              center,
-              rowTop,
-              rowHeight,
-              baseline,
-              scale,
-              selected ? .72 : .42,
-            );
-          } else {
-            overflow = drawContinuousTrace(
-              context,
-              values,
-              rowStartSec,
-              1 / sampleRate,
-              0,
-              displayStart,
-              timebase,
-              width,
-              center,
-              rowTop,
-              rowHeight,
-              baseline,
-              scale,
-            );
-          }
           if (showMicrovoltClipping) {
             drawSampleClippingRibbon(
               context,
@@ -4338,150 +4036,6 @@ export default function Home() {
               undefined,
               rowStartSec,
               1 / sampleRate,
-              displayStart,
-              timebase,
-              width,
-              rowTop,
-              rowHeight,
-              baseline,
-            );
-          }
-        } else {
-          const pixelColumns = Math.max(1, Math.floor(width));
-          let pixelEnvelope = pixelEnvelopeCacheRef.current.get(values);
-          if (!pixelEnvelope
-            || pixelEnvelope.pixelColumns !== pixelColumns
-            || pixelEnvelope.displayStart !== displayStart
-            || pixelEnvelope.timebase !== timebase
-            || pixelEnvelope.rowStartSec !== rowStartSec
-            || pixelEnvelope.sampleRate !== sampleRate) {
-            const minima = new Float64Array(pixelColumns);
-            minima.fill(Number.POSITIVE_INFINITY);
-            const maxima = new Float64Array(pixelColumns);
-            maxima.fill(Number.NEGATIVE_INFINITY);
-            const gaps = new Uint8Array(pixelColumns);
-            const midpoints = new Float64Array(pixelColumns);
-            midpoints.fill(Number.NaN);
-            for (let sample = 0; sample < values.length; sample += 1) {
-              const sampleTime = rowStartSec + sample / sampleRate;
-              const column = Math.floor(((sampleTime - displayStart) / timebase) * pixelColumns);
-              if (column < 0 || column >= pixelColumns) continue;
-              const value = values[sample];
-              if (!Number.isFinite(value)) {
-                // A missing source sample is a real discontinuity. Do not let a
-                // finite neighbor in the same pixel visually bridge that gap.
-                gaps[column] = 1;
-                continue;
-              }
-              minima[column] = Math.min(minima[column], value);
-              maxima[column] = Math.max(maxima[column], value);
-            }
-            for (let x = 0; x < pixelColumns; x += 1) {
-              if (minima[x] !== Number.POSITIVE_INFINITY && !gaps[x]) {
-                midpoints[x] = (minima[x] + maxima[x]) / 2;
-              }
-            }
-            pixelEnvelope = {
-              pixelColumns,
-              displayStart,
-              timebase,
-              rowStartSec,
-              sampleRate,
-              minima,
-              maxima,
-              gaps,
-              midpoints,
-              baseline: cachedBaseline(values),
-            };
-            pixelEnvelopeCacheRef.current.set(values, pixelEnvelope);
-          }
-          const { minima, maxima, gaps, midpoints, baseline } = pixelEnvelope;
-          const projection = { ...traceProjection, baseline };
-          const detailedGeometry = cachedGeometry(
-            values,
-            `pixels:${pixelColumns}:${displayStart}:${timebase}:${rowStartSec}:${sampleRate}:${rowHeight}:${baseline}:${scale}`,
-            () => measureEnvelopeTraceGeometry(minima, maxima, midpoints, gaps, projection),
-          );
-          const midpointGeometry = cachedGeometry(
-            values,
-            `pixels-midpoint:${pixelColumns}:${displayStart}:${timebase}:${rowStartSec}:${sampleRate}:${rowHeight}:${baseline}:${scale}`,
-            () => measureRawTraceGeometry(midpoints, projection),
-          );
-          const renderMode = envelopeTraceRenderMode(
-            detailedGeometry,
-            midpointGeometry,
-            traceGeometryBudget,
-          );
-          if (renderMode === "grouped-extrema") {
-            const maximumGroups = Math.min(
-              extremaGroupBudget,
-              maximumExtremaGroupsForBudget(pixelColumns, projection, traceGeometryBudget),
-            );
-            overflow = drawGroupedExtrema(
-              context,
-              minima,
-              maxima,
-              midpoints,
-              maximumGroups,
-              displayStart,
-              timebase / pixelColumns,
-              displayStart,
-              timebase,
-              width,
-              center,
-              rowTop,
-              rowHeight,
-              baseline,
-              scale,
-              selected ? .72 : .42,
-              gaps,
-            );
-          } else {
-            if (renderMode === "detailed") {
-              overflow = drawOverviewEnvelope(
-                context,
-                minima,
-                maxima,
-                displayStart,
-                timebase / pixelColumns,
-                displayStart,
-                timebase,
-                width,
-                center,
-                rowTop,
-                rowHeight,
-                baseline,
-                scale,
-                selected,
-                false,
-                gaps,
-              );
-            }
-            overflow = drawContinuousTrace(
-              context,
-              midpoints,
-              displayStart,
-              timebase / pixelColumns,
-              .5,
-              displayStart,
-              timebase,
-              width,
-              center,
-              rowTop,
-              rowHeight,
-              baseline,
-              scale,
-              gaps,
-            ) || overflow;
-          }
-          if (showMicrovoltClipping) {
-            drawSampleClippingRibbon(
-              context,
-              minima,
-              maxima,
-              gaps,
-              displayStart,
-              timebase / pixelColumns,
               displayStart,
               timebase,
               width,

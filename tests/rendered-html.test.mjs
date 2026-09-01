@@ -687,15 +687,14 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(css, /\.general-info-panel\s*\{/);
 });
 
-test("keeps pixel-bounded derived montage traces continuous", async () => {
+test("keeps every prepared waveform as one continuous centerline", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const branchStart = page.indexOf("else if (values.length <= Math.max(2, width * 1.5))");
-  const branchEnd = page.indexOf("const pixelColumns", branchStart);
-  assert.ok(branchStart >= 0 && branchEnd > branchStart, "the pixel-bounded raw trace branch is present");
-  const branch = page.slice(branchStart, branchEnd);
-  assert.match(branch, /preserveDerivedMontageContinuity\s*=\s*montage\s*!==\s*"referential"/);
-  assert.match(branch, /if\s*\(!preserveDerivedMontageContinuity[\s\S]*?!waveformGeometryFitsBudget/);
-  assert.match(branch, /else\s*\{[\s\S]*?drawContinuousTrace\(/, "derived montage rows keep their continuous prepared samples");
+  const drawingStart = page.indexOf("const traceOrder");
+  const drawingEnd = page.indexOf("if (markOnset !== null)", drawingStart);
+  const drawing = page.slice(drawingStart, drawingEnd);
+  assert.match(drawing, /if \(envelope\) \{[\s\S]*?drawContinuousTrace\(/, "cached overviews draw their resampled centerline");
+  assert.match(drawing, /\} else \{[\s\S]*?drawContinuousTrace\(/, "exact and montage windows draw their prepared centerline");
+  assert.doesNotMatch(drawing, /drawGroupedExtrema|drawOverviewEnvelope|pixelEnvelope/, "no zoom path turns extrema into extra traces");
 });
 
 test("toggles live resource usage from the control left of Help and Settings", async () => {
@@ -1023,17 +1022,10 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
   assert.match(draw, /context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)[\s\S]*?context\.clip\(\)/, "each channel is clipped to its exact row without a minimum-height bleed");
   const continuousStart = page.indexOf("function drawContinuousTrace");
-  const groupedStart = page.indexOf("function drawGroupedExtrema", continuousStart);
-  const overviewEnvelopeStart = page.indexOf("function drawOverviewEnvelope", groupedStart);
-  const clippingRibbonStart = page.indexOf("function drawSampleClippingRibbon", overviewEnvelopeStart);
-  const continuousTrace = page.slice(continuousStart, groupedStart);
-  const groupedExtrema = page.slice(groupedStart, overviewEnvelopeStart);
-  const overviewEnvelope = page.slice(overviewEnvelopeStart, clippingRibbonStart);
+  const clippingRibbonStart = page.indexOf("function drawSampleClippingRibbon", continuousStart);
+  const continuousTrace = page.slice(continuousStart, clippingRibbonStart);
   assert.match(continuousTrace, /confineTraceYValueToRow/, "direct traces are confined by the allocation-free row helper");
-  assert.match(groupedExtrema, /confineTraceYValueToRow/, "grouped raw reductions are confined by the same row helper");
-  assert.match(overviewEnvelope, /confineTraceYValueToRow/, "the connected overview envelope is confined by the same row boundary");
   assert.match(continuousTrace, /traceYOverflowsRow/, "direct-trace overflow reporting remains separate from coordinate confinement");
-  assert.match(groupedExtrema, /traceYOverflowsRow/, "grouped-extrema overflow reporting remains separate from coordinate confinement");
   assert.match(draw, /if\s*\(overflow\)[\s\S]*?context\.closePath\(\)/, "clipped excursions leave an overflow marker");
   assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
   assert.match(draw, /if\s*\(rowHeight\s*>=\s*2\)[\s\S]*?context\.strokeRect/, "focused-row borders are omitted when a compact row is too short to contain the stroke");
@@ -1059,19 +1051,17 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
 
 test("renders wide recordings with a clipped-voltage halo around out-of-range peaks", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const overviewStart = page.indexOf("function drawOverviewEnvelope");
-  const overviewEnd = page.indexOf("function expectedEDFRecordBytes", overviewStart);
-  const overview = page.slice(overviewStart, overviewEnd);
-  assert.match(overview, /context\.closePath\(\)[\s\S]*?context\.fill\(\)/, "extrema form a connected filled silhouette");
-  assert.match(overview, /gaussianClippingHaloIntensity/);
-  assert.match(overview, /clippingExcessIntensity/);
-  assert.match(overview, /peakWidth/, "true exceedances remain narrow peaks over the Gaussian trail");
-  assert.match(overview, /showClippingHalo\s*&&\s*rowHeight\s*>=\s*4/);
-  assert.match(overview, /clippingThresholdMicrovolts\s*=\s*100[\s\S]*?fullColorExcessMicrovolts\s*=\s*200/);
-  assert.match(overview, /context\.fillRect\(left,\s*ribbonTop/, "clipped peaks use a thin time-aligned indicator rather than vertical frequency strokes");
+  const ribbonStart = page.indexOf("function drawSampleClippingRibbon");
+  const ribbonEnd = page.indexOf("function expectedEDFRecordBytes", ribbonStart);
+  const ribbon = page.slice(ribbonStart, ribbonEnd);
+  assert.match(ribbon, /gaussianClippingHaloIntensity/);
+  assert.match(ribbon, /clippingExcessIntensity/);
+  assert.match(ribbon, /peakWidth/, "true exceedances remain narrow peaks over the Gaussian trail");
+  assert.match(ribbon, /clippingThresholdMicrovolts\s*=\s*100[\s\S]*?fullColorExcessMicrovolts\s*=\s*200/);
+  assert.match(ribbon, /context\.fillRect\(left,\s*ribbonTop/, "clipped peaks use a thin time-aligned indicator rather than waveform extrema");
 
   const envelopeBranchStart = page.indexOf("if (envelope) {");
-  const envelopeBranchEnd = page.indexOf("} else if (values.length", envelopeBranchStart);
+  const envelopeBranchEnd = page.indexOf("        } else {", envelopeBranchStart);
   const envelopeBranch = page.slice(envelopeBranchStart, envelopeBranchEnd);
   assert.match(envelopeBranch, /drawContinuousTrace\(/);
   assert.match(envelopeBranch, /envelopeWindowMatchesViewport\([\s\S]*?envelope\.startSec[\s\S]*?envelope\.bucketDurationSec[\s\S]*?values\.length[\s\S]*?displayStart[\s\S]*?timebase/);
@@ -1080,7 +1070,7 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
   assert.match(page, /dark green → lime → yellow → orange marks distance beyond ±100 µV/);
   assert.match(page, /drawSampleClippingRibbon\([\s\S]*?values,[\s\S]*?values,/, "close raw-sample views retain the clipping ribbon");
-  assert.match(page, /drawSampleClippingRibbon\([\s\S]*?minima,[\s\S]*?maxima,[\s\S]*?gaps,/, "pixel-envelope views retain the clipping ribbon");
+  assert.doesNotMatch(page, /function drawOverviewEnvelope|function drawGroupedExtrema/, "extrema cannot be rendered as additional waveforms");
 });
 
 test("filters padded signal data and crops back to the requested viewport", async () => {

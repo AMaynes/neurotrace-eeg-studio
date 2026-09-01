@@ -265,38 +265,14 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(spectrum, /No sufficiently complete signal frames/);
 
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
-  const groupedExtrema = section(page, "function drawGroupedExtrema", "function drawOverviewEnvelope");
-  const overviewEnvelope = section(page, "function drawOverviewEnvelope", "function expectedEDFRecordBytes");
+  const clippingRibbon = section(page, "function drawSampleClippingRibbon", "function expectedEDFRecordBytes");
   assert.match(drawing, /if\s*\(rowTop\s*\+\s*rowHeight\s*<\s*plotTop\s*\|\|\s*rowTop\s*>\s*height\)\s*continue/);
   assert.match(drawing, /display\.envelopes\[channel\]/);
-  assert.match(drawing, /waveformGeometryFitsBudget/);
-  assert.match(drawing, /envelopeTraceRenderMode/);
   assert.match(drawing, /drawContinuousTrace/);
-  assert.match(drawing, /maximumExtremaGroupsForBudget/);
-  assert.match(drawing, /extremaGroupBudget/);
-  assert.match(page, /WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER\s*=\s*1\.5/);
-  assert.match(drawing, /drawGroupedExtrema/);
-  assert.match(drawing, /context\.fill\(\)/);
-  assert.doesNotMatch(drawing, /context\.lineTo\(x\s*\+\s*\.5,\s*confineTraceYValueToRow\(minimumY/);
-  assert.match(groupedExtrema, /drawBoundary\(\(group\)\s*=>\s*group\.maximum\)/);
-  assert.match(groupedExtrema, /drawBoundary\(\(group\)\s*=>\s*group\.minimum\)/);
-  assert.doesNotMatch(groupedExtrema, /context\.lineTo\(x,\s*bottom\)/);
-  assert.match(groupedExtrema, /interrupted/);
-  assert.match(groupedExtrema, /representativeGroupEnd\s*!==\s*group\.start/);
-  assert.match(groupedExtrema, /representativeConnected/);
-  assert.match(groupedExtrema, /representativeMean/);
-  assert.doesNotMatch(groupedExtrema, /binWidth/);
-  assert.doesNotMatch(groupedExtrema, /previousTop/);
-  assert.doesNotMatch(groupedExtrema, /context\.fill\(\)/);
-  assert.match(groupedExtrema, /context\.stroke\(\)/);
-  assert.equal(groupedExtrema.match(/context\.stroke\(\)/g)?.length, 1);
-  assert.match(drawing, /drawOverviewEnvelope/);
-  assert.match(overviewEnvelope, /context\.closePath\(\)[\s\S]*?context\.fill\(\)/);
-  assert.match(overviewEnvelope, /gaussianClippingHaloIntensity/);
-  assert.match(overviewEnvelope, /showClippingHalo\s*&&\s*rowHeight\s*>=\s*4/);
-  assert.match(overviewEnvelope, /context\.fillRect\(left,\s*ribbonTop/);
-  assert.match(drawing, /cachedGeometry/);
-  assert.match(page, /WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER\s*=\s*3\.25/);
+  assert.doesNotMatch(drawing, /drawGroupedExtrema|drawOverviewEnvelope|pixelEnvelope|envelopeTraceRenderMode/);
+  assert.doesNotMatch(page, /function drawGroupedExtrema|function drawOverviewEnvelope/);
+  assert.match(clippingRibbon, /gaussianClippingHaloIntensity/);
+  assert.match(clippingRibbon, /context\.fillRect\(left,\s*ribbonTop/);
   assert.match(page, /MAX_WAVEFORM_CANVAS_SCALE\s*=\s*1/);
   assert.match(page, /getContext\("2d",\s*\{\s*alpha:\s*false,\s*desynchronized:\s*true\s*\}\)/);
   assert.match(page, /context\.lineJoin\s*=\s*"bevel"/);
@@ -312,20 +288,16 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
 test("finite clipped waveform samples remain connected when zoom rebuilds the trace", async () => {
   const page = await pageSource();
   const rowConfinement = section(page, "const TRACE_ROW_EDGE_INSET_PX", "function traceYOverflowsRow");
-  const continuousTrace = section(page, "function drawContinuousTrace", "function drawGroupedExtrema");
+  const continuousTrace = section(page, "function drawContinuousTrace", "function drawSampleClippingRibbon");
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
-  const directTrace = section(
-    drawing,
-    "} else if (values.length <= Math.max(2, width * 1.5)) {",
-    "} else {\n          const pixelColumns",
-  );
 
   assert.match(rowConfinement, /const edgeInset\s*=\s*Math\.min\(TRACE_ROW_EDGE_INSET_PX,\s*rowHeight\s*\/\s*2\)/);
   assert.match(rowConfinement, /Math\.min\(visibleBottom,\s*Math\.max\(visibleTop,\s*y\)\)/, "clipped montage strokes stay visibly inside the row clip");
   assert.match(continuousTrace, /if\s*\(!Number\.isFinite\(value\)\s*\|\|\s*gaps\?\.\[index\]\)\s*\{\s*connected\s*=\s*false/);
   assert.match(continuousTrace, /if\s*\(traceYOverflowsRow\(rawY,\s*rowTop,\s*rowHeight\)\)\s*\{\s*overflow\s*=\s*true;\s*\}\s*if\s*\(connected\)\s*context\.lineTo\(x,\s*y\)/);
   assert.doesNotMatch(continuousTrace, /traceYOverflowsRow[\s\S]*?connected\s*=\s*false/, "finite clipped samples remain connected at row boundaries");
-  assert.match(directTrace, /overflow\s*=\s*drawContinuousTrace\(/, "zoomed raw traces reuse the continuous clipping path");
+  assert.match(drawing, /\} else \{[\s\S]*?overflow\s*=\s*drawContinuousTrace\(/, "every exact zoom level reuses the continuous clipping path");
+  assert.doesNotMatch(drawing, /drawGroupedExtrema|drawOverviewEnvelope/, "clipped extrema never become extra traces");
 });
 
 test("detects recording modality instead of accepting a manual recording-type selection", async () => {
