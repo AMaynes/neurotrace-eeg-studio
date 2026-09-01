@@ -431,8 +431,9 @@ textarea:focus-visible {
 .time-window-control label { height: 27px; display: flex; align-items: center; border: 1px solid #263e46; border-radius: 3px; background: #0d1b20; }
 .time-window-control input { width: 58px; height: 25px; padding: 0 5px; border: 0; background: transparent; color: #d7e3e2; text-align: right; font: 9px ui-monospace, monospace; }
 .time-window-control input::-webkit-inner-spin-button { display: none; }
-.time-window-control .window-sync-button { width: 25px; display: flex; align-items: center; justify-content: center; color: var(--mint); font-size: 13px; }
+.time-window-control .window-sync-button { width: 18px; height: 21px; display: flex; align-items: center; justify-content: center; color: var(--mint); font-size: 11px; }
 .time-window-control .window-sync-button:not(:disabled):hover { background: #17332d; }
+.window-step-buttons { display: flex; gap: 2px; }
 
 .filter-drawer {
   min-height: 48px;

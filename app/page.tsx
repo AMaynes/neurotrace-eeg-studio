@@ -4935,7 +4935,7 @@ export default function Home() {
                   <button disabled={!hasRecording} aria-label="Next window time unit" title="Next unit" onClick={() => cycleWindowDraftUnit(1)}>›</button>
                 </div>
               </div>
-              <button className="window-zoom-button" disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease staged window amount" onClick={() => adjustWindowDraft(-1)}>−</button>
+              <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">↻</span></button>
               <label className="window-amount-field"><input
                 disabled={!hasRecording}
                 aria-label={`Window amount in ${windowDraftUnit}`}
@@ -4947,8 +4947,10 @@ export default function Home() {
                 onChange={(event) => setWindowDraftValue(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") syncWindowDraft(); }}
               /></label>
-              <button className="window-zoom-button" disabled={!hasRecording} aria-label="Increase window amount" title="Increase staged window amount" onClick={() => adjustWindowDraft(1)}>+</button>
-              <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">↻</span></button>
+              <div className="window-step-buttons">
+                <button disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease staged window amount" onClick={() => adjustWindowDraft(-1)}>−</button>
+                <button disabled={!hasRecording} aria-label="Increase window amount" title="Increase staged window amount" onClick={() => adjustWindowDraft(1)}>+</button>
+              </div>
             </div>
             <div className="gain-control" aria-label="Gain"><span>Gain</span><button disabled={!hasRecording} onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button><b>{gain.toFixed(1)}×</b><button disabled={!hasRecording} onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button></div>
             <div className="toolbar-spacer" />

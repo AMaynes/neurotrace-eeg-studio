@@ -215,6 +215,7 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(controls, /onClick=\{syncWindowDraft\}/);
   assert.match(controls, /className="window-sync-button"[\s\S]*?<span aria-hidden="true">↻<\/span><\/button>/);
   assert.doesNotMatch(controls, />Sync</, "the icon-only Sync button does not repeat its accessible name visually");
+  assert.match(controls, /className="window-sync-button"[\s\S]*?className="window-amount-field"[\s\S]*?className="window-step-buttons"[\s\S]*?aria-label="Decrease window amount"[\s\S]*?aria-label="Increase window amount"/, "Sync sits left of the amount while both steppers stay together on its right");
 
   const windowLogic = page.slice(page.indexOf("const setTimeWindow"), page.indexOf("const commitMutation"));
   assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
@@ -225,7 +226,8 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(windowLogic, /setWindowDraftValue\(null\)/);
   assert.match(css, /\.window-unit-picker\s*\{/);
   assert.match(css, /\.time-window-control\.pending\s*\{/);
-  assert.match(css, /\.window-sync-button/);
+  assert.match(css, /\.window-sync-button\s*\{[^}]*width:\s*18px[^}]*height:\s*21px/s);
+  assert.match(css, /\.window-step-buttons\s*\{[^}]*display:\s*flex/);
 });
 
 test("visually subdues controls that are temporarily unavailable", async () => {
