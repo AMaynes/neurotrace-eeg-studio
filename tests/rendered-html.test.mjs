@@ -687,6 +687,17 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(css, /\.general-info-panel\s*\{/);
 });
 
+test("keeps pixel-bounded derived montage traces continuous", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const branchStart = page.indexOf("else if (values.length <= Math.max(2, width * 1.5))");
+  const branchEnd = page.indexOf("const pixelColumns", branchStart);
+  assert.ok(branchStart >= 0 && branchEnd > branchStart, "the pixel-bounded raw trace branch is present");
+  const branch = page.slice(branchStart, branchEnd);
+  assert.match(branch, /preserveDerivedMontageContinuity\s*=\s*montage\s*!==\s*"referential"/);
+  assert.match(branch, /if\s*\(!preserveDerivedMontageContinuity[\s\S]*?!waveformGeometryFitsBudget/);
+  assert.match(branch, /else\s*\{[\s\S]*?drawContinuousTrace\(/, "derived montage rows keep their continuous prepared samples");
+});
+
 test("toggles live resource usage from the control left of Help and Settings", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

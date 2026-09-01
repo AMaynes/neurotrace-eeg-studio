@@ -4285,7 +4285,12 @@ export default function Home() {
             `raw:${width}:${rowHeight}:${baseline}:${scale}`,
             () => measureRawTraceGeometry(values, projection),
           );
-          if (!waveformGeometryFitsBudget(geometry, traceGeometryBudget)) {
+          // Derived montages reach this branch only after Nyquist-safe,
+          // pixel-bounded display preparation. Grouping them again turns
+          // high-amplitude bipolar/CAR traces into artificial stair steps.
+          const preserveDerivedMontageContinuity = montage !== "referential";
+          if (!preserveDerivedMontageContinuity
+            && !waveformGeometryFitsBudget(geometry, traceGeometryBudget)) {
             const maximumGroups = Math.min(
               extremaGroupBudget,
               maximumExtremaGroupsForBudget(values.length, projection, traceGeometryBudget),
@@ -4542,7 +4547,7 @@ export default function Home() {
     waveDrawRef.current = draw;
     draw();
     return () => performanceDiagnostics.removeCanvasSurface("waveform");
-  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, montage, timebase, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
