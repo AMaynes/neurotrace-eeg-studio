@@ -704,6 +704,9 @@ test("toggles live resource usage from the control left of Help and Settings", a
   assert.ok(actions.indexOf("Show resource usage") < helpPosition && helpPosition < settingsPosition, "resource usage sits immediately before Help and Settings");
   assert.match(css, /\.top-project-actions\s*\{[^}]*flex:\s*0 0 142px/, "save has a dedicated visible header zone");
   assert.match(css, /\.save-project-button\s*\{[^}]*width:\s*118px/, "save is a clearly labeled button rather than an icon-only control");
+  assert.match(header, /aria-haspopup="dialog"[\s\S]*?aria-expanded=\{showProjectSave\}[\s\S]*?aria-controls="project-save-dialog"/, "save communicates whether its dialog is open");
+  assert.match(css, /\.save-project-button\s*\{[^}]*border:\s*1px solid #294149[^}]*background:\s*#102027[^}]*color:\s*#b3c4c6/, "save uses the neutral utility palette while idle");
+  assert.match(css, /\.save-project-button:hover,\s*\.save-project-button:focus-visible,\s*\.save-project-button\[aria-expanded="true"\]\s*\{[^}]*background:\s*#163a2f[^}]*color:\s*#d7fff2/, "save turns green only while interactive or open");
   assert.match(actions, /setRightPanelView\("resources"\)[\s\S]*?setRightPanelOpen\(true\)/);
 
   const sidebarStart = page.indexOf('<aside className="right-sidebar">');

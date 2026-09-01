@@ -6909,6 +6909,9 @@ export default function Home() {
           <button
             className="save-project-button"
             aria-label="Save NeuroTrace project"
+            aria-haspopup="dialog"
+            aria-expanded={showProjectSave}
+            aria-controls="project-save-dialog"
             title={`Save one portable project file${customTools.length ? ` · ${customTools.length} custom definition${customTools.length === 1 ? "" : "s"}` : ""}`}
             onClick={() => {
               setProjectSaveError("");
@@ -7436,7 +7439,7 @@ export default function Home() {
       </div>}
 
       {showProjectSave && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !projectSaveBusy) setShowProjectSave(false); }}>
-        <div className="modal project-save-modal" role="dialog" aria-modal="true" aria-label="Save NeuroTrace project" tabIndex={-1}>
+        <div id="project-save-dialog" className="modal project-save-modal" role="dialog" aria-modal="true" aria-label="Save NeuroTrace project" tabIndex={-1}>
           <button className="modal-close" disabled={projectSaveBusy} onClick={() => setShowProjectSave(false)} aria-label="Close project save">×</button>
           <span className="modal-eyebrow">SAVE PROJECT</span>
           <h2>Keep the whole workspace in one file.</h2>
