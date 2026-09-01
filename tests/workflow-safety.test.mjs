@@ -307,6 +307,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
 
 test("finite clipped waveform samples remain connected when zoom rebuilds the trace", async () => {
   const page = await pageSource();
+  const rowConfinement = section(page, "const TRACE_ROW_EDGE_INSET_PX", "function traceYOverflowsRow");
   const continuousTrace = section(page, "function drawContinuousTrace", "function drawGroupedExtrema");
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
   const directTrace = section(
@@ -315,6 +316,8 @@ test("finite clipped waveform samples remain connected when zoom rebuilds the tr
     "} else {\n          const pixelColumns",
   );
 
+  assert.match(rowConfinement, /const edgeInset\s*=\s*Math\.min\(TRACE_ROW_EDGE_INSET_PX,\s*rowHeight\s*\/\s*2\)/);
+  assert.match(rowConfinement, /Math\.min\(visibleBottom,\s*Math\.max\(visibleTop,\s*y\)\)/, "clipped montage strokes stay visibly inside the row clip");
   assert.match(continuousTrace, /if\s*\(!Number\.isFinite\(value\)\s*\|\|\s*gaps\?\.\[index\]\)\s*\{\s*connected\s*=\s*false/);
   assert.match(continuousTrace, /if\s*\(traceYOverflowsRow\(rawY,\s*rowTop,\s*rowHeight\)\)\s*\{\s*overflow\s*=\s*true;\s*\}\s*if\s*\(connected\)\s*context\.lineTo\(x,\s*y\)/);
   assert.doesNotMatch(continuousTrace, /traceYOverflowsRow[\s\S]*?connected\s*=\s*false/, "finite clipped samples remain connected at row boundaries");

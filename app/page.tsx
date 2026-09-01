@@ -1119,11 +1119,19 @@ function makeEnvelopeCacheEntry(
   };
 }
 
+const TRACE_ROW_EDGE_INSET_PX = 1;
+
 function confineTraceYValueToRow(y: number, rowTop: number, rowHeight: number) {
   const rowBottom = rowTop + rowHeight;
-  if (Number.isFinite(y)) return Math.min(rowBottom, Math.max(rowTop, y));
-  if (y === Number.NEGATIVE_INFINITY) return rowTop;
-  if (y === Number.POSITIVE_INFINITY) return rowBottom;
+  // A stroke centered exactly on the clip boundary loses half its width and
+  // can look broken during high-amplitude montage excursions. Keep the trace
+  // inside the row while preserving the separate overflow indication.
+  const edgeInset = Math.min(TRACE_ROW_EDGE_INSET_PX, rowHeight / 2);
+  const visibleTop = rowTop + edgeInset;
+  const visibleBottom = rowBottom - edgeInset;
+  if (Number.isFinite(y)) return Math.min(visibleBottom, Math.max(visibleTop, y));
+  if (y === Number.NEGATIVE_INFINITY) return visibleTop;
+  if (y === Number.POSITIVE_INFINITY) return visibleBottom;
   return (rowTop + rowBottom) / 2;
 }
 
