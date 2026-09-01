@@ -540,7 +540,8 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(page, /const focused = !inspectionDragging && focusedChannel === index/);
   assert.match(page, /inspectionHighlighted \? "inspection-highlighted"/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
-  assert.match(css, /\.canvas-shell\.inspection-mode canvas\s*\{[^}]*cursor:\s*zoom-in/);
+  assert.match(css, /\.canvas-shell canvas\s*\{[^}]*cursor:\s*crosshair/);
+  assert.doesNotMatch(css, /cursor:\s*zoom-in/, "General Info keeps the normal waveform crosshair");
   assert.match(css, /\.wave-inspection-range\s*\{[^}]*min-height:\s*12px/);
   assert.match(css, /\.channel-rail button\.inspection-highlighted\s*\{/);
   assert.doesNotMatch(css, /\.wave-inspection-range\s*\{[^}]*(?:top:\s*0|bottom:\s*0)/);
