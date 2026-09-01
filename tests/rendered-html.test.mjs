@@ -197,6 +197,7 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   ]);
   assert.match(page, /type WindowTimeUnit = "ms" \| "s" \| "m" \| "hrs"/);
   assert.match(page, /const WINDOW_TIME_UNITS: WindowTimeUnit\[\] = \["ms", "s", "m", "hrs"\]/);
+  assert.match(page, /const WINDOW_AMOUNT_STEP = \.1/);
   assert.match(page, /const WINDOW_ZOOM_STEP_SECONDS = \.1/);
   assert.match(page, /const MIN_TIME_WINDOW_SECONDS = WINDOW_ZOOM_STEP_SECONDS/);
   assert.match(page, /const \[windowDraftValue, setWindowDraftValue\] = useState<string \| null>\(null\)/);
@@ -214,8 +215,8 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(controls, /step=\{windowDraftStep\}/);
   assert.match(controls, /onChange=\{\(event\) => setWindowDraftValue\(event\.target\.value\)\}/);
   assert.doesNotMatch(controls, /onChange=\{[^}]*setTimeWindow/, "editing the staged amount does not reload the waveform");
-  assert.match(controls, /aria-label="Decrease window amount"[\s\S]*?adjustWindowDraft\(-1\)/);
-  assert.match(controls, /aria-label="Increase window amount"[\s\S]*?adjustWindowDraft\(1\)/);
+  assert.match(controls, /aria-label="Decrease window amount"[\s\S]*?adjustWindowDraft\(-1, event\)/);
+  assert.match(controls, /aria-label="Increase window amount"[\s\S]*?adjustWindowDraft\(1, event\)/);
   assert.doesNotMatch(controls, /zoomTimeWindow\(/, "the amount buttons stage numeric changes instead of immediately zooming");
   assert.match(controls, /className="window-sync-button"/);
   assert.match(controls, /onClick=\{syncWindowDraft\}/);
@@ -232,7 +233,8 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
   assert.doesNotMatch(windowLogic, /Math\.min\(300/, "the full recording duration is accepted");
   assert.match(windowLogic, /numericValue \* windowUnitSeconds/);
-  assert.match(windowLogic, /currentValue \+ direction/);
+  assert.match(windowLogic, /let step = WINDOW_AMOUNT_STEP[\s\S]*?modifiers\.shiftKey[\s\S]*?modifiers\.ctrlKey \|\| modifiers\.metaKey \? 10 : 1/);
+  assert.match(windowLogic, /currentValue \+ direction \* step/);
   assert.match(windowLogic, /timebase \+ \(direction === "in" \? -WINDOW_ZOOM_STEP_SECONDS : WINDOW_ZOOM_STEP_SECONDS\)/);
   assert.match(windowLogic, /setTimeWindow\(nextWindow\)/);
   assert.match(windowLogic, /setWindowDraftValue\(null\)/);

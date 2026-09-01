@@ -1043,6 +1043,7 @@ const FULL_SESSION_ENVELOPE_REFINEMENT = 32;
 const LOCAL_ENVELOPE_REFINEMENT = 4;
 const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "m", "hrs"];
 const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, m: 60, hrs: 3_600 };
+const WINDOW_AMOUNT_STEP = .1;
 const WINDOW_ZOOM_STEP_SECONDS = .1;
 const MIN_TIME_WINDOW_SECONDS = WINDOW_ZOOM_STEP_SECONDS;
 // Fewer samples cannot form a stable trace or survive the AR(2) whitening
@@ -2368,19 +2369,24 @@ export default function Home() {
   const windowDraftDisplayValue = windowDraftValue ?? formatWindowAmount(timebase / windowUnitSeconds);
   const windowDraftMaximum = Math.max(Number.EPSILON, meta.durationSec / windowUnitSeconds);
   const windowDraftMinimum = Math.min(minimumRenderableWindow / windowUnitSeconds, windowDraftMaximum);
-  const windowDraftStep = WINDOW_ZOOM_STEP_SECONDS / windowUnitSeconds;
+  const windowDraftStep = WINDOW_AMOUNT_STEP;
   const cycleWindowDraftUnit = () => {
     setWindowDraftValue((current) => current ?? formatWindowAmount(timebase / windowUnitSeconds));
     const currentIndex = WINDOW_TIME_UNITS.indexOf(windowDraftUnit);
     setWindowDraftUnit(WINDOW_TIME_UNITS[(currentIndex + 1) % WINDOW_TIME_UNITS.length]);
   };
-  const adjustWindowDraft = (direction: -1 | 1) => {
+  const adjustWindowDraft = (
+    direction: -1 | 1,
+    modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+  ) => {
     if (!hasRecording) return;
     const numericValue = Number(windowDraftDisplayValue);
     const currentValue = Number.isFinite(numericValue) && numericValue > 0
       ? numericValue
       : windowDraftMinimum;
-    setWindowDraftValue(formatWindowAmount(clamp(currentValue + direction, windowDraftMinimum, windowDraftMaximum)));
+    let step = WINDOW_AMOUNT_STEP;
+    if (modifiers.shiftKey) step = modifiers.ctrlKey || modifiers.metaKey ? 10 : 1;
+    setWindowDraftValue(formatWindowAmount(clamp(currentValue + direction * step, windowDraftMinimum, windowDraftMaximum)));
   };
   const syncWindowDraft = () => {
     if (!hasRecording) return;
@@ -6699,8 +6705,8 @@ export default function Home() {
                 <button disabled={!hasRecording} aria-label="Cycle window time unit" title="Cycle time unit" onClick={cycleWindowDraftUnit}><span aria-hidden="true">…</span></button>
               </div>
               <div className="window-step-buttons">
-                <button disabled={!hasRecording} aria-label="Increase window amount" title="Increase staged window amount" onClick={() => adjustWindowDraft(1)}>+</button>
-                <button disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease staged window amount" onClick={() => adjustWindowDraft(-1)}>−</button>
+                <button disabled={!hasRecording} aria-label="Increase window amount" title="Increase by 0.1 · Shift: 1 · Ctrl/Cmd+Shift: 10" onClick={(event) => adjustWindowDraft(1, event)}>+</button>
+                <button disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease by 0.1 · Shift: 1 · Ctrl/Cmd+Shift: 10" onClick={(event) => adjustWindowDraft(-1, event)}>−</button>
               </div>
               <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
             </div>
