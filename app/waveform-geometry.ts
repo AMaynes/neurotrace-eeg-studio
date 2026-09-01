@@ -44,6 +44,13 @@ export interface WaveformGeometryBudget {
 
 export type EnvelopeTraceRenderMode = "detailed" | "midpoint" | "grouped-extrema";
 
+const CLIPPING_SEVERITY_COLOR_STOPS = [
+  { intensity: 0, color: [7, 18, 22] },
+  { intensity: .5, color: [87, 223, 103] },
+  { intensity: .78, color: [242, 218, 65] },
+  { intensity: 1, color: [255, 126, 45] },
+] as const;
+
 export type GroupedExtremaVisitor = (
   startIndex: number,
   endIndex: number,
@@ -401,13 +408,56 @@ export function gaussianClippingHaloIntensity(
     const minimum = minima[sourceIndex];
     const maximum = maxima[sourceIndex];
     if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
-    const excess = Math.max(0, maximum - visibleMaximum, visibleMinimum - minimum);
-    if (!(excess > 0)) continue;
-    const seed = Math.min(1, excess / fullIntensityExcess);
+    const seed = clippingExcessIntensity(
+      minimum,
+      maximum,
+      visibleMinimum,
+      visibleMaximum,
+      fullIntensityExcess,
+    );
+    if (!(seed > 0)) continue;
     const distance = (targetIndex - sourceIndex) / sigmaBuckets;
     halo = Math.max(halo, seed * Math.exp(-.5 * distance * distance));
   }
   return halo;
+}
+
+/** Normalizes a bucket's distance beyond either voltage threshold. */
+export function clippingExcessIntensity(
+  minimum: number,
+  maximum: number,
+  visibleMinimum: number,
+  visibleMaximum: number,
+  fullIntensityExcess: number,
+) {
+  if (!Number.isFinite(minimum)
+    || !Number.isFinite(maximum)
+    || !Number.isFinite(visibleMinimum)
+    || !Number.isFinite(visibleMaximum)
+    || !(visibleMaximum > visibleMinimum)
+    || !Number.isFinite(fullIntensityExcess)
+    || !(fullIntensityExcess > 0)) return 0;
+  const excess = Math.max(0, maximum - visibleMaximum, visibleMinimum - minimum);
+  return Math.min(1, excess / fullIntensityExcess);
+}
+
+/**
+ * Maps normalized voltage excess to the clipping ribbon's perceptual scale:
+ * viewer-background green at the threshold, lime midway, yellow high, and
+ * orange at the most extreme values.
+ */
+export function clippingSeverityColor(intensity: number) {
+  const normalized = Number.isFinite(intensity) ? Math.min(1, Math.max(0, intensity)) : 0;
+  const upperIndex = CLIPPING_SEVERITY_COLOR_STOPS.findIndex((stop) => stop.intensity >= normalized);
+  const upper = CLIPPING_SEVERITY_COLOR_STOPS[Math.max(0, upperIndex)];
+  const lower = CLIPPING_SEVERITY_COLOR_STOPS[Math.max(0, upperIndex - 1)];
+  const span = upper.intensity - lower.intensity;
+  const mix = span > 0 ? (normalized - lower.intensity) / span : 0;
+  const [red, green, blue] = lower.color.map((value, channel) => (
+    Math.round(value + (upper.color[channel] - value) * mix)
+  ));
+  const alpha = .76 + normalized * .22;
+  return `rgba(${red}, ${green}, ${blue}, ${alpha.toFixed(3)})`;
 }
 
 /**

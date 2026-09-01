@@ -16,6 +16,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  clippingExcessIntensity,
+  clippingSeverityColor,
   envelopeWindowMatchesViewport,
   envelopeTraceRenderMode,
   estimateEnvelopeActivityRate,
@@ -65,6 +67,26 @@ test("fades clipped-voltage indicators symmetrically around an out-of-range peak
     () => gaussianClippingHaloIntensity(minima, new Float32Array(3), gaps, 0, -100, 100, 50),
     /equal lengths/i,
   );
+});
+
+test("normalizes clipping color from background green through lime and yellow to orange", () => {
+  assert.equal(clippingSeverityColor(0), "rgba(7, 18, 22, 0.760)");
+  assert.equal(clippingSeverityColor(.5), "rgba(87, 223, 103, 0.870)");
+  assert.equal(clippingSeverityColor(.78), "rgba(242, 218, 65, 0.932)");
+  assert.equal(clippingSeverityColor(1), "rgba(255, 126, 45, 0.980)");
+  assert.equal(clippingSeverityColor(2), clippingSeverityColor(1));
+  assert.equal(clippingSeverityColor(Number.NaN), clippingSeverityColor(0));
+});
+
+test("uses equal severity for the same distance above and below 100 microvolts", () => {
+  const gaps = new Uint8Array(1);
+  const above = gaussianClippingHaloIntensity([0], [150], gaps, 0, -100, 100, 200);
+  const below = gaussianClippingHaloIntensity([-150], [0], gaps, 0, -100, 100, 200);
+  assert.equal(above, .25);
+  assert.equal(below, above);
+  assert.equal(clippingExcessIntensity(-100, 100, -100, 100, 200), 0);
+  assert.equal(clippingExcessIntensity(-300, 100, -100, 100, 200), 1);
+  assert.equal(clippingExcessIntensity(-100, 300, -100, 100, 200), 1);
 });
 
 test("suppresses clipping halos until zoomed envelope coverage matches the viewport", () => {

@@ -79,6 +79,8 @@ import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
+  clippingExcessIntensity,
+  clippingSeverityColor,
   envelopeWindowMatchesViewport,
   envelopeTraceRenderMode,
   gaussianClippingHaloIntensity,
@@ -1191,30 +1193,79 @@ function drawOverviewEnvelope(
   }
 
   if (showClippingHalo && rowHeight >= 4) {
-    const ribbonTop = rowTop + rowHeight - Math.min(3, rowHeight * .08);
-    const visibleHalfRange = rowHeight / (2 * scale);
-    const visibleMinimum = baseline - visibleHalfRange;
-    const visibleMaximum = baseline + visibleHalfRange;
-    for (let index = 0; index < minima.length; index += 1) {
-      if (!isFiniteBucket(index)) continue;
-      const intensity = gaussianClippingHaloIntensity(
-        minima,
-        maxima,
-        gaps,
-        index,
-        visibleMinimum,
-        visibleMaximum,
-        visibleHalfRange * .35,
-      );
-      if (intensity < .015) continue;
-      context.fillStyle = `hsla(142 76% 58% / ${.12 + intensity * .82})`;
-      const left = xAtBoundary(index);
-      const right = xAtBoundary(index + 1);
-      context.fillRect(left, ribbonTop, Math.max(1, right - left), rowTop + rowHeight - ribbonTop);
-    }
+    drawSampleClippingRibbon(
+      context,
+      minima,
+      maxima,
+      gaps,
+      startSec,
+      bucketDurationSec,
+      displayStart,
+      timebase,
+      width,
+      rowTop,
+      rowHeight,
+      baseline,
+    );
   }
   context.restore();
   return overflow;
+}
+
+function drawSampleClippingRibbon(
+  context: CanvasRenderingContext2D,
+  minima: ArrayLike<number>,
+  maxima: ArrayLike<number>,
+  gaps: ArrayLike<number> | undefined,
+  startSec: number,
+  bucketDurationSec: number,
+  displayStart: number,
+  timebase: number,
+  width: number,
+  rowTop: number,
+  rowHeight: number,
+  baseline: number,
+) {
+  if (rowHeight < 4 || !minima.length || maxima.length !== minima.length) return;
+  const clippingThresholdMicrovolts = 100;
+  const fullColorExcessMicrovolts = 200;
+  const haloColorScale = .3;
+  const ribbonTop = rowTop + rowHeight - Math.min(3, rowHeight * .08);
+  for (let index = 0; index < minima.length; index += 1) {
+    if (gaps?.[index] || !Number.isFinite(minima[index]) || !Number.isFinite(maxima[index])) continue;
+    const haloIntensity = gaussianClippingHaloIntensity(
+      minima,
+      maxima,
+      gaps,
+      index,
+      baseline - clippingThresholdMicrovolts,
+      baseline + clippingThresholdMicrovolts,
+      fullColorExcessMicrovolts,
+    );
+    if (haloIntensity < .005) continue;
+    const left = ((startSec + index * bucketDurationSec - displayStart) / timebase) * width;
+    const right = ((startSec + (index + 1) * bucketDurationSec - displayStart) / timebase) * width;
+    const bucketWidth = Math.max(1, right - left);
+    context.fillStyle = clippingSeverityColor(haloIntensity * haloColorScale);
+    context.fillRect(left, ribbonTop, bucketWidth, rowTop + rowHeight - ribbonTop);
+
+    const localIntensity = clippingExcessIntensity(
+      minima[index],
+      maxima[index],
+      baseline - clippingThresholdMicrovolts,
+      baseline + clippingThresholdMicrovolts,
+      fullColorExcessMicrovolts,
+    );
+    if (localIntensity < .005) continue;
+    const peakWidth = Math.min(bucketWidth, Math.max(1, bucketWidth * .3));
+    context.fillStyle = clippingSeverityColor(localIntensity);
+    context.fillRect(
+      left + (bucketWidth - peakWidth) / 2,
+      ribbonTop,
+      peakWidth,
+      rowTop + rowHeight - ribbonTop,
+    );
+  }
 }
 
 function expectedEDFRecordBytes(source: EDFSource, startSec: number, durationSec: number) {
@@ -3839,6 +3890,8 @@ export default function Home() {
         const scale = legacyRawCountDisplay
           ? (rowHeight * gain) / LEGACY_RAW_COUNTS_PER_ROW
           : (rowHeight * 0.36 * gain) / 100;
+        const showMicrovoltClipping = !legacyRawCountDisplay
+          && ["µv", "μv", "uv"].includes((display.units[channel] ?? "").trim().toLowerCase());
         const selected = channel === focusedChannel;
         const traceProjection: TraceGeometryProjection = {
           widthPx: width,
@@ -3871,13 +3924,14 @@ export default function Home() {
             baseline,
             scale,
             selected,
-            envelopeWindowMatchesViewport(
-              envelope.startSec,
-              envelope.bucketDurationSec,
-              values.length,
-              displayStart,
-              timebase,
-            ),
+            showMicrovoltClipping
+              && envelopeWindowMatchesViewport(
+                envelope.startSec,
+                envelope.bucketDurationSec,
+                values.length,
+                displayStart,
+                timebase,
+              ),
             envelope.gaps,
           );
         } else if (values.length <= Math.max(2, width * 1.5)) {
@@ -3936,6 +3990,22 @@ export default function Home() {
               }
             }
             context.stroke();
+          }
+          if (showMicrovoltClipping) {
+            drawSampleClippingRibbon(
+              context,
+              values,
+              values,
+              undefined,
+              rowStartSec,
+              1 / sampleRate,
+              displayStart,
+              timebase,
+              width,
+              rowTop,
+              rowHeight,
+              baseline,
+            );
           }
         } else {
           const pixelColumns = Math.max(1, Math.floor(width));
@@ -4062,6 +4132,22 @@ export default function Home() {
               scale,
               gaps,
             ) || overflow;
+          }
+          if (showMicrovoltClipping) {
+            drawSampleClippingRibbon(
+              context,
+              minima,
+              maxima,
+              gaps,
+              displayStart,
+              timebase / pixelColumns,
+              displayStart,
+              timebase,
+              width,
+              rowTop,
+              rowHeight,
+              baseline,
+            );
           }
         }
         context.restore();
@@ -6915,7 +7001,7 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
         ctx.fillStyle = "#071216";
         ctx.fillRect(0, 0, width, height);
         const status = overview
-          ? "Wide view: green glow marks peaks beyond the visible µV range · zoom in for exact waveform and spectrum"
+          ? "Wide view: dark green → lime → yellow → orange marks distance beyond ±100 µV · zoom in for exact waveform and spectrum"
           : sampleRate < 2
           ? "Spectrum unavailable below 2 Hz"
           : computeError || (!spectrum ? "Computing spectrum…" : "");

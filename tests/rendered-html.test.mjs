@@ -994,8 +994,10 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   const overview = page.slice(overviewStart, overviewEnd);
   assert.match(overview, /context\.closePath\(\)[\s\S]*?context\.fill\(\)/, "extrema form a connected filled silhouette");
   assert.match(overview, /gaussianClippingHaloIntensity/);
+  assert.match(overview, /clippingExcessIntensity/);
+  assert.match(overview, /peakWidth/, "true exceedances remain narrow peaks over the Gaussian trail");
   assert.match(overview, /showClippingHalo\s*&&\s*rowHeight\s*>=\s*4/);
-  assert.match(overview, /visibleHalfRange[\s\S]*?visibleMinimum[\s\S]*?visibleMaximum/);
+  assert.match(overview, /clippingThresholdMicrovolts\s*=\s*100[\s\S]*?fullColorExcessMicrovolts\s*=\s*200/);
   assert.match(overview, /context\.fillRect\(left,\s*ribbonTop/, "clipped peaks use a thin time-aligned indicator rather than vertical frequency strokes");
 
   const envelopeBranchStart = page.indexOf("if (envelope) {");
@@ -1005,7 +1007,9 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   assert.match(envelopeBranch, /envelopeWindowMatchesViewport\([\s\S]*?envelope\.startSec[\s\S]*?envelope\.bucketDurationSec[\s\S]*?values\.length[\s\S]*?displayStart[\s\S]*?timebase/);
   assert.doesNotMatch(envelopeBranch, /drawContinuousTrace\(/, "bucket midpoints are not connected into a fake low-frequency waveform");
   assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
-  assert.match(page, /green glow marks peaks beyond the visible µV range/);
+  assert.match(page, /dark green → lime → yellow → orange marks distance beyond ±100 µV/);
+  assert.match(page, /drawSampleClippingRibbon\([\s\S]*?values,[\s\S]*?values,/, "close raw-sample views retain the clipping ribbon");
+  assert.match(page, /drawSampleClippingRibbon\([\s\S]*?minima,[\s\S]*?maxima,[\s\S]*?gaps,/, "pixel-envelope views retain the clipping ribbon");
 });
 
 test("filters padded signal data and crops back to the requested viewport", async () => {
