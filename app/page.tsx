@@ -6905,16 +6905,18 @@ export default function Home() {
           </div>
           <button className="add-session-tab" disabled={importBusy} aria-label="Add blank session" title="Add blank session" onClick={createBlankSession}>+</button>
         </nav>
-        <div className="top-actions utility-actions">
+        <div className="top-project-actions">
           <button
-            className="utility-button save-project-button"
+            className="save-project-button"
             aria-label="Save NeuroTrace project"
             title={`Save one portable project file${customTools.length ? ` · ${customTools.length} custom definition${customTools.length === 1 ? "" : "s"}` : ""}`}
             onClick={() => {
               setProjectSaveError("");
               setShowProjectSave(true);
             }}
-          ><span aria-hidden="true">⇩</span></button>
+          ><span aria-hidden="true">⇩</span><b>Save project</b></button>
+        </div>
+        <div className="top-actions utility-actions">
           <button
             className={`utility-button ${resourcePanelActive ? "active" : ""}`}
             aria-label={resourcePanelActive ? "Return to right panel tools" : "Show resource usage"}

@@ -688,17 +688,22 @@ test("toggles live resource usage from the control left of Help and Settings", a
   ]);
 
   assert.match(page, /const \[rightPanelView,\s*setRightPanelView\]\s*=\s*useState<"labels" \| "inspect" \| "resources">\("labels"\)/);
+  const headerStart = page.indexOf('<header className="topbar">');
+  const headerEnd = page.indexOf("</header>", headerStart);
+  const header = page.slice(headerStart, headerEnd);
   const actionsStart = page.indexOf('<div className="top-actions utility-actions">');
   const actionsEnd = page.indexOf("</div>", actionsStart);
   const actions = page.slice(actionsStart, actionsEnd);
-  const savePosition = actions.indexOf("Save NeuroTrace project");
-  const resourcePosition = actions.indexOf("Show resource usage");
+  const savePosition = header.indexOf("Save NeuroTrace project");
+  const resourcePosition = header.indexOf("Show resource usage");
   const helpPosition = actions.indexOf("Open Help");
   const settingsPosition = actions.indexOf("Open Settings");
   assert.ok(resourcePosition >= 0, "the resource control is present in the top-right utility group");
-  assert.ok(savePosition >= 0 && savePosition < resourcePosition, "project save sits at the far-left edge of the utility group");
-  assert.ok(resourcePosition < helpPosition && helpPosition < settingsPosition, "resource usage sits immediately before Help and Settings");
-  assert.match(css, /\.save-project-button\s*\{[^}]*margin-right:\s*auto/, "save is visually separated from resource usage");
+  assert.ok(savePosition >= 0 && savePosition < resourcePosition, "project save sits in its own top-right zone left of resource usage");
+  assert.match(header, /className="top-project-actions"[\s\S]*?<b>Save project<\/b>[\s\S]*?className="top-actions utility-actions"/);
+  assert.ok(actions.indexOf("Show resource usage") < helpPosition && helpPosition < settingsPosition, "resource usage sits immediately before Help and Settings");
+  assert.match(css, /\.top-project-actions\s*\{[^}]*flex:\s*0 0 142px/, "save has a dedicated visible header zone");
+  assert.match(css, /\.save-project-button\s*\{[^}]*width:\s*118px/, "save is a clearly labeled button rather than an icon-only control");
   assert.match(actions, /setRightPanelView\("resources"\)[\s\S]*?setRightPanelOpen\(true\)/);
 
   const sidebarStart = page.indexOf('<aside className="right-sidebar">');
