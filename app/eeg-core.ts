@@ -2647,6 +2647,41 @@ export interface RawFlatlineInterval {
   totalChannelCount: number;
 }
 
+export interface FlatlineDisplayRegion {
+  startSec: number;
+  endSec: number;
+}
+
+/** Combines nearby detections for a cleaner QC overlay without changing detection itself. */
+export function mergeNearbyFlatlineRegions(
+  regions: readonly FlatlineDisplayRegion[],
+  maximumGapSec: number,
+): FlatlineDisplayRegion[] {
+  if (!(maximumGapSec >= 0) || !Number.isFinite(maximumGapSec)) {
+    throw new Error("Flatline merge gap must be non-negative and finite.");
+  }
+  if (!regions.length) return [];
+  const ordered = regions.map((region) => {
+    if (!Number.isFinite(region.startSec)
+      || !Number.isFinite(region.endSec)
+      || region.endSec < region.startSec) {
+      throw new Error("Flatline regions must have finite, ordered boundaries.");
+    }
+    return { startSec: region.startSec, endSec: region.endSec };
+  }).sort((first, second) => first.startSec - second.startSec || first.endSec - second.endSec);
+  const merged: FlatlineDisplayRegion[] = [{ ...ordered[0] }];
+  for (const region of ordered.slice(1)) {
+    const current = merged[merged.length - 1];
+    const gapSec = region.startSec - current.endSec;
+    if (gapSec <= maximumGapSec + 1e-9) {
+      current.endSec = Math.max(current.endSec, region.endSec);
+    } else {
+      merged.push({ ...region });
+    }
+  }
+  return merged;
+}
+
 export interface RawFlatlineDetectionOptions {
   startSec?: number;
   /** Optional absolute origin for each channel when raw windows are offset. */

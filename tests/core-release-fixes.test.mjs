@@ -30,6 +30,7 @@ import {
   detectRawSynchronizedFlatlines,
   formatDisplayChannelLabel,
   makeId,
+  mergeNearbyFlatlineRegions,
   normalizeEDFPhysicalDimension,
   orderAnatomicalChannelIndices,
   parseEDFHeader,
@@ -330,6 +331,23 @@ test("overview flatline detection uses constant typed-array workspace", () => {
 
   assert.deepEqual(allocationCount(4), { float32: 2, uint8: 2 });
   assert.deepEqual(allocationCount(12_000), { float32: 2, uint8: 2 });
+});
+
+test("groups displayed flatline regions separated by no more than two seconds", () => {
+  const regions = mergeNearbyFlatlineRegions([
+    { startSec: 7, endSec: 8 },
+    { startSec: 0, endSec: 1 },
+    { startSec: 3, endSec: 4 },
+    { startSec: 6.000_001, endSec: 6.5 },
+  ], 2);
+
+  assert.deepEqual(regions, [
+    { startSec: 0, endSec: 4 },
+    { startSec: 6.000_001, endSec: 8 },
+  ]);
+  assert.deepEqual(mergeNearbyFlatlineRegions([], 2), []);
+  assert.throws(() => mergeNearbyFlatlineRegions([{ startSec: 2, endSec: 1 }], 2), /ordered boundaries/i);
+  assert.throws(() => mergeNearbyFlatlineRegions([], -1), /merge gap/i);
 });
 
 test("cached exact envelopes aggregate extrema, gaps, and absolute metadata conservatively", () => {

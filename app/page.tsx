@@ -46,6 +46,7 @@ import {
   formatDisplayChannelLabel,
   LEGACY_RAW_COUNTS_PER_ROW,
   makeId,
+  mergeNearbyFlatlineRegions,
   orderAnatomicalChannelIndices,
   parseLegacyMatMetadata,
   projectEnvelopeChannels,
@@ -886,6 +887,7 @@ const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, hr
 const MIN_WINDOW_AMOUNT = .001;
 const MIN_TIME_WINDOW_SECONDS = MIN_WINDOW_AMOUNT * WINDOW_UNIT_SECONDS.ms;
 const WHEEL_PAN_SETTLE_MS = 180;
+const FLATLINE_DISPLAY_MERGE_GAP_SECONDS = 2;
 const MAX_INTERACTIVE_TIMELINE_ANNOTATIONS = 400;
 const TIMELINE_DENSITY_BINS_PER_TRACK = 256;
 
@@ -3188,13 +3190,16 @@ export default function Home() {
             startSec: visibleEnvelope.startSec,
             bucketDurationSec: visibleEnvelope.bucketDurationSec,
           }));
-          const flatlineRegions = detectEnvelopeSynchronizedFlatlines(
-            envelopes.map((entry) => entry.minima),
-            envelopes.map((entry) => entry.maxima),
-            envelopes.map((entry) => entry.gaps),
-            visibleEnvelope.bucketDurationSec,
-            { startSec: visibleEnvelope.startSec, thresholdFraction: .8, minimumDurationSec: .25 },
-          ).map((region) => ({ startSec: region.startSec, endSec: region.endSec }));
+          const flatlineRegions = mergeNearbyFlatlineRegions(
+            detectEnvelopeSynchronizedFlatlines(
+              envelopes.map((entry) => entry.minima),
+              envelopes.map((entry) => entry.maxima),
+              envelopes.map((entry) => entry.gaps),
+              visibleEnvelope.bucketDurationSec,
+              { startSec: visibleEnvelope.startSec, thresholdFraction: .8, minimumDurationSec: .25 },
+            ),
+            FLATLINE_DISPLAY_MERGE_GAP_SECONDS,
+          );
           const effectiveRate = 1 / visibleEnvelope.bucketDurationSec;
           displayAppliedRequestIdRef.current = requestId;
           const nextDisplay: DisplayWindow = {
@@ -3340,12 +3345,15 @@ export default function Home() {
           }
           if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
           const byteLength = windowData.data.reduce((sum, channel) => sum + channel.byteLength, 0);
-          const flatlineRegions = detectRawSynchronizedFlatlines(windowData.data, windowData.sampleRates, {
-            startSec: windowData.startSec,
-            channelStartSecs: windowData.channelStartSecs,
-            thresholdFraction: .8,
-            minimumDurationSec: .25,
-          }).map((region) => ({ startSec: region.startSec, endSec: region.endSec }));
+          const flatlineRegions = mergeNearbyFlatlineRegions(
+            detectRawSynchronizedFlatlines(windowData.data, windowData.sampleRates, {
+              startSec: windowData.startSec,
+              channelStartSecs: windowData.channelStartSecs,
+              thresholdFraction: .8,
+              minimumDurationSec: .25,
+            }),
+            FLATLINE_DISPLAY_MERGE_GAP_SECONDS,
+          );
           rawWindow = {
             source,
             channelKey,
