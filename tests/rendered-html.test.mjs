@@ -664,13 +664,13 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
   assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
   assert.match(page, /unprojectVerticalFraction\(screenFraction, waveformVerticalViewport\)/);
-  assert.match(page, /const selected = channel === focusedChannel/);
+  assert.match(page, /const selected = channelSelectionActive && channel === focusedChannel/);
   assert.doesNotMatch(
     page,
     /\[activeCandidateTime, activeSessionContentView,[^\]]*inspection(?:Dragging|Range)/,
     "the DOM inspection rectangle updates without retracing busy waveform paths",
   );
-  assert.match(page, /const focused = !inspectionDragging && !inspectionRange\?\.dragged && focusedChannel === index/);
+  assert.match(page, /const focused = channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
   assert.doesNotMatch(page, /inspectionHighlighted|inspection-highlighted/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
   assert.match(css, /\.canvas-shell canvas\s*\{[^}]*cursor:\s*crosshair/);
@@ -974,9 +974,10 @@ test("highlights a focused channel and provides compact or vertically scrollable
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /const focused = !inspectionDragging && !inspectionRange\?\.dragged && focusedChannel === index/);
+  assert.match(page, /const focused = channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
   assert.match(page, /aria-pressed=\{focused\}/);
-  assert.match(page, /setFocusedChannel\(index\)/);
+  assert.match(page, /setFocusedChannel\(index\)[\s\S]*?setChannelSelectionActive\(true\)/);
+  assert.match(page, /setChannelSelectionActive\(false\)/);
   assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
   assert.match(page, /--channel-content-height/);
   assert.match(page, /aria-pressed=\{expandedChannels \|\| Boolean\(waveformVerticalViewport\)\}/);

@@ -277,7 +277,10 @@ export function computeSpectrogram(request: SpectrogramComputeRequest): Spectrog
   validateRequest(request);
   const startedAt = nowMs();
   const { data, sampleRate } = request;
-  const windowSize = Math.max(1, Math.round(sampleRate));
+  // Keep Buzcode's one-second window whenever possible, but shorten the
+  // analysis window for an intentionally sub-second viewer range. This keeps
+  // deep zooms informative instead of returning an all-NaN spectrogram.
+  const windowSize = Math.max(1, Math.min(data.length, Math.round(sampleRate)));
   const hop = windowSize;
   const frames = data.length < windowSize ? 1 : Math.floor((data.length - windowSize) / hop) + 1;
   const rawBins = rawFrequencyBins(sampleRate);

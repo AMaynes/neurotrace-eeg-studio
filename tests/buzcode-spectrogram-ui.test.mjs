@@ -18,16 +18,20 @@ test("exposes TheStateEditor processing controls and linked navigation", async (
   assert.match(panel, /value \+ 10/);
   assert.match(panel, /colorLimitShift/);
   assert.match(panel, /double-right reset/i);
+  assert.equal((panel.match(/SPECTROGRAM_DRAG_PAN_SCALE/g) ?? []).length, 2);
   assert.match(page, /event\.deltaY > 0 \? 1\.25 : 0\.75/);
 });
 
-test("lets the spectrogram replace the waveform pane while retaining bounded exact input", async () => {
+test("lets the spectrogram replace the waveform pane without changing the waveform data path", async () => {
   const [page, css] = await Promise.all([
     readFile(projectFile("app/page.tsx"), "utf8"),
     readFile(projectFile("app/globals.css"), "utf8"),
   ]);
   assert.match(page, /SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES/);
-  assert.match(page, /spectrogramCanUseExactSamples[\s\S]*?&& !spectrogramCanUseExactSamples/);
+  assert.doesNotMatch(page, /spectrogramCanUseExactSamples/);
+  assert.match(page, /setExactSpectrogramSignal/);
+  assert.match(page, /source\.getWindow\(signalViewStart, timebase, \[sourceIndex\]/);
+  assert.match(page, /matchingExactSpectrogramSignal\?\.data \?\? display\.data\[focusedChannel\]/);
   assert.match(page, /viewer\.clientHeight - fixedSiblingHeight/);
   assert.doesNotMatch(page, /viewer\.clientHeight - waveformMinimumHeight/);
   assert.match(css, /\.signal-and-tracks\.with-spectrogram \.waveform-wrap\s*\{\s*min-height:\s*0;/);

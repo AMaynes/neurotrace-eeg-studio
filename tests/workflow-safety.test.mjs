@@ -107,6 +107,8 @@ test("global shortcuts leave native controls alone and reserve Enter and Space f
   const modalEscape = section(keyboard, 'if (event.key === "Escape" && modalOpen)', "if (modalOpen) return");
   assert.ok(modalEscape.indexOf("confirmCommit.length") < modalEscape.indexOf("showAnnotationEditor"), "Escape closes the top advisory before its editor");
   assert.doesNotMatch(modalEscape, /setSelectedAnnotationId\(null\)|setSelectedAnnotationIds\(new Set\(\)\)/);
+  assert.match(keyboard, /closest\("\.spectrogram-panel"\) && event\.key !== "Escape"/);
+  assert.match(keyboard, /event\.key === "Escape"[\s\S]*?setChannelSelectionActive\(false\)/);
 });
 
 test("critical feedback and dialogs expose accessible semantics", async () => {

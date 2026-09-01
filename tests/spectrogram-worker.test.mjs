@@ -53,6 +53,16 @@ test("marks frames with less than 75 percent finite coverage as unavailable", ()
   assert.equal(result.metrics.dftTerms, 0);
 });
 
+test("adapts the analysis window for a valid sub-second deep zoom", () => {
+  const sampleRate = 128;
+  const data = Float32Array.from({ length: 8 }, (_, index) => Math.sin((2 * Math.PI * index) / 8));
+  const result = computeSpectrogram({ data, sampleRate });
+  assert.equal(result.windowSize, data.length);
+  assert.equal(result.frames, 1);
+  assert.equal(result.metrics.finiteFrames, 1);
+  assert.ok([...result.powers].some(Number.isFinite));
+});
+
 test("returns unique transferable result buffers and validates unsupported input", () => {
   const result = computeSpectrogram({ data: Float32Array.of(1, 2, 3, 4), sampleRate: 4 });
   const transfers = spectrogramTransferList(result);

@@ -1045,6 +1045,9 @@ const ENVELOPE_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
 const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
 const INITIAL_PREVIEW_READ_BUDGET_BYTES = 16 * 1024 * 1024;
 const SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES = 32 * 1024 * 1024;
+// A full-width drag shifts less than one window so trackpad/mouse movement can
+// be precise without breaking the shared waveform/spectrogram time lock.
+const SPECTROGRAM_DRAG_PAN_SCALE = 0.3;
 const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES;
 const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 // The waveform is continuously repainted while navigating. A HiDPI backing
@@ -1073,6 +1076,9 @@ const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "hr"];
 const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, hr: 3_600 };
 const MIN_WINDOW_AMOUNT = .001;
 const MIN_TIME_WINDOW_SECONDS = MIN_WINDOW_AMOUNT * WINDOW_UNIT_SECONDS.ms;
+// Fewer samples cannot form a stable trace or survive the AR(2) whitening
+// prefix used by the spectrogram at deep zoom.
+const MIN_RENDERABLE_SAMPLE_COUNT = 8;
 const WHEEL_PAN_SETTLE_MS = 180;
 const FLATLINE_DISPLAY_MERGE_GAP_SECONDS = 2;
 const MAX_INTERACTIVE_TIMELINE_ANNOTATIONS = 400;
@@ -2033,7 +2039,15 @@ export default function Home() {
   const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set());
   const [badChannels, setBadChannels] = useState<Set<number>>(() => new Set());
   const [focusedChannel, setFocusedChannel] = useState(0);
+  const [channelSelectionActive, setChannelSelectionActive] = useState(false);
   const [display, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
+  const [exactSpectrogramSignal, setExactSpectrogramSignal] = useState<{
+    sourceIndex: number;
+    viewStart: number;
+    duration: number;
+    data: Float32Array;
+    sampleRate: number;
+  } | null>(null);
   const [waveformWidth, setWaveformWidth] = useState(1);
   const [channelViewportHeight, setChannelViewportHeight] = useState(245);
   const [loadingSignal, setLoadingSignal] = useState(false);
@@ -2380,6 +2394,8 @@ export default function Home() {
     setSelectedChannels(new Set(snapshot.selectedChannels));
     setBadChannels(new Set(snapshot.badChannels));
     setFocusedChannel(snapshot.focusedChannel);
+    setChannelSelectionActive(false);
+    setExactSpectrogramSignal(null);
     // Signal caches are global LRUs keyed by source. Retain them across tabs so
     // reopening a session does not discard its expensive full-session index.
     setDisplay(EMPTY_DISPLAY);
@@ -2528,25 +2544,37 @@ export default function Home() {
     return bounded;
   }, [meta.durationSec, timebase]);
 
+  const focusedSourceSampleRateCandidate = display.sourceSampleRates[focusedChannel]
+    ?? meta.sampleRates[display.primarySourceIndices[focusedChannel] ?? -1]
+    ?? primarySampleRate(meta);
+  const focusedSourceSampleRate = Number.isFinite(focusedSourceSampleRateCandidate)
+    && focusedSourceSampleRateCandidate > 0
+      ? focusedSourceSampleRateCandidate
+      : 1;
+  const minimumRenderableWindow = Math.max(
+    MIN_TIME_WINDOW_SECONDS,
+    MIN_RENDERABLE_SAMPLE_COUNT / Math.max(Number.EPSILON, focusedSourceSampleRate),
+  );
+
   const setTimeWindow = useCallback((requested: number, anchorTime = viewStart + timebase / 2) => {
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
-    const next = clamp(requested, Math.min(MIN_TIME_WINDOW_SECONDS, maximumWindow), maximumWindow);
+    const next = clamp(requested, Math.min(minimumRenderableWindow, maximumWindow), maximumWindow);
     const anchor = clamp(anchorTime, viewStart, viewStart + timebase);
     const anchorRatio = timebase > 0 ? (anchor - viewStart) / timebase : 0.5;
     commitViewStart(clamp(anchor - anchorRatio * next, 0, Math.max(0, meta.durationSec - next)));
     setTimebase(next);
-  }, [commitViewStart, meta.durationSec, timebase, viewStart]);
+  }, [commitViewStart, meta.durationSec, minimumRenderableWindow, timebase, viewStart]);
 
   const zoomToTimeRange = useCallback((start: number, end: number) => {
     const rangeStart = clamp(Math.min(start, end), 0, meta.durationSec);
     const rangeEnd = clamp(Math.max(start, end), rangeStart, meta.durationSec);
     const selectedDuration = rangeEnd - rangeStart;
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
-    const nextDuration = clamp(selectedDuration, Math.min(MIN_TIME_WINDOW_SECONDS, maximumWindow), maximumWindow);
+    const nextDuration = clamp(selectedDuration, Math.min(minimumRenderableWindow, maximumWindow), maximumWindow);
     const center = (rangeStart + rangeEnd) / 2;
     commitViewStart(clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)));
     setTimebase(nextDuration);
-  }, [commitViewStart, meta.durationSec]);
+  }, [commitViewStart, meta.durationSec, minimumRenderableWindow]);
 
   const zoomTimeWindow = useCallback((direction: "in" | "out", anchorTime?: number) => {
     setTimeWindow(timebase * (direction === "in" ? 0.8 : 1.25), anchorTime);
@@ -3227,17 +3255,10 @@ export default function Home() {
       }
       setLoadingSignal(true);
       try {
-        const exactSpectrogramInputBytes = indices.reduce((bytes, index) => {
-          const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
-          return bytes + Math.ceil(sampleRate * timebase) * Float32Array.BYTES_PER_ELEMENT;
-        }, 0);
-        const spectrogramCanUseExactSamples = spectrogramOpen
-          && exactSpectrogramInputBytes <= SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES;
         const useEnvelopePath = !filters.enabled
           && montage === "referential"
           && waveformWidth >= MIN_WAVEFORM_WIDTH_FOR_ENVELOPE
           && typeof source.getEnvelopeWindow === "function"
-          && !spectrogramCanUseExactSamples
           && indices.some((index) =>
             (meta.sampleRates[index] ?? primarySampleRate(meta)) * timebase > Math.max(2, waveformWidth * 1.5));
         const filterPadSec = filters.enabled
@@ -3901,7 +3922,48 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, signalViewStart, spectrogramOpen, timebase, verifyingSource, waveformWidth]);
+  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
+
+  // The waveform overview must not switch rendering modes when Spectrum opens.
+  // Load only its focused source channel exactly and leave `display` untouched.
+  useEffect(() => {
+    const source = sourceRef.current;
+    const envelope = display.envelopes[focusedChannel];
+    const sourceIndex = display.primarySourceIndices[focusedChannel];
+    const sampleRate = meta.sampleRates[sourceIndex] ?? primarySampleRate(meta);
+    const expectedBytes = Math.ceil(sampleRate * timebase) * Float32Array.BYTES_PER_ELEMENT;
+    if (!spectrogramOpen
+      || !hasRecording
+      || !source
+      || !envelope
+      || sourceIndex === undefined
+      || expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES) {
+      setExactSpectrogramSignal(null);
+      return;
+    }
+
+    const abortController = new AbortController();
+    setExactSpectrogramSignal(null);
+    void source.getWindow(signalViewStart, timebase, [sourceIndex], { signal: abortController.signal })
+      .then((windowData) => {
+        if (abortController.signal.aborted || sourceRef.current !== source) return;
+        const data = windowData.data[0];
+        if (!data?.length) return;
+        setExactSpectrogramSignal({
+          sourceIndex,
+          viewStart: signalViewStart,
+          duration: timebase,
+          data,
+          sampleRate: windowData.sampleRates[0] ?? sampleRate,
+        });
+      })
+      .catch((error) => {
+        if (!abortController.signal.aborted && !isAbortFailure(error)) {
+          setExactSpectrogramSignal(null);
+        }
+      });
+    return () => abortController.abort();
+  }, [display.envelopes, display.primarySourceIndices, focusedChannel, hasRecording, meta, signalViewStart, spectrogramOpen, timebase]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -4047,7 +4109,7 @@ export default function Home() {
           context.strokeStyle = "rgba(87, 223, 183, .22)";
           context.beginPath(); context.moveTo(0, rowTop - rowHeight * 2); context.lineTo(width, rowTop - rowHeight * 2); context.stroke();
         }
-        if (channel === focusedChannel) {
+        if (channelSelectionActive && channel === focusedChannel) {
           context.fillStyle = "rgba(87, 223, 183, .065)";
           context.fillRect(0, rowTop, width, rowHeight);
           if (rowHeight >= 2) {
@@ -4099,8 +4161,8 @@ export default function Home() {
       }
 
       const traceOrder = display.data.map((_, index) => index).sort((left, right) => {
-        if (left === focusedChannel) return 1;
-        if (right === focusedChannel) return -1;
+        if (channelSelectionActive && left === focusedChannel) return 1;
+        if (channelSelectionActive && right === focusedChannel) return -1;
         return left - right;
       });
       const visibleTraceCount = Math.max(1, traceOrder.reduce((count, channel) => {
@@ -4153,7 +4215,7 @@ export default function Home() {
           : (rowHeight * 0.36 * gain) / 100;
         const showMicrovoltClipping = !legacyRawCountDisplay
           && ["µv", "μv", "uv"].includes((display.units[channel] ?? "").trim().toLowerCase());
-        const selected = channel === focusedChannel;
+        const selected = channelSelectionActive && channel === focusedChannel;
         const traceProjection: TraceGeometryProjection = {
           widthPx: width,
           rowHeightPx: rowHeight,
@@ -4460,7 +4522,7 @@ export default function Home() {
     waveDrawRef.current = draw;
     draw();
     return () => performanceDiagnostics.removeCanvasSurface("waveform");
-  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -4647,6 +4709,7 @@ export default function Home() {
     setCursorTime(time);
     setCursorLocked(true);
     setFocusedChannel(row);
+    setChannelSelectionActive(true);
     setCursorAmplitude(values?.[sample] ?? 0);
     if (inspectionMode) {
       setSelection(null);
@@ -4688,6 +4751,7 @@ export default function Home() {
       if (!pending) return;
       setCursorTime(pending.time);
       setFocusedChannel(pending.row);
+      setChannelSelectionActive(true);
       setCursorAmplitude(pending.amplitude);
       if (pending.inspectionBox) setInspectionRange(pending.inspectionBox);
       else if (pending.selection && !inspectionMode) setSelection(pending.selection);
@@ -4720,6 +4784,7 @@ export default function Home() {
     setCursorTime(time);
     setCursorLocked(true);
     setFocusedChannel(row);
+    setChannelSelectionActive(true);
     setCursorAmplitude(values?.[sample] ?? 0);
     if (inspectionMode) {
       const range = inspectionBoxFromPointer(pointer, row, time, pointerY, rect);
@@ -4797,6 +4862,7 @@ export default function Home() {
           ? "windowed"
           : "instance";
     setFocusedChannel(row);
+    setChannelSelectionActive(true);
     addAnnotation(label, selection?.start ?? time, selection?.end, intent, row);
     setDragGhost(null);
   };
@@ -5307,6 +5373,8 @@ export default function Home() {
     setSourceInterpretation(interpretation ?? null);
     setSelectedChannels(new Set(recommendedChannels));
     setBadChannels(new Set());
+    setChannelSelectionActive(false);
+    setExactSpectrogramSignal(null);
     // Do not clear cross-session LRUs here; entries are source-keyed and their
     // global byte ceilings evict the least-recently used recording as needed.
     setDisplay(EMPTY_DISPLAY);
@@ -6471,7 +6539,7 @@ export default function Home() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
-      if (target?.closest(".spectrogram-panel")) return;
+      if (target?.closest(".spectrogram-panel") && event.key !== "Escape") return;
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
@@ -6499,13 +6567,6 @@ export default function Home() {
         return;
       }
       if (modalOpen) return;
-      if (interactiveTarget) return;
-      if (zoomModifier && (zoomInKey || zoomOutKey)) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (hasRecording) zoomTimeWindow(zoomInKey ? "in" : "out", cursorLocked ? cursorTime : undefined);
-        return;
-      }
       if (event.key === "Escape") {
         event.preventDefault();
         if (dragAnnotationRef.current) {
@@ -6523,10 +6584,18 @@ export default function Home() {
         setWaveformVerticalViewport(null);
         setMarkOnset(null);
         setCursorLocked(false);
+        setChannelSelectionActive(false);
         setDragGhost(null);
         setShowSessionContextPicker(false);
         setActiveTool("cursor");
-        setToast("Selection and pinned cursor cleared");
+        setToast("Selections, active channel, and pinned cursor cleared");
+        return;
+      }
+      if (interactiveTarget) return;
+      if (zoomModifier && (zoomInKey || zoomOutKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (hasRecording) zoomTimeWindow(zoomInKey ? "in" : "out", cursorLocked ? cursorTime : undefined);
         return;
       }
       if (!hasRecording) {
@@ -6584,7 +6653,7 @@ export default function Home() {
         selectInstanceQueueEntry(Math.min(instanceQueueEntries.length - 1, activeQueueIndex + 1));
       } else if (lower === controlBindings.previousCandidate && instanceQueueEntries.length) {
         selectInstanceQueueEntry(Math.max(0, activeQueueIndex - 1));
-      } else if (lower === controlBindings.toggleBadChannel && selectedChannels.size) {
+      } else if (lower === controlBindings.toggleBadChannel && channelSelectionActive && selectedChannels.size) {
         const originalIndex = display.primarySourceIndices[focusedChannel];
         if (originalIndex === undefined || originalIndex < 0) {
           setToast("Choose a displayed source-derived channel before changing channel quality");
@@ -6606,7 +6675,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, channelSelectionActive, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -6754,6 +6823,17 @@ export default function Home() {
   const activeDisplayVisibleBytes = activeDisplayViews.reduce((sum, view) => sum + view.byteLength, 0);
   const activeBackingBuffers = new Set(activeDisplayViews.map((view) => view.buffer));
   const activeDisplayBytes = [...activeBackingBuffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
+  const focusedSourceIndex = display.primarySourceIndices[focusedChannel];
+  const matchingExactSpectrogramSignal = exactSpectrogramSignal
+    && exactSpectrogramSignal.sourceIndex === focusedSourceIndex
+    && Math.abs(exactSpectrogramSignal.viewStart - signalViewStart) < 1e-9
+    && Math.abs(exactSpectrogramSignal.duration - timebase) < 1e-9
+      ? exactSpectrogramSignal
+      : null;
+  const spectrogramData = matchingExactSpectrogramSignal?.data ?? display.data[focusedChannel];
+  const spectrogramSampleRate = matchingExactSpectrogramSignal?.sampleRate
+    ?? display.sampleRates[focusedChannel]
+    ?? primarySampleRate(meta);
 
   return (
     <main
@@ -7081,13 +7161,19 @@ export default function Home() {
                 {display.labels.map((label, index) => {
                   const rowStyle = channelRailRowStyle(index);
                   if (!rowStyle) return null;
-                  const focused = !inspectionDragging && !inspectionRange?.dragged && focusedChannel === index;
+                  const focused = channelSelectionActive
+                    && !inspectionDragging
+                    && !inspectionRange?.dragged
+                    && focusedChannel === index;
                   return <button
                     key={`${label}-${index}`}
                     className={`${focused ? "focused" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
                     style={rowStyle}
                     aria-pressed={focused}
-                    onClick={() => setFocusedChannel(index)}
+                    onClick={() => {
+                      setFocusedChannel(index);
+                      setChannelSelectionActive(true);
+                    }}
                   ><strong>{formatDisplayChannelLabel(label)}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>;
                 })}
               </div>
@@ -7122,14 +7208,14 @@ export default function Home() {
             </div>
 
             {spectrogramOpen && <SpectrogramPanel
-              data={display.data[focusedChannel]}
-              sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)}
+              data={spectrogramData}
+              sampleRate={spectrogramSampleRate}
               viewStart={viewStart}
               viewDuration={timebase}
               sessionDuration={meta.durationSec}
               cursor={cursorTime}
               label={formatDisplayChannelLabel(display.labels[focusedChannel] || "Focused channel")}
-              overview={Boolean(display.envelopes[focusedChannel])}
+              overview={!matchingExactSpectrogramSignal && Boolean(display.envelopes[focusedChannel])}
               onPreviewStart={previewViewStartSafe}
               onCommitStart={(start) => commitViewStart(clamp(start, 0, Math.max(0, meta.durationSec - timebase)))}
               onCenter={jumpTo}
@@ -7936,7 +8022,12 @@ function SpectrogramPanel({
     const moved = Math.abs(distance) >= 4;
     if (interaction.mode === "pan") {
       if (moved) {
-        onCommitStart(boundedStart(interaction.originalViewStart - (distance / Math.max(1, event.currentTarget.getBoundingClientRect().width - 51)) * viewDuration));
+        onCommitStart(boundedStart(
+          interaction.originalViewStart
+          - (distance / Math.max(1, event.currentTarget.getBoundingClientRect().width - 51))
+            * viewDuration
+            * SPECTROGRAM_DRAG_PAN_SCALE,
+        ));
       } else {
         onCenter(viewStart + plotRatio(event.clientX, event.currentTarget) * viewDuration);
       }
@@ -8050,7 +8141,9 @@ function SpectrogramPanel({
           if (interaction.mode === "pan") {
             if (Math.abs(interaction.currentX - interaction.startX) < 4) return;
             const next = interaction.originalViewStart
-              - ((interaction.currentX - interaction.startX) / Math.max(1, rect.width - 51)) * viewDuration;
+              - ((interaction.currentX - interaction.startX) / Math.max(1, rect.width - 51))
+                * viewDuration
+                * SPECTROGRAM_DRAG_PAN_SCALE;
             onPreviewStart(boundedStart(next));
           } else {
             const startRatio = plotRatio(interaction.startX, event.currentTarget);
