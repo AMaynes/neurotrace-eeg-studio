@@ -103,6 +103,7 @@ import {
 } from "./waveform-geometry";
 import {
   composeVerticalViewport,
+  panVerticalViewport,
   projectVerticalFraction,
   unprojectVerticalFraction,
   type NormalizedVerticalViewport,
@@ -5127,6 +5128,7 @@ export default function Home() {
     const viewer = viewerRef.current;
     if (!viewer) return;
     const viewerRect = viewer.getBoundingClientRect();
+    const waveformShell = event.target instanceof Element ? event.target.closest(".waveform-wrap") : null;
     const canvasShell = event.target instanceof Element ? event.target.closest(".canvas-shell") : null;
     const spectrogramShell = event.target instanceof Element ? event.target.closest(".spectrogram-canvas-shell") : null;
     const rect = (canvasShell ?? spectrogramShell)?.getBoundingClientRect() ?? viewerRect;
@@ -5156,6 +5158,20 @@ export default function Home() {
     if (overExpandedChannels && Math.abs(event.deltaY) > Math.abs(event.deltaX) && !event.shiftKey) {
       return;
     }
+    const verticalWaveformGesture = waveformVerticalViewport
+      && waveformShell
+      && Math.abs(event.deltaY) > Math.abs(event.deltaX)
+      && !event.shiftKey;
+    if (verticalWaveformGesture) {
+      event.preventDefault();
+      const waveformRect = waveformShell.getBoundingClientRect();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? waveformRect.height : 1;
+      const plotHeight = Math.max(1, waveformRect.height - CHANNEL_RAIL_HEADER_HEIGHT);
+      setWaveformVerticalViewport((current) => current
+        ? panVerticalViewport(current, event.deltaY * unit / plotHeight)
+        : current);
+      return;
+    }
     event.preventDefault();
     const rawDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.width : 1;
@@ -5173,7 +5189,7 @@ export default function Home() {
         setSignalViewStart(wheelPanTargetRef.current);
       }, WHEEL_PAN_SETTLE_MS);
     });
-  }, [clearWheelPanSettle, expandedChannels, previewViewStartSafe, setTimeWindow, timebase, viewStart]);
+  }, [clearWheelPanSettle, expandedChannels, previewViewStartSafe, setTimeWindow, timebase, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     viewerWheelRef.current = onViewerWheel;

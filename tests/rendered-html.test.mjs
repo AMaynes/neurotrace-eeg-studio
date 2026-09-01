@@ -551,6 +551,7 @@ test("reattaches non-passive waveform wheel controls after a blank session loads
   assert.match(wheelHandler, /event\.deltaX/);
   assert.match(wheelHandler, /event\.deltaY/);
   assert.match(wheelHandler, /overExpandedChannels[\s\S]*?Math\.abs\(event\.deltaY\)\s*>\s*Math\.abs\(event\.deltaX\)[\s\S]*?return/, "vertical gestures scroll expanded channels natively");
+  assert.match(wheelHandler, /verticalWaveformGesture[\s\S]*?panVerticalViewport\(current,[\s\S]*?event\.deltaY[\s\S]*?return/, "vertical gestures pan a box-zoomed waveform through enabled channels");
   assert.match(wheelHandler, /previewViewStartSafe\(/, "ordinary wheel and trackpad gestures pan the recording without starting a read");
   assert.match(wheelHandler, /window\.setTimeout[\s\S]*?setSignalViewStart\(wheelPanTargetRef\.current\)[\s\S]*?WHEEL_PAN_SETTLE_MS/, "signal loading starts only after panning settles");
 

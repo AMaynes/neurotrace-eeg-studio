@@ -29,6 +29,20 @@ export function composeVerticalViewport(
   };
 }
 
+/** Pans a magnified viewport by a fraction of its visible screen height. */
+export function panVerticalViewport(
+  viewport: NormalizedVerticalViewport,
+  screenDeltaFraction: number,
+): NormalizedVerticalViewport {
+  assertViewport(viewport, "Waveform viewport");
+  if (!Number.isFinite(screenDeltaFraction)) {
+    throw new Error("Waveform vertical pan must be finite.");
+  }
+  const span = viewport.bottom - viewport.top;
+  const top = Math.min(Math.max(0, viewport.top + screenDeltaFraction * span), 1 - span);
+  return { top, bottom: top + span };
+}
+
 /** Maps complete-channel-space coordinates into the magnified screen viewport. */
 export function projectVerticalFraction(
   contentFraction: number,
