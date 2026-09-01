@@ -263,7 +263,8 @@ function readEnvelope(request: Extract<Mat73WorkerRequest, { type: "envelope" }>
   const minima = request.channelIndices.map(() => new Float32Array(request.bucketCount).fill(Number.POSITIVE_INFINITY));
   const maxima = request.channelIndices.map(() => new Float32Array(request.bucketCount).fill(Number.NEGATIVE_INFINITY));
   const gaps = request.channelIndices.map(() => new Uint8Array(request.bucketCount).fill(1));
-  const data = request.channelIndices.map(() => new Float32Array(request.bucketCount));
+  const data = request.channelIndices.map(() => new Float32Array(request.bucketCount).fill(Number.NaN));
+  const counts = request.channelIndices.map(() => new Uint32Array(request.bucketCount));
   const sampleCount = request.endSample - request.firstSample;
   if (!sampleCount || !request.channelIndices.length) {
     minima.forEach((channel) => channel.fill(0));
@@ -302,19 +303,22 @@ function readEnvelope(request: Extract<Mat73WorkerRequest, { type: "envelope" }>
           : channelOffset * chunkSamples + localSample;
         const value = Number(values[sourceIndex]);
         if (!Number.isFinite(value)) return;
+        const count = counts[outputIndex][bucket] + 1;
+        counts[outputIndex][bucket] = count;
+        data[outputIndex][bucket] = count === 1
+          ? value
+          : data[outputIndex][bucket] + (value - data[outputIndex][bucket]) / count;
         if (value < minima[outputIndex][bucket]) minima[outputIndex][bucket] = value;
         if (value > maxima[outputIndex][bucket]) maxima[outputIndex][bucket] = value;
         gaps[outputIndex][bucket] = 0;
       });
     }
   }
-  data.forEach((channel, channelIndex) => {
+  data.forEach((_, channelIndex) => {
     for (let bucket = 0; bucket < request.bucketCount; bucket += 1) {
       if (gaps[channelIndex][bucket]) {
-        minima[channelIndex][bucket] = 0;
-        maxima[channelIndex][bucket] = 0;
-      } else {
-        channel[bucket] = (minima[channelIndex][bucket] + maxima[channelIndex][bucket]) / 2;
+        minima[channelIndex][bucket] = Number.NaN;
+        maxima[channelIndex][bucket] = Number.NaN;
       }
     }
   });

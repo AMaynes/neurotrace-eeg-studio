@@ -1,7 +1,7 @@
 /**
  * Pure, bounded-memory EDF envelope construction shared by the worker and its
  * direct fallback. File reads remain record-aligned while the retained output
- * is limited to one min/max/midpoint/gap tuple per requested display bucket.
+ * is limited to one min/max/mean/gap tuple per requested display bucket.
  */
 
 import { buildEnvelopePyramid } from "./eeg-core.ts";
@@ -119,6 +119,7 @@ type EnvelopeAccumulator = {
   gaps: Uint8Array;
   data: Float32Array;
   variation: Float32Array;
+  counts: Uint32Array;
   previousBucket: number;
   previousValue: number;
 };
@@ -193,6 +194,7 @@ function makeAccumulator(bucketCount: number): EnvelopeAccumulator {
     gaps: new Uint8Array(bucketCount),
     data,
     variation: new Float32Array(bucketCount),
+    counts: new Uint32Array(bucketCount),
     previousBucket: -1,
     previousValue: Number.NaN,
   };
@@ -208,9 +210,7 @@ function finishAccumulator(accumulator: EnvelopeAccumulator, signal?: AbortSigna
       // sample. Keep it neutral; only decoded non-finite values mark gaps.
       accumulator.minima[bucket] = Number.NaN;
       accumulator.maxima[bucket] = Number.NaN;
-    } else {
-      accumulator.data[bucket] = (minimum + maximum) / 2;
-    }
+    } else if (accumulator.gaps[bucket]) accumulator.data[bucket] = Number.NaN;
   }
 }
 
@@ -443,6 +443,11 @@ export async function buildEDFEnvelopeWindow(
                 }
                 accumulator.previousBucket = bucket;
                 accumulator.previousValue = value;
+                const count = accumulator.counts[bucket] + 1;
+                accumulator.counts[bucket] = count;
+                accumulator.data[bucket] = count === 1
+                  ? value
+                  : accumulator.data[bucket] + (value - accumulator.data[bucket]) / count;
                 if (value < accumulator.minima[bucket]) accumulator.minima[bucket] = value;
                 if (value > accumulator.maxima[bucket]) accumulator.maxima[bucket] = value;
               } else {

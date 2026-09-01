@@ -182,9 +182,9 @@ Channels with incompatible units, sample rates, or timing are not combined. Gaps
 
 ### Aliasing and large windows
 
-- For recordings at 1,000 Hz or higher, the viewer may reduce the display rate by 2 when there are at least two samples per screen pixel.
-- Before reducing the rate, it applies a 97-tap low-pass anti-alias filter that preserves the 0–200 Hz display band.
-- When many samples share a pixel, the viewer keeps the minimum and maximum instead of averaging them. This preserves spikes while making minute- or hour-long windows practical.
-- When zoomed in, it switches back to exact samples.
+- When zooming out, the viewer chooses a new display rate of about one sample per horizontal pixel.
+- Before resampling, it low-passes below half of that new rate (the Nyquist limit). The zero-phase anti-alias filter is applied before samples are removed, so high-frequency activity does not fold into a false slow waveform.
+- File-backed overviews use the same rule through their multiresolution levels. Min/max values remain available only for clipping and dropout indicators; the waveform itself stays a thin, resampled centerline.
+- When zoomed in, the viewer switches back to exact samples. The existing 97-tap 2× clinical decimator is still used for its 0–200 Hz case.
 
-**Files:** `app/eeg-core.ts` (`designClinicalDecimationFir`, `decimateClinicalDisplayTrace`, and the envelope-pyramid functions) contains the anti-aliasing and multiscale data algorithms; `app/waveform-geometry.ts` limits drawing work; `app/page.tsx` selects the correct level for the current zoom.
+**Files:** `app/eeg-core.ts` (`displayDecimationFactor`, `prepareClinicalDisplaySignals`, and the envelope-pyramid functions) contains the resampling and anti-aliasing algorithms; `app/display-processing-worker.ts` runs exact-window resampling in the background; `app/page.tsx` selects the correct level and draws the resampled centerline.

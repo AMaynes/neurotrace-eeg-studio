@@ -32,7 +32,7 @@ test("factor-1 unfiltered windows bypass the worker without copying or detaching
       data: [first, second],
       sampleRates: [200, 500],
       filters: FILTERS_OFF,
-      pixelCount: 1,
+      pixelCount: 3,
       sourceStartSampleIndices: [101, 207],
     }, { fallbackToMainThread: false });
 

@@ -19,7 +19,7 @@ type DisplayProcessingResponse =
     type: "complete";
     data: Float32Array[];
     sampleRates: number[];
-    factors: Array<1 | 2>;
+    factors: number[];
     outputStartSampleIndices: number[];
   }
   | { type: "error"; message: string };

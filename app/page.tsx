@@ -39,7 +39,7 @@ import {
   buildEnvelopePyramid,
   anatomicalChannelGroup,
   buildMontage,
-  clinicalDecimationFactor,
+  displayDecimationFactor,
   detectEnvelopeSynchronizedFlatlines,
   detectRawSynchronizedFlatlines,
   formatClock,
@@ -364,7 +364,7 @@ type PerformanceWithMemory = Performance & {
 
 type DisplayWindow = {
   data: Float32Array[];
-  /** Exact source extrema retained per display-time bucket for overview drawing. */
+  /** Exact source extrema retained for clipping and dropout metadata. */
   envelopes: Array<{
     minima: Float32Array;
     maxima: Float32Array;
@@ -405,7 +405,7 @@ type ProcessedWindowCache = {
   data: Float32Array[];
   sampleRates: number[];
   channelStartSecs: number[];
-  factors: Array<1 | 2>;
+  factors: number[];
   byteLength: number;
 };
 
@@ -3742,7 +3742,7 @@ export default function Home() {
         const processingDuration = Math.max(1e-9, requiredEnd - requiredStart);
         const processingPixelCount = Math.max(1, waveformWidth * processingDuration / Math.max(1e-9, timebase));
         const expectedFactors = processingData.map((channel, index) =>
-          clinicalDecimationFactor(rawWindow.sampleRates[index], channel.length, processingPixelCount));
+          displayDecimationFactor(rawWindow.sampleRates[index], channel.length, processingPixelCount));
         const processingIsIdentity = !filters.enabled && expectedFactors.every((factor) => factor === 1);
         const sourceStartSampleIndices = processingRanges.map((range) => range.sourceStartSample);
         const settingsKey = JSON.stringify({
@@ -4238,12 +4238,12 @@ export default function Home() {
         const envelope = display.envelopes[channel];
         if (envelope) {
           const baseline = cachedBaseline(values);
-          overflow = drawOverviewEnvelope(
+          overflow = drawContinuousTrace(
             context,
-            envelope.minima,
-            envelope.maxima,
+            values,
             envelope.startSec,
             envelope.bucketDurationSec,
+            0.5,
             displayStart,
             timebase,
             width,
@@ -4252,17 +4252,31 @@ export default function Home() {
             rowHeight,
             baseline,
             scale,
-            selected,
-            showMicrovoltClipping
-              && envelopeWindowMatchesViewport(
+            envelope.gaps,
+          );
+          if (showMicrovoltClipping
+            && envelopeWindowMatchesViewport(
                 envelope.startSec,
                 envelope.bucketDurationSec,
                 values.length,
                 displayStart,
                 timebase,
-              ),
-            envelope.gaps,
-          );
+              )) {
+            drawSampleClippingRibbon(
+              context,
+              envelope.minima,
+              envelope.maxima,
+              envelope.gaps,
+              envelope.startSec,
+              envelope.bucketDurationSec,
+              displayStart,
+              timebase,
+              width,
+              rowTop,
+              rowHeight,
+              baseline,
+            );
+          }
         } else if (values.length <= Math.max(2, width * 1.5)) {
           const baseline = cachedBaseline(values);
           const projection = { ...traceProjection, baseline };

@@ -111,6 +111,7 @@ type ChannelAccumulator = {
   maxima: Float32Array;
   gaps: Uint8Array;
   variation: Float32Array;
+  counts: Uint32Array;
   previousBucket: number;
   previousValue: number;
 };
@@ -191,6 +192,7 @@ function makeAccumulator(
     maxima,
     gaps: new Uint8Array(request.bucketCount),
     variation: new Float32Array(request.bucketCount),
+    counts: new Uint32Array(request.bucketCount),
     previousBucket: -1,
     previousValue: Number.NaN,
   };
@@ -206,9 +208,7 @@ function finishAccumulator(accumulator: ChannelAccumulator, signal?: AbortSignal
       // those bins are neutral and must not masquerade as recording loss.
       accumulator.minima[bucket] = Number.NaN;
       accumulator.maxima[bucket] = Number.NaN;
-    } else {
-      accumulator.data[bucket] = (minimum + maximum) / 2;
-    }
+    } else if (accumulator.gaps[bucket]) accumulator.data[bucket] = Number.NaN;
   }
 }
 
@@ -224,6 +224,11 @@ function addChannelEnvelopeSample(accumulator: ChannelAccumulator, bucket: numbe
   }
   accumulator.previousBucket = bucket;
   accumulator.previousValue = value;
+  const count = accumulator.counts[bucket] + 1;
+  accumulator.counts[bucket] = count;
+  accumulator.data[bucket] = count === 1
+    ? value
+    : accumulator.data[bucket] + (value - accumulator.data[bucket]) / count;
   if (value < accumulator.minima[bucket]) accumulator.minima[bucket] = value;
   if (value > accumulator.maxima[bucket]) accumulator.maxima[bucket] = value;
 }

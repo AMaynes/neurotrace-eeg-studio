@@ -65,7 +65,7 @@ test("Raw DAT envelope builder preserves calibrated extrema and reports bounded 
   assert.deepEqual([...result.window.gaps[0]], [0, 0]);
   assert.deepEqual([...result.window.minima[1]], [-9, 19]);
   assert.deepEqual([...result.window.maxima[1]], [15, 31]);
-  assert.deepEqual([...result.window.data[1]], [3, 25]);
+  assert.deepEqual([...result.window.data[1]], [4, 25]);
   assert.deepEqual([...result.window.variation[1]], [44, 12]);
   assert.deepEqual(result.window.channelIndices, [2, 0]);
   assert.deepEqual(result.window.channelLabels, ["C", "A"]);

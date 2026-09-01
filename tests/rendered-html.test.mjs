@@ -1062,9 +1062,10 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   const envelopeBranchStart = page.indexOf("if (envelope) {");
   const envelopeBranchEnd = page.indexOf("} else if (values.length", envelopeBranchStart);
   const envelopeBranch = page.slice(envelopeBranchStart, envelopeBranchEnd);
-  assert.match(envelopeBranch, /drawOverviewEnvelope\(/);
+  assert.match(envelopeBranch, /drawContinuousTrace\(/);
   assert.match(envelopeBranch, /envelopeWindowMatchesViewport\([\s\S]*?envelope\.startSec[\s\S]*?envelope\.bucketDurationSec[\s\S]*?values\.length[\s\S]*?displayStart[\s\S]*?timebase/);
-  assert.doesNotMatch(envelopeBranch, /drawContinuousTrace\(/, "bucket midpoints are not connected into a fake low-frequency waveform");
+  assert.doesNotMatch(envelopeBranch, /drawOverviewEnvelope\(/, "source extrema do not thicken the resampled overview trace");
+  assert.match(envelopeBranch, /drawSampleClippingRibbon\([\s\S]*?envelope\.minima[\s\S]*?envelope\.maxima/, "extrema remain available for clipping indicators");
   assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
   assert.match(page, /dark green → lime → yellow → orange marks distance beyond ±100 µV/);
   assert.match(page, /drawSampleClippingRibbon\([\s\S]*?values,[\s\S]*?values,/, "close raw-sample views retain the clipping ribbon");

@@ -75,9 +75,9 @@ export interface SignalReadOptions {
 }
 
 /**
- * Screen-resolution extrema for a contiguous time window. Each bucket keeps
- * both polarities, so zoomed-out EEG does not alias a spike into an average.
- * `data` contains the bucket midpoint for cursor/readout compatibility.
+ * Screen-resolution signal for a contiguous time window. `data` is the
+ * Nyquist-filtered representative trace; extrema remain available for source
+ * clipping and dropout metadata without thickening the displayed centerline.
  */
 export interface EnvelopeWindowData extends WindowData {
   minima: Float32Array[];
@@ -2177,7 +2177,7 @@ export interface ClinicalDisplayTrace {
 export interface ClinicalDisplaySignals {
   data: Float32Array[];
   sampleRates: number[];
-  factors: ClinicalDecimationFactor[];
+  factors: number[];
   retainedInputSampleOffsets: Array<0 | 1>;
   outputStartSampleIndices: number[];
   outputStartOffsetSecs: number[];
@@ -2221,6 +2221,23 @@ export function clinicalDecimationFactor(
   }
   const resolutionFactor = Math.min(2, Math.floor(sampleCount / pixelCount));
   return sampleRate / 4 >= 250 && resolutionFactor >= 2 ? 2 : 1;
+}
+
+/**
+ * Returns the globally aligned reduction needed to keep at most one displayed
+ * sample per horizontal pixel. The resulting sample rate defines the display
+ * bandwidth; samples are low-passed below its Nyquist frequency before use.
+ */
+export function displayDecimationFactor(
+  sampleRate: number,
+  sampleCount: number,
+  pixelCount: number,
+): number {
+  const clinicalFactor = clinicalDecimationFactor(sampleRate, sampleCount, pixelCount);
+  // N samples span N-1 sample intervals. Using the span prevents a one-sample
+  // overlap difference from changing the global decimation grid while panning.
+  const resolutionFactor = Math.max(1, Math.ceil(Math.max(0, sampleCount - 1) / pixelCount));
+  return clinicalFactor * Math.max(1, Math.ceil(resolutionFactor / clinicalFactor));
 }
 
 /**
@@ -2344,6 +2361,7 @@ type EnvelopeAccumulator = {
   gaps: Uint8Array;
   data: Float32Array;
   variation: Float32Array;
+  counts: Uint32Array;
   previousBucket: number;
   previousValue: number;
 };
@@ -2361,6 +2379,7 @@ function makeEnvelopeAccumulator(bucketCount: number): EnvelopeAccumulator {
     gaps: new Uint8Array(bucketCount),
     data,
     variation: new Float32Array(bucketCount),
+    counts: new Uint32Array(bucketCount),
     previousBucket: -1,
     previousValue: Number.NaN,
   };
@@ -2379,6 +2398,11 @@ function addEnvelopeSample(accumulator: EnvelopeAccumulator, bucket: number, val
   }
   accumulator.previousBucket = bucket;
   accumulator.previousValue = value;
+  const count = accumulator.counts[bucket] + 1;
+  accumulator.counts[bucket] = count;
+  accumulator.data[bucket] = count === 1
+    ? value
+    : accumulator.data[bucket] + (value - accumulator.data[bucket]) / count;
   accumulator.minima[bucket] = Math.min(accumulator.minima[bucket], value);
   accumulator.maxima[bucket] = Math.max(accumulator.maxima[bucket], value);
 }
@@ -2394,7 +2418,7 @@ function finishEnvelopeAccumulator(accumulator: EnvelopeAccumulator) {
       accumulator.maxima[bucket] = Number.NaN;
       continue;
     }
-    accumulator.data[bucket] = (minimum + maximum) / 2;
+    if (accumulator.gaps[bucket]) accumulator.data[bucket] = Number.NaN;
   }
 }
 
@@ -2422,13 +2446,96 @@ function makeEnvelopeWindowResult(
   };
 }
 
+function resampleEnvelopeRepresentatives(
+  input: Float32Array,
+  sourceGaps: Uint8Array,
+  sourceStartSec: number,
+  sourceBucketDurationSec: number,
+  targetStartSec: number,
+  targetBucketDurationSec: number,
+  targetGaps: Uint8Array,
+): Float32Array {
+  const output = new Float32Array(targetGaps.length);
+  output.fill(Number.NaN);
+  const sourceRate = 1 / sourceBucketDurationSec;
+  const outputRate = 1 / targetBucketDurationSec;
+  const continuousInput = input.slice();
+  const leftFiniteIndices = new Int32Array(input.length);
+  leftFiniteIndices.fill(-1);
+  let lastFinite = -1;
+  for (let index = 0; index < input.length; index += 1) {
+    if (sourceGaps[index]) {
+      continuousInput[index] = Number.NaN;
+      lastFinite = -1;
+    } else if (Number.isFinite(input[index])) {
+      lastFinite = index;
+    } else {
+      leftFiniteIndices[index] = lastFinite;
+      if (lastFinite >= 0) continuousInput[index] = input[lastFinite];
+    }
+  }
+  let nextFinite = -1;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    if (sourceGaps[index]) {
+      nextFinite = -1;
+    } else if (Number.isFinite(input[index])) {
+      nextFinite = index;
+    } else if (nextFinite >= 0) {
+      const left = leftFiniteIndices[index];
+      continuousInput[index] = left >= 0
+        ? input[left] + (input[nextFinite] - input[left]) * ((index - left) / (nextFinite - left))
+        : input[nextFinite];
+    }
+  }
+  let filtered: Float32Array<ArrayBufferLike> = continuousInput;
+  if (outputRate < sourceRate * 0.95) {
+    const coefficients = designBiquad("lowpass", outputRate * 0.4, sourceRate, Math.SQRT1_2);
+    if (!coefficients) {
+      throw new SignalFileError(
+        "INVALID_WINDOW",
+        "Envelope resampling could not establish a valid Nyquist low-pass.",
+      );
+    }
+    filtered = applyBiquad(continuousInput, coefficients, true);
+    filtered = applyBiquad(filtered, coefficients, true);
+  }
+  const firstSourceCenterSec = sourceStartSec + sourceBucketDurationSec / 2;
+  for (let target = 0; target < output.length; target += 1) {
+    if (targetGaps[target]) continue;
+    const targetCenterSec = targetStartSec + (target + 0.5) * targetBucketDurationSec;
+    const sourcePosition = (targetCenterSec - firstSourceCenterSec) / sourceBucketDurationSec;
+    const left = Math.floor(sourcePosition);
+    const fraction = sourcePosition - left;
+    const leftValue = filtered[clampIndex(left, filtered.length)];
+    const rightValue = filtered[clampIndex(left + 1, filtered.length)];
+    if (Number.isFinite(leftValue) && Number.isFinite(rightValue)) {
+      output[target] = leftValue + (rightValue - leftValue) * fraction;
+      continue;
+    }
+    const nearest = nearestFiniteSample(filtered, Math.round(sourcePosition), 8);
+    if (nearest !== null) output[target] = nearest;
+  }
+  return output;
+}
+
+function clampIndex(index: number, length: number) {
+  return Math.max(0, Math.min(length - 1, index));
+}
+
+function nearestFiniteSample(values: Float32Array, center: number, maximumDistance: number) {
+  for (let distance = 0; distance <= maximumDistance; distance += 1) {
+    const left = values[center - distance];
+    if (Number.isFinite(left)) return left;
+    const right = values[center + distance];
+    if (Number.isFinite(right)) return right;
+  }
+  return null;
+}
+
 /**
- * Conservatively coarsens a cached exact-extrema envelope without rereading the
- * source signal. Target buckets may crop or straddle cached bucket boundaries;
- * every cached bucket with positive overlap contributes its full extrema. A
- * propagated source gap keeps midpoint data missing while retaining any known
- * extrema for waveform/QC rendering. Empty buckets created only because an
- * index is finer than the source sample cadence are neutral, not data loss.
+ * Coarsens cached exact extrema while Nyquist-filtering the representative
+ * trace before resampling. Extrema remain available for clipping and dropout
+ * metadata, but are not used as the displayed waveform centerline.
  */
 export function aggregateEnvelopeWindow(
   source: EnvelopeWindowData,
@@ -2573,8 +2680,19 @@ export function aggregateEnvelopeWindow(
       minima[channel][targetBucket] = minimum;
       maxima[channel][targetBucket] = maximum;
       if (variation) variation[channel][targetBucket] = totalVariation;
-      if (!missing) data[channel][targetBucket] = (minimum + maximum) / 2;
     }
+  }
+
+  for (let channel = 0; channel < channelCount; channel += 1) {
+    data[channel].set(resampleEnvelopeRepresentatives(
+      source.data[channel],
+      source.gaps[channel],
+      source.startSec,
+      source.bucketDurationSec,
+      targetStartSec,
+      targetBucketDurationSec,
+      gaps[channel],
+    ));
   }
 
   const effectiveRate = targetBucketCount / targetDurationSec;
@@ -2758,7 +2876,7 @@ export function selectEnvelopePyramidLevel(
   return levels[0];
 }
 
-/** Applies the clinical rule independently to mixed-rate raw/display channels. */
+/** Applies clinical preparation and Nyquist-safe screen resampling per channel. */
 export function prepareClinicalDisplaySignals(
   data: readonly Float32Array[],
   sampleRates: readonly number[],
@@ -2771,14 +2889,40 @@ export function prepareClinicalDisplaySignals(
   if (sourceStartSampleIndices && sourceStartSampleIndices.length !== data.length) {
     throw new Error(`Expected ${data.length} source start sample indices, received ${sourceStartSampleIndices.length}.`);
   }
-  const traces = data.map((channel, index) =>
-    decimateClinicalDisplayTrace(
+  const traces = data.map((channel, index) => {
+    const trace = decimateClinicalDisplayTrace(
       channel,
       sampleRates[index],
       pixelCount,
       sourceStartSampleIndices?.[index] ?? 0,
-    ),
-  );
+    );
+    const combinedFactor = displayDecimationFactor(sampleRates[index], channel.length, pixelCount);
+    const additionalFactor = combinedFactor / trace.factor;
+    if (additionalFactor === 1) return trace;
+
+    const outputRate = trace.sampleRate / additionalFactor;
+    const coefficients = designBiquad("lowpass", outputRate * 0.4, trace.sampleRate, Math.SQRT1_2);
+    if (!coefficients) throw new Error("Display resampling could not establish a valid Nyquist low-pass.");
+    // Two forward-backward second-order passes provide an eighth-order,
+    // zero-phase anti-alias response without making work scale with factor.
+    let filtered = applyBiquad(trace.data, coefficients, true);
+    filtered = applyBiquad(filtered, coefficients, true);
+    const clinicalGridStart = trace.outputStartSampleIndex / trace.factor;
+    const retainedOffset = (additionalFactor - clinicalGridStart % additionalFactor) % additionalFactor;
+    const outputLength = Math.max(0, Math.ceil((filtered.length - retainedOffset) / additionalFactor));
+    const output = new Float32Array(outputLength);
+    for (let outputIndex = 0; outputIndex < outputLength; outputIndex += 1) {
+      output[outputIndex] = filtered[retainedOffset + outputIndex * additionalFactor];
+    }
+    return {
+      ...trace,
+      data: output,
+      sampleRate: outputRate,
+      factor: combinedFactor,
+      outputStartSampleIndex: trace.outputStartSampleIndex + retainedOffset * trace.factor,
+      outputStartOffsetSec: trace.outputStartOffsetSec + retainedOffset / trace.sampleRate,
+    };
+  });
   return {
     data: traces.map((trace) => trace.data),
     sampleRates: traces.map((trace) => trace.sampleRate),

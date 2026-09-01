@@ -3,6 +3,7 @@
 import {
   applyDisplayFilters,
   clinicalDecimationFactor,
+  displayDecimationFactor,
   prepareClinicalDisplaySignals,
   type DisplayFilterSettings,
 } from "./eeg-core.ts";
@@ -18,7 +19,7 @@ export type DisplayProcessingRequest = {
 export type DisplayProcessingResult = {
   data: Float32Array[];
   sampleRates: number[];
-  factors: Array<1 | 2>;
+  factors: number[];
   outputStartSampleIndices: number[];
 };
 
@@ -57,6 +58,11 @@ function noOpDisplayResult(request: DisplayProcessingRequest): DisplayProcessing
   }
   const allFactorsAreOne = request.data.every((channel, index) =>
     clinicalDecimationFactor(
+      request.sampleRates[index],
+      channel.length,
+      request.pixelCount,
+    ) === 1
+    && displayDecimationFactor(
       request.sampleRates[index],
       channel.length,
       request.pixelCount,

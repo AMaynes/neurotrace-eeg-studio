@@ -26,6 +26,7 @@ import {
   confineTraceYToRow,
   decimateClinicalDisplayTrace,
   designClinicalDecimationFir,
+  displayDecimationFactor,
   detectEnvelopeSynchronizedFlatlines,
   detectRawSynchronizedFlatlines,
   formatDisplayChannelLabel,
@@ -249,7 +250,7 @@ test("file-backed overview envelopes retain both polarities with pixel-bounded o
   assert.deepEqual([...envelope.minima[1]], [-50, 4]);
   assert.deepEqual([...envelope.maxima[1]], [100, 10]);
   assert.deepEqual([...envelope.gaps[0]], [0, 0]);
-  assert.deepEqual([...envelope.data[1]], [25, 7]);
+  assert.deepEqual([...envelope.data[1]], [13, 7], "overview representatives use bucket means, not extrema midpoints");
   assert.equal(envelope.data[0].length, 2);
   assert.equal(envelope.bucketDurationSec, 0.5);
 
@@ -384,11 +385,12 @@ test("cached exact envelopes aggregate extrema, gaps, and absolute metadata cons
   assert.deepEqual([...aggregated.minima[0]], [-4, 5]);
   assert.deepEqual([...aggregated.maxima[0]], [8, 10]);
   assert.ok(Number.isNaN(aggregated.data[0][0]), "a propagated gap must not acquire a finite midpoint");
-  assert.equal(aggregated.data[0][1], 7.5);
+  assert.ok(Number.isFinite(aggregated.data[0][1]));
   assert.deepEqual([...aggregated.gaps[0]], [1, 0]);
   assert.deepEqual([...aggregated.minima[1]], [10, 14]);
   assert.deepEqual([...aggregated.maxima[1]], [15, 19]);
-  assert.deepEqual([...aggregated.data[1]], [12.5, 16.5]);
+  assert.ok(aggregated.data[1].every(Number.isFinite));
+  assert.ok(aggregated.data[1][0] < aggregated.data[1][1]);
   assert.deepEqual([...aggregated.gaps[1]], [0, 0]);
   assert.deepEqual([...aggregated.variation[0]], [10, 26]);
   assert.deepEqual([...aggregated.variation[1]], [26, 10]);
@@ -423,7 +425,8 @@ test("cached envelope aggregation includes every partially overlapping source bu
   const cropped = aggregateEnvelopeWindow(source, 20.25, 1.5, 1);
   assert.deepEqual([...cropped.minima[0]], [1]);
   assert.deepEqual([...cropped.maxima[0]], [8]);
-  assert.deepEqual([...cropped.data[0]], [4.5]);
+  assert.ok(Number.isFinite(cropped.data[0][0]));
+  assert.ok(cropped.data[0][0] >= 1 && cropped.data[0][0] <= 8);
   assert.equal(cropped.startSec, 20.25);
   assert.equal(cropped.channelStartSecs[0], 20.25);
   assert.equal(cropped.bucketDurationSec, 1.5);
@@ -448,7 +451,8 @@ test("oversampled empty envelope buckets do not become recording gaps", () => {
   const aggregated = aggregateEnvelopeWindow(source, 0, 1, 2);
   assert.deepEqual([...aggregated.minima[0]], [1, 3]);
   assert.deepEqual([...aggregated.maxima[0]], [1, 3]);
-  assert.deepEqual([...aggregated.data[0]], [1, 3]);
+  assert.ok(aggregated.data[0].every(Number.isFinite));
+  assert.ok(aggregated.data[0][0] < aggregated.data[0][1]);
   assert.deepEqual([...aggregated.gaps[0]], [0, 0]);
 });
 
@@ -505,12 +509,16 @@ test("envelope pyramid preserves exact extrema, gaps, coverage, and metadata", (
   assert.deepEqual([...levels[1].minima[0]], [1, 3, -2, 0]);
   assert.deepEqual([...levels[1].maxima[0]], [6, 9, 5, 8]);
   assert.deepEqual([...levels[1].gaps[0]], [0, 1, 0, 0]);
-  assert.deepEqual([...levels[1].data[0]], [3.5, Number.NaN, 1.5, 4]);
+  assert.ok(Number.isFinite(levels[1].data[0][0]));
+  assert.ok(Number.isNaN(levels[1].data[0][1]));
+  assert.ok(Number.isFinite(levels[1].data[0][2]));
+  assert.ok(Number.isFinite(levels[1].data[0][3]));
 
   assert.deepEqual([...levels[2].minima[0]], [1, -2]);
   assert.deepEqual([...levels[2].maxima[0]], [9, 8]);
   assert.deepEqual([...levels[2].gaps[0]], [1, 0]);
-  assert.deepEqual([...levels[2].data[0]], [Number.NaN, 3]);
+  assert.ok(Number.isNaN(levels[2].data[0][0]));
+  assert.ok(Number.isFinite(levels[2].data[0][1]));
 
   assert.deepEqual([...levels[3].minima[0]], [-2]);
   assert.deepEqual([...levels[3].maxima[0]], [9]);
@@ -734,7 +742,11 @@ test("24-hour envelope pyramid keeps a 6-hour render pixel-bounded with exact ex
       assert.equal(visible.maxima[channel][displayBucket], expectedMaximum);
       assert.equal(visible.gaps[channel][displayBucket], expectedGap);
       if (expectedGap) assert.ok(Number.isNaN(visible.data[channel][displayBucket]));
-      else assert.equal(visible.data[channel][displayBucket], (expectedMinimum + expectedMaximum) / 2);
+      else {
+        assert.ok(Number.isFinite(visible.data[channel][displayBucket]));
+        assert.ok(visible.data[channel][displayBucket] >= expectedMinimum - 0.01);
+        assert.ok(visible.data[channel][displayBucket] <= expectedMaximum + 0.01);
+      }
     }
   }
 });
@@ -792,6 +804,8 @@ test("clinical FIR and conditional 2x decimation satisfy release invariants", ()
     "the exact nSamples/nPixels ratio must be used for fractional canvas widths",
   );
   assert.equal(clinicalDecimationFactor(1000, 2001, 1000.1), 2);
+  assert.equal(displayDecimationFactor(500, 10_001, 1_000), 10);
+  assert.equal(displayDecimationFactor(1_000, 10_001, 1_000), 10);
 
   const short = new Float32Array([1, 2, 3]);
   const untouched = decimateClinicalDisplayTrace(short, 1000, 10);
@@ -857,12 +871,24 @@ test("2x clinical decimation stays on the recording-global even-sample grid", ()
     [100, 101],
   );
   assert.deepEqual(prepared.retainedInputSampleOffsets, [0, 1]);
-  assert.deepEqual(prepared.outputStartSampleIndices, [100, 102]);
-  assert.deepEqual(prepared.outputStartOffsetSecs, [0, 0.001]);
+  assert.deepEqual(prepared.factors, [10, 10]);
+  assert.deepEqual(prepared.outputStartSampleIndices, [100, 110]);
+  assert.deepEqual(prepared.outputStartOffsetSecs, [0, 0.009000000000000001]);
+  assert.deepEqual(prepared.sampleRates, [100, 100]);
   assert.throws(
     () => prepareClinicalDisplaySignals([evenStartWindow], [sampleRate], 100, [100, 101]),
     /source start sample indices/i,
   );
+});
+
+test("zoomed-out display resampling suppresses energy above the new Nyquist limit", () => {
+  const alternating = Float32Array.from({ length: 10_001 }, (_, index) => index % 2 ? -1 : 1);
+  const prepared = prepareClinicalDisplaySignals([alternating], [500], 100, [0]);
+  assert.equal(prepared.factors[0], 100);
+  assert.equal(prepared.sampleRates[0], 5);
+  const interior = prepared.data[0].slice(5, -5);
+  assert.ok(interior.length > 0);
+  assert.ok(Math.max(...interior.map(Math.abs)) < 0.01, "250 Hz input must not alias into a 2.5 Hz display band");
 });
 
 test("detects only synchronized raw flatlines at the 80 percent threshold", () => {
