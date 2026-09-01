@@ -28,6 +28,7 @@ import {
   designClinicalDecimationFir,
   detectEnvelopeSynchronizedFlatlines,
   detectRawSynchronizedFlatlines,
+  formatDisplayChannelLabel,
   makeId,
   normalizeEDFPhysicalDimension,
   orderAnatomicalChannelIndices,
@@ -36,6 +37,12 @@ import {
   projectEnvelopeChannels,
   selectEnvelopePyramidLevel,
 } from "../app/eeg-core.ts";
+
+test("removes redundant EEG prefixes from displayed channel labels", () => {
+  assert.equal(formatDisplayChannelLabel("EEG Fp1"), "Fp1");
+  assert.equal(formatDisplayChannelLabel("EEG Fp1-REF–EEG F7-REF"), "Fp1-REF–F7-REF");
+  assert.equal(formatDisplayChannelLabel("SEEG LA1"), "SEEG LA1");
+});
 
 function latin1Bytes(text, width) {
   const output = new Uint8Array(width).fill(0x20);

@@ -43,6 +43,7 @@ import {
   detectEnvelopeSynchronizedFlatlines,
   detectRawSynchronizedFlatlines,
   formatClock,
+  formatDisplayChannelLabel,
   LEGACY_RAW_COUNTS_PER_ROW,
   makeId,
   orderAnatomicalChannelIndices,
@@ -409,6 +410,9 @@ const LABELS: LabelDefinition[] = [
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
 const CHANNEL_RAIL_HEADER_HEIGHT = 28;
 const ANATOMICAL_GROUP_GAP_ROWS = 4;
+const DEFAULT_SPECTROGRAM_HEIGHT = 138;
+const MIN_SPECTROGRAM_HEIGHT = 96;
+const MAX_SPECTROGRAM_HEIGHT = 480;
 const LEGACY_SEIZURE_EVENT_TERMS = ["sz", "seiz", "tonic", "eeg onset", "ictal"] as const;
 const PALETTE_BUTTON_NAMES: Record<string, string> = {
   preictal: "Pre",
@@ -4141,7 +4145,7 @@ export default function Home() {
         zoomToTimeRange(range.start, range.end);
         setToast(`Zoomed to ${range.end - range.start < 1 ? "a 1 s window" : `${(range.end - range.start).toFixed(2)} s`} across ${range.channelLabels.length} channel${range.channelLabels.length === 1 ? "" : "s"}`);
       } else {
-        setToast(`Inspecting ${display.labels[row] ?? "waveform"} at ${formatClock(time, true)} — drag a box to zoom`);
+        setToast(`Inspecting ${formatDisplayChannelLabel(display.labels[row] ?? "waveform")} at ${formatClock(time, true)} — drag a box to zoom`);
       }
     } else if (activeTool === "seizure" && !pointer.moved) {
       if (markOnset === null) {
@@ -6107,7 +6111,7 @@ export default function Home() {
                     style={{ gridRow: `${channelRowLayout.rowStartUnits[index] + 1} / span 1` }}
                     aria-pressed={focused || inspectionHighlighted}
                     onClick={() => setFocusedChannel(index)}
-                  ><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>;
+                  ><strong>{formatDisplayChannelLabel(label)}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>;
                 })}
               </div>
               <div className="canvas-column">
@@ -6137,7 +6141,7 @@ export default function Home() {
               </div>
             </div>
 
-            {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={display.startSecs[focusedChannel] ?? display.viewStart} cursor={cursorTime} label={display.labels[focusedChannel] || "Focused channel"} overview={Boolean(display.envelopes[focusedChannel])} />}
+            {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={display.startSecs[focusedChannel] ?? display.viewStart} cursor={cursorTime} label={formatDisplayChannelLabel(display.labels[focusedChannel] || "Focused channel")} overview={Boolean(display.envelopes[focusedChannel])} />}
 
             {bottomTracksOpen && <div
               className={`timeline ${annotationSelectionBox ? "box-selecting" : ""}`}
@@ -6191,7 +6195,7 @@ export default function Home() {
           </div>
 
           <footer className="command-strip">
-            <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{display.labels[focusedChannel] ?? "—"}</span><span>{formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}</span><span>source sample {Math.round(cursorTime * sourceRateForDisplayRow(display, meta, focusedChannel)).toLocaleString()}</span></div>
+            <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{formatDisplayChannelLabel(display.labels[focusedChannel] ?? "—")}</span><span>{formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}</span><span>source sample {Math.round(cursorTime * sourceRateForDisplayRow(display, meta, focusedChannel)).toLocaleString()}</span></div>
             <div className="command-status" role="status" aria-live="polite" aria-atomic="true"><span className="status-dot" /><span className="command-status-text">{toast}</span>{verifyingSource && <button className="verification-cancel" onClick={cancelSourceVerification}>Cancel load</button>}</div>
             {selectedAnnotationIds.size > 0 && <div className="annotation-command-actions">
               {selectedAnnotationIds.size === 1 && selectedAnnotation
@@ -6358,7 +6362,7 @@ export default function Home() {
                   return next;
                 })} />
                 <span className="channel-switch" aria-hidden="true" />
-                <span className="channel-toggle-copy"><strong>{name}</strong><small>{meta.channelUnits[index] ?? "µV"} · source channel {index + 1}</small></span>
+                <span className="channel-toggle-copy"><strong>{formatDisplayChannelLabel(name)}</strong><small>{meta.channelUnits[index] ?? "µV"} · source channel {index + 1}</small></span>
               </label>
               <button className={badChannels.has(index) ? "bad" : ""} onClick={() => setBadChannels((current) => {
                 const next = new Set(current);
@@ -6481,7 +6485,7 @@ export default function Home() {
           </section>
           {queueDetailAnnotation?.channelScope && <section className="queue-detail-source">
             <span>CHANNEL PROVENANCE</span>
-            <strong>{queueDetailAnnotation.channelScope.displayLabel}</strong>
+            <strong>{formatDisplayChannelLabel(queueDetailAnnotation.channelScope.displayLabel)}</strong>
             <p>{queueDetailAnnotation.channelScope.sourceLabels.join(", ")} · {queueDetailAnnotation.channelScope.montage}</p>
           </section>}
           <div className="queue-detail-actions">
@@ -6550,8 +6554,29 @@ export default function Home() {
   );
 }
 
+function availableSpectrogramHeight(panel: HTMLDivElement | null) {
+  const viewer = panel?.parentElement;
+  if (!panel || !viewer) return MAX_SPECTROGRAM_HEIGHT;
+  const waveform = viewer.querySelector<HTMLElement>(".waveform-wrap");
+  const waveformMinimumHeight = waveform
+    ? Number.parseFloat(window.getComputedStyle(waveform).minHeight) || 0
+    : 0;
+  const fixedSiblingHeight = Array.from(viewer.children).reduce((height, child) => {
+    if (child === panel || child === waveform) return height;
+    return height + child.getBoundingClientRect().height;
+  }, 0);
+  return clamp(
+    viewer.clientHeight - waveformMinimumHeight - fixedSiblingHeight,
+    MIN_SPECTROGRAM_HEIGHT,
+    MAX_SPECTROGRAM_HEIGHT,
+  );
+}
+
 function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: { data?: Float32Array; sampleRate: number; start: number; cursor: number; label: string; overview: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const resizeRef = useRef<{ pointerId: number; startY: number; startHeight: number; maximumHeight: number } | null>(null);
+  const [spectrogramHeight, setSpectrogramHeight] = useState(DEFAULT_SPECTROGRAM_HEIGHT);
   const [spectrumState, setSpectrumState] = useState<{
     data?: Float32Array;
     sampleRate: number;
@@ -6561,6 +6586,29 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
   const spectrumStateMatches = spectrumState.data === data && spectrumState.sampleRate === sampleRate;
   const spectrum = spectrumStateMatches ? spectrumState.result : null;
   const computeError = spectrumStateMatches ? spectrumState.error : "";
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const resize = resizeRef.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      setSpectrogramHeight(clamp(
+        resize.startHeight - (event.clientY - resize.startY),
+        MIN_SPECTROGRAM_HEIGHT,
+        resize.maximumHeight,
+      ));
+    };
+    const onUp = (event: PointerEvent) => {
+      if (resizeRef.current?.pointerId === event.pointerId) resizeRef.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
 
   useEffect(() => {
     if (overview || !data?.length || sampleRate < 2) return;
@@ -6678,7 +6726,41 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
   }, [computeError, overview, sampleRate, spectrum]);
   const duration = data?.length && sampleRate ? data.length / sampleRate : 1;
   const cursorLeft = clamp(((cursor - start) / duration) * 100, 0, 100);
-  return <div className="spectrogram-panel"><div className="spectrogram-label"><strong>{label}</strong><span>{sampleRate >= 2 ? `1–${Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only` : "Sampling rate below 2 Hz"}</span></div><div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div></div>;
+  return <div ref={panelRef} className="spectrogram-panel" style={{ height: spectrogramHeight }}>
+    <button
+      className="spectrogram-resize-handle"
+      type="button"
+      role="separator"
+      aria-label="Resize spectrogram"
+      aria-orientation="horizontal"
+      aria-valuemin={MIN_SPECTROGRAM_HEIGHT}
+      aria-valuemax={MAX_SPECTROGRAM_HEIGHT}
+      aria-valuenow={Math.round(spectrogramHeight)}
+      title="Drag up to enlarge; drag down to shrink the spectrogram"
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        resizeRef.current = {
+          pointerId: event.pointerId,
+          startY: event.clientY,
+          startHeight: spectrogramHeight,
+          maximumHeight: availableSpectrogramHeight(panelRef.current),
+        };
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        event.preventDefault();
+        const adjustment = event.key === "ArrowUp" ? 20 : -20;
+        setSpectrogramHeight((height) => clamp(
+          height + adjustment,
+          MIN_SPECTROGRAM_HEIGHT,
+          availableSpectrogramHeight(panelRef.current),
+        ));
+      }}
+    />
+    <div className="spectrogram-label"><strong>{label}</strong><span>{sampleRate >= 2 ? `1–${Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only` : "Sampling rate below 2 Hz"}</span></div>
+    <div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div>
+  </div>;
 }
 
 type FileStructureNode = { title: string; detail: string };
@@ -6844,9 +6926,9 @@ function GeneralInfoPanel({
   const rangeEnd = inspectionRange ? Math.max(inspectionRange.start, inspectionRange.end) : cursorTime;
   const duration = rangeEnd - rangeStart;
   const isArea = inspectionRange !== null && duration > 0.0005;
-  const displayLabel = display.labels[focusedChannel] ?? "—";
+  const displayLabel = formatDisplayChannelLabel(display.labels[focusedChannel] ?? "—");
   const selectedChannelLabels = inspectionRange?.channelLabels.length
-    ? inspectionRange.channelLabels
+    ? inspectionRange.channelLabels.map(formatDisplayChannelLabel)
     : [displayLabel];
   const sourceIndices = display.sourceIndices[focusedChannel] ?? [];
   const sourceLabels = sourceIndices.map((index) => meta.channelLabels[index]).filter(Boolean);

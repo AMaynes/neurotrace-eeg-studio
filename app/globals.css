@@ -534,7 +534,11 @@ textarea:focus-visible {
 .drop-ghost { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--mint); pointer-events: none; box-shadow: 0 0 9px rgba(87, 223, 183, .5); }
 .drop-ghost span { position: absolute; top: 4px; left: 5px; padding: 3px 5px; border: 1px solid #488577; border-radius: 3px; background: #122c27; color: var(--mint); font: 8px ui-monospace, monospace; white-space: nowrap; }
 
-.spectrogram-panel { height: 138px; flex: 0 0 auto; display: grid; grid-template-columns: 70px minmax(0, 1fr); border-bottom: 1px solid #20353c; background: #071216; }
+.spectrogram-panel { position: relative; height: 138px; flex: 0 0 auto; display: grid; grid-template-columns: 70px minmax(0, 1fr); border-bottom: 1px solid #20353c; background: #071216; }
+.spectrogram-resize-handle { position: absolute; z-index: 8; left: 0; right: 0; top: -4px; height: 9px; padding: 0; border: 0; background: transparent; cursor: ns-resize; touch-action: none; }
+.spectrogram-resize-handle::before { content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 1px; background: #2a4750; opacity: .8; }
+.spectrogram-resize-handle:hover::before,
+.spectrogram-resize-handle:focus-visible::before { height: 2px; background: var(--mint); box-shadow: 0 0 8px rgba(87, 223, 183, .25); }
 .spectrogram-label { display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 4px; padding: 0 7px; border-right: 1px solid #20353c; background: #0a171b; text-align: right; }
 .spectrogram-label strong { color: #90adb2; font: 8px ui-monospace, monospace; }
 .spectrogram-label span { color: #4e666c; font-size: 6px; line-height: 1.4; }

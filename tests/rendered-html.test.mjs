@@ -549,6 +549,27 @@ test("resizes context from its top edge, with upward drag expanding the track", 
   assert.doesNotMatch(handleRule, /\bbottom\s*:/, "the old bottom-edge resize affordance is removed");
 });
 
+test("resizes the spectrogram vertically from its top edge", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  const spectrumStart = page.indexOf("function SpectrogramPanel");
+  const spectrumEnd = page.indexOf("type FileStructureNode", spectrumStart);
+  assert.ok(spectrumStart >= 0 && spectrumEnd > spectrumStart, "the spectrogram panel implementation is present");
+  const spectrum = page.slice(spectrumStart, spectrumEnd);
+  assert.match(spectrum, /const \[spectrogramHeight,\s*setSpectrogramHeight\]\s*=\s*useState\(DEFAULT_SPECTROGRAM_HEIGHT\)/);
+  assert.match(spectrum, /resize\.startHeight\s*-\s*\(event\.clientY\s*-\s*resize\.startY\)/, "dragging upward increases spectrogram height");
+  assert.match(spectrum, /className="spectrogram-resize-handle"[\s\S]*?role="separator"[\s\S]*?aria-valuenow=/);
+  assert.match(spectrum, /style=\{\{ height:\s*spectrogramHeight \}\}/);
+
+  const handleRule = css.match(/\.spectrogram-resize-handle\s*\{([^}]+)\}/)?.[1] ?? "";
+  assert.match(handleRule, /\btop\s*:/, "the resize affordance is attached to the spectrogram's top edge");
+  assert.match(handleRule, /cursor:\s*ns-resize/);
+  assert.match(handleRule, /touch-action:\s*none/);
+});
+
 test("keeps the right panel label view ordered like the ontology palette", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const sidebarStart = page.indexOf('<aside className="right-sidebar">');

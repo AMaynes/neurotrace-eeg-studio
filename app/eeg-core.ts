@@ -3339,6 +3339,13 @@ export function formatClock(seconds: number, withMs = false): string {
   return `${negative ? "−" : ""}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}${withMs ? `.${String(milliseconds).padStart(3, "0")}` : ""}`;
 }
 
+/** Removes redundant signal-type prefixes without changing source metadata. */
+export function formatDisplayChannelLabel(label: string): string {
+  const trimmed = label.trim();
+  const formatted = trimmed.replace(/\bEEG\s+/gi, "").trim();
+  return formatted || trimmed;
+}
+
 /** Backwards-compatible name used by earlier viewer prototypes. */
 export const formatTime = formatClock;
 
