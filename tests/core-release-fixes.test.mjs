@@ -929,31 +929,32 @@ test("annotation IDs remain unique without a reload-resetting counter", () => {
   assert.ok(!ids.includes("ann-000001"));
 });
 
-test("referential montage retains QC-marked channels while derived montages exclude them", () => {
+test("referential montage retains explicitly excluded inputs while derived montages omit them", () => {
   const data = [
     new Float32Array([1, 2]),
     new Float32Array([3, 4]),
     new Float32Array([5, 6]),
   ];
   const labels = ["LA1", "LA2", "LA3"];
-  const bad = new Set([1]);
+  const excluded = new Set([1]);
   const starts = [4, 4, 4];
-  const referential = buildMontage(data, labels, "referential", bad, [1000, 1000, 1000], starts);
+  const referential = buildMontage(data, labels, "referential", excluded, [1000, 1000, 1000], starts);
   assert.deepEqual(referential.labels, labels);
   assert.deepEqual(referential.primarySourceIndices, [0, 1, 2]);
   assert.deepEqual(referential.sampleStartSecs, starts);
   assert.equal(referential.data[0], data[0], "referential rows must retain the original sample buffer");
   assert.equal(referential.data[1], data[1]);
 
-  const average = buildMontage(data, labels, "average", bad, [1000, 1000, 1000], starts);
+  const average = buildMontage(data, labels, "average", excluded, [1000, 1000, 1000], starts);
   assert.deepEqual(average.primarySourceIndices, [0, 2]);
   assert.deepEqual(average.sampleStartSecs, [4, 4]);
   const partiallyAlignedAverage = buildMontage(data, labels, "average", new Set(), [1000, 1000, 1000], [4, 4.001, 4]);
   assert.deepEqual(partiallyAlignedAverage.primarySourceIndices, [0, 2]);
   assert.match(partiallyAlignedAverage.warnings.join("\n"), /excluded.*incompatible.*LA2/i);
 
-  const bipolar = buildMontage(data, labels, "bipolar", bad, [1000, 1000, 1000], starts);
-  assert.equal(bipolar.data.length, 0, "a bad LA2 contact must not be bridged from LA1 to LA3");
+  const bipolar = buildMontage(data, labels, "bipolar", excluded, [1000, 1000, 1000], starts);
+  assert.deepEqual(bipolar.labels, ["LA1-3"]);
+  assert.deepEqual(Array.from(bipolar.data[0]), [4, 4], "MATLAB pairs adjacent retained entries in ChannelMat order");
 
   const misalignedBipolar = buildMontage(
     data.slice(0, 2),
@@ -963,7 +964,7 @@ test("referential montage retains QC-marked channels while derived montages excl
     [1000, 1000],
     [4, 4.001],
   );
-  assert.equal(misalignedBipolar.data.length, 0);
+  assert.deepEqual(misalignedBipolar.labels, ["LA1", "LA2"], "an unsafe derivation falls back to recorded channels");
   assert.match(misalignedBipolar.warnings.join("\n"), /sample start times.*not aligned/i);
 });
 
@@ -982,13 +983,14 @@ test("montages preserve polarity, finite gaps, provenance, and the largest align
   assert.deepEqual(Array.from(average.data[1]), [-1, 0, 0, -3]);
   assert.match(average.warnings.join("\n"), /excluded.*LB1/i);
 
-  const bipolar = buildMontage(data.slice(0, 2), labels.slice(0, 2), "bipolar", new Set(), [1000, 1000], [2, 2]);
-  assert.deepEqual(bipolar.labels, ["SEEG LA1-REF–SEEG LA2-REF"]);
+  const bipolar = buildMontage(data.slice(0, 2), ["LA1", "LA2"], "bipolar", new Set(), [1000, 1000], [2, 2]);
+  assert.deepEqual(bipolar.labels, ["LA1-2"]);
   assert.deepEqual(bipolar.sourceIndices, [[0, 1]]);
-  assert.deepEqual(Array.from(bipolar.data[0]), [2, Number.NaN, Number.NaN, 6]);
+  assert.deepEqual(bipolar.primarySourceIndices, [1]);
+  assert.deepEqual(Array.from(bipolar.data[0]), [-2, Number.NaN, Number.NaN, -6]);
 });
 
-test("bipolar montage omits duplicate contacts instead of choosing an arbitrary source", () => {
+test("bipolar montage preserves repeated contacts in ChannelMat order", () => {
   const montage = buildMontage(
     [
       new Float32Array([10]),
@@ -996,15 +998,16 @@ test("bipolar montage omits duplicate contacts instead of choosing an arbitrary 
       new Float32Array([4]),
       new Float32Array([1]),
     ],
-    ["POL LA1", "POL LA2", "SEEG LA2", "POL LA3"],
+    ["LA1", "LA2", "LA2", "LA3"],
     "bipolar",
     new Set(),
     [1000, 1000, 1000, 1000],
     [0, 0, 0, 0],
   );
 
-  assert.deepEqual(montage.data, []);
-  assert.match(montage.warnings.join("\n"), /share contact 2.*ambiguous contact/i);
+  assert.deepEqual(montage.labels, ["LA1-2", "LA2-2", "LA2-3"]);
+  assert.deepEqual(montage.data.map((channel) => [...channel]), [[-5], [-1], [-3]]);
+  assert.deepEqual(montage.warnings, []);
 });
 
 test("montage rejects invalid modes and sample-rate metadata", () => {
@@ -1016,19 +1019,20 @@ test("montage rejects invalid modes and sample-rate metadata", () => {
   assert.deepEqual(emptyAverage.sampleStartSecs, []);
 });
 
-test("orders scalp and depth channels anatomically while keeping auxiliary channels last", () => {
+test("matches MATLAB anatomical acceptance and stable left-right-other ordering", () => {
   const labels = ["RA1", "ECG1", "LA1", "LB2", "RB1", "F3", "X1"];
   assert.deepEqual(labels.map(anatomicalChannelGroup), ["RA", null, "LA", "LB", "RB", null, "X"]);
-  assert.deepEqual(orderAnatomicalChannelIndices(labels), [5, 2, 3, 0, 4, 6, 1]);
+  assert.deepEqual(orderAnatomicalChannelIndices(labels), [2, 3, 0, 4, 6]);
   assert.deepEqual(
     orderAnatomicalChannelIndices(["C4", "Fp2", "O1", "F7", "Cz", "Fp1", "P3", "T6", "Fz", "ECG1", "T3"]),
-    [5, 1, 3, 8, 10, 4, 0, 6, 7, 2, 9],
+    [1, 2, 5, 6, 7, 10],
   );
-  assert.deepEqual(orderAnatomicalChannelIndices(["RB2", "LA3", "LA1", "RA2", "LB1", "RA1"]), [2, 1, 4, 5, 3, 0]);
-  assert.equal(anatomicalChannelGroup("EEG LA1-REF–EEG LA2-REF"), "LA");
-  assert.equal(anatomicalChannelGroup("SEEG LA1-REF"), "LA");
-  assert.equal(anatomicalChannelGroup("POL RB03"), "RB");
-  assert.equal(anatomicalChannelGroup("Fp1-Fp2"), "FP");
+  assert.deepEqual(orderAnatomicalChannelIndices(["RB2", "LA3", "LA1", "RA2", "LB1", "RA1"]), [1, 2, 4, 0, 3, 5]);
+  assert.equal(anatomicalChannelGroup("EEG LA1-REF–EEG LA2-REF"), null);
+  assert.equal(anatomicalChannelGroup("SEEG LA1-REF"), null);
+  assert.equal(anatomicalChannelGroup("POL RB03"), null);
+  assert.equal(anatomicalChannelGroup("Fp1-Fp2"), null);
+  assert.deepEqual(orderAnatomicalChannelIndices(["ECG1", "F3", "C4"]), [0, 1, 2], "no valid anatomical contacts preserves source order");
 });
 
 test("confines extreme waveform coordinates to exactly one channel row", () => {

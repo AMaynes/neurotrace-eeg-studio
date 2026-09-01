@@ -66,7 +66,7 @@ test("decodes EDF+ TAL annotations and ignores record timekeeping entries", asyn
   assert.deepEqual(parsed.warnings, []);
 });
 
-test("omits unsafe mixed-rate bipolar derivations", () => {
+test("omits unsafe mixed-rate bipolar arithmetic and falls back to recorded channels", () => {
   const montage = buildMontage(
     [new Float32Array([1, 2, 3, 4]), new Float32Array([1, 2])],
     ["LA1", "LA2"],
@@ -75,6 +75,7 @@ test("omits unsafe mixed-rate bipolar derivations", () => {
     [256, 128],
   );
 
-  assert.equal(montage.data.length, 0);
+  assert.deepEqual(montage.labels, ["LA1", "LA2"]);
+  assert.equal(montage.data.length, 2);
   assert.match(montage.warnings.join("\n"), /cannot be subtracted without resampling/i);
 });

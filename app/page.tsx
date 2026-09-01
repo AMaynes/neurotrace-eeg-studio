@@ -2152,14 +2152,16 @@ export default function Home() {
   const pendingLegacyCandidateEvents = useMemo(() => (pendingLegacyMeta?.events ?? [])
     .map((event, sourceIndex) => ({ event, sourceIndex }))
     .filter(({ event }) => isLegacySeizureCandidate(event.label)), [pendingLegacyMeta]);
-  const legacyAnatomicalLayout = meta.format === "raw-int16-le" && meta.channelLabels.length >= 100;
+  const matlabAnatomicalLayout = meta.format === "raw-int16-le"
+    || recordingType === "SEEG / iEEG"
+    || recordingType === "Simultaneous scalp + iEEG";
   const legacyRawCountDisplay = meta.format === "raw-int16-le"
     && sourceInterpretation?.display_amplitude_mode === "legacy-raw-counts";
   const datPhysicalScaleValid = datMapping.physicalScale === ""
     || (Number.isFinite(datMapping.physicalScale) && datMapping.physicalScale > 0);
   const channelRowLayout = useMemo(
-    () => buildChannelRowLayout(display.labels, legacyAnatomicalLayout),
-    [display.labels, legacyAnatomicalLayout],
+    () => buildChannelRowLayout(display.labels, matlabAnatomicalLayout),
+    [display.labels, matlabAnatomicalLayout],
   );
   const activeCandidateOnset = activeCandidateAnnotation?.start ?? markOnset;
   const activeCandidateOffset = activeCandidateAnnotation?.end ?? null;
@@ -3244,7 +3246,9 @@ export default function Home() {
     const requestId = ++displayRequestIdRef.current;
     const source = sourceRef.current;
     const selectedIndices = [...selectedChannels].sort((a, b) => a - b);
-    const indices = orderAnatomicalChannelIndices(meta.channelLabels, selectedIndices);
+    const indices = matlabAnatomicalLayout
+      ? orderAnatomicalChannelIndices(meta.channelLabels, selectedIndices)
+      : selectedIndices;
     const channelKey = indices.join(",");
     const refreshWindow = async () => {
       if (!hasRecording || !indices.length) {

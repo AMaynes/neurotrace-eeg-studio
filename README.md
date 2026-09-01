@@ -173,11 +173,12 @@ High-pass and low-pass use second-order Butterworth-style filters. Notch filteri
 
 - **Recorded / referential:** shows each channel as it exists in the file.
 - **Average reference (CAR):** subtracts the sample-by-sample average of compatible channels from each channel.
-- **Bipolar:** subtracts adjacent contacts in the same electrode group, such as `LA1 - LA2`. It only pairs true neighbors and does not bridge a missing contact.
+- **Bipolar:** matches the MATLAB reviewer: contacts stay in `ChannelMat` order within each electrode group, and each result is the following contact minus the current contact. A row labeled `LA1-2` therefore contains `LA2 - LA1`.
+- **Anatomical order:** accepts only letter-and-number contact names, applies the MATLAB exclusion list, then shows left, right, and unlateralized groups while preserving the source order. Four blank row spaces separate electrode groups.
 
 Channels with incompatible units, sample rates, or timing are not combined. Gaps remain gaps.
 
-**Files:** `app/eeg-core.ts` (`buildMontage` and label-parsing helpers) contains the montage algorithms; `app/page.tsx` checks units and connects results back to their source channels.
+**Files:** `app/eeg-core.ts` (`buildMontage`, `orderAnatomicalChannelIndices`, and `anatomicalChannelGroup`) contains the montage and ordering algorithms; `app/page.tsx` applies the order, group spacing, unit checks, and source-channel links.
 
 ### Aliasing and large windows
 

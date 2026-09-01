@@ -3261,129 +3261,76 @@ export interface MontageResult {
   warnings: string[];
 }
 
-type BadChannelSet = ReadonlySet<number | string>;
+type ExcludedChannelSet = ReadonlySet<number | string>;
 
-function channelIsBad(index: number, label: string, badChannels: BadChannelSet): boolean {
-  if (badChannels.has(index) || badChannels.has(label)) return true;
+function channelIsExcluded(index: number, label: string, excludedChannels: ExcludedChannelSet): boolean {
+  if (excludedChannels.has(index) || excludedChannels.has(label)) return true;
   const normalized = label.trim().toLowerCase();
-  for (const entry of badChannels) {
+  for (const entry of excludedChannels) {
     if (typeof entry === "string" && entry.trim().toLowerCase() === normalized) return true;
   }
   return false;
 }
 
-const SCALP_ROW_ORDER = new Map([
-  ["FP", 0], ["AF", 1], ["F", 2], ["FT", 3], ["FC", 3], ["T", 4], ["C", 4],
-  ["TP", 5], ["CP", 5], ["P", 6], ["PO", 7], ["O", 8], ["A", 9], ["M", 9],
-]);
-
-const LEGACY_SCALP_ALIASES = new Map([
-  ["T3", "T7"], ["T4", "T8"], ["T5", "P7"], ["T6", "P8"],
-]);
-
-const LEGACY_AUXILIARY_GROUPS = new Set([
+const MATLAB_EXCLUDED_CHANNEL_GROUPS = new Set([
   "DC", "MARK", "E", "C", "EX", "F", "REF", "GND", "ECG", "EKG", "EMG",
   "EOG", "TRIG", "SYNC", "AUX", "STI",
 ]);
 
-interface ContactLabel {
+interface MatlabAnatomicalChannel {
   sourceIndex: number;
   actualLabel: string;
   group: string;
-  contact: number;
+  contactText: string;
 }
 
-interface ScalpChannelPosition {
-  row: number;
-  horizontal: number;
-}
-
-function cleanElectrodeLabel(label: string) {
-  return label
-    .trim()
-    .replace(/^(?:EEG|SEEG|ECOG|POL)\s+/i, "")
-    .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
-    .trim();
-}
-
-function scalpChannelPosition(label: string): ScalpChannelPosition | null {
-  const cleaned = cleanElectrodeLabel(label).replace(/[\s_-]/g, "").toUpperCase();
-  const canonical = LEGACY_SCALP_ALIASES.get(cleaned) ?? cleaned;
-  const match = /^(FP|AF|FT|FC|TP|CP|PO|F|T|C|P|O|A|M)(Z|\d+)$/.exec(canonical);
-  if (!match) return null;
-  const row = SCALP_ROW_ORDER.get(match[1]);
-  if (row === undefined) return null;
-  if (match[2] === "Z") return { row, horizontal: 0 };
-  const number = Number(match[2]);
-  if (!Number.isInteger(number) || number < 1 || number > 10) return null;
-  const horizontal = number % 2 === 1 ? -(number + 1) / 2 : number / 2;
-  return { row, horizontal };
-}
-
-function parseContactLabel(label: string, sourceIndex: number): ContactLabel | null {
-  const cleaned = cleanElectrodeLabel(label);
-  if (scalpChannelPosition(cleaned)) return null;
-  const match = /^(.*?)(\d+)$/.exec(cleaned);
-  if (!match || !/[A-Za-z]/.test(match[1])) return null;
-  const contact = Number(match[2]);
-  if (!Number.isSafeInteger(contact)) return null;
-  const group = match[1].replace(/[\s_-]+/g, "").toUpperCase();
-  if (LEGACY_AUXILIARY_GROUPS.has(group)) return null;
-  return { sourceIndex, actualLabel: label, group, contact };
+function parseMatlabAnatomicalChannel(label: string, sourceIndex: number): MatlabAnatomicalChannel | null {
+  const actualLabel = label.trim();
+  const match = /^([A-Za-z]+)(\d+)$/.exec(actualLabel);
+  if (!match || MATLAB_EXCLUDED_CHANNEL_GROUPS.has(match[1].toUpperCase())) return null;
+  return { sourceIndex, actualLabel, group: match[1], contactText: match[2] };
 }
 
 /**
- * Returns the anatomical depth-electrode group used by the legacy MATLAB
- * reviewer. Bipolar display labels such as LA1–LA2 resolve to the same LA
- * group, while the MATLAB reviewer's explicitly auxiliary groups return null.
+ * Returns the exact letter-only group accepted by the MATLAB reviewer for a
+ * source contact (`LA1`) or its bipolar label (`LA1-2`). Prefixes, suffixes,
+ * separators, and the MATLAB exclusion list are intentionally not normalized.
  */
 export function anatomicalChannelGroup(label: string): string | null {
-  const cleaned = cleanElectrodeLabel(label);
-  // Only the first contact establishes the group. This also handles derived
-  // labels such as "EEG LA1-REF–EEG LA2-REF" without confusing reference
-  // suffix hyphens with the bipolar separator.
-  const match = /^([A-Za-z]+)[\s_-]*(\d+)/.exec(cleaned);
+  const match = /^([A-Za-z]+)\d+(?:-\d+)?$/.exec(label.trim());
   if (!match) return null;
-  const group = match[1].replace(/[\s_-]+/g, "").toUpperCase();
-  if (LEGACY_AUXILIARY_GROUPS.has(group)) return null;
-  return group;
+  return MATLAB_EXCLUDED_CHANNEL_GROUPS.has(match[1].toUpperCase()) ? null : match[1];
 }
 
 /**
- * Orders scalp channels front-to-back and left-to-right, then depth contacts
- * by side, electrode group, and contact number. Auxiliary channels retain
- * their source order at the end. Source-channel identity never changes.
+ * Matches seizure_annotation_tool_update.m: accept only `letters + digits`,
+ * exclude its auxiliary groups, then stably partition contacts left, right,
+ * and unlateralized. Original ChannelMat order is preserved inside each side;
+ * if no anatomical contacts exist, the input order is returned unchanged.
  */
 export function orderAnatomicalChannelIndices(
   labels: readonly string[],
   indices: readonly number[] = labels.map((_, index) => index),
 ): number[] {
-  return indices
-    .map((sourceIndex, position) => {
-      const label = labels[sourceIndex] ?? "";
-      const scalp = scalpChannelPosition(label);
-      if (scalp) return { sourceIndex, position, category: 0, row: scalp.row, horizontal: scalp.horizontal, group: "", contact: 0 };
-      const depth = parseContactLabel(label, sourceIndex);
-      if (depth) {
-        const side = depth.group.startsWith("L") ? 0 : depth.group.startsWith("R") ? 1 : 2;
-        return { sourceIndex, position, category: 1, row: side, horizontal: 0, group: depth.group, contact: depth.contact };
-      }
-      return { sourceIndex, position, category: 2, row: 0, horizontal: 0, group: "", contact: 0 };
-    })
-    .sort((left, right) => left.category - right.category
-      || left.row - right.row
-      || left.horizontal - right.horizontal
-      || left.group.localeCompare(right.group)
-      || left.contact - right.contact
-      || left.position - right.position)
-    .map(({ sourceIndex }) => sourceIndex);
+  const anatomical = indices.flatMap((sourceIndex) => {
+    const parsed = parseMatlabAnatomicalChannel(labels[sourceIndex] ?? "", sourceIndex);
+    return parsed ? [parsed] : [];
+  });
+  if (!anatomical.length) return [...indices];
+  const left = anatomical.filter((channel) => channel.group[0]?.toUpperCase() === "L");
+  const right = anatomical.filter((channel) => channel.group[0]?.toUpperCase() === "R");
+  const other = anatomical.filter((channel) => {
+    const side = channel.group[0]?.toUpperCase();
+    return side !== "L" && side !== "R";
+  });
+  return [...left, ...right, ...other].map((channel) => channel.sourceIndex);
 }
 
 export function buildMontage(
   data: readonly Float32Array[],
   labels: readonly string[],
   mode: MontageMode,
-  badChannels: BadChannelSet = new Set<number | string>(),
+  excludedChannels: ExcludedChannelSet = new Set<number | string>(),
   sampleRates?: readonly number[],
   sampleStartSecs?: readonly number[],
 ): MontageResult {
@@ -3407,7 +3354,7 @@ export function buildMontage(
   }
   const validIndices = data
     .map((_, index) => index)
-    .filter((index) => !channelIsBad(index, labels[index], badChannels));
+    .filter((index) => !channelIsExcluded(index, labels[index], excludedChannels));
   const warnings: string[] = [];
 
   if (mode === "referential") {
@@ -3426,7 +3373,7 @@ export function buildMontage(
 
   if (mode === "average" || mode === "average-reference") {
     if (validIndices.length === 0) {
-      warnings.push("No usable channels remain after bad-channel exclusion.");
+      warnings.push("No compatible channels remain for average-reference arithmetic.");
       return {
         data: [],
         labels: [],
@@ -3496,9 +3443,10 @@ export function buildMontage(
     };
   }
 
-  const groups = new Map<string, ContactLabel[]>();
-  for (const index of validIndices) {
-    const contact = parseContactLabel(labels[index], index);
+  const orderedIndices = orderAnatomicalChannelIndices(labels, validIndices);
+  const groups = new Map<string, MatlabAnatomicalChannel[]>();
+  for (const index of orderedIndices) {
+    const contact = parseMatlabAnatomicalChannel(labels[index], index);
     if (!contact) continue;
     const group = groups.get(contact.group) ?? [];
     group.push(contact);
@@ -3510,28 +3458,9 @@ export function buildMontage(
   const primarySourceIndices: number[] = [];
   const outputSampleStartSecs: number[] = [];
   for (const contacts of groups.values()) {
-    const contactsByNumber = new Map<number, ContactLabel[]>();
-    for (const contact of contacts) {
-      const matchingContacts = contactsByNumber.get(contact.contact) ?? [];
-      matchingContacts.push(contact);
-      contactsByNumber.set(contact.contact, matchingContacts);
-    }
-    const unambiguousContacts: ContactLabel[] = [];
-    for (const matchingContacts of contactsByNumber.values()) {
-      if (matchingContacts.length === 1) {
-        unambiguousContacts.push(matchingContacts[0]);
-        continue;
-      }
-      warnings.push(
-        `${matchingContacts.map((contact) => contact.actualLabel).join(", ")} share contact ${matchingContacts[0].contact} in group ${matchingContacts[0].group}; pairs using that ambiguous contact were omitted.`,
-      );
-    }
-    unambiguousContacts.sort((a, b) => a.contact - b.contact || a.sourceIndex - b.sourceIndex);
-    for (let index = 0; index < unambiguousContacts.length - 1; index += 1) {
-      const first = unambiguousContacts[index];
-      const second = unambiguousContacts[index + 1];
-      // Never bridge missing/bad contacts; only true N-to-N+1 electrode neighbors.
-      if (second.contact !== first.contact + 1) continue;
+    for (let index = 0; index < contacts.length - 1; index += 1) {
+      const first = contacts[index];
+      const second = contacts[index + 1];
       const firstData = data[first.sourceIndex];
       const secondData = data[second.sourceIndex];
       const firstRate = sampleRates?.[first.sourceIndex];
@@ -3554,20 +3483,32 @@ export function buildMontage(
       }
       const derived = new Float32Array(sampleCount);
       for (let sample = 0; sample < sampleCount; sample += 1) {
-        // Conventional label polarity: A1–A2 means A1 minus A2.
+        // MATLAB reviewer convention: the following contact minus the current contact.
         derived[sample] = Number.isFinite(firstData[sample]) && Number.isFinite(secondData[sample])
-          ? firstData[sample] - secondData[sample]
+          ? secondData[sample] - firstData[sample]
           : Number.NaN;
       }
       outputData.push(derived);
-      outputLabels.push(`${first.actualLabel}–${second.actualLabel}`);
+      outputLabels.push(`${first.group}${first.contactText}-${second.contactText}`);
       sourceIndices.push([first.sourceIndex, second.sourceIndex]);
-      primarySourceIndices.push(first.sourceIndex);
-      if (firstStartSec !== undefined) outputSampleStartSecs.push(firstStartSec);
+      primarySourceIndices.push(second.sourceIndex);
+      if (secondStartSec !== undefined) outputSampleStartSecs.push(secondStartSec);
     }
   }
   if (outputData.length === 0) {
-    warnings.push("No adjacent numbered electrode contacts were available for a bipolar derivation.");
+    const fallbackIndices = groups.size ? orderedIndices.filter((index) =>
+      parseMatlabAnatomicalChannel(labels[index], index) !== null) : validIndices;
+    warnings.push("No MATLAB-style bipolar pairs were available; showing the recorded reference.");
+    return {
+      data: fallbackIndices.map((index) => data[index]),
+      labels: fallbackIndices.map((index) => labels[index]),
+      sampleRates: sampleRates ? fallbackIndices.map((index) => sampleRates[index]) : undefined,
+      sampleStartSecs: sampleStartSecs ? fallbackIndices.map((index) => sampleStartSecs[index]) : undefined,
+      sourceIndices: fallbackIndices.map((index) => [index]),
+      primarySourceIndices: fallbackIndices,
+      mode,
+      warnings,
+    };
   }
   return {
     data: outputData,
