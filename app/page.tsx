@@ -6905,9 +6905,9 @@ export default function Home() {
           </div>
           <button className="add-session-tab" disabled={importBusy} aria-label="Add blank session" title="Add blank session" onClick={createBlankSession}>+</button>
         </nav>
-        <div className="top-project-actions">
+        <div className="top-actions utility-actions">
           <button
-            className="save-project-button"
+            className="utility-button save-project-button"
             aria-label="Save NeuroTrace project"
             aria-haspopup="dialog"
             aria-expanded={showProjectSave}
@@ -6917,9 +6917,7 @@ export default function Home() {
               setProjectSaveError("");
               setShowProjectSave(true);
             }}
-          ><span aria-hidden="true">⇩</span><b>Save project</b></button>
-        </div>
-        <div className="top-actions utility-actions">
+          ><span aria-hidden="true">⇩</span></button>
           <button
             className={`utility-button ${resourcePanelActive ? "active" : ""}`}
             aria-label={resourcePanelActive ? "Return to right panel tools" : "Show resource usage"}

@@ -1228,35 +1228,12 @@ textarea:focus-visible {
 
 .add-session-tab:hover { background: #142823; border-color: #386158; }
 
-.top-project-actions {
-  flex: 0 0 142px;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  padding: 0 18px 0 6px;
-  background: #091419;
-}
-
 .save-project-button {
-  width: 118px;
-  height: 36px;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid #294149;
-  border-radius: 7px;
-  background: #102027;
-  color: #b3c4c6;
-  cursor: pointer;
+  margin-right: auto;
 }
 
-.save-project-button:hover,
-.save-project-button:focus-visible,
-.save-project-button[aria-expanded="true"] { border-color: var(--mint); background: #163a2f; color: #d7fff2; }
-.save-project-button > span { transform: translateY(-1px); font-size: 17px; font-weight: 800; line-height: 1; }
-.save-project-button > b { font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.save-project-button[aria-expanded="true"] { border-color: #46635e; background: #142622; color: var(--mint); }
+.save-project-button > span { transform: translateY(-1px); font-size: 19px; }
 
 .utility-actions {
   flex: 0 0 var(--label-pane);
