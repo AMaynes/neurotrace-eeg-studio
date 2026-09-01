@@ -512,7 +512,7 @@ textarea:focus-visible {
 .channel-rail button { min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 1px; padding: 0 7px 0 3px; border: 0; border-bottom: 1px solid rgba(38, 64, 72, .32); background: transparent; color: #91adb2; cursor: pointer; text-align: right; }
 .channel-rail button:hover,
 .channel-rail button.focused { background: #10252a; color: var(--mint); box-shadow: inset -2px 0 0 var(--mint); }
-.channel-rail button.inspection-highlighted { background: rgba(102, 174, 255, .14); color: #d1e8ff; box-shadow: inset -3px 0 0 #66aeff, inset 0 0 0 1px rgba(102, 174, 255, .2); }
+.channel-rail.viewport-zoomed { display: block; overflow: hidden; }
 .channel-rail strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .channel-rail span { color: #51676d; font: 6px ui-monospace, monospace; }
 .canvas-column { position: relative; min-width: 0; min-height: 0; overflow: hidden; }

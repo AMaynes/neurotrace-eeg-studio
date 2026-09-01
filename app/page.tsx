@@ -101,6 +101,12 @@ import {
   type WaveformGeometryBudget,
   type WaveformGeometrySummary,
 } from "./waveform-geometry";
+import {
+  composeVerticalViewport,
+  projectVerticalFraction,
+  unprojectVerticalFraction,
+  type NormalizedVerticalViewport,
+} from "./waveform-viewport";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -112,6 +118,7 @@ type WindowTimeUnit = "ms" | "s" | "hr";
 type AnnotationDragPatch = Pick<Annotation, "start" | "end" | "track" | "geometry">;
 type AnnotationSelectionBox = { left: number; top: number; width: number; height: number };
 type InspectionBox = {
+  dragged: boolean;
   start: number;
   end: number;
   startRow: number;
@@ -1833,6 +1840,7 @@ export default function Home() {
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
   const [inspectionRange, setInspectionRange] = useState<InspectionBox | null>(null);
   const [inspectionDragging, setInspectionDragging] = useState(false);
+  const [waveformVerticalViewport, setWaveformVerticalViewport] = useState<NormalizedVerticalViewport | null>(null);
   const [cursorTime, setCursorTime] = useState(0);
   const [cursorAmplitude, setCursorAmplitude] = useState(0);
   const [cursorLocked, setCursorLocked] = useState(false);
@@ -2162,6 +2170,7 @@ export default function Home() {
     setSelection(snapshot.selection);
     setInspectionRange(null);
     setInspectionDragging(false);
+    setWaveformVerticalViewport(null);
     setCursorTime(snapshot.cursorTime);
     setCursorAmplitude(snapshot.cursorAmplitude);
     setCursorLocked(snapshot.cursorLocked);
@@ -3776,8 +3785,21 @@ export default function Home() {
       const plotHeight = expandedChannels
         ? Math.max(1, channelRowLayout.totalUnits * 60)
         : Math.max(1, height - plotTop);
-      const rowHeight = expandedChannels ? 60 : plotHeight / channelRowLayout.totalUnits;
+      const verticalUnitStart = expandedChannels
+        ? 0
+        : (waveformVerticalViewport?.top ?? 0) * channelRowLayout.totalUnits;
+      const verticalUnitSpan = expandedChannels
+        ? channelRowLayout.totalUnits
+        : Math.max(
+            Number.EPSILON,
+            ((waveformVerticalViewport?.bottom ?? 1) - (waveformVerticalViewport?.top ?? 0))
+              * channelRowLayout.totalUnits,
+          );
+      const rowHeight = expandedChannels ? 60 : plotHeight / verticalUnitSpan;
       const rowScrollOffset = expandedChannels ? channelScrollOffsetRef.current : 0;
+      const rowTopForChannel = (channel: number) => plotTop
+        + rowHeight * (channelRowLayout.rowStartUnits[channel] - verticalUnitStart)
+        - rowScrollOffset;
 
       if (activeCandidateTime !== null && activeCandidateTime >= displayStart && activeCandidateTime <= displayEnd) {
         const eventX = ((activeCandidateTime - displayStart) / timebase) * width;
@@ -3794,7 +3816,7 @@ export default function Home() {
       }
 
       for (let channel = 0; channel < display.data.length; channel += 1) {
-        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel] - rowScrollOffset;
+        const rowTop = rowTopForChannel(channel);
         const center = rowTop + rowHeight * 0.5;
         if (rowTop + rowHeight < plotTop || rowTop > height) continue;
         if (channelRowLayout.groupStarts.has(channel)) {
@@ -3858,7 +3880,7 @@ export default function Home() {
         return left - right;
       });
       const visibleTraceCount = Math.max(1, traceOrder.reduce((count, channel) => {
-        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel] - rowScrollOffset;
+        const rowTop = rowTopForChannel(channel);
         return count + Number(rowTop + rowHeight >= plotTop && rowTop <= height);
       }, 0));
       const traceGeometryBudget: WaveformGeometryBudget = {
@@ -3898,7 +3920,7 @@ export default function Home() {
         const values = display.data[channel];
         const sampleRate = display.sampleRates[channel] ?? 1;
         const rowStartSec = display.startSecs[channel] ?? displayStart;
-        const rowTop = plotTop + rowHeight * channelRowLayout.rowStartUnits[channel] - rowScrollOffset;
+        const rowTop = rowTopForChannel(channel);
         const center = rowTop + rowHeight * 0.5;
         if (rowTop + rowHeight < plotTop || rowTop > height) continue;
         if (!values.length || !(sampleRate > 0)) continue;
@@ -4185,7 +4207,7 @@ export default function Home() {
           : (rowHeight * 0.36 * gain) / 100;
         const barValue = (legacyRawCountDisplay ? 5_000 : 100) / gain;
         const x = Math.max(18, width - 34);
-        const y = plotTop + rowHeight * (channelRowLayout.rowStartUnits[scaleRow] + .5) - rowScrollOffset;
+        const y = rowTopForChannel(scaleRow) + rowHeight * .5;
         const halfHeight = barValue * scale * .5;
         if (y + halfHeight >= plotTop && y - halfHeight <= height) {
           context.strokeStyle = "rgba(87, 223, 183, .95)";
@@ -4221,7 +4243,7 @@ export default function Home() {
     waveDrawRef.current = draw;
     draw();
     return () => performanceDiagnostics.removeCanvasSurface("waveform");
-  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase, viewStart]);
+  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -4287,11 +4309,34 @@ export default function Home() {
         contentY / Math.max(1, channelRowLayout.totalUnits * 60),
       );
     }
+    const screenFraction = (localY - CHANNEL_RAIL_HEADER_HEIGHT)
+      / Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
     return channelRowFromFraction(
       channelRowLayout,
-      (localY - CHANNEL_RAIL_HEADER_HEIGHT) / Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT),
+      unprojectVerticalFraction(screenFraction, waveformVerticalViewport),
     );
-  }, [channelRowLayout, expandedChannels]);
+  }, [channelRowLayout, expandedChannels, waveformVerticalViewport]);
+
+  const channelRailRowStyle = useCallback((channel: number): React.CSSProperties | null => {
+    if (!waveformVerticalViewport || expandedChannels) {
+      return { gridRow: `${channelRowLayout.rowStartUnits[channel] + 1} / span 1` };
+    }
+    const contentTop = channelRowLayout.rowStartUnits[channel] / channelRowLayout.totalUnits;
+    const contentBottom = (channelRowLayout.rowStartUnits[channel] + 1) / channelRowLayout.totalUnits;
+    const screenTop = projectVerticalFraction(contentTop, waveformVerticalViewport);
+    const screenBottom = projectVerticalFraction(contentBottom, waveformVerticalViewport);
+    if (screenBottom <= 0 || screenTop >= 1) return null;
+    const plotHeight = Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT);
+    const clippedTop = clamp(screenTop, 0, 1);
+    const clippedBottom = clamp(screenBottom, 0, 1);
+    return {
+      position: "absolute",
+      top: CHANNEL_RAIL_HEADER_HEIGHT + clippedTop * plotHeight,
+      right: 0,
+      left: 0,
+      height: Math.max(1, (clippedBottom - clippedTop) * plotHeight),
+    };
+  }, [channelRowLayout, channelViewportHeight, expandedChannels, waveformVerticalViewport]);
 
   const timeFromPointer = useCallback((event: { clientX: number }, element: HTMLElement, row: number, bypass = false) => {
     const rect = element.getBoundingClientRect();
@@ -4326,6 +4371,7 @@ export default function Home() {
     const startRow = Math.min(pointer.startRow, row);
     const endRow = Math.max(pointer.startRow, row);
     return {
+      dragged: pointer.moved,
       start: Math.min(pointer.startTime, time),
       end: Math.max(pointer.startTime, time),
       startRow,
@@ -4336,6 +4382,30 @@ export default function Home() {
       sourceIndices: [...new Set(display.sourceIndices.slice(startRow, endRow + 1).flat())],
     };
   }, [display.labels, display.sourceIndices]);
+
+  const fitWaveformVerticallyToInspectionBox = useCallback((range: InspectionBox, rect: DOMRect) => {
+    const canvasHeight = Math.max(1, rect.height);
+    const plotTopFraction = clamp(CHANNEL_RAIL_HEADER_HEIGHT / canvasHeight, 0, 1);
+    const plotFractionSpan = Math.max(Number.EPSILON, 1 - plotTopFraction);
+    const selection = expandedChannels
+      ? (() => {
+          const scrollTop = waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current;
+          const contentHeight = Math.max(1, channelRowLayout.totalUnits * 60);
+          return {
+            top: clamp((scrollTop + range.top * canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT) / contentHeight, 0, 1),
+            bottom: clamp((scrollTop + range.bottom * canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT) / contentHeight, 0, 1),
+          };
+        })()
+      : {
+          top: clamp((range.top - plotTopFraction) / plotFractionSpan, 0, 1),
+          bottom: clamp((range.bottom - plotTopFraction) / plotFractionSpan, 0, 1),
+        };
+    if (selection.bottom <= selection.top) return;
+    setWaveformVerticalViewport((current) => composeVerticalViewport(expandedChannels ? null : current, selection));
+    setExpandedChannels(false);
+    channelScrollOffsetRef.current = 0;
+    if (waveformScrollRef.current) waveformScrollRef.current.scrollTop = 0;
+  }, [channelRowLayout.totalUnits, expandedChannels]);
 
   const inspectionMode = rightPanelView === "inspect"
     || (rightPanelView === "resources" && lastRightPanelToolView === "inspect");
@@ -4439,9 +4509,11 @@ export default function Home() {
       setSelection(null);
       setInspectionRange(range);
       const horizontalDrag = Math.abs(event.clientX - pointer.startX) > 3;
-      if (horizontalDrag && range.end > range.start) {
-        zoomToTimeRange(range.start, range.end);
-        setToast(`Zoomed to ${range.end - range.start < 1 ? "a 1 s window" : `${(range.end - range.start).toFixed(2)} s`} across ${range.channelLabels.length} channel${range.channelLabels.length === 1 ? "" : "s"}`);
+      const verticalDrag = Math.abs(pointerY - pointer.startY) > 3;
+      if (horizontalDrag || verticalDrag) {
+        if (horizontalDrag && range.end > range.start) zoomToTimeRange(range.start, range.end);
+        if (verticalDrag) fitWaveformVerticallyToInspectionBox(range, rect);
+        setToast(`Box fitted to the waveform view · ${(range.end - range.start).toFixed(2)} s × ${range.channelLabels.length} channel${range.channelLabels.length === 1 ? "" : "s"}`);
       } else {
         setToast(`Inspecting ${formatDisplayChannelLabel(display.labels[row] ?? "waveform")} at ${formatClock(time, true)} — drag a box to zoom`);
       }
@@ -5022,6 +5094,7 @@ export default function Home() {
     setSelection(null);
     setInspectionRange(null);
     setInspectionDragging(false);
+    setWaveformVerticalViewport(null);
     setMarkOnset(null);
     setActiveTool("cursor");
     setAnnotationDragPreview(null);
@@ -5979,6 +6052,8 @@ export default function Home() {
         setSelectedAnnotationId(null);
         setSelectedAnnotationIds(new Set());
         setSelection(null);
+        setInspectionRange(null);
+        setWaveformVerticalViewport(null);
         setMarkOnset(null);
         setCursorLocked(false);
         setDragGhost(null);
@@ -6144,6 +6219,7 @@ export default function Home() {
     setLastRightPanelToolView(view);
     setRightPanelView(view);
     setRightPanelOpen(true);
+    setWaveformVerticalViewport(null);
     if (view === "inspect") {
       setSelection(null);
       setInspectionRange(null);
@@ -6443,22 +6519,31 @@ export default function Home() {
               style={{ "--channel-content-height": `${Math.max(245, channelRowLayout.totalUnits * 60 + 28)}px` } as React.CSSProperties}
               onScroll={updateExpandedChannelViewport}
             >
-              <div className="channel-rail" style={{ gridTemplateRows: `repeat(${channelRowLayout.totalUnits}, 1fr)` }}>
+              <div className={`channel-rail ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} style={{ gridTemplateRows: `repeat(${channelRowLayout.totalUnits}, 1fr)` }}>
                 <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
-                <button className={`channel-layout-button ${expandedChannels ? "active" : ""}`} aria-label={`${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`} aria-pressed={expandedChannels} title={`${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`} onClick={() => setExpandedChannels((value) => !value)}>E</button>
+                <button
+                  className={`channel-layout-button ${expandedChannels || waveformVerticalViewport ? "active" : ""}`}
+                  aria-label={waveformVerticalViewport ? "Reset vertical box zoom" : `${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`}
+                  aria-pressed={expandedChannels || Boolean(waveformVerticalViewport)}
+                  title={waveformVerticalViewport ? "Fit all channels" : `${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`}
+                  onClick={() => {
+                    if (waveformVerticalViewport) {
+                      setWaveformVerticalViewport(null);
+                      setToast("Full channel view restored");
+                    } else {
+                      setExpandedChannels((value) => !value);
+                    }
+                  }}
+                >{waveformVerticalViewport ? "↕" : "E"}</button>
                 {display.labels.map((label, index) => {
-                  const inspectionHighlighted = Boolean(
-                    inspectionDragging
-                    && inspectionRange
-                    && index >= inspectionRange.startRow
-                    && index <= inspectionRange.endRow,
-                  );
-                  const focused = !inspectionDragging && focusedChannel === index;
+                  const rowStyle = channelRailRowStyle(index);
+                  if (!rowStyle) return null;
+                  const focused = !inspectionDragging && !inspectionRange?.dragged && focusedChannel === index;
                   return <button
                     key={`${label}-${index}`}
-                    className={`${focused ? "focused" : ""} ${inspectionHighlighted ? "inspection-highlighted" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
-                    style={{ gridRow: `${channelRowLayout.rowStartUnits[index] + 1} / span 1` }}
-                    aria-pressed={focused || inspectionHighlighted}
+                    className={`${focused ? "focused" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
+                    style={rowStyle}
+                    aria-pressed={focused}
                     onClick={() => setFocusedChannel(index)}
                   ><strong>{formatDisplayChannelLabel(label)}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>;
                 })}
@@ -6471,7 +6556,7 @@ export default function Home() {
                   onDrop={onLabelDrop}
                   onDragLeave={() => setDragGhost(null)}
                 >
-                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to zoom in time and inspect its channels." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
+                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to fit its time and channel area to the full view." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
                   {!inspectionMode && selection && <div className="wave-selection" style={{
                     left: `${((Math.max(viewStart, selection.start) - viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(viewStart + timebase, selection.end) - Math.max(viewStart, selection.start)) / timebase) * 100)}%`,
@@ -7581,7 +7666,7 @@ function GeneralInfoPanel({
   const rangeStart = inspectionRange ? Math.min(inspectionRange.start, inspectionRange.end) : cursorTime;
   const rangeEnd = inspectionRange ? Math.max(inspectionRange.start, inspectionRange.end) : cursorTime;
   const duration = rangeEnd - rangeStart;
-  const isArea = inspectionRange !== null && duration > 0.0005;
+  const isArea = inspectionRange?.dragged ?? false;
   const displayLabel = formatDisplayChannelLabel(display.labels[focusedChannel] ?? "—");
   const selectedChannelLabels = inspectionRange?.channelLabels.length
     ? inspectionRange.channelLabels.map(formatDisplayChannelLabel)
@@ -7606,7 +7691,7 @@ function GeneralInfoPanel({
     <header className="general-info-heading">
       <span>WAVEFORM INSPECTOR</span>
       <h2>General info</h2>
-      <p>Click a waveform point to inspect it. Drag a box to zoom its time range and inspect every channel inside it.</p>
+      <p>Click a waveform point to inspect it. Drag a box to fit that exact time and channel area to the full waveform view. All channels stay enabled.</p>
     </header>
 
     {!hasRecording ? <div className="general-info-empty"><span>⌁</span><strong>No recording loaded</strong><p>Load a recording, then select a point or area in the waveform.</p></div> : !inspectionRange ? <div className="general-info-empty ready"><span>⌖</span><strong>Ready to inspect</strong><p>Choose any waveform row. Your selected channel, timing, amplitude, source, and nearby labels will appear here.</p></div> : <>

@@ -152,7 +152,7 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
 
   sourceHas(/aria-label="Add channels"/, "CH+ has an accessible action name");
   sourceHas(/>\s*CH\+\s*<\/button>/, "the compact channel action is visible as CH+");
-  sourceHas(/className=\{`channel-layout-button[\s\S]*?>E<\/button>/, "the expanded channel layout control sits beside CH+");
+  sourceHas(/className=\{`channel-layout-button[\s\S]*?waveformVerticalViewport \? "↕" : "E"/, "the channel layout and vertical-reset control sits beside CH+");
   sourceHas(/aria-label="(?:Open )?Help"/, "Help trigger has an accessible name");
   sourceHas(/aria-label="(?:Open )?Settings"/, "Settings trigger has an accessible name");
 
@@ -643,7 +643,10 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(pointerHandlers, /inspectionBox: inspectionMode && pointerRef\.current\.moved/);
   assert.match(pointerHandlers, /if \(pending\.inspectionBox\) setInspectionRange\(pending\.inspectionBox\)/);
   assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end\)/);
-  assert.doesNotMatch(pointerHandlers, /setInspectionRowRange|setSelectedChannels|setExpandedChannels/, "box zoom preserves every visible channel");
+  assert.match(pointerHandlers, /fitWaveformVerticallyToInspectionBox\(range, rect\)/);
+  assert.match(page, /composeVerticalViewport\(expandedChannels \? null : current, selection\)/);
+  assert.match(page, /expandedChannels[\s\S]*?channelRowLayout\.totalUnits \* 60/, "expanded, scrolled channels use content-space box bounds");
+  assert.doesNotMatch(pointerHandlers, /setInspectionRowRange|setSelectedChannels/, "box zoom preserves every enabled channel");
   assert.match(pointerHandlers, /setSelection\(\{ start: Math\.min\(pointer\.startTime, time\), end: Math\.max\(pointer\.startTime, time\) \}\)/);
   assert.match(pointerHandlers, /choose a label/);
 
@@ -651,21 +654,23 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(page, /className="wave-inspection-range"/);
   assert.match(page, /top: `\$\{inspectionRange\.top \* 100\}%`/);
   assert.match(page, /height: `\$\{Math\.max\(0, inspectionRange\.bottom - inspectionRange\.top\) \* 100\}%`/);
-  assert.match(page, /Drag a box to zoom its time range and inspect every channel inside it\./);
+  assert.match(page, /Drag a box to fit that exact time and channel area to the full waveform view\. All channels stay enabled\./);
   assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
+  assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
+  assert.match(page, /unprojectVerticalFraction\(screenFraction, waveformVerticalViewport\)/);
   assert.match(page, /const selected = channel === focusedChannel/);
   assert.doesNotMatch(
     page,
     /\[activeCandidateTime, activeSessionContentView,[^\]]*inspection(?:Dragging|Range)/,
     "the DOM inspection rectangle updates without retracing busy waveform paths",
   );
-  assert.match(page, /const focused = !inspectionDragging && focusedChannel === index/);
-  assert.match(page, /inspectionHighlighted \? "inspection-highlighted"/);
+  assert.match(page, /const focused = !inspectionDragging && !inspectionRange\?\.dragged && focusedChannel === index/);
+  assert.doesNotMatch(page, /inspectionHighlighted|inspection-highlighted/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
   assert.match(css, /\.canvas-shell canvas\s*\{[^}]*cursor:\s*crosshair/);
   assert.doesNotMatch(css, /cursor:\s*zoom-in/, "General Info keeps the normal waveform crosshair");
   assert.match(css, /\.wave-inspection-range\s*\{[^}]*min-height:\s*12px/);
-  assert.match(css, /\.channel-rail button\.inspection-highlighted\s*\{/);
+  assert.match(css, /\.channel-rail\.viewport-zoomed\s*\{[^}]*overflow:\s*hidden/);
   assert.doesNotMatch(css, /\.wave-inspection-range\s*\{[^}]*(?:top:\s*0|bottom:\s*0)/);
   assert.match(css, /\.general-info-panel\s*\{/);
 });
@@ -940,12 +945,12 @@ test("highlights a focused channel and provides compact or vertically scrollable
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /const focused = !inspectionDragging && focusedChannel === index/);
-  assert.match(page, /aria-pressed=\{focused \|\| inspectionHighlighted\}/);
+  assert.match(page, /const focused = !inspectionDragging && !inspectionRange\?\.dragged && focusedChannel === index/);
+  assert.match(page, /aria-pressed=\{focused\}/);
   assert.match(page, /setFocusedChannel\(index\)/);
   assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
   assert.match(page, /--channel-content-height/);
-  assert.match(page, /aria-pressed=\{expandedChannels\}/);
+  assert.match(page, /aria-pressed=\{expandedChannels \|\| Boolean\(waveformVerticalViewport\)\}/);
   assert.match(css, /\.waveform-wrap\.channel-scroll-mode[\s\S]*?height:\s*0[\s\S]*?overflow-y:\s*scroll/);
   assert.match(css, /\.waveform-wrap\.channel-scroll-mode \.canvas-column\s*\{\s*overflow:\s*visible/);
   assert.match(css, /\.channel-rail button\.focused/);
@@ -960,7 +965,10 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   const draw = page.slice(drawStart, drawEnd);
   assert.match(draw, /const plotTop\s*=\s*CHANNEL_RAIL_HEADER_HEIGHT/);
   assert.match(draw, /const plotHeight\s*=\s*expandedChannels[\s\S]*?Math\.max\(1,\s*height\s*-\s*plotTop\)/);
-  assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channelRowLayout\.rowStartUnits\[channel\]\s*-\s*rowScrollOffset/);
+  assert.match(draw, /const verticalUnitStart\s*=\s*expandedChannels[\s\S]*?waveformVerticalViewport\?\.top/);
+  assert.match(draw, /const verticalUnitSpan\s*=\s*expandedChannels[\s\S]*?waveformVerticalViewport\?\.bottom/);
+  assert.match(draw, /const rowTopForChannel\s*=\s*\(channel: number\)\s*=>\s*plotTop[\s\S]*?channelRowLayout\.rowStartUnits\[channel\]\s*-\s*verticalUnitStart/);
+  assert.match(draw, /const rowTop\s*=\s*rowTopForChannel\(channel\)/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
   assert.match(draw, /context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)[\s\S]*?context\.clip\(\)/, "each channel is clipped to its exact row without a minimum-height bleed");
   assert.ok((draw.match(/confineTraceYValueToRow\(/g) ?? []).length >= 2, "direct and raw reduction paths hard-limit trace coordinates to the row without allocating point objects");
