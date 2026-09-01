@@ -948,10 +948,9 @@ test("referential montage retains QC-marked channels while derived montages excl
   const average = buildMontage(data, labels, "average", bad, [1000, 1000, 1000], starts);
   assert.deepEqual(average.primarySourceIndices, [0, 2]);
   assert.deepEqual(average.sampleStartSecs, [4, 4]);
-  assert.throws(
-    () => buildMontage(data, labels, "average", new Set(), [1000, 1000, 1000], [4, 4.001, 4]),
-    /aligned sample start times/i,
-  );
+  const partiallyAlignedAverage = buildMontage(data, labels, "average", new Set(), [1000, 1000, 1000], [4, 4.001, 4]);
+  assert.deepEqual(partiallyAlignedAverage.primarySourceIndices, [0, 2]);
+  assert.match(partiallyAlignedAverage.warnings.join("\n"), /excluded.*incompatible.*LA2/i);
 
   const bipolar = buildMontage(data, labels, "bipolar", bad, [1000, 1000, 1000], starts);
   assert.equal(bipolar.data.length, 0, "a bad LA2 contact must not be bridged from LA1 to LA3");
@@ -968,6 +967,55 @@ test("referential montage retains QC-marked channels while derived montages excl
   assert.match(misalignedBipolar.warnings.join("\n"), /sample start times.*not aligned/i);
 });
 
+test("montages preserve polarity, finite gaps, provenance, and the largest aligned average cohort", () => {
+  const data = [
+    new Float32Array([3, Number.NaN, Number.POSITIVE_INFINITY, 9]),
+    new Float32Array([1, 4, 5, 3]),
+    new Float32Array([100, 100]),
+  ];
+  const labels = ["SEEG LA1-REF", "SEEG LA2-REF", "SEEG LB1-REF"];
+
+  const average = buildMontage(data, labels, "average-reference", new Set(), [1000, 1000, 500], [2, 2, 2]);
+  assert.deepEqual(average.primarySourceIndices, [0, 1]);
+  assert.deepEqual(average.sourceIndices, [[0, 1], [0, 1]]);
+  assert.deepEqual(Array.from(average.data[0]), [1, Number.NaN, Number.NaN, 3]);
+  assert.deepEqual(Array.from(average.data[1]), [-1, 0, 0, -3]);
+  assert.match(average.warnings.join("\n"), /excluded.*LB1/i);
+
+  const bipolar = buildMontage(data.slice(0, 2), labels.slice(0, 2), "bipolar", new Set(), [1000, 1000], [2, 2]);
+  assert.deepEqual(bipolar.labels, ["SEEG LA1-REF–SEEG LA2-REF"]);
+  assert.deepEqual(bipolar.sourceIndices, [[0, 1]]);
+  assert.deepEqual(Array.from(bipolar.data[0]), [2, Number.NaN, Number.NaN, 6]);
+});
+
+test("bipolar montage omits duplicate contacts instead of choosing an arbitrary source", () => {
+  const montage = buildMontage(
+    [
+      new Float32Array([10]),
+      new Float32Array([5]),
+      new Float32Array([4]),
+      new Float32Array([1]),
+    ],
+    ["POL LA1", "POL LA2", "SEEG LA2", "POL LA3"],
+    "bipolar",
+    new Set(),
+    [1000, 1000, 1000, 1000],
+    [0, 0, 0, 0],
+  );
+
+  assert.deepEqual(montage.data, []);
+  assert.match(montage.warnings.join("\n"), /share contact 2.*ambiguous contact/i);
+});
+
+test("montage rejects invalid modes and sample-rate metadata", () => {
+  const data = [new Float32Array([1])];
+  assert.throws(() => buildMontage(data, ["LA1"], "unknown", new Set()), /unsupported montage mode/i);
+  assert.throws(() => buildMontage(data, ["LA1"], "referential", new Set(), [0]), /sample rates must be positive and finite/i);
+  const emptyAverage = buildMontage(data, ["LA1"], "average", new Set([0]), [1000], [0]);
+  assert.deepEqual(emptyAverage.sampleRates, []);
+  assert.deepEqual(emptyAverage.sampleStartSecs, []);
+});
+
 test("orders scalp and depth channels anatomically while keeping auxiliary channels last", () => {
   const labels = ["RA1", "ECG1", "LA1", "LB2", "RB1", "F3", "X1"];
   assert.deepEqual(labels.map(anatomicalChannelGroup), ["RA", null, "LA", "LB", "RB", null, "X"]);
@@ -978,6 +1026,8 @@ test("orders scalp and depth channels anatomically while keeping auxiliary chann
   );
   assert.deepEqual(orderAnatomicalChannelIndices(["RB2", "LA3", "LA1", "RA2", "LB1", "RA1"]), [2, 1, 4, 5, 3, 0]);
   assert.equal(anatomicalChannelGroup("EEG LA1-REF–EEG LA2-REF"), "LA");
+  assert.equal(anatomicalChannelGroup("SEEG LA1-REF"), "LA");
+  assert.equal(anatomicalChannelGroup("POL RB03"), "RB");
   assert.equal(anatomicalChannelGroup("Fp1-Fp2"), "FP");
 });
 

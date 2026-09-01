@@ -6570,7 +6570,10 @@ export default function Home() {
                   {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
                   {loadingSignal && <div className="signal-loading"><span /> Preparing signal window…</div>}
                   {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
-                  {!display.data.length && !loadingSignal && <div className="no-channels"><strong>No visible channels</strong><span>Use CH+ to choose channels.</span></div>}
+                  {!display.data.length && !loadingSignal && <div className="no-channels" role="status">
+                    <strong>{display.warnings.length ? `${montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average-reference" : "Signal"} view unavailable` : "No visible channels"}</strong>
+                    <span>{display.warnings[0] ?? "Use CH+ to choose channels."}</span>
+                  </div>}
                 </div>
               </div>
             </div>

@@ -3149,7 +3149,7 @@ interface ScalpChannelPosition {
 function cleanElectrodeLabel(label: string) {
   return label
     .trim()
-    .replace(/^EEG\s+/i, "")
+    .replace(/^(?:EEG|SEEG|ECOG|POL)\s+/i, "")
     .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
     .trim();
 }
@@ -3235,11 +3235,17 @@ export function buildMontage(
   sampleRates?: readonly number[],
   sampleStartSecs?: readonly number[],
 ): MontageResult {
+  if (mode !== "referential" && mode !== "average" && mode !== "average-reference" && mode !== "bipolar") {
+    throw new Error(`Unsupported montage mode: ${String(mode)}.`);
+  }
   if (data.length !== labels.length) {
     throw new Error(`Montage received ${data.length} signals but ${labels.length} labels.`);
   }
   if (sampleRates && sampleRates.length !== data.length) {
     throw new Error(`Montage received ${data.length} signals but ${sampleRates.length} sample rates.`);
+  }
+  if (sampleRates?.some((sampleRate) => !Number.isFinite(sampleRate) || !(sampleRate > 0))) {
+    throw new Error("Montage sample rates must be positive and finite.");
   }
   if (sampleStartSecs && sampleStartSecs.length !== data.length) {
     throw new Error(`Montage received ${data.length} signals but ${sampleStartSecs.length} sample start times.`);
@@ -3272,6 +3278,7 @@ export function buildMontage(
       return {
         data: [],
         labels: [],
+        sampleRates: sampleRates ? [] : undefined,
         sampleStartSecs: sampleStartSecs ? [] : undefined,
         sourceIndices: [],
         primarySourceIndices: [],
@@ -3279,23 +3286,29 @@ export function buildMontage(
         warnings,
       };
     }
-    const sampleCount = data[validIndices[0]].length;
-    const referenceRate = sampleRates?.[validIndices[0]];
-    const referenceStartSec = sampleStartSecs?.[validIndices[0]];
-    if (referenceRate !== undefined && validIndices.some((index) => Math.abs((sampleRates?.[index] ?? referenceRate) - referenceRate) > 1e-9)) {
-      throw new Error("Average reference requires equal sampling rates. Resample mixed-rate EDF channels first.");
+    let referenceIndices: number[] = [];
+    for (const candidate of validIndices) {
+      const compatible = validIndices.filter((index) =>
+        data[index].length === data[candidate].length
+        && (!sampleRates || Math.abs(sampleRates[index] - sampleRates[candidate]) <= 1e-9)
+        && (!sampleStartSecs || Math.abs(sampleStartSecs[index] - sampleStartSecs[candidate]) <= 1e-9));
+      if (compatible.length > referenceIndices.length) referenceIndices = compatible;
     }
-    if (validIndices.some((index) => data[index].length !== sampleCount)) {
-      throw new Error("Average reference requires equal-length channels. Resample mixed-rate EDF channels first.");
+    const omittedIndices = validIndices.filter((index) => !referenceIndices.includes(index));
+    if (omittedIndices.length) {
+      const displayedLabels = omittedIndices.slice(0, 8).map((index) => labels[index]);
+      const remainingCount = omittedIndices.length - displayedLabels.length;
+      warnings.push(
+        `Average reference excluded ${omittedIndices.length} channel${omittedIndices.length === 1 ? "" : "s"} with incompatible sample rates, sample counts, or start times: ${displayedLabels.join(", ")}${remainingCount ? `, and ${remainingCount} more` : ""}.`,
+      );
     }
-    if (referenceStartSec !== undefined && validIndices.some(
-      (index) => Math.abs((sampleStartSecs?.[index] ?? referenceStartSec) - referenceStartSec) > 1e-9,
-    )) {
-      throw new Error("Average reference requires channels with aligned sample start times.");
-    }
+    if (referenceIndices.length === 1) warnings.push("Average reference has only one compatible usable channel; its finite samples resolve to zero.");
+    const sampleCount = data[referenceIndices[0]].length;
+    const referenceRate = sampleRates?.[referenceIndices[0]];
+    const referenceStartSec = sampleStartSecs?.[referenceIndices[0]];
     const average = new Float64Array(sampleCount);
     const counts = new Uint32Array(sampleCount);
-    for (const index of validIndices) {
+    for (const index of referenceIndices) {
       const channel = data[index];
       for (let sample = 0; sample < sampleCount; sample += 1) {
         if (Number.isFinite(channel[sample])) {
@@ -3308,7 +3321,7 @@ export function buildMontage(
       if (counts[sample]) average[sample] /= counts[sample];
       else average[sample] = Number.NaN;
     }
-    const output = validIndices.map((index) => {
+    const output = referenceIndices.map((index) => {
       const channel = new Float32Array(sampleCount);
       for (let sample = 0; sample < sampleCount; sample += 1) {
         channel[sample] = Number.isFinite(data[index][sample]) && Number.isFinite(average[sample])
@@ -3319,13 +3332,13 @@ export function buildMontage(
     });
     return {
       data: output,
-      labels: validIndices.map((index) => `${labels[index]} (CAR)`),
-      sampleRates: referenceRate === undefined ? undefined : validIndices.map(() => referenceRate),
+      labels: referenceIndices.map((index) => `${labels[index]} (CAR)`),
+      sampleRates: referenceRate === undefined ? undefined : referenceIndices.map(() => referenceRate),
       sampleStartSecs: referenceStartSec === undefined
         ? undefined
-        : validIndices.map(() => referenceStartSec),
-      sourceIndices: validIndices.map(() => [...validIndices]),
-      primarySourceIndices: validIndices,
+        : referenceIndices.map(() => referenceStartSec),
+      sourceIndices: referenceIndices.map(() => [...referenceIndices]),
+      primarySourceIndices: referenceIndices,
       mode,
       warnings,
     };
@@ -3345,13 +3358,28 @@ export function buildMontage(
   const primarySourceIndices: number[] = [];
   const outputSampleStartSecs: number[] = [];
   for (const contacts of groups.values()) {
-    contacts.sort((a, b) => a.contact - b.contact || a.sourceIndex - b.sourceIndex);
-    for (let index = 0; index < contacts.length - 1; index += 1) {
-      const first = contacts[index];
-      const second = contacts[index + 1];
+    const contactsByNumber = new Map<number, ContactLabel[]>();
+    for (const contact of contacts) {
+      const matchingContacts = contactsByNumber.get(contact.contact) ?? [];
+      matchingContacts.push(contact);
+      contactsByNumber.set(contact.contact, matchingContacts);
+    }
+    const unambiguousContacts: ContactLabel[] = [];
+    for (const matchingContacts of contactsByNumber.values()) {
+      if (matchingContacts.length === 1) {
+        unambiguousContacts.push(matchingContacts[0]);
+        continue;
+      }
+      warnings.push(
+        `${matchingContacts.map((contact) => contact.actualLabel).join(", ")} share contact ${matchingContacts[0].contact} in group ${matchingContacts[0].group}; pairs using that ambiguous contact were omitted.`,
+      );
+    }
+    unambiguousContacts.sort((a, b) => a.contact - b.contact || a.sourceIndex - b.sourceIndex);
+    for (let index = 0; index < unambiguousContacts.length - 1; index += 1) {
+      const first = unambiguousContacts[index];
+      const second = unambiguousContacts[index + 1];
       // Never bridge missing/bad contacts; only true N-to-N+1 electrode neighbors.
       if (second.contact !== first.contact + 1) continue;
-      if (contacts[index + 2]?.contact === second.contact) continue;
       const firstData = data[first.sourceIndex];
       const secondData = data[second.sourceIndex];
       const firstRate = sampleRates?.[first.sourceIndex];
@@ -3375,7 +3403,9 @@ export function buildMontage(
       const derived = new Float32Array(sampleCount);
       for (let sample = 0; sample < sampleCount; sample += 1) {
         // Conventional label polarity: A1–A2 means A1 minus A2.
-        derived[sample] = firstData[sample] - secondData[sample];
+        derived[sample] = Number.isFinite(firstData[sample]) && Number.isFinite(secondData[sample])
+          ? firstData[sample] - secondData[sample]
+          : Number.NaN;
       }
       outputData.push(derived);
       outputLabels.push(`${first.actualLabel}–${second.actualLabel}`);
