@@ -64,6 +64,25 @@ type AnnotationOrigin = "manual" | "imported" | "detector" | "legacy";
 type PlacementIntent = "native" | "instance" | "windowed" | "context-instance" | "context-window";
 type AnnotationDragPatch = Pick<Annotation, "start" | "end" | "track" | "geometry">;
 type AnnotationSelectionBox = { left: number; top: number; width: number; height: number };
+type DisplayRowRange = { start: number; end: number };
+type InspectionBox = {
+  start: number;
+  end: number;
+  startRow: number;
+  endRow: number;
+  top: number;
+  bottom: number;
+  channelLabels: string[];
+  sourceIndices: number[];
+};
+type WavePointerState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startTime: number;
+  startRow: number;
+  moved: boolean;
+};
 
 type LabelDefinition = {
   id: string;
@@ -708,6 +727,26 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function applyDisplayRowRange(display: DisplayWindow, range: DisplayRowRange | null): DisplayWindow {
+  if (!range || display.labels.length === 0) return display;
+  const start = clamp(Math.floor(Math.min(range.start, range.end)), 0, display.labels.length - 1);
+  const end = clamp(Math.ceil(Math.max(range.start, range.end)), start, display.labels.length - 1);
+  if (start === 0 && end === display.labels.length - 1) return display;
+  const afterEnd = end + 1;
+  return {
+    ...display,
+    data: display.data.slice(start, afterEnd),
+    envelopes: display.envelopes.slice(start, afterEnd),
+    labels: display.labels.slice(start, afterEnd),
+    sampleRates: display.sampleRates.slice(start, afterEnd),
+    sourceSampleRates: display.sourceSampleRates.slice(start, afterEnd),
+    startSecs: display.startSecs.slice(start, afterEnd),
+    units: display.units.slice(start, afterEnd),
+    sourceIndices: display.sourceIndices.slice(start, afterEnd),
+    primarySourceIndices: display.primarySourceIndices.slice(start, afterEnd),
+  };
+}
+
 function snapTime(value: number, mode: "1s" | "100ms" | "sample", sampleRate: number, bypass = false) {
   if (bypass) return value;
   if (mode === "1s") return Math.round(value);
@@ -1107,7 +1146,7 @@ export default function Home() {
   const activeCandidateIndexRef = useRef(0);
   const undoRef = useRef<AnnotationHistorySnapshot[]>([]);
   const redoRef = useRef<AnnotationHistorySnapshot[]>([]);
-  const pointerRef = useRef<{ pointerId: number; startX: number; startTime: number; moved: boolean } | null>(null);
+  const pointerRef = useRef<WavePointerState | null>(null);
   const wheelFrameRef = useRef<number | null>(null);
   const zoomWheelFrameRef = useRef<number | null>(null);
   const channelScrollFrameRef = useRef<number | null>(null);
@@ -1124,7 +1163,13 @@ export default function Home() {
   const processedWindowCacheRef = useRef<ProcessedWindowCache[]>([]);
   const envelopeWindowCacheRef = useRef<EnvelopeWindowCache[]>([]);
   const cursorFrameRef = useRef<number | null>(null);
-  const pendingCursorRef = useRef<{ time: number; row: number; amplitude: number; selection?: { start: number; end: number } } | null>(null);
+  const pendingCursorRef = useRef<{
+    time: number;
+    row: number;
+    amplitude: number;
+    selection?: { start: number; end: number };
+    inspectionBox?: InspectionBox;
+  } | null>(null);
   const contextResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const sessionQueueResizeRef = useRef<{ startY: number; startHeight: number; availableHeight: number } | null>(null);
   const sessionLabelsSectionRef = useRef<HTMLElement>(null);
@@ -1182,7 +1227,9 @@ export default function Home() {
   const [selectedAnnotationIds, setSelectedAnnotationIds] = useState<Set<string>>(() => new Set());
   const [annotationSelectionBox, setAnnotationSelectionBox] = useState<AnnotationSelectionBox | null>(null);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
-  const [inspectionRange, setInspectionRange] = useState<{ start: number; end: number } | null>(null);
+  const [inspectionRange, setInspectionRange] = useState<InspectionBox | null>(null);
+  const [inspectionRowRange, setInspectionRowRange] = useState<DisplayRowRange | null>(null);
+  const [inspectionDragging, setInspectionDragging] = useState(false);
   const [cursorTime, setCursorTime] = useState(0);
   const [cursorAmplitude, setCursorAmplitude] = useState(0);
   const [cursorLocked, setCursorLocked] = useState(false);
@@ -1493,6 +1540,8 @@ export default function Home() {
     setSelectedAnnotationIds(snapshot.selectedAnnotationId ? new Set([snapshot.selectedAnnotationId]) : new Set());
     setSelection(snapshot.selection);
     setInspectionRange(null);
+    setInspectionRowRange(null);
+    setInspectionDragging(false);
     setCursorTime(snapshot.cursorTime);
     setCursorAmplitude(snapshot.cursorAmplitude);
     setCursorLocked(snapshot.cursorLocked);
@@ -2397,7 +2446,7 @@ export default function Home() {
           ).map((region) => ({ startSec: region.startSec, endSec: region.endSec }));
           const effectiveRate = 1 / envelopeWindow.bucketDurationSec;
           displayAppliedRequestIdRef.current = requestId;
-          setDisplay({
+          const nextDisplay = applyDisplayRowRange({
             data,
             envelopes,
             labels: indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`),
@@ -2410,8 +2459,9 @@ export default function Home() {
             warnings: [],
             viewStart,
             flatlineRegions,
-          });
-          setFocusedChannel((current) => clamp(current, 0, Math.max(0, indices.length - 1)));
+          }, inspectionRowRange);
+          setDisplay(nextDisplay);
+          setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
           setLoadingSignal(false);
           return;
         }
@@ -2612,7 +2662,7 @@ export default function Home() {
           return contributorUnits.length === 1 ? contributorUnits[0] : contributorUnits.length ? "mixed" : "a.u.";
         });
         displayAppliedRequestIdRef.current = requestId;
-        setDisplay({
+        const nextDisplay = applyDisplayRowRange({
           data: montageResult.data,
           envelopes: montageResult.data.map(() => null),
           labels: montageResult.labels,
@@ -2625,8 +2675,9 @@ export default function Home() {
           warnings: [...montageWarnings, ...montageResult.warnings],
           viewStart,
           flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > viewStart && region.startSec < viewStart + timebase),
-        });
-        setFocusedChannel((current) => clamp(current, 0, Math.max(0, montageResult.labels.length - 1)));
+        }, inspectionRowRange);
+        setDisplay(nextDisplay);
+        setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
         setLoadingSignal(false);
       } catch (error) {
         if (abortController.signal.aborted) return;
@@ -2652,7 +2703,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, spectrogramOpen, timebase, viewStart, waveformWidth]);
+  }, [badChannels, filters, hasRecording, inspectionRowRange, meta, montage, selectedChannels, spectrogramOpen, timebase, viewStart, waveformWidth]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -3058,6 +3109,38 @@ export default function Home() {
     );
   }, [activeTool, display, meta, snapMode, timebase]);
 
+  const inspectionBoxFromPointer = useCallback((
+    pointer: WavePointerState,
+    row: number,
+    time: number,
+    clientY: number,
+    rect: DOMRect,
+  ): InspectionBox => {
+    const plotTop = clamp(CHANNEL_RAIL_HEADER_HEIGHT / Math.max(1, rect.height), 0, 1);
+    const startFraction = clamp((pointer.startY - rect.top) / Math.max(1, rect.height), plotTop, 1);
+    const currentFraction = clamp((clientY - rect.top) / Math.max(1, rect.height), plotTop, 1);
+    const minimumHeight = Math.min(12 / Math.max(1, rect.height), Math.max(0, 1 - plotTop));
+    let top = Math.min(startFraction, currentFraction);
+    let bottom = Math.max(startFraction, currentFraction);
+    if (bottom - top < minimumHeight) {
+      const center = (top + bottom) / 2;
+      top = clamp(center - minimumHeight / 2, plotTop, Math.max(plotTop, 1 - minimumHeight));
+      bottom = Math.min(1, top + minimumHeight);
+    }
+    const startRow = Math.min(pointer.startRow, row);
+    const endRow = Math.max(pointer.startRow, row);
+    return {
+      start: Math.min(pointer.startTime, time),
+      end: Math.max(pointer.startTime, time),
+      startRow,
+      endRow,
+      top,
+      bottom,
+      channelLabels: display.labels.slice(startRow, endRow + 1),
+      sourceIndices: [...new Set(display.sourceIndices.slice(startRow, endRow + 1).flat())],
+    };
+  }, [display.labels, display.sourceIndices]);
+
   const inspectionMode = rightPanelView === "inspect"
     || (rightPanelView === "resources" && lastRightPanelToolView === "inspect");
 
@@ -3069,7 +3152,14 @@ export default function Home() {
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     const values = display.data[row];
     const sample = sampleIndexForDisplayRow(display, row, time);
-    pointerRef.current = { pointerId: event.pointerId, startX: event.clientX, startTime: time, moved: false };
+    pointerRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startTime: time,
+      startRow: row,
+      moved: false,
+    };
     event.currentTarget.setPointerCapture(event.pointerId);
     setCursorTime(time);
     setCursorLocked(true);
@@ -3077,19 +3167,24 @@ export default function Home() {
     setCursorAmplitude(values?.[sample] ?? 0);
     if (inspectionMode) {
       setSelection(null);
-      setInspectionRange({ start: time, end: time });
+      setInspectionDragging(true);
+      setInspectionRange(inspectionBoxFromPointer(pointerRef.current, row, time, event.clientY, rect));
     }
   };
 
   const onWavePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!pointerRef.current || pointerRef.current.pointerId !== event.pointerId) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const row = channelRowFromClientY(event.clientY, rect);
+    const pointerY = inspectionMode
+      ? clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom)
+      : event.clientY;
+    const row = channelRowFromClientY(pointerY, rect);
     if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     const values = display.data[row];
     const sample = sampleIndexForDisplayRow(display, row, time);
-    if (Math.abs(event.clientX - pointerRef.current.startX) > 3) {
+    if (Math.abs(event.clientX - pointerRef.current.startX) > 3
+      || (inspectionMode && Math.abs(pointerY - pointerRef.current.startY) > 3)) {
       pointerRef.current.moved = true;
     }
     pendingCursorRef.current = {
@@ -3098,6 +3193,9 @@ export default function Home() {
       amplitude: values?.[sample] ?? 0,
       selection: pointerRef.current.moved
         ? { start: Math.min(pointerRef.current.startTime, time), end: Math.max(pointerRef.current.startTime, time) }
+        : undefined,
+      inspectionBox: inspectionMode && pointerRef.current.moved
+        ? inspectionBoxFromPointer(pointerRef.current, row, time, pointerY, rect)
         : undefined,
     };
     if (cursorFrameRef.current !== null) return;
@@ -3108,10 +3206,8 @@ export default function Home() {
       setCursorTime(pending.time);
       setFocusedChannel(pending.row);
       setCursorAmplitude(pending.amplitude);
-      if (pending.selection) {
-        if (inspectionMode) setInspectionRange(pending.selection);
-        else setSelection(pending.selection);
-      }
+      if (pending.inspectionBox) setInspectionRange(pending.inspectionBox);
+      else if (pending.selection && !inspectionMode) setSelection(pending.selection);
     });
   };
 
@@ -3119,13 +3215,17 @@ export default function Home() {
     const pointer = pointerRef.current;
     if (!pointer || pointer.pointerId !== event.pointerId) return;
     pointerRef.current = null;
+    setInspectionDragging(false);
     if (cursorFrameRef.current !== null) {
       window.cancelAnimationFrame(cursorFrameRef.current);
       cursorFrameRef.current = null;
     }
     pendingCursorRef.current = null;
     const rect = event.currentTarget.getBoundingClientRect();
-    const hitRow = channelRowFromClientY(event.clientY, rect);
+    const pointerY = inspectionMode
+      ? clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom)
+      : event.clientY;
+    const hitRow = channelRowFromClientY(pointerY, rect);
     if (hitRow === null && !pointer.moved) {
       setToast("Click directly on a waveform row");
       return;
@@ -3139,14 +3239,23 @@ export default function Home() {
     setFocusedChannel(row);
     setCursorAmplitude(values?.[sample] ?? 0);
     if (inspectionMode) {
-      const range = { start: Math.min(pointer.startTime, time), end: Math.max(pointer.startTime, time) };
+      const range = inspectionBoxFromPointer(pointer, row, time, pointerY, rect);
       setSelection(null);
       setInspectionRange(range);
-      if (pointer.moved && range.end > range.start) {
+      const horizontalDrag = Math.abs(event.clientX - pointer.startX) > 3;
+      if (horizontalDrag && range.end > range.start) {
+        const fullDisplayStartRow = inspectionRowRange?.start ?? 0;
+        setInspectionRowRange({
+          start: fullDisplayStartRow + range.startRow,
+          end: fullDisplayStartRow + range.endRow,
+        });
+        setExpandedChannels(false);
+        setChannelScrollOffset(0);
+        setFocusedChannel(0);
         zoomToTimeRange(range.start, range.end);
-        setToast(`Zoomed to ${range.end - range.start < 1 ? "a 1 s window around" : `${(range.end - range.start).toFixed(2)} s at`} ${formatClock(range.start, true)}`);
+        setToast(`Zoomed to ${range.end - range.start < 1 ? "a 1 s window" : `${(range.end - range.start).toFixed(2)} s`} across ${range.channelLabels.length} channel${range.channelLabels.length === 1 ? "" : "s"}`);
       } else {
-        setToast(`Inspecting ${display.labels[row] ?? "waveform"} at ${formatClock(time, true)} — drag to zoom`);
+        setToast(`Inspecting ${display.labels[row] ?? "waveform"} at ${formatClock(time, true)} — drag a box to zoom`);
       }
     } else if (activeTool === "seizure" && !pointer.moved) {
       if (markOnset === null) {
@@ -3172,6 +3281,7 @@ export default function Home() {
     if (pointerRef.current?.pointerId !== event.pointerId) return;
     pointerRef.current = null;
     pendingCursorRef.current = null;
+    setInspectionDragging(false);
     if (cursorFrameRef.current !== null) {
       window.cancelAnimationFrame(cursorFrameRef.current);
       cursorFrameRef.current = null;
@@ -3708,6 +3818,8 @@ export default function Home() {
     setCursorLocked(false);
     setSelection(null);
     setInspectionRange(null);
+    setInspectionRowRange(null);
+    setInspectionDragging(false);
     setMarkOnset(null);
     setActiveTool("cursor");
     setAnnotationDragPreview(null);
@@ -4576,11 +4688,16 @@ export default function Home() {
     setRightPanelOpen(true);
     if (view === "inspect") {
       setSelection(null);
+      setInspectionRange(null);
+      setInspectionRowRange(null);
+      setInspectionDragging(false);
       setMarkOnset(null);
       setActiveTool("cursor");
-      setToast("General info mode — click a waveform point to inspect it, or drag across time to zoom");
+      setToast("General info mode — click a waveform point to inspect it, or drag a box to zoom");
     } else {
       setInspectionRange(null);
+      setInspectionRowRange(null);
+      setInspectionDragging(false);
       setToast("Labeling mode — drag across time to select a labeling window");
     }
   };
@@ -4866,14 +4983,16 @@ export default function Home() {
                   onDrop={onLabelDrop}
                   onDragLeave={() => setDragGhost(null)}
                 >
-                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag across time to zoom." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
+                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to zoom in time and channels." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
                   {!inspectionMode && selection && <div className="wave-selection" style={{
                     left: `${((Math.max(display.viewStart, selection.start) - display.viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(display.viewStart + timebase, selection.end) - Math.max(display.viewStart, selection.start)) / timebase) * 100)}%`,
                   }} />}
-                  {inspectionMode && inspectionRange && inspectionRange.end > inspectionRange.start && <div className="wave-inspection-range" style={{
+                  {inspectionMode && inspectionDragging && inspectionRange && inspectionRange.end > inspectionRange.start && <div className="wave-inspection-range" style={{
                     left: `${((Math.max(display.viewStart, inspectionRange.start) - display.viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(display.viewStart + timebase, inspectionRange.end) - Math.max(display.viewStart, inspectionRange.start)) / timebase) * 100)}%`,
+                    top: `${inspectionRange.top * 100}%`,
+                    height: `${Math.max(0, inspectionRange.bottom - inspectionRange.top) * 100}%`,
                   }} />}
                   {cursorLocked && cursorTime >= display.viewStart && cursorTime <= display.viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
                   {loadingSignal && <div className="signal-loading"><span /> Preparing signal window…</div>}
@@ -5540,7 +5659,7 @@ function GeneralInfoPanel({
   focusedChannel: number;
   cursorTime: number;
   cursorAmplitude: number;
-  inspectionRange: { start: number; end: number } | null;
+  inspectionRange: InspectionBox | null;
   montage: MontageMode;
   viewStart: number;
   timebase: number;
@@ -5551,6 +5670,9 @@ function GeneralInfoPanel({
   const duration = rangeEnd - rangeStart;
   const isArea = inspectionRange !== null && duration > 0.0005;
   const displayLabel = display.labels[focusedChannel] ?? "—";
+  const selectedChannelLabels = inspectionRange?.channelLabels.length
+    ? inspectionRange.channelLabels
+    : [displayLabel];
   const sourceIndices = display.sourceIndices[focusedChannel] ?? [];
   const sourceLabels = sourceIndices.map((index) => meta.channelLabels[index]).filter(Boolean);
   const primarySourceIndex = display.primarySourceIndices[focusedChannel];
@@ -5571,14 +5693,14 @@ function GeneralInfoPanel({
     <header className="general-info-heading">
       <span>WAVEFORM INSPECTOR</span>
       <h2>General info</h2>
-      <p>Click a waveform point to inspect it. Drag horizontally to zoom into a time range.</p>
+      <p>Click a waveform point to inspect it. Drag a box to zoom into both its time range and channels.</p>
     </header>
 
     {!hasRecording ? <div className="general-info-empty"><span>⌁</span><strong>No recording loaded</strong><p>Load a recording, then select a point or area in the waveform.</p></div> : !inspectionRange ? <div className="general-info-empty ready"><span>⌖</span><strong>Ready to inspect</strong><p>Choose any waveform row. Your selected channel, timing, amplitude, source, and nearby labels will appear here.</p></div> : <>
       <section className="general-info-focus-card">
         <span>{isArea ? "SELECTED AREA" : "CLICKED POINT"}</span>
         <strong>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : formatClock(rangeStart, true)}</strong>
-        <small>{isArea ? `${formatClock(rangeStart, true)}–${formatClock(rangeEnd, true)}` : `${displayLabel} · ${formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}`}</small>
+        <small>{isArea ? `${formatClock(rangeStart, true)}–${formatClock(rangeEnd, true)} · ${selectedChannelLabels.length} channel${selectedChannelLabels.length === 1 ? "" : "s"}` : `${displayLabel} · ${formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}`}</small>
       </section>
 
       <section className="general-info-section">
@@ -5587,6 +5709,7 @@ function GeneralInfoPanel({
           <div><dt>Start</dt><dd>{formatClock(rangeStart, true)}</dd></div>
           <div><dt>End</dt><dd>{isArea ? formatClock(rangeEnd, true) : "Same point"}</dd></div>
           <div><dt>Duration</dt><dd>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : "Instant"}</dd></div>
+          <div><dt>Channel span</dt><dd>{selectedChannelLabels.length === 1 ? selectedChannelLabels[0] : `${selectedChannelLabels[0]}–${selectedChannelLabels[selectedChannelLabels.length - 1]} (${selectedChannelLabels.length})`}</dd></div>
           <div><dt>Pointer amplitude</dt><dd>{formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}</dd></div>
           <div><dt>Source sample</dt><dd>{Math.round(cursorTime * sampleRate).toLocaleString()}</dd></div>
         </dl>

@@ -501,7 +501,7 @@ test("keeps the right panel label view ordered like the ontology palette", async
   assert.doesNotMatch(sidebar, /<QcPanel|\bQC\b/, "QC does not compete with the label palette");
 });
 
-test("switches waveform dragging between labeling selection and general-info zoom", async () => {
+test("switches waveform dragging between labeling selection and two-dimensional general-info zoom", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -516,17 +516,27 @@ test("switches waveform dragging between labeling selection and general-info zoo
   const pointerStart = page.indexOf("const onWavePointerDown");
   const pointerEnd = page.indexOf("const onLabelDrop", pointerStart);
   const pointerHandlers = page.slice(pointerStart, pointerEnd);
-  assert.match(pointerHandlers, /if \(inspectionMode\) setInspectionRange\(pending\.selection\)/);
+  assert.match(pointerHandlers, /inspectionBox: inspectionMode && pointerRef\.current\.moved/);
+  assert.match(pointerHandlers, /if \(pending\.inspectionBox\) setInspectionRange\(pending\.inspectionBox\)/);
   assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end\)/);
+  assert.match(pointerHandlers, /setInspectionRowRange\(\{/);
+  assert.match(pointerHandlers, /start: fullDisplayStartRow \+ range\.startRow/);
+  assert.match(pointerHandlers, /end: fullDisplayStartRow \+ range\.endRow/);
   assert.match(pointerHandlers, /setSelection\(\{ start: Math\.min\(pointer\.startTime, time\), end: Math\.max\(pointer\.startTime, time\) \}\)/);
   assert.match(pointerHandlers, /choose a label/);
 
   assert.match(page, /className=\{`canvas-shell \$\{inspectionMode \? "inspection-mode" : ""\}`\}/);
   assert.match(page, /className="wave-inspection-range"/);
-  assert.match(page, /Click a waveform point to inspect it\. Drag horizontally to zoom into a time range\./);
+  assert.match(page, /top: `\$\{inspectionRange\.top \* 100\}%`/);
+  assert.match(page, /height: `\$\{Math\.max\(0, inspectionRange\.bottom - inspectionRange\.top\) \* 100\}%`/);
+  assert.match(page, /Drag a box to zoom into both its time range and channels\./);
+  assert.match(page, /function applyDisplayRowRange/);
+  assert.match(page, /data: display\.data\.slice\(start, afterEnd\)/);
+  assert.match(page, /sourceIndices: display\.sourceIndices\.slice\(start, afterEnd\)/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
   assert.match(css, /\.canvas-shell\.inspection-mode canvas\s*\{[^}]*cursor:\s*zoom-in/);
-  assert.match(css, /\.wave-inspection-range\s*\{/);
+  assert.match(css, /\.wave-inspection-range\s*\{[^}]*min-height:\s*12px/);
+  assert.doesNotMatch(css, /\.wave-inspection-range\s*\{[^}]*(?:top:\s*0|bottom:\s*0)/);
   assert.match(css, /\.general-info-panel\s*\{/);
 });
 
