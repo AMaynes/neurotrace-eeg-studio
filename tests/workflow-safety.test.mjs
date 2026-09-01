@@ -277,6 +277,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(groupedExtrema, /Math\.max\(0,\s*width\s*-\s*1\)/);
   assert.match(groupedExtrema, /bottom\s*-\s*top\s*>\s*1/);
   assert.match(groupedExtrema, /previousTop/);
+  assert.match(groupedExtrema, /previousGroupEnd\s*!==\s*groupStart/);
   assert.match(groupedExtrema, /connectorX/);
   assert.doesNotMatch(groupedExtrema, /context\.stroke\(\)/);
   assert.match(drawing, /cachedGeometry/);

@@ -942,12 +942,19 @@ function drawGroupedExtrema(
   let previousTop: number | null = null;
   let previousBottom: number | null = null;
   let previousRight: number | null = null;
+  let previousGroupEnd: number | null = null;
   visitGroupedWaveformExtrema(
     minima,
     maxima,
     gaps,
     maximumGroups,
     (groupStart, groupEnd, minimum, maximum, interrupted) => {
+      if (previousGroupEnd !== groupStart) {
+        previousTop = null;
+        previousBottom = null;
+        previousRight = null;
+      }
+      previousGroupEnd = groupEnd;
       const maximumY = center - (maximum - baseline) * scale;
       const minimumY = center - (minimum - baseline) * scale;
       if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
