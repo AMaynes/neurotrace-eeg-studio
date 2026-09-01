@@ -930,10 +930,15 @@ test("referential montage retains QC-marked channels while derived montages excl
   assert.match(misalignedBipolar.warnings.join("\n"), /sample start times.*not aligned/i);
 });
 
-test("orders legacy contact channels left then right while applying MATLAB group exclusions", () => {
+test("orders scalp and depth channels anatomically while keeping auxiliary channels last", () => {
   const labels = ["RA1", "ECG1", "LA1", "LB2", "RB1", "F3", "X1"];
   assert.deepEqual(labels.map(anatomicalChannelGroup), ["RA", null, "LA", "LB", "RB", null, "X"]);
-  assert.deepEqual(orderAnatomicalChannelIndices(labels), [2, 3, 0, 4, 6, 1, 5]);
+  assert.deepEqual(orderAnatomicalChannelIndices(labels), [5, 2, 3, 0, 4, 6, 1]);
+  assert.deepEqual(
+    orderAnatomicalChannelIndices(["C4", "Fp2", "O1", "F7", "Cz", "Fp1", "P3", "T6", "Fz", "ECG1", "T3"]),
+    [5, 1, 3, 8, 10, 4, 0, 6, 7, 2, 9],
+  );
+  assert.deepEqual(orderAnatomicalChannelIndices(["RB2", "LA3", "LA1", "RA2", "LB1", "RA1"]), [2, 1, 4, 5, 3, 0]);
   assert.equal(anatomicalChannelGroup("EEG LA1-REF–EEG LA2-REF"), "LA");
   assert.equal(anatomicalChannelGroup("Fp1-Fp2"), "FP");
 });

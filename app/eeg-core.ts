@@ -3044,10 +3044,13 @@ function channelIsBad(index: number, label: string, badChannels: BadChannelSet):
   return false;
 }
 
-const STANDARD_SCALP_LABELS = new Set([
-  "FP1", "FP2", "FPZ", "F3", "F4", "F7", "F8", "FZ", "FC1", "FC2", "FC5", "FC6",
-  "C3", "C4", "CZ", "T3", "T4", "T5", "T6", "T7", "T8", "TP9", "TP10", "P3", "P4",
-  "P7", "P8", "PZ", "O1", "O2", "OZ", "A1", "A2", "M1", "M2",
+const SCALP_ROW_ORDER = new Map([
+  ["FP", 0], ["AF", 1], ["F", 2], ["FT", 3], ["FC", 3], ["T", 4], ["C", 4],
+  ["TP", 5], ["CP", 5], ["P", 6], ["PO", 7], ["O", 8], ["A", 9], ["M", 9],
+]);
+
+const LEGACY_SCALP_ALIASES = new Map([
+  ["T3", "T7"], ["T4", "T8"], ["T5", "P7"], ["T6", "P8"],
 ]);
 
 const LEGACY_AUXILIARY_GROUPS = new Set([
@@ -3062,14 +3065,36 @@ interface ContactLabel {
   contact: number;
 }
 
-function parseContactLabel(label: string, sourceIndex: number): ContactLabel | null {
-  const cleaned = label
+interface ScalpChannelPosition {
+  row: number;
+  horizontal: number;
+}
+
+function cleanElectrodeLabel(label: string) {
+  return label
     .trim()
     .replace(/^EEG\s+/i, "")
     .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
     .trim();
-  const canonical = cleaned.replace(/[\s_-]/g, "").toUpperCase();
-  if (STANDARD_SCALP_LABELS.has(canonical)) return null;
+}
+
+function scalpChannelPosition(label: string): ScalpChannelPosition | null {
+  const cleaned = cleanElectrodeLabel(label).replace(/[\s_-]/g, "").toUpperCase();
+  const canonical = LEGACY_SCALP_ALIASES.get(cleaned) ?? cleaned;
+  const match = /^(FP|AF|FT|FC|TP|CP|PO|F|T|C|P|O|A|M)(Z|\d+)$/.exec(canonical);
+  if (!match) return null;
+  const row = SCALP_ROW_ORDER.get(match[1]);
+  if (row === undefined) return null;
+  if (match[2] === "Z") return { row, horizontal: 0 };
+  const number = Number(match[2]);
+  if (!Number.isInteger(number) || number < 1 || number > 10) return null;
+  const horizontal = number % 2 === 1 ? -(number + 1) / 2 : number / 2;
+  return { row, horizontal };
+}
+
+function parseContactLabel(label: string, sourceIndex: number): ContactLabel | null {
+  const cleaned = cleanElectrodeLabel(label);
+  if (scalpChannelPosition(cleaned)) return null;
   const match = /^(.*?)(\d+)$/.exec(cleaned);
   if (!match || !/[A-Za-z]/.test(match[1])) return null;
   const contact = Number(match[2]);
@@ -3085,11 +3110,7 @@ function parseContactLabel(label: string, sourceIndex: number): ContactLabel | n
  * group, while the MATLAB reviewer's explicitly auxiliary groups return null.
  */
 export function anatomicalChannelGroup(label: string): string | null {
-  const cleaned = label
-    .trim()
-    .replace(/^EEG\s+/i, "")
-    .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
-    .trim();
+  const cleaned = cleanElectrodeLabel(label);
   // Only the first contact establishes the group. This also handles derived
   // labels such as "EEG LA1-REF–EEG LA2-REF" without confusing reference
   // suffix hyphens with the bipolar separator.
@@ -3101,8 +3122,9 @@ export function anatomicalChannelGroup(label: string): string | null {
 }
 
 /**
- * Reproduces the MATLAB reviewer's stable left/right/other ordering without
- * changing the source-channel identity carried by each row.
+ * Orders scalp channels front-to-back and left-to-right, then depth contacts
+ * by side, electrode group, and contact number. Auxiliary channels retain
+ * their source order at the end. Source-channel identity never changes.
  */
 export function orderAnatomicalChannelIndices(
   labels: readonly string[],
@@ -3110,11 +3132,22 @@ export function orderAnatomicalChannelIndices(
 ): number[] {
   return indices
     .map((sourceIndex, position) => {
-      const group = anatomicalChannelGroup(labels[sourceIndex] ?? "");
-      const side = group?.startsWith("L") ? 0 : group?.startsWith("R") ? 1 : group ? 2 : 3;
-      return { sourceIndex, position, side };
+      const label = labels[sourceIndex] ?? "";
+      const scalp = scalpChannelPosition(label);
+      if (scalp) return { sourceIndex, position, category: 0, row: scalp.row, horizontal: scalp.horizontal, group: "", contact: 0 };
+      const depth = parseContactLabel(label, sourceIndex);
+      if (depth) {
+        const side = depth.group.startsWith("L") ? 0 : depth.group.startsWith("R") ? 1 : 2;
+        return { sourceIndex, position, category: 1, row: side, horizontal: 0, group: depth.group, contact: depth.contact };
+      }
+      return { sourceIndex, position, category: 2, row: 0, horizontal: 0, group: "", contact: 0 };
     })
-    .sort((left, right) => left.side - right.side || left.position - right.position)
+    .sort((left, right) => left.category - right.category
+      || left.row - right.row
+      || left.horizontal - right.horizontal
+      || left.group.localeCompare(right.group)
+      || left.contact - right.contact
+      || left.position - right.position)
     .map(({ sourceIndex }) => sourceIndex);
 }
 

@@ -905,6 +905,7 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
   assert.match(draw, /if\s*\(rowHeight\s*>=\s*2\)[\s\S]*?context\.strokeRect/, "focused-row borders are omitted when a compact row is too short to contain the stroke");
   assert.match(page, /const ANATOMICAL_GROUP_GAP_ROWS\s*=\s*4/);
+  assert.match(page, /const indices = orderAnatomicalChannelIndices\(meta\.channelLabels, selectedIndices\)/, "every recording uses anatomical channel ordering");
   assert.match(page, /channelRowFromFraction\(\s*channelRowLayout/);
   assert.match(draw, /robustTraceBaseline\(values\)[\s\S]*?max\s*-\s*baseline/, "each trace is centered on a robust display-window baseline");
   assert.match(draw, /if \(!Number\.isFinite\(value\)\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");

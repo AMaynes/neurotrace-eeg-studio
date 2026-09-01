@@ -2678,9 +2678,7 @@ export default function Home() {
     const requestId = ++displayRequestIdRef.current;
     const source = sourceRef.current;
     const selectedIndices = [...selectedChannels].sort((a, b) => a - b);
-    const indices = meta.format === "raw-int16-le" && meta.channelLabels.length >= 100
-      ? orderAnatomicalChannelIndices(meta.channelLabels, selectedIndices)
-      : selectedIndices;
+    const indices = orderAnatomicalChannelIndices(meta.channelLabels, selectedIndices);
     const channelKey = indices.join(",");
     const refreshWindow = async () => {
       if (!hasRecording || !indices.length) {
@@ -4848,9 +4846,7 @@ export default function Home() {
           verificationDecode?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
           verificationDecode = null;
         } else if (source instanceof RawDatSource) {
-          const overviewChannelIndices = nextMeta.channelLabels.length >= 100
-            ? orderAnatomicalChannelIndices(nextMeta.channelLabels, recommendedChannels)
-            : [...recommendedChannels].sort((left, right) => left - right);
+          const overviewChannelIndices = orderAnatomicalChannelIndices(nextMeta.channelLabels, recommendedChannels);
           const fullOverviewBuckets = reusableEnvelopeBucketCount(
             Math.max(1, overviewChannelIndices.length),
             2_048,
