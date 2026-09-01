@@ -6536,6 +6536,19 @@ export default function Home() {
             }}
           ><span aria-hidden="true">⇩</span></button>
           <button
+            className="utility-button upload-recording-button"
+            disabled={importBusy}
+            aria-label="Upload recording or companion files"
+            aria-haspopup="dialog"
+            aria-expanded={showImport}
+            aria-controls="recording-import-dialog"
+            title="Upload a recording, directory, or companion files"
+            onClick={() => {
+              setUploadError(null);
+              setShowImport(true);
+            }}
+          ><span aria-hidden="true">⇧</span></button>
+          <button
             className={`utility-button ${resourcePanelActive ? "active" : ""}`}
             aria-label={resourcePanelActive ? "Return to right panel tools" : "Show resource usage"}
             aria-pressed={resourcePanelActive}
@@ -7041,7 +7054,7 @@ export default function Home() {
       </div>
 
       {showImport && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !importBusy) setShowImport(false); }}>
-        <div className="modal import-modal" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
+        <div id="recording-import-dialog" className="modal import-modal" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN A RECORDING</span>
           <h2>Bring in the recording and everything around it.</h2>

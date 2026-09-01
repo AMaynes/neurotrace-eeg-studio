@@ -1193,12 +1193,14 @@ textarea:focus-visible {
 
 .add-session-tab:hover { background: #142823; border-color: #386158; }
 
-.save-project-button {
+.upload-recording-button {
   margin-right: auto;
 }
 
-.save-project-button[aria-expanded="true"] { border-color: #46635e; background: #142622; color: var(--mint); }
-.save-project-button > span { transform: translateY(-1px); font-size: 19px; }
+.save-project-button[aria-expanded="true"],
+.upload-recording-button[aria-expanded="true"] { border-color: #46635e; background: #142622; color: var(--mint); }
+.save-project-button > span,
+.upload-recording-button > span { transform: translateY(-1px); font-size: 19px; }
 
 .utility-actions {
   flex: 0 0 var(--label-pane);

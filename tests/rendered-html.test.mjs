@@ -733,17 +733,21 @@ test("toggles live resource usage from the control left of Help and Settings", a
   const actionsEnd = page.indexOf("</div>", actionsStart);
   const actions = page.slice(actionsStart, actionsEnd);
   const savePosition = actions.indexOf("Save NeuroTrace project");
+  const uploadPosition = actions.indexOf("Upload recording or companion files");
   const resourcePosition = actions.indexOf("Show resource usage");
   const helpPosition = actions.indexOf("Open Help");
   const settingsPosition = actions.indexOf("Open Settings");
   assert.ok(resourcePosition >= 0, "the resource control is present in the top-right utility group");
-  assert.ok(savePosition >= 0 && savePosition < resourcePosition, "project save sits at the far-left edge of the utility group");
+  assert.ok(savePosition >= 0 && savePosition < uploadPosition, "upload sits directly to the right of project download");
+  assert.ok(uploadPosition < resourcePosition, "upload remains grouped with project download");
   assert.ok(resourcePosition < helpPosition && helpPosition < settingsPosition, "resource usage sits immediately before Help and Settings");
   assert.match(actions, /className="utility-button save-project-button"[\s\S]*?<span aria-hidden="true">⇩<\/span><\/button>/, "save remains an icon-only utility control");
+  assert.match(actions, /className="utility-button upload-recording-button"[\s\S]*?aria-expanded=\{showImport\}[\s\S]*?aria-controls="recording-import-dialog"[\s\S]*?<span aria-hidden="true">⇧<\/span><\/button>/, "upload opens the existing recording dialog");
   assert.match(actions, /aria-haspopup="dialog"[\s\S]*?aria-expanded=\{showProjectSave\}[\s\S]*?aria-controls="project-save-dialog"/, "save communicates whether its dialog is open");
-  assert.match(css, /\.save-project-button\s*\{[^}]*margin-right:\s*auto[^}]*\}/, "save is visually separated from resource usage");
+  assert.match(css, /\.upload-recording-button\s*\{[^}]*margin-right:\s*auto[^}]*\}/, "upload and download are visually separated from resource usage");
   assert.doesNotMatch(css.match(/\.save-project-button\s*\{[^}]*\}/)?.[0] ?? "", /border|background|color/, "save inherits the neutral utility-button resting style");
-  assert.match(css, /\.save-project-button\[aria-expanded="true"\]\s*\{[^}]*color:\s*var\(--mint\)/, "save turns green only while its dialog is open");
+  assert.match(css, /\.save-project-button\[aria-expanded="true"\],[\s\S]{0,100}\{[^}]*color:\s*var\(--mint\)/, "save turns green only while its dialog is open");
+  assert.match(page, /id="recording-import-dialog" className="modal import-modal"/, "upload targets the existing import dialog");
   assert.match(actions, /setRightPanelView\("resources"\)[\s\S]*?setRightPanelOpen\(true\)/);
 
   const sidebarStart = page.indexOf('<aside className="right-sidebar">');
