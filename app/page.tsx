@@ -1693,6 +1693,18 @@ export default function Home() {
     const currentIndex = WINDOW_TIME_UNITS.indexOf(windowDraftUnit);
     setWindowDraftUnit(WINDOW_TIME_UNITS[(currentIndex + direction + WINDOW_TIME_UNITS.length) % WINDOW_TIME_UNITS.length]);
   };
+  const adjustWindowDraft = (direction: -1 | 1) => {
+    if (!hasRecording) return;
+    const numericValue = Number(windowDraftDisplayValue);
+    const currentValue = Number.isFinite(numericValue) && numericValue > 0
+      ? numericValue
+      : windowDraftMinimum;
+    const decimalPlaces = windowDraftDisplayValue.includes(".")
+      ? windowDraftDisplayValue.split(".")[1].length
+      : 0;
+    const step = 10 ** -decimalPlaces;
+    setWindowDraftValue(formatWindowAmount(clamp(currentValue + direction * step, windowDraftMinimum, windowDraftMaximum)));
+  };
   const syncWindowDraft = () => {
     if (!hasRecording) return;
     const numericValue = Number(windowDraftDisplayValue);
@@ -4923,7 +4935,7 @@ export default function Home() {
                   <button disabled={!hasRecording} aria-label="Next window time unit" title="Next unit" onClick={() => cycleWindowDraftUnit(1)}>›</button>
                 </div>
               </div>
-              <button className="window-zoom-button" disabled={!hasRecording} aria-label="Zoom out in time" title="Zoom out · Ctrl/⌘ −" onClick={() => zoomTimeWindow("out")}>−</button>
+              <button className="window-zoom-button" disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease staged window amount" onClick={() => adjustWindowDraft(-1)}>−</button>
               <label className="window-amount-field"><input
                 disabled={!hasRecording}
                 aria-label={`Window amount in ${windowDraftUnit}`}
@@ -4935,7 +4947,7 @@ export default function Home() {
                 onChange={(event) => setWindowDraftValue(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") syncWindowDraft(); }}
               /></label>
-              <button className="window-zoom-button" disabled={!hasRecording} aria-label="Zoom in in time" title="Zoom in · Ctrl/⌘ +" onClick={() => zoomTimeWindow("in")}>+</button>
+              <button className="window-zoom-button" disabled={!hasRecording} aria-label="Increase window amount" title="Increase staged window amount" onClick={() => adjustWindowDraft(1)}>+</button>
               <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">↻</span><b>Sync</b></button>
             </div>
             <div className="gain-control" aria-label="Gain"><span>Gain</span><button disabled={!hasRecording} onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button><b>{gain.toFixed(1)}×</b><button disabled={!hasRecording} onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button></div>

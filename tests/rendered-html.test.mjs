@@ -208,6 +208,9 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(controls, /max=\{windowDraftMaximum\}/);
   assert.match(controls, /onChange=\{\(event\) => setWindowDraftValue\(event\.target\.value\)\}/);
   assert.doesNotMatch(controls, /onChange=\{[^}]*setTimeWindow/, "editing the staged amount does not reload the waveform");
+  assert.match(controls, /aria-label="Decrease window amount"[\s\S]*?adjustWindowDraft\(-1\)/);
+  assert.match(controls, /aria-label="Increase window amount"[\s\S]*?adjustWindowDraft\(1\)/);
+  assert.doesNotMatch(controls, /zoomTimeWindow\(/, "the amount buttons stage numeric changes instead of immediately zooming");
   assert.match(controls, /className="window-sync-button"/);
   assert.match(controls, /onClick=\{syncWindowDraft\}/);
 
@@ -215,6 +218,7 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
   assert.doesNotMatch(windowLogic, /Math\.min\(300/, "the full recording duration is accepted");
   assert.match(windowLogic, /numericValue \* windowUnitSeconds/);
+  assert.match(windowLogic, /currentValue \+ direction \* step/);
   assert.match(windowLogic, /setTimeWindow\(nextWindow\)/);
   assert.match(windowLogic, /setWindowDraftValue\(null\)/);
   assert.match(css, /\.window-unit-picker\s*\{/);
