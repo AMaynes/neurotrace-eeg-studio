@@ -80,6 +80,8 @@ export interface EnvelopeWindowData extends WindowData {
   minima: Float32Array[];
   maxima: Float32Array[];
   gaps: Uint8Array[];
+  /** Sum of absolute sample-to-sample changes inside each bucket. */
+  variation?: Float32Array[];
   bucketDurationSec: number;
 }
 
@@ -2189,6 +2191,9 @@ type EnvelopeAccumulator = {
   maxima: Float32Array;
   gaps: Uint8Array;
   data: Float32Array;
+  variation: Float32Array;
+  previousBucket: number;
+  previousValue: number;
 };
 
 function makeEnvelopeAccumulator(bucketCount: number): EnvelopeAccumulator {
@@ -2198,15 +2203,30 @@ function makeEnvelopeAccumulator(bucketCount: number): EnvelopeAccumulator {
   minima.fill(Number.POSITIVE_INFINITY);
   maxima.fill(Number.NEGATIVE_INFINITY);
   data.fill(Number.NaN);
-  return { minima, maxima, gaps: new Uint8Array(bucketCount), data };
+  return {
+    minima,
+    maxima,
+    gaps: new Uint8Array(bucketCount),
+    data,
+    variation: new Float32Array(bucketCount),
+    previousBucket: -1,
+    previousValue: Number.NaN,
+  };
 }
 
 function addEnvelopeSample(accumulator: EnvelopeAccumulator, bucket: number, value: number) {
   if (bucket < 0 || bucket >= accumulator.data.length) return;
   if (!Number.isFinite(value)) {
     accumulator.gaps[bucket] = 1;
+    accumulator.previousBucket = -1;
+    accumulator.previousValue = Number.NaN;
     return;
   }
+  if (accumulator.previousBucket === bucket && Number.isFinite(accumulator.previousValue)) {
+    accumulator.variation[bucket] += Math.abs(value - accumulator.previousValue);
+  }
+  accumulator.previousBucket = bucket;
+  accumulator.previousValue = value;
   accumulator.minima[bucket] = Math.min(accumulator.minima[bucket], value);
   accumulator.maxima[bucket] = Math.max(accumulator.maxima[bucket], value);
 }
@@ -2245,6 +2265,7 @@ function makeEnvelopeWindowResult(
     minima: accumulators.map((entry) => entry.minima),
     maxima: accumulators.map((entry) => entry.maxima),
     gaps: accumulators.map((entry) => entry.gaps),
+    variation: accumulators.map((entry) => entry.variation),
     bucketDurationSec: request.durationSec > 0 ? request.durationSec / bucketCount : 0,
   };
 }
@@ -2291,6 +2312,9 @@ export function aggregateEnvelopeWindow(
     source.channelLabels.length,
     source.channelUnits.length,
   ];
+  if (source.variation && source.variation.length !== channelCount) {
+    throw new SignalFileError("INVALID_WINDOW", "The cached envelope activity metadata is inconsistent.");
+  }
   if (metadataLengths.some((length) => length !== channelCount)) {
     throw new SignalFileError("INVALID_WINDOW", "The cached envelope channel metadata is inconsistent.");
   }
@@ -2305,7 +2329,8 @@ export function aggregateEnvelopeWindow(
     if (source.data[channel].length !== sourceBucketCount
       || source.minima[channel].length !== sourceBucketCount
       || source.maxima[channel].length !== sourceBucketCount
-      || source.gaps[channel].length !== sourceBucketCount) {
+      || source.gaps[channel].length !== sourceBucketCount
+      || (source.variation && source.variation[channel].length !== sourceBucketCount)) {
       throw new SignalFileError("INVALID_WINDOW", "The cached envelope channel bucket counts are inconsistent.");
     }
   }
@@ -2352,6 +2377,9 @@ export function aggregateEnvelopeWindow(
     return channel;
   });
   const gaps = data.map(() => new Uint8Array(targetBucketCount));
+  const variation = source.variation
+    ? data.map(() => new Float32Array(targetBucketCount))
+    : undefined;
   const relativeIndexTolerance = 1e-9;
 
   for (let targetBucket = 0; targetBucket < targetBucketCount; targetBucket += 1) {
@@ -2371,6 +2399,7 @@ export function aggregateEnvelopeWindow(
       let minimum = Number.POSITIVE_INFINITY;
       let maximum = Number.NEGATIVE_INFINITY;
       let missing = false;
+      let totalVariation = 0;
       for (let sourceBucket = firstSourceBucket; sourceBucket < lastSourceBucket; sourceBucket += 1) {
         const sourceMinimum = source.minima[channel][sourceBucket];
         const sourceMaximum = source.maxima[channel][sourceBucket];
@@ -2382,11 +2411,16 @@ export function aggregateEnvelopeWindow(
         }
         minimum = Math.min(minimum, sourceMinimum);
         maximum = Math.max(maximum, sourceMaximum);
+        if (variation) {
+          const sourceVariation = source.variation?.[channel][sourceBucket];
+          if (Number.isFinite(sourceVariation)) totalVariation += sourceVariation ?? 0;
+        }
       }
       gaps[channel][targetBucket] = missing ? 1 : 0;
       if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) continue;
       minima[channel][targetBucket] = minimum;
       maxima[channel][targetBucket] = maximum;
+      if (variation) variation[channel][targetBucket] = totalVariation;
       if (!missing) data[channel][targetBucket] = (minimum + maximum) / 2;
     }
   }
@@ -2397,6 +2431,7 @@ export function aggregateEnvelopeWindow(
     minima,
     maxima,
     gaps,
+    variation,
     bucketDurationSec: targetBucketDurationSec,
     sampleRates: source.sampleRates.map(() => effectiveRate),
     channelStartSecs: source.channelStartSecs.map(() => targetStartSec),
@@ -2419,7 +2454,7 @@ export function projectEnvelopeChannels(
   requestedChannelIndices: readonly number[],
 ): EnvelopeWindowData {
   const channelCount = source.channelIndices.length;
-  const channelCollections: readonly (readonly unknown[])[] = [
+  const channelCollections: (readonly unknown[])[] = [
     source.data,
     source.minima,
     source.maxima,
@@ -2429,6 +2464,7 @@ export function projectEnvelopeChannels(
     source.channelLabels,
     source.channelUnits,
   ];
+  if (source.variation) channelCollections.push(source.variation);
   if (channelCollections.some((collection) => collection.length !== channelCount)) {
     throw new SignalFileError(
       "INVALID_WINDOW",
@@ -2477,6 +2513,9 @@ export function projectEnvelopeChannels(
     minima: sourcePositions.map((position) => source.minima[position]),
     maxima: sourcePositions.map((position) => source.maxima[position]),
     gaps: sourcePositions.map((position) => source.gaps[position]),
+    variation: source.variation
+      ? sourcePositions.map((position) => source.variation![position])
+      : undefined,
     bucketDurationSec: source.bucketDurationSec,
     sampleRates: sourcePositions.map((position) => source.sampleRates[position]),
     channelStartSecs: sourcePositions.map((position) => source.channelStartSecs[position]),
@@ -2507,11 +2546,13 @@ export function buildEnvelopePyramid(
     throw new SignalFileError("INVALID_WINDOW", "Envelope pyramid base must contain at least one time bucket.");
   }
   const channelArrays = [base.data, base.minima, base.maxima, base.gaps];
+  if (base.variation) channelArrays.push(base.variation);
   if (channelArrays.some((channels) => channels.length !== base.data.length)
     || base.data.some((channel) => channel.length !== baseBucketCount)
     || base.minima.some((channel) => channel.length !== baseBucketCount)
     || base.maxima.some((channel) => channel.length !== baseBucketCount)
-    || base.gaps.some((channel) => channel.length !== baseBucketCount)) {
+    || base.gaps.some((channel) => channel.length !== baseBucketCount)
+    || base.variation?.some((channel) => channel.length !== baseBucketCount)) {
     throw new SignalFileError("INVALID_WINDOW", "Envelope pyramid base channel bucket counts are inconsistent.");
   }
 

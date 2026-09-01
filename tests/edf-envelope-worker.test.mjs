@@ -194,6 +194,8 @@ test("builds calibrated mixed-rate EDF envelopes in requested display-channel or
   assert.deepEqual([...result.window.minima[1]], [0, -20, -50, -70]);
   assert.deepEqual([...result.window.maxima[1]], [10, 30, 40, 60]);
   assert.deepEqual([...result.window.data[1]], [5, 5, -5, -5]);
+  assert.deepEqual([...result.window.variation[0]], [0, 0, 0, 0]);
+  assert.deepEqual([...result.window.variation[1]], [10, 50, 90, 130]);
   assert.deepEqual([...result.window.gaps[0]], [0, 0, 0, 0]);
   assert.deepEqual([...result.window.gaps[1]], [0, 0, 0, 0]);
   assert.equal(result.metrics.recordsRead, 2);
@@ -346,7 +348,7 @@ test("builds and transfers an exact finest-to-coarsest EDF pyramid in the worker
   assert.equal(progress.at(-1).decodeMs, result.metrics.decodeMs);
 
   const transfers = edfEnvelopeTransferList(result);
-  assert.equal(transfers.length, 12);
+  assert.equal(transfers.length, 15);
   assert.equal(new Set(transfers).size, transfers.length);
   assert.ok(transfers.every((buffer) => buffer instanceof ArrayBuffer && buffer.byteLength > 0));
 });

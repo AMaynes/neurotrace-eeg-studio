@@ -341,3 +341,25 @@ export function waveformOverviewColumnBudget(durationSec: number, widthPx: numbe
       : Math.floor(widthPx);
   return Math.max(1, Math.min(Math.floor(widthPx), maximumColumns));
 }
+
+/**
+ * Converts within-bucket total variation into a scale-independent activity
+ * rate. A clean sinusoid approaches its cycles-per-second rate; isolated
+ * transients remain visible in the amplitude envelope without masquerading as
+ * sustained frequency.
+ */
+export function estimateEnvelopeActivityRate(
+  totalVariation: number,
+  minimum: number,
+  maximum: number,
+  bucketDurationSec: number,
+) {
+  const range = maximum - minimum;
+  if (!Number.isFinite(totalVariation)
+    || totalVariation < 0
+    || !Number.isFinite(range)
+    || !(range > 0)
+    || !Number.isFinite(bucketDurationSec)
+    || !(bucketDurationSec > 0)) return 0;
+  return totalVariation / (2 * range * bucketDurationSec);
+}

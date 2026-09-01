@@ -55,6 +55,7 @@ import {
   type LegacyMatMetadata,
   type MontageMode,
   type RecordingMeta,
+  type SignalErrorCode,
   type SignalSource,
 } from "./eeg-core";
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
@@ -74,10 +75,11 @@ import {
 } from "./performance-diagnostics";
 import { sha256Blob } from "./source-integrity";
 import { verifySourceOffThread } from "./source-integrity-worker-client";
-import { adaptiveTimeGridInterval } from "./time-grid";
+import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   envelopeTraceRenderMode,
+  estimateEnvelopeActivityRate,
   maximumExtremaGroupsForBudget,
   measureEnvelopeTraceGeometry,
   measureRawTraceGeometry,
@@ -243,6 +245,12 @@ type RawDatMapping = {
   physicalScale: number | "";
 };
 
+type UploadErrorMessage = {
+  title: string;
+  message: string;
+  files: string[];
+};
+
 type ControlBindings = {
   undo: string;
   redo: string;
@@ -294,6 +302,7 @@ type DisplayWindow = {
     minima: Float32Array;
     maxima: Float32Array;
     gaps: Uint8Array;
+    variation?: Float32Array;
     startSec: number;
     bucketDurationSec: number;
   } | null>;
@@ -414,6 +423,15 @@ const DEFAULT_SPECTROGRAM_HEIGHT = 138;
 const MIN_SPECTROGRAM_HEIGHT = 96;
 const MAX_SPECTROGRAM_HEIGHT = 480;
 const LEGACY_SEIZURE_EVENT_TERMS = ["sz", "seiz", "tonic", "eeg onset", "ictal"] as const;
+const SUPPORTED_RECORDING_EXTENSIONS = new Set(["edf", "mat", "dat"]);
+const SIGNAL_ERROR_CODES = new Set<SignalErrorCode>([
+  "UNSUPPORTED_FORMAT",
+  "INVALID_HEADER",
+  "TRUNCATED_FILE",
+  "INVALID_WINDOW",
+  "DECOMPRESSION_UNAVAILABLE",
+  "NO_SIGNAL_MATRIX",
+]);
 const PALETTE_BUTTON_NAMES: Record<string, string> = {
   preictal: "Pre",
   ictal: "Ictal",
@@ -438,6 +456,92 @@ function annotationGeometry(annotation: Pick<Annotation, "geometry" | "labelId">
 function isLegacySeizureCandidate(label: string) {
   const normalized = label.trim().toLowerCase();
   return LEGACY_SEIZURE_EVENT_TERMS.some((term) => normalized.includes(term));
+}
+
+function recordingExtension(file: File) {
+  return file.name.split(".").at(-1)?.toLowerCase() ?? "";
+}
+
+function validateUploadSelection(files: readonly File[]): UploadErrorMessage | null {
+  const unsupported = files.filter((file) => !SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)));
+  if (unsupported.length) {
+    return {
+      title: "Unsupported file type",
+      message: "NeuroTrace accepts EDF/EDF+, MATLAB v5 MAT, and signed-int16 DAT recordings. Choose a supported recording file and try again.",
+      files: unsupported.map((file) => file.name),
+    };
+  }
+
+  const incomplete = files.filter((file) => {
+    const extension = recordingExtension(file);
+    if (file.size === 0) return true;
+    if (extension === "edf") return file.size < 256;
+    if (extension === "mat") return file.size < 128;
+    return extension === "dat" && (file.size < 2 || file.size % 2 !== 0);
+  });
+  if (incomplete.length) {
+    return {
+      title: "Incomplete or damaged file",
+      message: "One or more files are too short for their format or end in a partial sample. Copy or export the recording again before retrying.",
+      files: incomplete.map((file) => file.name),
+    };
+  }
+
+  const edfFiles = files.filter((file) => recordingExtension(file) === "edf");
+  const matFiles = files.filter((file) => recordingExtension(file) === "mat");
+  const datFiles = files.filter((file) => recordingExtension(file) === "dat");
+  if (edfFiles.length > 1 || datFiles.length > 1 || matFiles.length > 1 || (edfFiles.length && files.length > 1)) {
+    return {
+      title: "Choose one recording",
+      message: "Open one EDF, one MAT, one DAT, or one same-name MAT + DAT pair at a time. Additional recordings can be opened in separate session tabs.",
+      files: files.map((file) => file.name),
+    };
+  }
+  if (datFiles.length === 1 && matFiles.length === 1) {
+    const datStem = datFiles[0].name.replace(/\.dat$/i, "").toLowerCase();
+    const matStem = matFiles[0].name.replace(/\.mat$/i, "").toLowerCase();
+    if (datStem !== matStem) {
+      return {
+        title: "MAT and DAT files do not match",
+        message: "A companion MAT + DAT session must use the same base filename. Rename or select the matching pair, or select the DAT alone for manual mapping.",
+        files: [matFiles[0].name, datFiles[0].name],
+      };
+    }
+  }
+  return null;
+}
+
+function uploadErrorFrom(error: unknown, files: readonly File[]): UploadErrorMessage {
+  const detail = error instanceof Error ? error.message : "The selected recording could not be opened.";
+  const possibleCode = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  const code = typeof possibleCode === "string" && SIGNAL_ERROR_CODES.has(possibleCode as SignalErrorCode)
+    ? possibleCode as SignalErrorCode
+    : undefined;
+  const title = code === "TRUNCATED_FILE" || /truncat|shorter than|past the end|incomplete/i.test(detail)
+    ? "Incomplete or damaged file"
+    : code === "UNSUPPORTED_FORMAT" || /unsupported|not a matlab|choose an edf/i.test(detail)
+      ? "Unsupported recording format"
+      : code === "INVALID_HEADER" || /header/i.test(detail)
+        ? "Invalid recording header"
+        : code === "NO_SIGNAL_MATRIX"
+          ? "No EEG signal matrix found"
+          : code === "DECOMPRESSION_UNAVAILABLE"
+            ? "Compressed MAT file cannot be opened"
+            : error instanceof Error && error.name === "AbortError"
+              ? "Upload canceled"
+              : "Recording could not be opened";
+  const guidance = title === "Incomplete or damaged file"
+    ? " The file may be incomplete; copy or export it again and retry."
+    : title === "Invalid recording header"
+      ? " Confirm that the filename extension matches the original recording format."
+      : "";
+  return {
+    title,
+    message: `${detail}${guidance}`,
+    files: files.map((file) => file.name),
+  };
 }
 
 function normalizeAnnotationGeometry(annotation: Annotation, durationSec: number): Annotation {
@@ -781,6 +885,7 @@ const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "hr"];
 const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, hr: 3_600 };
 const MIN_WINDOW_AMOUNT = .001;
 const MIN_TIME_WINDOW_SECONDS = MIN_WINDOW_AMOUNT * WINDOW_UNIT_SECONDS.ms;
+const WHEEL_PAN_SETTLE_MS = 180;
 const MAX_INTERACTIVE_TIMELINE_ANNOTATIONS = 400;
 const TIMELINE_DENSITY_BINS_PER_TRACK = 256;
 
@@ -816,8 +921,9 @@ function reusableEnvelopeBucketCount(
 ) {
   const maxBucketsByBudget = Math.max(
     1,
-    // A complete min/max pyramid consumes less than twice the finest level.
-    Math.floor(ENVELOPE_CACHE_BUDGET_BYTES / Math.max(1, channelCount * 13 * 2)),
+    // Data, min, max, gap, and variation pyramids consume less than twice the
+    // finest level: four Float32 values plus one gap byte per bucket.
+    Math.floor(ENVELOPE_CACHE_BUDGET_BYTES / Math.max(1, channelCount * 17 * 2)),
   );
   const refinement = fullSession
     ? FULL_SESSION_ENVELOPE_REFINEMENT
@@ -833,7 +939,8 @@ function envelopeWindowByteLength(window: EnvelopeWindowData) {
   return window.data.reduce((sum, channel) => sum + channel.byteLength, 0)
     + window.minima.reduce((sum, channel) => sum + channel.byteLength, 0)
     + window.maxima.reduce((sum, channel) => sum + channel.byteLength, 0)
-    + window.gaps.reduce((sum, channel) => sum + channel.byteLength, 0);
+    + window.gaps.reduce((sum, channel) => sum + channel.byteLength, 0)
+    + (window.variation?.reduce((sum, channel) => sum + channel.byteLength, 0) ?? 0);
 }
 
 function makeEnvelopeCacheEntry(
@@ -999,6 +1106,106 @@ function drawGroupedExtrema(
     },
   );
   context.stroke();
+  context.restore();
+  return overflow;
+}
+
+function drawOverviewEnvelope(
+  context: CanvasRenderingContext2D,
+  minima: ArrayLike<number>,
+  maxima: ArrayLike<number>,
+  variation: ArrayLike<number> | undefined,
+  startSec: number,
+  bucketDurationSec: number,
+  displayStart: number,
+  timebase: number,
+  width: number,
+  center: number,
+  rowTop: number,
+  rowHeight: number,
+  baseline: number,
+  scale: number,
+  selected: boolean,
+  gaps?: ArrayLike<number>,
+) {
+  if (!minima.length || maxima.length !== minima.length) return false;
+  let overflow = false;
+  const xAtCenter = (index: number) => (
+    (startSec + (index + .5) * bucketDurationSec - displayStart) / timebase
+  ) * width;
+  const xAtBoundary = (index: number) => (
+    (startSec + index * bucketDurationSec - displayStart) / timebase
+  ) * width;
+  const topAt = (index: number) => {
+    const raw = center - (maxima[index] - baseline) * scale;
+    if (traceYOverflowsRow(raw, rowTop, rowHeight)) overflow = true;
+    return confineTraceYValueToRow(raw, rowTop, rowHeight);
+  };
+  const bottomAt = (index: number) => {
+    const raw = center - (minima[index] - baseline) * scale;
+    if (traceYOverflowsRow(raw, rowTop, rowHeight)) overflow = true;
+    return confineTraceYValueToRow(raw, rowTop, rowHeight);
+  };
+  const isFiniteBucket = (index: number) => !gaps?.[index]
+    && Number.isFinite(minima[index])
+    && Number.isFinite(maxima[index]);
+
+  context.save();
+  for (let runStart = 0; runStart < minima.length;) {
+    while (runStart < minima.length && !isFiniteBucket(runStart)) runStart += 1;
+    if (runStart >= minima.length) break;
+    let runEnd = runStart + 1;
+    while (runEnd < minima.length && isFiniteBucket(runEnd)) runEnd += 1;
+
+    context.beginPath();
+    context.moveTo(xAtBoundary(runStart), topAt(runStart));
+    for (let index = runStart; index < runEnd; index += 1) {
+      context.lineTo(xAtCenter(index), topAt(index));
+    }
+    context.lineTo(xAtBoundary(runEnd), topAt(runEnd - 1));
+    context.lineTo(xAtBoundary(runEnd), bottomAt(runEnd - 1));
+    for (let index = runEnd - 1; index >= runStart; index -= 1) {
+      context.lineTo(xAtCenter(index), bottomAt(index));
+    }
+    context.lineTo(xAtBoundary(runStart), bottomAt(runStart));
+    context.closePath();
+    context.fillStyle = selected ? "rgba(87, 223, 183, .18)" : "rgba(164, 200, 199, .11)";
+    context.fill();
+
+    context.beginPath();
+    context.moveTo(xAtCenter(runStart), topAt(runStart));
+    for (let index = runStart + 1; index < runEnd; index += 1) {
+      context.lineTo(xAtCenter(index), topAt(index));
+    }
+    context.moveTo(xAtCenter(runStart), bottomAt(runStart));
+    for (let index = runStart + 1; index < runEnd; index += 1) {
+      context.lineTo(xAtCenter(index), bottomAt(index));
+    }
+    context.globalAlpha = selected ? .9 : .64;
+    context.stroke();
+    context.globalAlpha = 1;
+    runStart = runEnd;
+  }
+
+  if (variation?.length === minima.length && rowHeight >= 4) {
+    const ribbonTop = rowTop + rowHeight - Math.min(3, rowHeight * .08);
+    for (let index = 0; index < minima.length; index += 1) {
+      if (!isFiniteBucket(index)) continue;
+      const rate = estimateEnvelopeActivityRate(
+        variation[index],
+        minima[index],
+        maxima[index],
+        bucketDurationSec,
+      );
+      if (!(rate > 0)) continue;
+      const intensity = clamp(Math.log1p(rate) / Math.log1p(80), 0, 1);
+      const hue = 205 - intensity * 165;
+      context.fillStyle = `hsla(${hue} 82% 62% / ${.2 + intensity * .72})`;
+      const left = xAtBoundary(index);
+      const right = xAtBoundary(index + 1);
+      context.fillRect(left, ribbonTop, Math.max(1, right - left), rowTop + rowHeight - ribbonTop);
+    }
+  }
   context.restore();
   return overflow;
 }
@@ -1472,6 +1679,9 @@ export default function Home() {
   const redoRef = useRef<AnnotationHistorySnapshot[]>([]);
   const pointerRef = useRef<WavePointerState | null>(null);
   const wheelFrameRef = useRef<number | null>(null);
+  const wheelPanSettleTimerRef = useRef<number | null>(null);
+  const wheelPanTargetRef = useRef(0);
+  const viewStartRef = useRef(0);
   const zoomWheelFrameRef = useRef<number | null>(null);
   const channelScrollFrameRef = useRef<number | null>(null);
   const wheelDeltaRef = useRef(0);
@@ -1535,6 +1745,7 @@ export default function Home() {
   const [sessionKey, setSessionKey] = useState("blank-initial-session");
   const [recordingType, setRecordingType] = useState("Scalp EEG");
   const [viewStart, setViewStart] = useState(0);
+  const [signalViewStart, setSignalViewStart] = useState(0);
   const [timebase, setTimebase] = useState(20);
   const [windowDraftUnit, setWindowDraftUnit] = useState<WindowTimeUnit>("s");
   const [windowDraftValue, setWindowDraftValue] = useState<string | null>(null);
@@ -1570,6 +1781,7 @@ export default function Home() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [activeCandidate, setActiveCandidate] = useState(0);
   const [toast, setToast] = useState("Blank session ready — load a recording");
+  const [uploadError, setUploadError] = useState<UploadErrorMessage | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [verifyingSource, setVerifyingSource] = useState(false);
   const [dragGhost, setDragGhost] = useState<{ labelId: string; time: number } | null>(null);
@@ -1605,6 +1817,21 @@ export default function Home() {
   const [sourceInterpretation, setSourceInterpretation] = useState<Record<string, unknown> | null>(null);
   const [recoveryStatus, setRecoveryStatus] = useState<"saved" | "error">("saved");
   const [controlBindings, setControlBindings] = useState<ControlBindings>(DEFAULT_CONTROLS);
+
+  const clearWheelPanSettle = useCallback(() => {
+    if (wheelPanSettleTimerRef.current !== null) {
+      window.clearTimeout(wheelPanSettleTimerRef.current);
+      wheelPanSettleTimerRef.current = null;
+    }
+  }, []);
+
+  const commitViewStart = useCallback((nextStart: number) => {
+    clearWheelPanSettle();
+    viewStartRef.current = nextStart;
+    wheelPanTargetRef.current = nextStart;
+    setViewStart(nextStart);
+    setSignalViewStart(nextStart);
+  }, [clearWheelPanSettle]);
 
   const activeCandidateItem = candidates[activeCandidate] ?? null;
   const activeCandidateTime = activeCandidateItem?.time ?? null;
@@ -1850,7 +2077,7 @@ export default function Home() {
     setSessionKey(snapshot.sessionKey);
     setRecordingType(snapshot.recordingType);
     setReviewer(snapshot.reviewer);
-    setViewStart(snapshot.viewStart);
+    commitViewStart(snapshot.viewStart);
     setTimebase(snapshot.timebase);
     setWindowDraftUnit("s");
     setWindowDraftValue(null);
@@ -1903,7 +2130,7 @@ export default function Home() {
     if (fileInputRef.current) fileInputRef.current.value = "";
     undoRef.current = snapshot.undo;
     redoRef.current = snapshot.redo;
-  }, []);
+  }, [commitViewStart]);
 
   const switchSession = useCallback((id: string) => {
     if (importBusy || id === activeSessionId) return;
@@ -1989,10 +2216,17 @@ export default function Home() {
   }, []);
 
   const setViewStartSafe = useCallback((next: number | ((value: number) => number)) => {
-    setViewStart((current) => {
-      const value = typeof next === "function" ? next(current) : next;
-      return clamp(value, 0, Math.max(0, meta.durationSec - timebase));
-    });
+    const value = typeof next === "function" ? next(viewStartRef.current) : next;
+    commitViewStart(clamp(value, 0, Math.max(0, meta.durationSec - timebase)));
+  }, [commitViewStart, meta.durationSec, timebase]);
+
+  const previewViewStartSafe = useCallback((next: number | ((value: number) => number)) => {
+    const value = typeof next === "function" ? next(viewStartRef.current) : next;
+    const bounded = clamp(value, 0, Math.max(0, meta.durationSec - timebase));
+    viewStartRef.current = bounded;
+    wheelPanTargetRef.current = bounded;
+    setViewStart(bounded);
+    return bounded;
   }, [meta.durationSec, timebase]);
 
   const setTimeWindow = useCallback((requested: number, anchorTime = viewStart + timebase / 2) => {
@@ -2000,9 +2234,9 @@ export default function Home() {
     const next = clamp(requested, Math.min(MIN_TIME_WINDOW_SECONDS, maximumWindow), maximumWindow);
     const anchor = clamp(anchorTime, viewStart, viewStart + timebase);
     const anchorRatio = timebase > 0 ? (anchor - viewStart) / timebase : 0.5;
-    setViewStart(clamp(anchor - anchorRatio * next, 0, Math.max(0, meta.durationSec - next)));
+    commitViewStart(clamp(anchor - anchorRatio * next, 0, Math.max(0, meta.durationSec - next)));
     setTimebase(next);
-  }, [meta.durationSec, timebase, viewStart]);
+  }, [commitViewStart, meta.durationSec, timebase, viewStart]);
 
   const zoomToTimeRange = useCallback((start: number, end: number) => {
     const rangeStart = clamp(Math.min(start, end), 0, meta.durationSec);
@@ -2011,9 +2245,9 @@ export default function Home() {
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
     const nextDuration = clamp(selectedDuration, Math.min(MIN_TIME_WINDOW_SECONDS, maximumWindow), maximumWindow);
     const center = (rangeStart + rangeEnd) / 2;
-    setViewStart(clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)));
+    commitViewStart(clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)));
     setTimebase(nextDuration);
-  }, [meta.durationSec]);
+  }, [commitViewStart, meta.durationSec]);
 
   const zoomTimeWindow = useCallback((direction: "in" | "out", anchorTime?: number) => {
     setTimeWindow(timebase * (direction === "in" ? 0.8 : 1.25), anchorTime);
@@ -2515,7 +2749,7 @@ export default function Home() {
       if (index !== nextIndex && item.status === "active") return { ...item, status: "queued" };
       return item;
     }));
-    setViewStart(clamp(next.time - timebase / 2, 0, Math.max(0, meta.durationSec - timebase)));
+    setViewStartSafe(next.time - timebase / 2);
     setCursorTime(next.time);
     setCursorLocked(true);
     setSelection(null);
@@ -2524,7 +2758,7 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     return next;
-  }, [candidates, meta.durationSec, timebase]);
+  }, [candidates, setViewStartSafe, timebase]);
 
   const commitAnnotation = useCallback((targetAnnotation: Annotation | null, force = false, advanceAfter = false) => {
     if (sourceVerificationRef.current) {
@@ -2687,7 +2921,7 @@ export default function Home() {
     const refreshWindow = async () => {
       if (!hasRecording || !indices.length) {
         displayAppliedRequestIdRef.current = requestId;
-        setDisplay({ ...EMPTY_DISPLAY, viewStart });
+        setDisplay({ ...EMPTY_DISPLAY, viewStart: signalViewStart });
         if (hasRecording) displayPreviewReadyRef.current = true;
         setLoadingSignal(false);
         return;
@@ -2711,8 +2945,8 @@ export default function Home() {
           return sampleRate >= 1000 ? 48 / sampleRate : 0;
         }));
         const processingPadSec = filterPadSec + groupDelayPadSec;
-        const requiredStart = Math.max(0, viewStart - processingPadSec);
-        const requiredEnd = Math.min(meta.durationSec, viewStart + timebase + processingPadSec);
+        const requiredStart = Math.max(0, signalViewStart - processingPadSec);
+        const requiredEnd = Math.min(meta.durationSec, signalViewStart + timebase + processingPadSec);
         const byteRate = indices.reduce((sum, index) => sum + Math.max(1, meta.sampleRates[index] ?? primarySampleRate(meta)) * Float32Array.BYTES_PER_ELEMENT, 0);
         const requiredDuration = Math.max(0, requiredEnd - requiredStart);
         const storageByteRate = (meta.byteLength ?? 0) / Math.max(1e-9, meta.durationSec);
@@ -2772,8 +3006,8 @@ export default function Home() {
           const requiredBucketDuration = timebase / overviewColumnCount;
           const reusableEnvelopeEntries = envelopeWindowCacheRef.current.filter((entry) =>
             entry.source === source
-            && entry.startSec <= viewStart + 1e-9
-            && entry.endSec >= viewStart + timebase - 1e-9
+            && entry.startSec <= signalViewStart + 1e-9
+            && entry.endSec >= signalViewStart + timebase - 1e-9
             && entry.levels[0]?.bucketDurationSec <= requiredBucketDuration * 1.05);
           let envelopeWindow = reusableEnvelopeEntries.find((entry) => entry.channelKey === channelKey)
             ?? reusableEnvelopeEntries.find((entry) => {
@@ -2941,7 +3175,7 @@ export default function Home() {
           );
           const visibleEnvelope = aggregateEnvelopeWindow(
             requestedEnvelopeLevel,
-            viewStart,
+            signalViewStart,
             timebase,
             displayBucketCount,
           );
@@ -2950,6 +3184,7 @@ export default function Home() {
             minima: visibleEnvelope.minima[position],
             maxima: visibleEnvelope.maxima[position],
             gaps: visibleEnvelope.gaps[position],
+            variation: visibleEnvelope.variation?.[position],
             startSec: visibleEnvelope.startSec,
             bucketDurationSec: visibleEnvelope.bucketDurationSec,
           }));
@@ -2973,7 +3208,7 @@ export default function Home() {
             sourceIndices: indices.map((index) => [index]),
             primarySourceIndices: indices,
             warnings: [],
-            viewStart,
+            viewStart: signalViewStart,
             flatlineRegions,
           };
           setDisplay(nextDisplay);
@@ -3247,13 +3482,13 @@ export default function Home() {
           // true timestamp lets the renderer cover the boundary without
           // stretching N samples across an N-sample-duration viewport.
           const cropStart = clamp(
-            Math.floor((viewStart - channelStart) * sampleRate + 1e-9),
+            Math.floor((signalViewStart - channelStart) * sampleRate + 1e-9),
             0,
             channel.length,
           );
           const requestedEnd = Math.max(
             cropStart + 1,
-            Math.ceil((viewStart + timebase - channelStart) * sampleRate - 1e-9),
+            Math.ceil((signalViewStart + timebase - channelStart) * sampleRate - 1e-9),
           );
           const requestedSamples = Math.max(1, requestedEnd - cropStart);
           croppedStartSecs.push(channelStart + cropStart / sampleRate);
@@ -3306,7 +3541,7 @@ export default function Home() {
         const sampleRates = montageResult.primarySourceIndices.map((position) => processed.sampleRates[position] ?? primarySampleRate(meta));
         const sourceSampleRates = montageResult.primarySourceIndices.map((position) => rawWindow.sampleRates[position] ?? primarySampleRate(meta));
         const startSecs = montageResult.sampleStartSecs
-          ?? montageResult.primarySourceIndices.map((position) => croppedStartSecs[position] ?? viewStart);
+          ?? montageResult.primarySourceIndices.map((position) => croppedStartSecs[position] ?? signalViewStart);
         const units = montageResult.sourceIndices.map((contributors) => {
           const contributorUnits = [...new Set(contributors.map((position) => rawWindow.channelUnits[position]).filter(Boolean))];
           return contributorUnits.length === 1 ? contributorUnits[0] : contributorUnits.length ? "mixed" : "a.u.";
@@ -3323,8 +3558,8 @@ export default function Home() {
           sourceIndices,
           primarySourceIndices,
           warnings: [...montageWarnings, ...montageResult.warnings],
-          viewStart,
-          flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > viewStart && region.startSec < viewStart + timebase),
+          viewStart: signalViewStart,
+          flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > signalViewStart && region.startSec < signalViewStart + timebase),
         };
         setDisplay(nextDisplay);
         displayPreviewReadyRef.current = true;
@@ -3336,7 +3571,7 @@ export default function Home() {
         displayAppliedRequestIdRef.current = requestId;
         setLoadingSignal(false);
         const message = error instanceof Error ? error.message : "Could not read this signal window";
-        setDisplay({ ...EMPTY_DISPLAY, viewStart, warnings: [message] });
+        setDisplay({ ...EMPTY_DISPLAY, viewStart: signalViewStart, warnings: [message] });
         setToast(message);
       }
     };
@@ -3354,7 +3589,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, timebase, verifyingSource, viewStart, waveformWidth]);
+  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -3407,17 +3642,27 @@ export default function Home() {
       context.miterLimit = 1;
       const width = rect.width;
       const height = rect.height;
-      const displayStart = display.viewStart;
+      const displayStart = viewStart;
       const displayEnd = displayStart + timebase;
       context.fillStyle = "#071216";
       context.fillRect(0, 0, width, height);
 
-      const secondsPerGrid = adaptiveTimeGridInterval(timebase, {
-        candidateRelative: activeCandidateTime !== null,
-      });
       context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
       context.textAlign = "center";
       context.textBaseline = "top";
+      const gridLabelReference = activeCandidateTime !== null
+        ? formatRelativeTime(Math.max(
+            Math.abs(displayStart - activeCandidateTime),
+            Math.abs(displayEnd - activeCandidateTime),
+          )).replace(" s", "")
+        : formatClock(displayEnd);
+      const secondsPerGrid = adaptiveTimeGridInterval(timebase, {
+        candidateRelative: activeCandidateTime !== null,
+        targetGridLines: timeGridLineBudget(
+          width,
+          context.measureText(gridLabelReference).width,
+        ),
+      });
       const gridAnchor = activeCandidateTime ?? 0;
       const firstGridIndex = Math.ceil((displayStart - gridAnchor) / secondsPerGrid);
       for (let gridIndex = firstGridIndex; ; gridIndex += 1) {
@@ -3598,91 +3843,24 @@ export default function Home() {
         const envelope = display.envelopes[channel];
         if (envelope) {
           const baseline = cachedBaseline(values);
-          const projection = { ...traceProjection, baseline };
-          const detailedGeometry = cachedGeometry(
-            values,
-            `envelope:${width}:${rowHeight}:${baseline}:${scale}`,
-            () => measureEnvelopeTraceGeometry(
-              envelope.minima,
-              envelope.maxima,
-              values,
-              envelope.gaps,
-              projection,
-            ),
+          overflow = drawOverviewEnvelope(
+            context,
+            envelope.minima,
+            envelope.maxima,
+            envelope.variation,
+            envelope.startSec,
+            envelope.bucketDurationSec,
+            displayStart,
+            timebase,
+            width,
+            center,
+            rowTop,
+            rowHeight,
+            baseline,
+            scale,
+            selected,
+            envelope.gaps,
           );
-          const midpointGeometry = cachedGeometry(
-            values,
-            `envelope-midpoint:${width}:${rowHeight}:${baseline}:${scale}`,
-            () => measureRawTraceGeometry(values, projection),
-          );
-          const renderMode = envelopeTraceRenderMode(
-            detailedGeometry,
-            midpointGeometry,
-            traceGeometryBudget,
-          );
-          if (renderMode === "grouped-extrema") {
-            const maximumGroups = Math.min(
-              extremaGroupBudget,
-              maximumExtremaGroupsForBudget(values.length, projection, traceGeometryBudget),
-            );
-            overflow = drawGroupedExtrema(
-              context,
-              envelope.minima,
-              envelope.maxima,
-              values,
-              maximumGroups,
-              envelope.startSec,
-              envelope.bucketDurationSec,
-              displayStart,
-              timebase,
-              width,
-              center,
-              rowTop,
-              rowHeight,
-              baseline,
-              scale,
-              selected ? .72 : .42,
-              envelope.gaps,
-            );
-          } else {
-            if (renderMode === "detailed") {
-              context.save();
-              context.globalAlpha = selected ? .72 : .42;
-              context.beginPath();
-              for (let bucket = 0; bucket < values.length; bucket += 1) {
-                const minimum = envelope.minima[bucket];
-                const maximum = envelope.maxima[bucket];
-                if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
-                const bucketTime = envelope.startSec + (bucket + .5) * envelope.bucketDurationSec;
-                const x = ((bucketTime - displayStart) / timebase) * width;
-                if (x < -1 || x > width + 1) continue;
-                const maximumY = center - (maximum - baseline) * scale;
-                const minimumY = center - (minimum - baseline) * scale;
-                if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
-                  || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
-                context.moveTo(x, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
-                context.lineTo(x, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
-              }
-              context.stroke();
-              context.restore();
-            }
-            overflow = drawContinuousTrace(
-              context,
-              values,
-              envelope.startSec,
-              envelope.bucketDurationSec,
-              .5,
-              displayStart,
-              timebase,
-              width,
-              center,
-              rowTop,
-              rowHeight,
-              baseline,
-              scale,
-              envelope.gaps,
-            ) || overflow;
-          }
         } else if (values.length <= Math.max(2, width * 1.5)) {
           const baseline = cachedBaseline(values);
           const projection = { ...traceProjection, baseline };
@@ -3923,7 +4101,7 @@ export default function Home() {
     waveDrawRef.current = draw;
     draw();
     return () => performanceDiagnostics.removeCanvasSurface("waveform");
-  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase]);
+  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase, viewStart]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -3997,15 +4175,15 @@ export default function Home() {
 
   const timeFromPointer = useCallback((event: { clientX: number }, element: HTMLElement, row: number, bypass = false) => {
     const rect = element.getBoundingClientRect();
-    const raw = display.viewStart + clamp((event.clientX - rect.left) / rect.width, 0, 1) * timebase;
-    const visibleStart = clamp(display.viewStart, 0, meta.durationSec);
-    const visibleEnd = clamp(display.viewStart + timebase, visibleStart, meta.durationSec);
+    const raw = viewStart + clamp((event.clientX - rect.left) / rect.width, 0, 1) * timebase;
+    const visibleStart = clamp(viewStart, 0, meta.durationSec);
+    const visibleEnd = clamp(viewStart + timebase, visibleStart, meta.durationSec);
     return clamp(
       snapTime(raw, activeTool === "seizure" ? "sample" : snapMode, sourceRateForDisplayRow(display, meta, row), bypass),
       visibleStart,
       visibleEnd,
     );
-  }, [activeTool, display, meta, snapMode, timebase]);
+  }, [activeTool, display, meta, snapMode, timebase, viewStart]);
 
   const inspectionBoxFromPointer = useCallback((
     pointer: WavePointerState,
@@ -4465,9 +4643,9 @@ export default function Home() {
 
   const jumpTo = useCallback((time: number) => {
     const start = clamp(time - timebase / 2, 0, Math.max(0, meta.durationSec - timebase));
-    setViewStart(start);
+    commitViewStart(start);
     setCursorTime(time);
-  }, [meta.durationSec, timebase]);
+  }, [commitViewStart, meta.durationSec, timebase]);
 
   const onViewerWheel = useCallback((event: WheelEvent) => {
     const viewer = viewerRef.current;
@@ -4507,9 +4685,14 @@ export default function Home() {
       const seconds = (wheelDeltaRef.current / wheelWidthRef.current) * timebase;
       wheelDeltaRef.current = 0;
       wheelFrameRef.current = null;
-      setViewStartSafe((current) => current + seconds);
+      previewViewStartSafe((current) => current + seconds);
+      clearWheelPanSettle();
+      wheelPanSettleTimerRef.current = window.setTimeout(() => {
+        wheelPanSettleTimerRef.current = null;
+        setSignalViewStart(wheelPanTargetRef.current);
+      }, WHEEL_PAN_SETTLE_MS);
     });
-  }, [expandedChannels, setTimeWindow, setViewStartSafe, timebase, viewStart]);
+  }, [clearWheelPanSettle, expandedChannels, previewViewStartSafe, setTimeWindow, timebase, viewStart]);
 
   useLayoutEffect(() => {
     viewerWheelRef.current = onViewerWheel;
@@ -4526,10 +4709,11 @@ export default function Home() {
 
   useEffect(() => () => {
     if (wheelFrameRef.current !== null) window.cancelAnimationFrame(wheelFrameRef.current);
+    clearWheelPanSettle();
     if (zoomWheelFrameRef.current !== null) window.cancelAnimationFrame(zoomWheelFrameRef.current);
     if (channelScrollFrameRef.current !== null) window.cancelAnimationFrame(channelScrollFrameRef.current);
     if (cursorFrameRef.current !== null) window.cancelAnimationFrame(cursorFrameRef.current);
-  }, []);
+  }, [clearWheelPanSettle]);
 
   const selectCandidate = useCallback((index: number) => {
     if (!candidates[index]) return;
@@ -4700,7 +4884,7 @@ export default function Home() {
     // Do not clear cross-session LRUs here; entries are source-keyed and their
     // global byte ceilings evict the least-recently used recording as needed.
     setDisplay(EMPTY_DISPLAY);
-    setViewStart(0);
+    commitViewStart(0);
     setGain(1);
     setMontage("referential");
     setFilters({ ...DEFAULT_FILTERS });
@@ -5069,13 +5253,19 @@ export default function Home() {
       if (previousSnapshot && activeSessionIdRef.current === targetSessionId) applySessionSnapshot(previousSnapshot);
       throw error;
     }
-  }, [activeSessionId, applySessionSnapshot, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, commitViewStart, storeActiveSession]);
 
   const importFiles = async (files: File[]) => {
     if (!files.length || importBusyRef.current) return;
+    setShowImport(true);
+    const selectionError = validateUploadSelection(files);
+    setUploadError(selectionError);
+    if (selectionError) {
+      setToast(selectionError.title);
+      return;
+    }
     importBusyRef.current = true;
     setImportBusy(true);
-    setShowImport(true);
     try {
       const edf = files.find((file) => /\.edf$/i.test(file.name));
       const dat = files.find((file) => /\.dat$/i.test(file.name));
@@ -5111,7 +5301,7 @@ export default function Home() {
           const resumeCandidate = queue.candidates[queue.activeIndex];
           setCandidates(queue.candidates);
           setActiveCandidate(queue.activeIndex);
-          setViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
+          commitViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
           setCursorTime(resumeCandidate.time);
           setCursorLocked(true);
           setToast(`${importedCandidates.length} EDF+ source event${importedCandidates.length === 1 ? "" : "s"} indexed in the source pass`);
@@ -5144,7 +5334,13 @@ export default function Home() {
             });
           } catch (error) {
             setSelectedLegacyEventIndices(new Set());
-            setToast(`Companion MAT needs manual mapping: ${error instanceof Error ? error.message : "metadata could not be read"}`);
+            const companionError = uploadErrorFrom(error, [mat]);
+            setUploadError({
+              ...companionError,
+              title: "Companion MAT could not be read",
+              message: `${companionError.message} The DAT can still be opened after you confirm its mapping manually.`,
+            });
+            setToast("Companion MAT needs manual mapping");
           }
         }
         if (!legacyMetadata) {
@@ -5171,7 +5367,9 @@ export default function Home() {
         throw new Error("Choose an EDF, self-contained MAT, or paired MAT + DAT recording.");
       }
     } catch (error) {
-      setToast(error instanceof Error ? error.message : "This recording could not be opened");
+      const uploadFailure = uploadErrorFrom(error, files);
+      setUploadError(uploadFailure);
+      setToast(uploadFailure.title);
       setShowImport(true);
     } finally {
       importBusyRef.current = false;
@@ -5184,9 +5382,27 @@ export default function Home() {
     if (!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0)
       || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0)
       || !datPhysicalScaleValid) {
-      setToast("Confirm a positive sample rate and whole-number channel count; any supplied µV/count scale must be positive");
+      const mappingError = {
+        title: "DAT mapping is incomplete",
+        message: "Enter a positive sample rate and whole-number channel count. If a µV/count scale is supplied, it must also be positive.",
+        files: [pendingDat.name],
+      };
+      setUploadError(mappingError);
+      setToast(mappingError.title);
       return;
     }
+    const bytesPerFrame = datMapping.channelCount * 2;
+    if (pendingDat.size < bytesPerFrame) {
+      const incompleteDatError = {
+        title: "Incomplete or damaged DAT file",
+        message: `This file is too short to contain one complete ${datMapping.channelCount}-channel sample frame. Check the channel count or copy the DAT file again.`,
+        files: [pendingDat.name],
+      };
+      setUploadError(incompleteDatError);
+      setToast(incompleteDatError.title);
+      return;
+    }
+    setUploadError(null);
     importBusyRef.current = true;
     setImportBusy(true);
     try {
@@ -5286,7 +5502,7 @@ export default function Home() {
           const resumeCandidate = queue.candidates[queue.activeIndex];
           setCandidates(queue.candidates);
           setActiveCandidate(queue.activeIndex);
-          setViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
+          commitViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
           setCursorTime(resumeCandidate.time);
           setCursorLocked(true);
           setToast(importedCandidates.length
@@ -5308,7 +5524,10 @@ export default function Home() {
       setSelectedLegacyEventIndices(new Set());
       setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
     } catch (error) {
-      setToast(error instanceof Error ? error.message : "Raw binary mapping failed");
+      const uploadFailure = uploadErrorFrom(error, [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null));
+      setUploadError(uploadFailure);
+      setToast(uploadFailure.title);
+      setShowImport(true);
     } finally {
       importBusyRef.current = false;
       setImportBusy(false);
@@ -6124,18 +6343,18 @@ export default function Home() {
                 >
                   <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to zoom in time and inspect its channels." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
                   {!inspectionMode && selection && <div className="wave-selection" style={{
-                    left: `${((Math.max(display.viewStart, selection.start) - display.viewStart) / timebase) * 100}%`,
-                    width: `${Math.max(0, ((Math.min(display.viewStart + timebase, selection.end) - Math.max(display.viewStart, selection.start)) / timebase) * 100)}%`,
+                    left: `${((Math.max(viewStart, selection.start) - viewStart) / timebase) * 100}%`,
+                    width: `${Math.max(0, ((Math.min(viewStart + timebase, selection.end) - Math.max(viewStart, selection.start)) / timebase) * 100)}%`,
                   }} />}
                   {inspectionMode && inspectionDragging && inspectionRange && inspectionRange.end > inspectionRange.start && <div className="wave-inspection-range" style={{
-                    left: `${((Math.max(display.viewStart, inspectionRange.start) - display.viewStart) / timebase) * 100}%`,
-                    width: `${Math.max(0, ((Math.min(display.viewStart + timebase, inspectionRange.end) - Math.max(display.viewStart, inspectionRange.start)) / timebase) * 100)}%`,
+                    left: `${((Math.max(viewStart, inspectionRange.start) - viewStart) / timebase) * 100}%`,
+                    width: `${Math.max(0, ((Math.min(viewStart + timebase, inspectionRange.end) - Math.max(viewStart, inspectionRange.start)) / timebase) * 100)}%`,
                     top: `${inspectionRange.top * 100}%`,
                     height: `${Math.max(0, inspectionRange.bottom - inspectionRange.top) * 100}%`,
                   }} />}
-                  {cursorLocked && cursorTime >= display.viewStart && cursorTime <= display.viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
+                  {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
                   {loadingSignal && <div className="signal-loading"><span /> Preparing signal window…</div>}
-                  {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
+                  {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
                   {!display.data.length && !loadingSignal && <div className="no-channels"><strong>No visible channels</strong><span>Use CH+ to choose channels.</span></div>}
                 </div>
               </div>
@@ -6301,10 +6520,19 @@ export default function Home() {
           <span className="modal-eyebrow">OPEN A RECORDING</span>
           <h2>Bring the signal to the labels.</h2>
           <p>EDF/EDF+ streams by time window. Self-contained MATLAB v5 matrices are mapped locally. Legacy Buzcode sessions can pair a MAT with its same-basename DAT.</p>
-          <button className={`drop-zone ${importBusy ? "busy" : ""}`} disabled={importBusy} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); importFiles([...event.dataTransfer.files]); }}>
+          <button className={`drop-zone ${importBusy ? "busy" : ""} ${uploadError ? "has-error" : ""}`} disabled={importBusy} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); importFiles([...event.dataTransfer.files]); }}>
             <span className="upload-mark">⇧</span><strong>{importBusy ? "Reading headers…" : "Drop EDF, MAT, or MAT + DAT"}</strong><small>or choose files · recordings never leave this browser</small>
           </button>
-          <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat" onChange={(event: ChangeEvent<HTMLInputElement>) => importFiles([...(event.target.files ?? [])])} />
+          <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat" onChange={(event: ChangeEvent<HTMLInputElement>) => {
+            const files = [...(event.target.files ?? [])];
+            event.target.value = "";
+            void importFiles(files);
+          }} />
+          {uploadError && <div className="upload-error" role="alert" aria-live="assertive">
+            <span aria-hidden="true">!</span>
+            <div><strong>{uploadError.title}</strong><p>{uploadError.message}</p>{uploadError.files.length > 0 && <small>{uploadError.files.join(" · ")}</small>}</div>
+            <button type="button" onClick={() => setUploadError(null)} aria-label="Dismiss upload error">×</button>
+          </div>}
           {pendingDat && <div className="dat-mapper">
             <div><span className="file-type">DAT</span><div><strong>{pendingDat.name}</strong><small>Signed int16 · little-endian</small></div></div>
             <p>{pendingLegacyMeta ? `Companion MAT metadata found ${pendingLegacyMeta.channelLabels.length || pendingLegacyMeta.channelCount || 0} channels and ${pendingLegacyMeta.events.filter((event) => isLegacySeizureCandidate(event.label)).length} seizure-keyword events (${pendingLegacyMeta.events.length} total). ${datMapping.channelCount < 100 ? "As in the MATLAB reviewer, source-event review will be disabled below 100 channels. " : ""}Every timing and scale value remains unverified until you confirm it here.` : "Enter and confirm the raw binary layout. Zero means the timing/channel mapping is still unknown; the recording cannot open until those fields are verified."}</p>
@@ -6668,7 +6896,7 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
         ctx.fillStyle = "#071216";
         ctx.fillRect(0, 0, width, height);
         const status = overview
-          ? "Zoom in for spectrum — wide views stay on the fast exact-extrema overview"
+          ? "Wide view: amplitude envelope + activity trend · zoom in for exact waveform and spectrum"
           : sampleRate < 2
           ? "Spectrum unavailable below 2 Hz"
           : computeError || (!spectrum ? "Computing spectrum…" : "");

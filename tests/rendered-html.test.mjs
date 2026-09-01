@@ -395,6 +395,41 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(page, /!importBusyRef\.current\s*&&\s*event\.dataTransfer\.files\.length/);
 });
 
+test("shows actionable upload errors for unsupported, incomplete, or mismatched recordings", async () => {
+  const [page, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  const validationStart = page.indexOf("function validateUploadSelection");
+  const validationEnd = page.indexOf("function uploadErrorFrom", validationStart);
+  const validation = page.slice(validationStart, validationEnd);
+  assert.match(validation, /Unsupported file type/);
+  assert.match(validation, /file\.size\s*===\s*0/);
+  assert.match(validation, /file\.size\s*<\s*256/);
+  assert.match(validation, /file\.size\s*<\s*128/);
+  assert.match(validation, /file\.size\s*%\s*2\s*!==\s*0/);
+  assert.match(validation, /MAT and DAT files do not match/);
+
+  const importStart = page.indexOf("const importFiles");
+  const importEnd = page.indexOf("const confirmDatImport", importStart);
+  const importer = page.slice(importStart, importEnd);
+  assert.match(importer, /validateUploadSelection\(files\)/);
+  assert.match(importer, /setUploadError\(uploadFailure\)/);
+  assert.match(importer, /setShowImport\(true\)/, "a parser failure reopens the dialog so its error remains visible");
+
+  const modalStart = page.indexOf("{showImport &&");
+  const modalEnd = page.indexOf("{confirmCommit.length", modalStart);
+  const modal = page.slice(modalStart, modalEnd);
+  assert.match(modal, /className="upload-error"[^>]*role="alert"/);
+  assert.match(modal, /aria-live="assertive"/);
+  assert.match(modal, /uploadError\.files\.join/);
+  assert.match(modal, /aria-label="Dismiss upload error"/);
+  assert.match(modal, /event\.target\.value\s*=\s*""/, "the same corrected or recopied file can be selected again");
+  assert.match(styles, /\.drop-zone\.has-error\s*\{/);
+  assert.match(styles, /\.upload-error\s*\{/);
+});
+
 test("toggles each loaded tab between the recording and file structure analysis", async () => {
   const [page, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -510,7 +545,8 @@ test("reattaches non-passive waveform wheel controls after a blank session loads
   assert.match(wheelHandler, /event\.deltaX/);
   assert.match(wheelHandler, /event\.deltaY/);
   assert.match(wheelHandler, /overExpandedChannels[\s\S]*?Math\.abs\(event\.deltaY\)\s*>\s*Math\.abs\(event\.deltaX\)[\s\S]*?return/, "vertical gestures scroll expanded channels natively");
-  assert.match(wheelHandler, /setViewStartSafe\(/, "ordinary wheel and trackpad gestures pan the recording");
+  assert.match(wheelHandler, /previewViewStartSafe\(/, "ordinary wheel and trackpad gestures pan the recording without starting a read");
+  assert.match(wheelHandler, /window\.setTimeout[\s\S]*?setSignalViewStart\(wheelPanTargetRef\.current\)[\s\S]*?WHEEL_PAN_SETTLE_MS/, "signal loading starts only after panning settles");
 
   const listenerStart = page.indexOf('viewer.addEventListener("wheel"');
   const listenerEffectStart = page.lastIndexOf("useEffect(() => {", listenerStart);
@@ -806,7 +842,7 @@ test("opens queue-item details with complete notes and context", async () => {
 
 test("does not tint the waveform for whole-session labels", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const canvasDrawStart = page.indexOf("const displayStart = display.viewStart");
+  const canvasDrawStart = page.indexOf("const displayStart = viewStart");
   const drawStart = page.indexOf("for (const item of annotations)", canvasDrawStart);
   const drawEnd = page.indexOf("const traceOrder", drawStart);
   const shading = page.slice(drawStart, drawEnd);
@@ -819,17 +855,24 @@ test("does not tint the waveform for whole-session labels", async () => {
   );
 });
 
-test("refreshes signal windows during panning instead of debouncing until scrolling stops", async () => {
+test("defers signal-window loading until wheel panning settles", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const wheelStart = page.indexOf("const onViewerWheel");
+  const wheelEnd = page.indexOf("useLayoutEffect", wheelStart);
+  const wheel = page.slice(wheelStart, wheelEnd);
   const effectStart = page.lastIndexOf("useEffect(() => {", page.indexOf("const requestId = ++displayRequestIdRef.current"));
   const playbackGuard = page.indexOf("if (!hasRecording || !playing)", page.indexOf("const requestId = ++displayRequestIdRef.current"));
   const effectEnd = page.lastIndexOf("useEffect(() => {", playbackGuard);
   assert.ok(effectStart >= 0 && effectEnd > effectStart, "signal-window refresh effect is present");
   const effect = page.slice(effectStart, effectEnd);
-  assert.match(effect, /displayRefreshPendingRef\.current\s*=\s*refreshWindow/, "each pan position replaces the pending read immediately");
+  assert.match(wheel, /previewViewStartSafe\(/, "wheel frames update only the visible viewport");
+  assert.match(wheel, /clearWheelPanSettle\(\)[\s\S]*?window\.setTimeout/, "continued wheel movement restarts the settle timer");
+  assert.match(wheel, /setSignalViewStart\(wheelPanTargetRef\.current\)[\s\S]*?WHEEL_PAN_SETTLE_MS/, "the final position is committed after the gesture pauses");
+  assert.match(effect, /requiredStart\s*=\s*Math\.max\(0, signalViewStart/, "signal reads use the settled position");
+  assert.match(effect, /displayRefreshPendingRef\.current\s*=\s*refreshWindow/, "the settled request replaces any pending read");
   assert.match(effect, /pumpLatestWindow/, "the newest requested window is pumped without building a stale read backlog");
-  assert.doesNotMatch(effect, /setTimeout/, "signal refresh no longer waits for wheel momentum to stop");
   assert.match(effect, /displayAppliedRequestIdRef/, "out-of-order reads cannot overwrite a newer rendered window");
+  assert.match(page, /const displayStart = viewStart/, "the existing waveform moves continuously with the live viewport");
 });
 
 test("keeps whole-session context out of the timed tracks and preserves exact label geometry", async () => {
@@ -920,7 +963,8 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channelRowLayout\.rowStartUnits\[channel\]\s*-\s*rowScrollOffset/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
   assert.match(draw, /context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)[\s\S]*?context\.clip\(\)/, "each channel is clipped to its exact row without a minimum-height bleed");
-  assert.ok((draw.match(/confineTraceYValueToRow\(/g) ?? []).length >= 4, "direct, envelope, and midpoint paths hard-limit trace coordinates to the row without allocating point objects");
+  assert.ok((draw.match(/confineTraceYValueToRow\(/g) ?? []).length >= 2, "direct and raw reduction paths hard-limit trace coordinates to the row without allocating point objects");
+  assert.match(page, /function drawOverviewEnvelope[\s\S]*?confineTraceYValueToRow/, "the connected overview envelope is confined by the same row boundary");
   assert.match(draw, /traceYOverflowsRow/, "overflow reporting remains separate from allocation-free coordinate confinement");
   assert.match(draw, /if\s*\(overflow\)[\s\S]*?context\.closePath\(\)/, "clipped excursions leave an overflow marker");
   assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
@@ -943,6 +987,24 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(page, /const row\s*=\s*channelRowFromClientY\(event\.clientY,\s*rect\)/);
 });
 
+test("renders wide recordings as a connected amplitude envelope with an activity ribbon", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const overviewStart = page.indexOf("function drawOverviewEnvelope");
+  const overviewEnd = page.indexOf("function expectedEDFRecordBytes", overviewStart);
+  const overview = page.slice(overviewStart, overviewEnd);
+  assert.match(overview, /context\.closePath\(\)[\s\S]*?context\.fill\(\)/, "extrema form a connected filled silhouette");
+  assert.match(overview, /estimateEnvelopeActivityRate/);
+  assert.match(overview, /context\.fillRect\(left,\s*ribbonTop/, "activity is a thin time-aligned ribbon rather than vertical frequency strokes");
+
+  const envelopeBranchStart = page.indexOf("if (envelope) {");
+  const envelopeBranchEnd = page.indexOf("} else if (values.length", envelopeBranchStart);
+  const envelopeBranch = page.slice(envelopeBranchStart, envelopeBranchEnd);
+  assert.match(envelopeBranch, /drawOverviewEnvelope\(/);
+  assert.doesNotMatch(envelopeBranch, /drawContinuousTrace\(/, "bucket midpoints are not connected into a fake low-frequency waveform");
+  assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
+  assert.match(page, /Wide view: amplitude envelope \+ activity trend · zoom in for exact waveform and spectrum/);
+});
+
 test("filters padded signal data and crops back to the requested viewport", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const refreshStart = page.indexOf("const refreshWindow");
@@ -951,8 +1013,8 @@ test("filters padded signal data and crops back to the requested viewport", asyn
 
   assert.match(refresh, /filterPadSec/);
   assert.match(refresh, /processingPadSec\s*=\s*filterPadSec\s*\+\s*groupDelayPadSec/);
-  assert.match(refresh, /requiredStart\s*=\s*Math\.max\(0,\s*viewStart\s*-\s*processingPadSec\)/);
-  assert.match(refresh, /requiredEnd\s*=\s*Math\.min\(meta\.durationSec,\s*viewStart\s*\+\s*timebase\s*\+\s*processingPadSec\)/);
+  assert.match(refresh, /requiredStart\s*=\s*Math\.max\(0,\s*signalViewStart\s*-\s*processingPadSec\)/);
+  assert.match(refresh, /requiredEnd\s*=\s*Math\.min\(meta\.durationSec,\s*signalViewStart\s*\+\s*timebase\s*\+\s*processingPadSec\)/);
   assert.match(refresh, /rawWindowCacheRef\.current\.find/, "adjacent pans reuse a bounded raw window cache");
   assert.match(refresh, /source\.getWindow\(\s*cacheStart/);
   assert.match(refresh, /processDisplaySignalsOffThread/, "clinical display preparation runs off-thread before the viewport crop");

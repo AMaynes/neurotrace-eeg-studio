@@ -61,10 +61,12 @@ test("Raw DAT envelope builder preserves calibrated extrema and reports bounded 
   assert.deepEqual([...result.window.minima[0]], [-35, -75]);
   assert.deepEqual([...result.window.maxima[0]], [-5, -45]);
   assert.deepEqual([...result.window.data[0]], [-20, -60]);
+  assert.deepEqual([...result.window.variation[0]], [30, 30]);
   assert.deepEqual([...result.window.gaps[0]], [0, 0]);
   assert.deepEqual([...result.window.minima[1]], [-9, 19]);
   assert.deepEqual([...result.window.maxima[1]], [15, 31]);
   assert.deepEqual([...result.window.data[1]], [3, 25]);
+  assert.deepEqual([...result.window.variation[1]], [44, 12]);
   assert.deepEqual(result.window.channelIndices, [2, 0]);
   assert.deepEqual(result.window.channelLabels, ["C", "A"]);
   assert.deepEqual(result.window.channelUnits, ["count", "µV"]);
@@ -164,6 +166,7 @@ test("Raw DAT worker core matches the established source envelope exactly", asyn
   assert.deepEqual(actual.minima.map((channel) => [...channel]), expected.minima.map((channel) => [...channel]));
   assert.deepEqual(actual.maxima.map((channel) => [...channel]), expected.maxima.map((channel) => [...channel]));
   assert.deepEqual(actual.gaps.map((channel) => [...channel]), expected.gaps.map((channel) => [...channel]));
+  assert.deepEqual(actual.variation.map((channel) => [...channel]), expected.variation.map((channel) => [...channel]));
   assert.deepEqual(actual.sampleRates, expected.sampleRates);
   assert.deepEqual(actual.channelStartSecs, expected.channelStartSecs);
   assert.equal(actual.startSec, expected.startSec);
@@ -244,7 +247,7 @@ test("Raw DAT envelope builder keeps oversampled empty buckets neutral", async (
 test("Raw DAT envelope builder transfers each result buffer once", async () => {
   const result = await buildRawDatEnvelopeWindow(requestFor(rawDatBlob(frames)));
   const transfer = rawDatEnvelopeTransferList(result);
-  assert.equal(transfer.length, 8);
+  assert.equal(transfer.length, 10);
   assert.equal(new Set(transfer).size, transfer.length);
   assert.ok(transfer.every((buffer) => buffer instanceof ArrayBuffer && buffer.byteLength > 0));
 });
@@ -267,7 +270,7 @@ test("Raw DAT worker core builds and transfers finest-to-coarsest pyramid levels
   assert.equal(updates.at(-1).decodeMs, result.metrics.decodeMs);
 
   const transfer = rawDatEnvelopeTransferList(result);
-  assert.equal(transfer.length, 24);
+  assert.equal(transfer.length, 30);
   assert.equal(new Set(transfer).size, transfer.length);
   assert.ok(transfer.every((buffer) => buffer instanceof ArrayBuffer && buffer.byteLength > 0));
 });

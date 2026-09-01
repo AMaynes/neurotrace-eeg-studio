@@ -118,6 +118,9 @@ type EnvelopeAccumulator = {
   maxima: Float32Array;
   gaps: Uint8Array;
   data: Float32Array;
+  variation: Float32Array;
+  previousBucket: number;
+  previousValue: number;
 };
 
 type SelectedSignal = {
@@ -184,7 +187,15 @@ function makeAccumulator(bucketCount: number): EnvelopeAccumulator {
   minima.fill(Number.POSITIVE_INFINITY);
   maxima.fill(Number.NEGATIVE_INFINITY);
   data.fill(Number.NaN);
-  return { minima, maxima, gaps: new Uint8Array(bucketCount), data };
+  return {
+    minima,
+    maxima,
+    gaps: new Uint8Array(bucketCount),
+    data,
+    variation: new Float32Array(bucketCount),
+    previousBucket: -1,
+    previousValue: Number.NaN,
+  };
 }
 
 function finishAccumulator(accumulator: EnvelopeAccumulator, signal?: AbortSignal) {
@@ -427,10 +438,17 @@ export async function buildEDFEnvelopeWindow(
                 : view!.getInt16(sampleByteOffset, true);
               const value = (digital * entry.scale + entry.offset) * entry.unitScale;
               if (Number.isFinite(value)) {
+                if (accumulator.previousBucket === bucket && Number.isFinite(accumulator.previousValue)) {
+                  accumulator.variation[bucket] += Math.abs(value - accumulator.previousValue);
+                }
+                accumulator.previousBucket = bucket;
+                accumulator.previousValue = value;
                 if (value < accumulator.minima[bucket]) accumulator.minima[bucket] = value;
                 if (value > accumulator.maxima[bucket]) accumulator.maxima[bucket] = value;
               } else {
                 accumulator.gaps[bucket] = 1;
+                accumulator.previousBucket = -1;
+                accumulator.previousValue = Number.NaN;
               }
             }
             metrics.samplesDecoded += 1;
@@ -458,6 +476,7 @@ export async function buildEDFEnvelopeWindow(
     minima: selected.map((entry) => entry.accumulator.minima),
     maxima: selected.map((entry) => entry.accumulator.maxima),
     gaps: selected.map((entry) => entry.accumulator.gaps),
+    variation: selected.map((entry) => entry.accumulator.variation),
     bucketDurationSec: durationSec > 0 ? durationSec / request.bucketCount : 0,
     sampleRates: selected.map(() => effectiveRate),
     channelStartSecs: selected.map(() => startSec),
@@ -488,6 +507,7 @@ export function edfEnvelopeTransferList(result: EDFEnvelopeBuildResult): ArrayBu
     ...window.minima.map((channel) => channel.buffer),
     ...window.maxima.map((channel) => channel.buffer),
     ...window.gaps.map((channel) => channel.buffer),
+    ...(window.variation ?? []).map((channel) => channel.buffer),
   ]).map((buffer) => buffer as ArrayBuffer);
   return [...new Set(buffers)];
 }

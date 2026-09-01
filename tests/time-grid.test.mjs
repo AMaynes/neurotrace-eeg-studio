@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { adaptiveTimeGridInterval } from "../app/time-grid.ts";
+import { adaptiveTimeGridInterval, timeGridLineBudget } from "../app/time-grid.ts";
 
 test("candidate-relative views retain one-second ticks through 30 seconds", () => {
   for (const durationSec of [0.001, 1, 10, 29.999, 30]) {
@@ -52,4 +52,24 @@ test("invalid or empty durations return a safe finite interval", () => {
   for (const durationSec of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
     assert.equal(adaptiveTimeGridInterval(durationSec), 1);
   }
+});
+
+test("measured label widths reduce grid density before time labels can touch", () => {
+  const viewportWidthPx = 874;
+  const labelWidthPx = 48;
+  const targetGridLines = timeGridLineBudget(viewportWidthPx, labelWidthPx);
+  const durationSec = 3_400;
+  const intervalSec = adaptiveTimeGridInterval(durationSec, { targetGridLines });
+  const renderedSpacingPx = intervalSec / durationSec * viewportWidthPx;
+
+  assert.equal(targetGridLines, 14);
+  assert.ok(renderedSpacingPx >= labelWidthPx + 12);
+  assert.equal(timeGridLineBudget(2_000, labelWidthPx), 24);
+});
+
+test("grid line budgets retain safe defaults for invalid canvas measurements", () => {
+  assert.equal(timeGridLineBudget(Number.NaN, 48), 24);
+  assert.equal(timeGridLineBudget(800, Number.NaN), 24);
+  assert.equal(timeGridLineBudget(120, 48), 2);
+  assert.equal(timeGridLineBudget(800, 48, { minimumLabelGapPx: 32, maximumGridLines: 8 }), 8);
 });

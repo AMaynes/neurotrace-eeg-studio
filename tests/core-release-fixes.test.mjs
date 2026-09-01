@@ -347,6 +347,10 @@ test("cached exact envelopes aggregate extrema, gaps, and absolute metadata cons
       new Float32Array([12, 13, 14, 15, 16, 17, 18, 19]),
     ],
     gaps: [new Uint8Array(8), new Uint8Array(8)],
+    variation: [
+      new Float32Array([1, 2, 3, 4, 5, 6, 7, 8]),
+      new Float32Array([8, 7, 6, 5, 4, 3, 2, 1]),
+    ],
     bucketDurationSec: 0.5,
     sampleRates: [2, 2],
     channelStartSecs: [10, 10],
@@ -368,6 +372,8 @@ test("cached exact envelopes aggregate extrema, gaps, and absolute metadata cons
   assert.deepEqual([...aggregated.maxima[1]], [15, 19]);
   assert.deepEqual([...aggregated.data[1]], [12.5, 16.5]);
   assert.deepEqual([...aggregated.gaps[1]], [0, 0]);
+  assert.deepEqual([...aggregated.variation[0]], [10, 26]);
+  assert.deepEqual([...aggregated.variation[1]], [26, 10]);
   assert.equal(aggregated.startSec, 10);
   assert.equal(aggregated.durationSec, 4);
   assert.equal(aggregated.bucketDurationSec, 2);

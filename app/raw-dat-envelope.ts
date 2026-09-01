@@ -110,6 +110,9 @@ type ChannelAccumulator = {
   minima: Float32Array;
   maxima: Float32Array;
   gaps: Uint8Array;
+  variation: Float32Array;
+  previousBucket: number;
+  previousValue: number;
 };
 
 function nowMs() {
@@ -187,6 +190,9 @@ function makeAccumulator(
     minima,
     maxima,
     gaps: new Uint8Array(request.bucketCount),
+    variation: new Float32Array(request.bucketCount),
+    previousBucket: -1,
+    previousValue: Number.NaN,
   };
 }
 
@@ -204,6 +210,22 @@ function finishAccumulator(accumulator: ChannelAccumulator, signal?: AbortSignal
       accumulator.data[bucket] = (minimum + maximum) / 2;
     }
   }
+}
+
+function addChannelEnvelopeSample(accumulator: ChannelAccumulator, bucket: number, value: number) {
+  if (!Number.isFinite(value)) {
+    accumulator.gaps[bucket] = 1;
+    accumulator.previousBucket = -1;
+    accumulator.previousValue = Number.NaN;
+    return;
+  }
+  if (accumulator.previousBucket === bucket && Number.isFinite(accumulator.previousValue)) {
+    accumulator.variation[bucket] += Math.abs(value - accumulator.previousValue);
+  }
+  accumulator.previousBucket = bucket;
+  accumulator.previousValue = value;
+  if (value < accumulator.minima[bucket]) accumulator.minima[bucket] = value;
+  if (value > accumulator.maxima[bucket]) accumulator.maxima[bucket] = value;
 }
 
 function progress(
@@ -357,12 +379,7 @@ export async function buildRawDatEnvelopeWindow(
             const accumulator = accumulators[outputIndex];
             const digital = samples[frameSampleOffset + accumulator.sourceIndex];
             const value = digital * accumulator.scale + accumulator.offset;
-            if (Number.isFinite(value)) {
-              if (value < accumulator.minima[bucket]) accumulator.minima[bucket] = value;
-              if (value > accumulator.maxima[bucket]) accumulator.maxima[bucket] = value;
-            } else {
-              accumulator.gaps[bucket] = 1;
-            }
+            addChannelEnvelopeSample(accumulator, bucket, value);
           }
         }
       } else {
@@ -379,12 +396,7 @@ export async function buildRawDatEnvelopeWindow(
             const accumulator = accumulators[outputIndex];
             const digital = view.getInt16(frameByteOffset + accumulator.byteOffset, true);
             const value = digital * accumulator.scale + accumulator.offset;
-            if (Number.isFinite(value)) {
-              if (value < accumulator.minima[bucket]) accumulator.minima[bucket] = value;
-              if (value > accumulator.maxima[bucket]) accumulator.maxima[bucket] = value;
-            } else {
-              accumulator.gaps[bucket] = 1;
-            }
+            addChannelEnvelopeSample(accumulator, bucket, value);
           }
         }
       }
@@ -415,6 +427,7 @@ export async function buildRawDatEnvelopeWindow(
     minima: accumulators.map((entry) => entry.minima),
     maxima: accumulators.map((entry) => entry.maxima),
     gaps: accumulators.map((entry) => entry.gaps),
+    variation: accumulators.map((entry) => entry.variation),
     bucketDurationSec: durationSec > 0 ? durationSec / request.bucketCount : 0,
     sampleRates: accumulators.map(() => effectiveRate),
     channelStartSecs: accumulators.map(() => startSec),
@@ -445,6 +458,7 @@ export function rawDatEnvelopeTransferList(result: RawDatEnvelopeBuildResult): A
     ...window.minima.map((channel) => channel.buffer),
     ...window.maxima.map((channel) => channel.buffer),
     ...window.gaps.map((channel) => channel.buffer),
+    ...(window.variation ?? []).map((channel) => channel.buffer),
   ]).map((buffer) => buffer as ArrayBuffer);
   return [...new Set(buffers)];
 }

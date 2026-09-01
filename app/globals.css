@@ -756,9 +756,18 @@ textarea:focus-visible {
 .drop-zone { width: 100%; min-height: 128px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 1px dashed #3a6960; border-radius: 9px; background: radial-gradient(circle at 50% 35%, rgba(87, 223, 183, .1), transparent 65%), #0c1d20; color: #d8e7e3; cursor: pointer; transition: .2s; }
 .drop-zone:hover { border-color: var(--mint); background-color: #102622; transform: translateY(-1px); }
 .drop-zone.busy { pointer-events: none; opacity: .72; }
+.drop-zone.has-error { border-color: #9b4b52; background: radial-gradient(circle at 50% 35%, rgba(255, 107, 123, .09), transparent 65%), #1b1418; }
 .upload-mark { display: grid; place-items: center; width: 33px; height: 33px; border: 1px solid #3c6e64; border-radius: 50%; color: var(--mint); font-size: 18px; }
 .drop-zone strong { font-size: 11px; }
 .drop-zone small { color: #668079; font-size: 8px; }
+.upload-error { display: grid; grid-template-columns: 24px minmax(0, 1fr) 24px; align-items: start; gap: 9px; margin-top: 10px; padding: 10px; border: 1px solid #713b43; border-radius: 7px; background: #211419; color: #e7c8cc; }
+.upload-error > span { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid #9b4b52; border-radius: 50%; color: #ff7d89; font-size: 11px; font-weight: 900; }
+.upload-error > div { min-width: 0; }
+.upload-error strong { display: block; color: #ffd4d8; font-size: 9px; }
+.upload-error p { margin: 3px 0 0; color: #bd969c; font-size: 8px; line-height: 1.45; }
+.upload-error small { display: block; margin-top: 5px; overflow-wrap: anywhere; color: #8f7378; font-size: 7px; }
+.upload-error button { width: 24px; height: 24px; border: 0; background: transparent; color: #a98389; cursor: pointer; font-size: 14px; }
+.upload-error button:hover { color: #ffd4d8; }
 .format-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-top: 12px; }
 .format-cards div { min-height: 65px; display: flex; flex-direction: column; gap: 5px; padding: 8px; border: 1px solid #20383f; border-radius: 6px; background: #0a171c; }
 .format-cards strong { font-size: 8px; }

@@ -17,6 +17,7 @@ import test from "node:test";
 
 import {
   envelopeTraceRenderMode,
+  estimateEnvelopeActivityRate,
   maximumExtremaGroupsForBudget,
   measureEnvelopeTraceGeometry,
   measureRawTraceGeometry,
@@ -25,6 +26,13 @@ import {
   waveformOverviewColumnBudget,
   visitGroupedWaveformExtrema,
 } from "../app/waveform-geometry.ts";
+
+test("estimates sustained activity without calling a lone spike high frequency", () => {
+  assert.equal(estimateEnvelopeActivityRate(400, -10, 10, 10), 1);
+  assert.equal(estimateEnvelopeActivityRate(40, -10, 10, 10), 0.1);
+  assert.equal(estimateEnvelopeActivityRate(40, 2, 2, 10), 0);
+  assert.equal(estimateEnvelopeActivityRate(Number.NaN, -10, 10, 10), 0);
+});
 
 const projection = {
   widthPx: 2_048,
