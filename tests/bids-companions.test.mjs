@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   analyzeBidsCompanions,
   classifyUploadedFile,
+  detectRecordingChannelModality,
+  detectRecordingType,
   mergeSelectedFiles,
   parseTsv,
   relativeFilePath,
@@ -59,6 +61,21 @@ test("discovers and applies matching BIDS metadata, channels, participant fields
   assert.ok(!bundle.metadataSources.some((path) => path.includes("sub-02")));
   assert.equal(bundle.files.find((file) => file.path.endsWith("_eeg.edf"))?.status, "primary");
   assert.equal(bundle.files.find((file) => file.path.endsWith("_events.tsv"))?.status, "applied");
+});
+
+test("detects scalp, intracranial, simultaneous, and unknown recording types from evidence", () => {
+  assert.equal(detectRecordingType({ channelLabels: ["Fp1", "Cz", "EKG"] }), "Scalp EEG");
+  assert.equal(detectRecordingType({ channelLabels: ["SEEG LA1-REF", "SEEG LA2-REF"] }), "SEEG / iEEG");
+  assert.equal(detectRecordingType({ channelLabels: ["Fp1", "LA1", "LA2"] }), "Simultaneous scalp + iEEG");
+  assert.equal(detectRecordingType({
+    channels: [
+      { name: "F3", type: "EEG" },
+      { name: "LA1", type: "SEEG" },
+    ],
+  }), "Simultaneous scalp + iEEG");
+  assert.equal(detectRecordingType({ channelLabels: Array.from({ length: 128 }, (_, index) => `CH${index + 1}`) }), "Unknown recording type");
+  assert.equal(detectRecordingType({ recordingPath: "sub-01_task-rest_ieeg.edf" }), "SEEG / iEEG");
+  assert.equal(detectRecordingChannelModality("ECG", "ECG"), "unknown");
 });
 
 test("applies more-specific inherited JSON after task-level metadata", async () => {

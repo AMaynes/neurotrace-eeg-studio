@@ -89,7 +89,7 @@ The top-bar Save control creates one versioned `.neurotrace` project file. Its c
 
 Recording bytes are processed in the browser and are not uploaded by the application. The active `File` reference and decoded signal windows remain on the user’s device.
 
-Annotation drafts, event candidates, reviewer initials, channel-quality state, and recording type are persisted in browser-local storage under a source-derived identifier. These records may contain sensitive notes even though they do not contain raw EEG. Clearing the site’s browser storage removes that recovery state; exported bundles are ordinary local files managed by the user.
+Annotation drafts, event candidates, reviewer initials, and channel-quality state are persisted in browser-local storage under a source-derived identifier. Recording type is detected from BIDS metadata, channel types, and channel labels rather than saved as reviewer input. These records may contain sensitive notes even though they do not contain raw EEG. Clearing the site’s browser storage removes that recovery state; exported bundles are ordinary local files managed by the user.
 
 GitHub Pages receives normal requests for the application’s static HTML, JavaScript, CSS, and image assets. Hospital use still requires the institution’s security, privacy, governance, deployment, and validation process.
 

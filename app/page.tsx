@@ -109,6 +109,8 @@ import {
 } from "./waveform-viewport";
 import {
   analyzeBidsCompanions,
+  detectRecordingChannelModality,
+  detectRecordingType,
   emptyBidsCompanionBundle,
   mergeSelectedFiles,
   relativeFilePath,
@@ -424,7 +426,6 @@ type SessionWorkspaceSnapshot = {
   customTools: NeurotraceCustomToolAsset[];
   meta: RecordingMeta;
   sessionKey: string;
-  recordingType: string;
   reviewer: string;
   viewStart: number;
   timebase: number;
@@ -682,6 +683,7 @@ async function prepareSourceImportContext(
   const bundle = await analyzeBidsCompanions(uploadedFileInputs, {
     recordingFile: primary,
     channelCount: source.meta.channelCount,
+    channelLabels: source.meta.channelLabels,
   });
   const additionalRecordings = bundle.files.filter((file) =>
     file.role === "recording" && file.status === "available").length;
@@ -934,7 +936,6 @@ type RecoveredProject = {
   activeCandidate: number;
   badChannels: number[];
   reviewer: string | null;
-  recordingType: string | null;
   matlabExportIdentity: MatlabExportIdentity | null;
 };
 
@@ -988,7 +989,6 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
     throw new Error("Project event position is invalid");
   }
   if (project.reviewer !== undefined && typeof project.reviewer !== "string") throw new Error("Project reviewer is invalid");
-  if (project.recordingType !== undefined && typeof project.recordingType !== "string") throw new Error("Project recording type is invalid");
   if (project.matlabExportIdentity !== undefined && (
     !project.matlabExportIdentity
     || typeof project.matlabExportIdentity !== "object"
@@ -1006,7 +1006,6 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
     activeCandidate: candidates.length ? activeCandidate : 0,
     badChannels,
     reviewer: typeof project.reviewer === "string" ? project.reviewer : null,
-    recordingType: typeof project.recordingType === "string" ? project.recordingType : null,
     matlabExportIdentity: rawMatlabExportIdentity ? {
       patientId: typeof rawMatlabExportIdentity.patientId === "string" ? rawMatlabExportIdentity.patientId : "",
       matPath: typeof rawMatlabExportIdentity.matPath === "string" ? rawMatlabExportIdentity.matPath : "",
@@ -1766,7 +1765,6 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     customTools: [],
     meta: sourceMeta(source),
     sessionKey: `blank-${id}`,
-    recordingType: "Scalp EEG",
     reviewer: "",
     viewStart: 0,
     timebase: 20,
@@ -2027,7 +2025,12 @@ export default function Home() {
   const [activeSessionId, setActiveSessionId] = useState("initial-session");
   const activeSessionContentView = sessionTabs.find((tab) => tab.id === activeSessionId)?.contentView ?? "recording";
   const [sessionKey, setSessionKey] = useState("blank-initial-session");
-  const [recordingType, setRecordingType] = useState("Scalp EEG");
+  const recordingType = useMemo(() => detectRecordingType({
+    recordingPath: primaryFile ? relativeFilePath(primaryFile) : meta.name,
+    metadata: companionBundle.metadata,
+    channels: companionBundle.channels,
+    channelLabels: meta.channelLabels,
+  }), [companionBundle.channels, companionBundle.metadata, meta.channelLabels, meta.name, primaryFile]);
   const [viewStart, setViewStart] = useState(0);
   const [signalViewStart, setSignalViewStart] = useState(0);
   const [timebase, setTimebase] = useState(20);
@@ -2289,7 +2292,6 @@ export default function Home() {
       customTools,
       meta,
       sessionKey,
-      recordingType,
       reviewer,
       viewStart,
       timebase,
@@ -2327,7 +2329,6 @@ export default function Home() {
           activeCandidate: snapshot.activeCandidate,
           badChannels: snapshot.badChannels,
           reviewer: snapshot.reviewer,
-          recordingType: snapshot.recordingType,
           matlabExportIdentity: matlabExportIdentityFromInterpretation(snapshot.sourceInterpretation),
           savedAt: new Date().toISOString(),
         }));
@@ -2340,7 +2341,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recordingType, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, uploadedFileInputs, viewStart]);
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, uploadedFileInputs, viewStart]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2382,7 +2383,6 @@ export default function Home() {
     setCustomTools(snapshot.customTools ?? []);
     setMeta(snapshot.meta);
     setSessionKey(snapshot.sessionKey);
-    setRecordingType(snapshot.recordingType);
     setReviewer(snapshot.reviewer);
     commitViewStart(snapshot.viewStart);
     setTimebase(snapshot.timebase);
@@ -3221,7 +3221,6 @@ export default function Home() {
           activeCandidate,
           badChannels: [...badChannels],
           reviewer,
-          recordingType,
           matlabExportIdentity: matlabExportIdentityFromInterpretation(sourceInterpretation),
           savedAt: new Date().toISOString(),
         }));
@@ -3234,7 +3233,7 @@ export default function Home() {
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, hasRecording, recordingType, reviewer, sessionKey, sourceInterpretation, verifyingSource]);
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, hasRecording, reviewer, sessionKey, sourceInterpretation, verifyingSource]);
 
   useEffect(() => {
     displayAbortRef.current?.abort();
@@ -5395,7 +5394,6 @@ export default function Home() {
     setActiveCandidate(0);
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
-    setRecordingType(nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG");
     setReviewer("");
     annotationsRef.current = [];
     setAnnotations([]);
@@ -5626,6 +5624,7 @@ export default function Home() {
         const mergedBundle = await analyzeBidsCompanions(mergedInputs, {
           recordingFile: duplicateSnapshot.primaryFile ?? file,
           channelCount: duplicateSnapshot.source.meta.channelCount,
+          channelLabels: duplicateSnapshot.source.meta.channelLabels,
         });
         applyCompanionBundleToMeta(duplicateSnapshot.source.meta, mergedBundle);
         const imported = bidsEventAnnotations(
@@ -5651,7 +5650,6 @@ export default function Home() {
           ...duplicateSnapshot.badChannels,
           ...mergedBundle.badChannelIndices,
         ])];
-        if (mergedBundle.recordingType) duplicateSnapshot.recordingType = mergedBundle.recordingType;
       }
       if (sourceVerificationAbortRef.current === verificationAbortController) {
         sourceVerificationAbortRef.current = null;
@@ -5668,8 +5666,6 @@ export default function Home() {
     let restoredActiveCandidate = 0;
     let restoredBadChannels: number[] = [];
     let restoredReviewer: string | null = null;
-    let restoredRecordingType = importContext?.companionBundle.recordingType
-      ?? (nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG");
     let restoredMatlabExportIdentity: MatlabExportIdentity | null = null;
     let recoveryWarning: string | null = null;
     let usedLegacyRecoveryKey = false;
@@ -5715,7 +5711,6 @@ export default function Home() {
         restoredActiveCandidate = project.activeCandidate;
         restoredBadChannels = project.badChannels;
         restoredReviewer = project.reviewer;
-        if (project.recordingType) restoredRecordingType = project.recordingType;
         restoredMatlabExportIdentity = project.matlabExportIdentity;
       } catch {
         const preserved = preserveUnreadableRecovery("project", projectJson);
@@ -5768,7 +5763,6 @@ export default function Home() {
     setBadChannels(new Set(restoredBadChannels));
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
-    setRecordingType(restoredRecordingType);
     setReviewer(restoredReviewer ?? "");
     annotationsRef.current = restored;
     setAnnotations(restored);
@@ -5805,6 +5799,7 @@ export default function Home() {
         const bundle = await analyzeBidsCompanions(mergedFiles, {
           recordingFile: primaryFile,
           channelCount: hasRecording ? sourceRef.current.meta.channelCount : undefined,
+          channelLabels: hasRecording ? sourceRef.current.meta.channelLabels : undefined,
         });
         setUploadedFileInputs(mergedFiles);
         setCompanionBundle(bundle);
@@ -5824,7 +5819,6 @@ export default function Home() {
             annotationsRef.current = next;
             return next;
           });
-          if (bundle.recordingType) setRecordingType(bundle.recordingType);
           setToast(`${files.length} file${files.length === 1 ? "" : "s"} added · ${bundle.files.filter((file) => file.status === "applied").length} companions applied · ${bundle.events.length} BIDS events found`);
         } else {
           setToast(`${files.length} file${files.length === 1 ? "" : "s"} catalogued · add a supported EDF, MAT, or DAT recording to attach the metadata`);
@@ -6191,7 +6185,13 @@ export default function Home() {
         item.notes,
       ].map(tsvCell).join("\t");
     })].join("\n");
-    const channelsTsv = ["name\ttype\tunits\tsampling_frequency\tstatus\tstatus_description", ...meta.channelLabels.map((name, index) => [name, recordingType.includes("SEEG") ? "SEEG" : "EEG", meta.channelUnits[index] ?? "uV", meta.sampleRates[index] ?? sampleRate, badChannels.has(index) ? "bad" : "good", badChannels.has(index) ? "Reviewer-excluded channel" : ""].map(tsvCell).join("\t"))].join("\n");
+    const exportedChannelType = (name: string, index: number) => {
+      const declaredType = companionBundle.channels[index]?.type.trim().toUpperCase();
+      if (declaredType && declaredType !== "N/A") return declaredType;
+      const modality = detectRecordingChannelModality(name);
+      return modality === "intracranial" ? "SEEG" : modality === "scalp" ? "EEG" : "MISC";
+    };
+    const channelsTsv = ["name\ttype\tunits\tsampling_frequency\tstatus\tstatus_description", ...meta.channelLabels.map((name, index) => [name, exportedChannelType(name, index), meta.channelUnits[index] ?? "uV", meta.sampleRates[index] ?? sampleRate, badChannels.has(index) ? "bad" : "good", badChannels.has(index) ? "Reviewer-excluded channel" : ""].map(tsvCell).join("\t"))].join("\n");
     const windowRows = ["patient_id,session_id,start_sec,end_sec,start_sample,end_sample,sample_basis,entire_session_context,timed_context,windowed_labels,instance_labels,next_seizure_sec,windowed_confidence,instance_confidence,windowed_origins,instance_origins,bad_channel_mask,split"];
     const seizureStarts = committed.filter((item) => item.labelId === "ictal").map((item) => item.start).sort((a, b) => a - b);
     const entireSessionContext = committed
@@ -6943,7 +6943,7 @@ export default function Home() {
             <>
               <div className="recording-file-line"><strong title={meta.name}>{shortFileName(meta.name)}</strong><span>File type: {meta.format.toUpperCase()}</span></div>
               <div className="recording-stats">{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</div>
-              <label className="recording-type-line"><span>Recording type:</span><select value={recordingType} onChange={(event) => setRecordingType(event.target.value)}><option>SEEG / iEEG</option><option>Scalp EEG</option><option>Simultaneous scalp + iEEG</option><option>Other ephys</option></select></label>
+              <div className="recording-type-line"><span>Recording type:</span><strong>{recordingType}</strong></div>
             </>
           </section>}
 

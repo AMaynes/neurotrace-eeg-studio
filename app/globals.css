@@ -2021,15 +2021,10 @@ textarea:focus-visible {
   color: #869b9f;
   font-size: 9px;
 }
-.recording-type-line select {
-  min-width: 0;
-  height: 27px;
-  border: 1px solid #294149;
-  border-radius: 4px;
-  background: #0d1b20;
+.recording-type-line strong {
   color: #cbd9d9;
-  padding: 0 5px;
   font-size: 9px;
+  font-weight: 600;
 }
 .session-map-row,
 .patient-info-disclosure {

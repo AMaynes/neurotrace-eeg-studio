@@ -326,6 +326,18 @@ test("finite clipped waveform samples remain connected when zoom rebuilds the tr
   assert.match(directTrace, /overflow\s*=\s*drawContinuousTrace\(/, "zoomed raw traces reuse the continuous clipping path");
 });
 
+test("detects recording modality instead of accepting a manual recording-type selection", async () => {
+  const page = await pageSource();
+  const detection = section(page, "const recordingType = useMemo", "const [viewStart");
+  const summary = section(page, "{hasRecording && <section className=\"recording-summary\">", "</section>}");
+
+  assert.match(detection, /detectRecordingType\(/);
+  assert.match(detection, /channelLabels:\s*meta\.channelLabels/);
+  assert.match(summary, /<strong>\{recordingType\}<\/strong>/);
+  assert.doesNotMatch(summary, /<select/);
+  assert.doesNotMatch(page, /setRecordingType|channelLabels\.length\s*>\s*64\s*\?\s*"SEEG \/ iEEG"/);
+});
+
 test("measures the waveform after a recording mounts or returns from file info", async () => {
   const page = await pageSource();
   const resize = section(page, "useLayoutEffect(() => {\n    const canvas = canvasRef.current", "const updateExpandedChannelViewport");

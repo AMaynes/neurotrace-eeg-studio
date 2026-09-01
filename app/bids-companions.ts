@@ -68,13 +68,29 @@ export interface BidsCompanionBundle {
   badChannelIndices: number[];
   subjectId: string | null;
   sessionId: string | null;
-  recordingType: string | null;
+  recordingType: DetectedRecordingType | null;
   warnings: string[];
 }
 
 export interface CompanionAnalysisOptions {
   recordingFile?: File | null;
   channelCount?: number;
+  channelLabels?: readonly string[];
+}
+
+export type DetectedRecordingType =
+  | "Scalp EEG"
+  | "SEEG / iEEG"
+  | "Simultaneous scalp + iEEG"
+  | "Unknown recording type";
+
+export type RecordingChannelModality = "scalp" | "intracranial" | "unknown";
+
+export interface RecordingTypeEvidence {
+  recordingPath?: string;
+  metadata?: Readonly<Record<string, unknown>>;
+  channels?: readonly Pick<BidsChannelRecord, "name" | "type">[];
+  channelLabels?: readonly string[];
 }
 
 type ParsedBidsName = {
@@ -267,12 +283,68 @@ function isGenericMetadata(path: string, parsed: ParsedBidsName): boolean {
   return GENERIC_METADATA_NAMES.has(name) || APPLICABLE_JSON_SUFFIXES.has(parsed.suffix);
 }
 
-function recordingTypeFrom(recording: ParsedBidsName | null, metadata: Record<string, unknown>): string | null {
-  if (recording?.suffix === "ieeg") return "SEEG / iEEG";
-  if (recording?.suffix === "eeg") return "Scalp EEG";
-  if (typeof metadata.iEEGReference === "string") return "SEEG / iEEG";
-  if (typeof metadata.EEGReference === "string") return "Scalp EEG";
-  return null;
+const INTRACRANIAL_CHANNEL_TYPES = new Set(["SEEG", "ECOG", "IEEG", "DBS"]);
+const AUXILIARY_CHANNEL_GROUPS = new Set([
+  "AUX", "CH", "CHAN", "CHANNEL", "DC", "ECG", "EKG", "EMG", "EOG", "GND", "MARK", "MISC", "REF", "STI", "SYNC", "TRIG",
+]);
+
+export function detectRecordingChannelModality(label: string, declaredType = ""): RecordingChannelModality {
+  const normalizedType = declaredType.trim().toUpperCase();
+  if (normalizedType === "EEG") return "scalp";
+  if (INTRACRANIAL_CHANNEL_TYPES.has(normalizedType)) return "intracranial";
+
+  const normalizedLabel = label
+    .trim()
+    .toUpperCase()
+    .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/, "")
+    .replace(/[\s_-]/g, "");
+  if (/^(?:SEEG|ECOG|IEEG|POL)/.test(normalizedLabel)) return "intracranial";
+  const scalp = /^(?:FP|AF|FT|FC|TP|CP|PO|F|T|C|P|O|A|M)(?:Z|\d{1,2})$/.exec(
+    normalizedLabel.replace(/^EEG/, ""),
+  );
+  if (scalp) return "scalp";
+  const contact = /^([A-Z]+)\d+$/.exec(normalizedLabel.replace(/^EEG/, ""));
+  if (contact && !AUXILIARY_CHANNEL_GROUPS.has(contact[1])) return "intracranial";
+  return "unknown";
+}
+
+function recordingTypeForModalities(hasScalp: boolean, hasIntracranial: boolean): DetectedRecordingType {
+  if (hasScalp && hasIntracranial) return "Simultaneous scalp + iEEG";
+  if (hasIntracranial) return "SEEG / iEEG";
+  if (hasScalp) return "Scalp EEG";
+  return "Unknown recording type";
+}
+
+export function detectRecordingType(evidence: RecordingTypeEvidence): DetectedRecordingType {
+  const typedModalities = (evidence.channels ?? [])
+    .map((channel) => detectRecordingChannelModality(channel.name, channel.type));
+  if (typedModalities.some((modality) => modality !== "unknown")) {
+    return recordingTypeForModalities(
+      typedModalities.includes("scalp"),
+      typedModalities.includes("intracranial"),
+    );
+  }
+
+  const labelModalities = (evidence.channelLabels ?? [])
+    .map((label) => detectRecordingChannelModality(label));
+  if (labelModalities.some((modality) => modality !== "unknown")) {
+    return recordingTypeForModalities(
+      labelModalities.includes("scalp"),
+      labelModalities.includes("intracranial"),
+    );
+  }
+
+  const metadata = evidence.metadata ?? {};
+  const hasScalpMetadata = typeof metadata.EEGReference === "string";
+  const hasIntracranialMetadata = typeof metadata.iEEGReference === "string";
+  if (hasScalpMetadata || hasIntracranialMetadata) {
+    return recordingTypeForModalities(hasScalpMetadata, hasIntracranialMetadata);
+  }
+
+  const suffix = evidence.recordingPath ? parseBidsName(evidence.recordingPath).suffix : "";
+  if (suffix === "ieeg") return "SEEG / iEEG";
+  if (suffix === "eeg") return "Scalp EEG";
+  return "Unknown recording type";
 }
 
 export async function analyzeBidsCompanions(
@@ -425,7 +497,12 @@ export async function analyzeBidsCompanions(
   if (bundle.events.length) {
     bundle.metadata.BIDSEventRows = bundle.events.length;
   }
-  bundle.recordingType = recordingTypeFrom(recording, bundle.metadata);
+  bundle.recordingType = detectRecordingType({
+    recordingPath,
+    metadata: bundle.metadata,
+    channels: bundle.channels,
+    channelLabels: options.channelLabels,
+  });
 
   bundle.files = files.map((file) => {
     const key = selectedFileKey(file);
