@@ -68,7 +68,14 @@ import { buildEDFEnvelopeWindowOffThread } from "./edf-envelope-worker-client";
 import type { EDFEnvelopeProgress } from "./edf-envelope";
 import { buildRawDatEnvelopeWindowOffThread } from "./raw-dat-envelope-worker-client";
 import { computeSpectrogramOffThread } from "./spectrogram-worker-client";
-import type { SpectrogramComputeResult } from "./spectrogram-compute";
+import {
+  BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ,
+  BUZCODE_DEFAULT_SMOOTHING_SECONDS,
+  BUZCODE_SMOOTHING_OPTIONS,
+  displaySpectrogramPowers,
+  thetaRatioOverlay,
+  type SpectrogramComputeResult,
+} from "./spectrogram-compute";
 import {
   PerformanceDiagnosticsCollector,
   type DiagnosticsOperationHandle,
@@ -425,7 +432,7 @@ const CHANNEL_RAIL_HEADER_HEIGHT = 28;
 const ANATOMICAL_GROUP_GAP_ROWS = 4;
 const DEFAULT_SPECTROGRAM_HEIGHT = 138;
 const MIN_SPECTROGRAM_HEIGHT = 96;
-const MAX_SPECTROGRAM_HEIGHT = 480;
+const MAX_SPECTROGRAM_HEIGHT = 4096;
 const LEGACY_SEIZURE_EVENT_TERMS = ["sz", "seiz", "tonic", "eeg onset", "ictal"] as const;
 const SUPPORTED_RECORDING_EXTENSIONS = new Set(["edf", "mat", "dat"]);
 const SIGNAL_ERROR_CODES = new Set<SignalErrorCode>([
@@ -861,6 +868,7 @@ const RAW_WINDOW_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 const ENVELOPE_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
 const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
 const INITIAL_PREVIEW_READ_BUDGET_BYTES = 16 * 1024 * 1024;
+const SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES = 32 * 1024 * 1024;
 const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES;
 const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 // The waveform is continuously repainted while navigating. A HiDPI backing
@@ -2986,10 +2994,17 @@ export default function Home() {
       }
       setLoadingSignal(true);
       try {
+        const exactSpectrogramInputBytes = indices.reduce((bytes, index) => {
+          const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
+          return bytes + Math.ceil(sampleRate * timebase) * Float32Array.BYTES_PER_ELEMENT;
+        }, 0);
+        const spectrogramCanUseExactSamples = spectrogramOpen
+          && exactSpectrogramInputBytes <= SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES;
         const useEnvelopePath = !filters.enabled
           && montage === "referential"
           && waveformWidth >= MIN_WAVEFORM_WIDTH_FOR_ENVELOPE
           && typeof source.getEnvelopeWindow === "function"
+          && !spectrogramCanUseExactSamples
           && indices.some((index) =>
             (meta.sampleRates[index] ?? primarySampleRate(meta)) * timebase > Math.max(2, waveformWidth * 1.5));
         const filterPadSec = filters.enabled
@@ -3653,7 +3668,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
+  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, signalViewStart, spectrogramOpen, timebase, verifyingSource, waveformWidth]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -4757,6 +4772,15 @@ export default function Home() {
     if (!viewer) return;
     const viewerRect = viewer.getBoundingClientRect();
     const canvasShell = event.target instanceof Element ? event.target.closest(".canvas-shell") : null;
+    const spectrogramShell = event.target instanceof Element ? event.target.closest(".spectrogram-canvas-shell") : null;
+    if (spectrogramShell) {
+      event.preventDefault();
+      const rect = spectrogramShell.getBoundingClientRect();
+      const anchor = viewStart
+        + clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * timebase;
+      setTimeWindow(timebase * (event.deltaY > 0 ? 1.25 : 0.75), anchor);
+      return;
+    }
     const rect = canvasShell?.getBoundingClientRect() ?? viewerRect;
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault();
@@ -5908,6 +5932,7 @@ export default function Home() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
+      if (target?.closest(".spectrogram-panel")) return;
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
@@ -6465,7 +6490,22 @@ export default function Home() {
               </div>
             </div>
 
-            {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={display.startSecs[focusedChannel] ?? display.viewStart} cursor={cursorTime} label={formatDisplayChannelLabel(display.labels[focusedChannel] || "Focused channel")} overview={Boolean(display.envelopes[focusedChannel])} />}
+            {spectrogramOpen && <SpectrogramPanel
+              data={display.data[focusedChannel]}
+              sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)}
+              viewStart={viewStart}
+              viewDuration={timebase}
+              sessionDuration={meta.durationSec}
+              cursor={cursorTime}
+              label={formatDisplayChannelLabel(display.labels[focusedChannel] || "Focused channel")}
+              overview={Boolean(display.envelopes[focusedChannel])}
+              onPreviewStart={previewViewStartSafe}
+              onCommitStart={(start) => commitViewStart(clamp(start, 0, Math.max(0, meta.durationSec - timebase)))}
+              onCenter={jumpTo}
+              onZoom={(factor, anchor) => setTimeWindow(timebase * factor, anchor)}
+              onZoomRange={zoomToTimeRange}
+              onReset={() => setTimeWindow(meta.durationSec, meta.durationSec / 2)}
+            />}
 
             {bottomTracksOpen && <div
               className={`timeline ${annotationSelectionBox ? "box-selecting" : ""}`}
@@ -6891,21 +6931,60 @@ function availableSpectrogramHeight(panel: HTMLDivElement | null) {
   const viewer = panel?.parentElement;
   if (!panel || !viewer) return MAX_SPECTROGRAM_HEIGHT;
   const waveform = viewer.querySelector<HTMLElement>(".waveform-wrap");
-  const waveformMinimumHeight = waveform
-    ? Number.parseFloat(window.getComputedStyle(waveform).minHeight) || 0
-    : 0;
   const fixedSiblingHeight = Array.from(viewer.children).reduce((height, child) => {
     if (child === panel || child === waveform) return height;
     return height + child.getBoundingClientRect().height;
   }, 0);
   return clamp(
-    viewer.clientHeight - waveformMinimumHeight - fixedSiblingHeight,
+    viewer.clientHeight - fixedSiblingHeight,
     MIN_SPECTROGRAM_HEIGHT,
     MAX_SPECTROGRAM_HEIGHT,
   );
 }
 
-function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: { data?: Float32Array; sampleRate: number; start: number; cursor: number; label: string; overview: boolean }) {
+type SpectrogramAction = "browse" | "zoom" | "frequency";
+
+type SpectrogramPanelProps = {
+  data?: Float32Array;
+  sampleRate: number;
+  viewStart: number;
+  viewDuration: number;
+  sessionDuration: number;
+  cursor: number;
+  label: string;
+  overview: boolean;
+  onPreviewStart(start: number): void;
+  onCommitStart(start: number): void;
+  onCenter(time: number): void;
+  onZoom(factor: number, anchor: number): void;
+  onZoomRange(start: number, end: number): void;
+  onReset(): void;
+};
+
+function matlabJet(value: number) {
+  const scaled = 4 * clamp(value, 0, 1);
+  const red = clamp(Math.min(scaled - 1.5, -scaled + 4.5), 0, 1);
+  const green = clamp(Math.min(scaled - 0.5, -scaled + 3.5), 0, 1);
+  const blue = clamp(Math.min(scaled + 0.5, -scaled + 2.5), 0, 1);
+  return `rgb(${Math.round(red * 255)} ${Math.round(green * 255)} ${Math.round(blue * 255)})`;
+}
+
+function SpectrogramPanel({
+  data,
+  sampleRate,
+  viewStart,
+  viewDuration,
+  sessionDuration,
+  cursor,
+  label,
+  overview,
+  onPreviewStart,
+  onCommitStart,
+  onCenter,
+  onZoom,
+  onZoomRange,
+  onReset,
+}: SpectrogramPanelProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ pointerId: number; startY: number; startHeight: number; maximumHeight: number } | null>(null);
@@ -6919,6 +6998,34 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
   const spectrumStateMatches = spectrumState.data === data && spectrumState.sampleRate === sampleRate;
   const spectrum = spectrumStateMatches ? spectrumState.result : null;
   const computeError = spectrumStateMatches ? spectrumState.error : "";
+  const previousHeightRef = useRef(DEFAULT_SPECTROGRAM_HEIGHT);
+  const interactionRef = useRef<{
+    pointerId: number;
+    button: number;
+    detail: number;
+    startX: number;
+    currentX: number;
+    originalViewStart: number;
+    mode: "pan" | "zoom";
+  } | null>(null);
+  const [action, setAction] = useState<SpectrogramAction>("browse");
+  const [smoothingSeconds, setSmoothingSeconds] = useState(BUZCODE_DEFAULT_SMOOTHING_SECONDS);
+  const [displayMaxHz, setDisplayMaxHz] = useState(BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ);
+  const [colorLimitShift, setColorLimitShift] = useState(0);
+  const [overlay, setOverlay] = useState<"none" | "theta">("none");
+  const [zoomSelection, setZoomSelection] = useState<{ left: number; width: number } | null>(null);
+  const [showSpectrogramHelp, setShowSpectrogramHelp] = useState(false);
+  const displayedPowers = useMemo(
+    () => spectrum ? displaySpectrogramPowers(spectrum, smoothingSeconds) : null,
+    [smoothingSeconds, spectrum],
+  );
+  const thetaRatio = useMemo(
+    () => spectrum && overlay === "theta" ? thetaRatioOverlay(spectrum, smoothingSeconds) : null,
+    [overlay, smoothingSeconds, spectrum],
+  );
+  const maximumDisplayHz = Math.max(1, Math.floor((spectrum?.maxHz ?? displayMaxHz) / 10) * 10 || spectrum?.maxHz || displayMaxHz);
+  const minimumDisplayHz = Math.min(10, maximumDisplayHz);
+  const effectiveDisplayMaxHz = clamp(displayMaxHz, minimumDisplayHz, maximumDisplayHz);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -6948,9 +7055,9 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
     const abortController = new AbortController();
     const inputBytes = data.byteLength;
     const operation = performanceDiagnostics.beginDecode({
-      label: "Spectrogram DFT",
+      label: "Buzcode multitaper spectrogram",
       totalBytes: inputBytes,
-      phase: "Computing spectrum in worker",
+      phase: "Whitening and computing DPSS spectrum",
     });
     void computeSpectrogramOffThread({ data, sampleRate }, { signal: abortController.signal }).then(
       (result) => {
@@ -6998,53 +7105,131 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         const width = rect.width;
         const height = rect.height;
+        const plotLeft = 42;
+        const plotRight = 9;
+        const plotTop = 34;
+        const plotBottom = 22;
+        const plotWidth = Math.max(1, width - plotLeft - plotRight);
+        const plotHeight = Math.max(1, height - plotTop - plotBottom);
         ctx.fillStyle = "#071216";
         ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = "#02080a";
+        ctx.fillRect(plotLeft, plotTop, plotWidth, plotHeight);
         const status = overview
-          ? "Wide view: dark green → lime → yellow → orange marks distance beyond ±100 µV · zoom in for exact waveform and spectrum"
+          ? "Wide view: green glow marks peaks beyond the visible µV range · dark green → lime → yellow → orange marks distance beyond ±100 µV · zoom in for exact one-second multitaper bins"
           : sampleRate < 2
           ? "Spectrum unavailable below 2 Hz"
-          : computeError || (!spectrum ? "Computing spectrum…" : "");
+          : computeError || (!spectrum ? "AR whitening · computing five DPSS tapers…" : "");
         if (status) {
-          ctx.fillStyle = "rgba(235,245,243,.55)";
+          ctx.fillStyle = "rgba(235,245,243,.6)";
           ctx.font = "10px ui-monospace, monospace";
-          ctx.fillText(status, 8, 12);
+          ctx.fillText(status, plotLeft + 8, plotTop + 16);
           return;
         }
-        if (!spectrum) return;
-        const { powers, frames, bins, maxHz } = spectrum;
-        const flat = Array.from(powers).filter(Number.isFinite).sort((a, b) => a - b);
+        if (!spectrum || !displayedPowers) return;
+        const powers = displayedPowers;
+        const finitePowers = Array.from(powers).filter(Number.isFinite);
+        if (!finitePowers.length) {
+          ctx.fillStyle = "rgba(235,245,243,.6)";
+          ctx.font = "10px ui-monospace, monospace";
+          ctx.fillText("No sufficiently complete signal frames", plotLeft + 8, plotTop + 16);
+          return;
+        }
+        const visibleBins = [...spectrum.frequencies].flatMap((frequency, index) => (
+          frequency <= effectiveDisplayMaxHz ? [index] : []
+        ));
+        const flat = visibleBins.flatMap((bin) => (
+          Array.from(powers.slice(bin * spectrum.frames, (bin + 1) * spectrum.frames)).filter(Number.isFinite)
+        )).sort((left, right) => left - right);
         if (!flat.length) {
-          ctx.fillStyle = "rgba(235,245,243,.55)";
+          ctx.fillStyle = "rgba(235,245,243,.6)";
           ctx.font = "10px ui-monospace, monospace";
-          ctx.fillText("No sufficiently complete signal frames", 8, 12);
+          ctx.fillText("No sufficiently complete signal frames", plotLeft + 8, plotTop + 16);
           return;
         }
-        const low = flat[Math.floor(flat.length * 0.08)] ?? 0;
-        const high = flat[Math.floor(flat.length * 0.97)] ?? low + 1;
-        for (let bin = 0; bin < bins; bin += 1) for (let frame = 0; frame < frames; frame += 1) {
-          const x = (frame / frames) * width;
-          const y = height - ((bin + 1) / bins) * height;
-          const power = powers[bin * frames + frame];
-          if (!Number.isFinite(power)) {
-            ctx.fillStyle = "rgba(243,187,95,.06)";
-            ctx.fillRect(x, y, width / frames + 1, height / bins + 1);
-            continue;
+        const automaticLow = flat[0] ?? 0;
+        const automaticHigh = flat.at(-1) ?? automaticLow + 1;
+        const low = automaticLow + colorLimitShift;
+        const high = automaticHigh + colorLimitShift;
+        for (const bin of visibleBins) {
+          const centerFrequency = spectrum.frequencies[bin];
+          const lowerFrequency = bin > 0
+            ? (spectrum.frequencies[bin - 1] + centerFrequency) / 2
+            : 0;
+          const upperFrequency = bin < spectrum.bins - 1
+            ? (centerFrequency + spectrum.frequencies[bin + 1]) / 2
+            : effectiveDisplayMaxHz;
+          const yTop = plotTop + plotHeight * (1 - clamp(upperFrequency / effectiveDisplayMaxHz, 0, 1));
+          const yBottom = plotTop + plotHeight * (1 - clamp(lowerFrequency / effectiveDisplayMaxHz, 0, 1));
+          for (let frame = 0; frame < spectrum.frames; frame += 1) {
+            const x = plotLeft + (frame / spectrum.frames) * plotWidth;
+            const power = displayedPowers[bin * spectrum.frames + frame];
+            if (!Number.isFinite(power)) {
+              ctx.fillStyle = "#071216";
+            } else {
+              ctx.fillStyle = matlabJet((power - low) / Math.max(1e-9, high - low));
+            }
+            ctx.fillRect(
+              x,
+              yTop,
+              plotWidth / spectrum.frames + 1,
+              Math.max(1, yBottom - yTop + 1),
+            );
           }
-          const value = clamp((power - low) / Math.max(1e-6, high - low), 0, 1);
-          const hue = 220 - value * 170;
-          ctx.fillStyle = `hsl(${hue} 76% ${18 + value * 48}%)`;
-          ctx.fillRect(x, y, width / frames + 1, height / bins + 1);
         }
-        ctx.strokeStyle = "rgba(255,255,255,.28)";
-        ctx.font = "10px ui-monospace, monospace";
-        ctx.fillStyle = "rgba(235,245,243,.72)";
-        ctx.textAlign = "left";
-        [1, 10, 30, 70, 150].filter((hz) => hz <= maxHz).forEach((hz) => {
-          const normalized = Math.log(hz) / Math.log(Math.max(1.01, maxHz));
-          const y = height - normalized * height;
-          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); ctx.fillText(`${hz} Hz`, 5, y - 2);
+
+        ctx.font = "9px ui-monospace, monospace";
+        ctx.lineWidth = 1;
+        ctx.textAlign = "right";
+        const frequencyStep = effectiveDisplayMaxHz <= 40 ? 10 : effectiveDisplayMaxHz <= 100 ? 20 : 50;
+        for (let frequency = 0; frequency <= effectiveDisplayMaxHz; frequency += frequencyStep) {
+          const y = plotTop + plotHeight * (1 - frequency / effectiveDisplayMaxHz);
+          ctx.strokeStyle = "rgba(255,255,255,.18)";
+          ctx.beginPath(); ctx.moveTo(plotLeft, y); ctx.lineTo(plotLeft + plotWidth, y); ctx.stroke();
+          ctx.fillStyle = "rgba(235,245,243,.72)";
+          ctx.fillText(`${frequency}`, plotLeft - 5, y + 3);
+        }
+        ctx.save();
+        ctx.translate(9, plotTop + plotHeight / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(235,245,243,.55)";
+        ctx.fillText("Freq. (Hz)", 0, 0);
+        ctx.restore();
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(235,245,243,.62)";
+        [0, 0.5, 1].forEach((ratio) => {
+          const x = plotLeft + ratio * plotWidth;
+          ctx.fillText(formatClock(viewStart + ratio * viewDuration, true), x, height - 6);
         });
+
+        if (thetaRatio) {
+          ctx.strokeStyle = "rgba(255,255,255,.95)";
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          let drawing = false;
+          for (let frame = 0; frame < spectrum.frames; frame += 1) {
+            const ratio = thetaRatio[frame];
+            if (!Number.isFinite(ratio)) { drawing = false; continue; }
+            const x = plotLeft + ((frame + 0.5) / spectrum.frames) * plotWidth;
+            const overlayFrequency = effectiveDisplayMaxHz / 2 + ratio * (effectiveDisplayMaxHz / 2);
+            const y = plotTop + plotHeight * (1 - overlayFrequency / effectiveDisplayMaxHz);
+            if (drawing) ctx.lineTo(x, y);
+            else { ctx.moveTo(x, y); drawing = true; }
+          }
+          ctx.stroke();
+        }
+
+        if (cursor >= viewStart && cursor <= viewStart + viewDuration) {
+          const ratio = clamp((cursor - viewStart) / Math.max(Number.EPSILON, viewDuration), 0, 1);
+          const x = plotLeft + ratio * plotWidth;
+          ctx.save();
+          ctx.strokeStyle = "rgba(255,255,255,.9)";
+          ctx.setLineDash([5, 4]);
+          ctx.beginPath(); ctx.moveTo(x, plotTop); ctx.lineTo(x, plotTop + plotHeight); ctx.stroke();
+          ctx.restore();
+        }
       } finally {
         renderSpan.finish();
       }
@@ -7056,10 +7241,39 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
       observer.disconnect();
       performanceDiagnostics.removeCanvasSurface("spectrogram");
     };
-  }, [computeError, overview, sampleRate, spectrum]);
-  const duration = data?.length && sampleRate ? data.length / sampleRate : 1;
-  const cursorLeft = clamp(((cursor - start) / duration) * 100, 0, 100);
-  return <div ref={panelRef} className="spectrogram-panel" style={{ height: spectrogramHeight }}>
+  }, [colorLimitShift, computeError, cursor, displayedPowers, effectiveDisplayMaxHz, overview, sampleRate, spectrum, thetaRatio, viewDuration, viewStart]);
+
+  const plotRatio = (clientX: number, canvas: HTMLCanvasElement) => {
+    const rect = canvas.getBoundingClientRect();
+    return clamp((clientX - rect.left - 42) / Math.max(1, rect.width - 51), 0, 1);
+  };
+  const boundedStart = (requested: number) => clamp(requested, 0, Math.max(0, sessionDuration - viewDuration));
+  const completeInteraction = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const interaction = interactionRef.current;
+    if (!interaction || interaction.pointerId !== event.pointerId) return;
+    interactionRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const distance = interaction.currentX - interaction.startX;
+    const moved = Math.abs(distance) >= 4;
+    if (interaction.mode === "pan") {
+      if (moved) {
+        onCommitStart(boundedStart(interaction.originalViewStart - (distance / Math.max(1, event.currentTarget.getBoundingClientRect().width - 51)) * viewDuration));
+      } else {
+        onCenter(viewStart + plotRatio(event.clientX, event.currentTarget) * viewDuration);
+      }
+    } else if (moved) {
+      const startTime = viewStart + plotRatio(interaction.startX, event.currentTarget) * viewDuration;
+      const endTime = viewStart + plotRatio(interaction.currentX, event.currentTarget) * viewDuration;
+      onZoomRange(startTime, endTime);
+    } else {
+      const anchor = viewStart + plotRatio(event.clientX, event.currentTarget) * viewDuration;
+      if (interaction.button === 2 && interaction.detail >= 2) onReset();
+      else onZoom(interaction.button === 2 ? 1.25 : interaction.detail >= 2 ? 0.5 : 0.75, anchor);
+    }
+    setZoomSelection(null);
+  };
+
+  return <div ref={panelRef} className={`spectrogram-panel action-${action}`} style={{ height: spectrogramHeight }}>
     <button
       className="spectrogram-resize-handle"
       type="button"
@@ -7080,6 +7294,14 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
           maximumHeight: availableSpectrogramHeight(panelRef.current),
         };
       }}
+      onDoubleClick={() => {
+        const maximum = availableSpectrogramHeight(panelRef.current);
+        setSpectrogramHeight((height) => {
+          if (height >= maximum - 2) return clamp(previousHeightRef.current, MIN_SPECTROGRAM_HEIGHT, maximum);
+          previousHeightRef.current = height;
+          return maximum;
+        });
+      }}
       onKeyDown={(event) => {
         if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
         event.preventDefault();
@@ -7091,8 +7313,109 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: 
         ));
       }}
     />
-    <div className="spectrogram-label"><strong>{label}</strong><span>{sampleRate >= 2 ? `1–${Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only` : "Sampling rate below 2 Hz"}</span></div>
-    <div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div>
+    <div className="spectrogram-label">
+      <strong title={label}>{label}</strong>
+      <span>{sampleRate >= 2 ? "AR(2) white" : "Unavailable"}</span>
+      <span>{sampleRate >= 2 ? "NW 3 · K 5" : "Sampling < 2 Hz"}</span>
+      <span>{sampleRate >= 2 ? "FFT 3072" : ""}</span>
+    </div>
+    <div className="spectrogram-canvas-shell">
+      <div className="spectrogram-toolbar" aria-label="Buzcode spectrogram controls">
+        <span className="spectrogram-action-readout">{action === "browse" ? "BROWSE" : action === "zoom" ? "ZOOM" : "FREQ"}</span>
+        <button type="button" className={action === "browse" ? "active" : ""} onClick={() => setAction("browse")} title="Browse: click to center, hold and drag to pan">B</button>
+        <button type="button" className={action === "zoom" ? "active" : ""} onClick={() => setAction((current) => current === "zoom" ? "browse" : "zoom")} title="Zoom mode (Z)">Z</button>
+        <button type="button" className={action === "frequency" ? "active" : ""} onClick={() => setAction((current) => current === "frequency" ? "browse" : "frequency")} title="Frequency resize mode (F)">F</button>
+        <button type="button" onClick={onReset} title="Reset the full time extent (R)">R</button>
+        <label>Smooth
+          <select value={smoothingSeconds} onChange={(event) => setSmoothingSeconds(Number(event.target.value))}>
+            {BUZCODE_SMOOTHING_OPTIONS.map((seconds) => <option value={seconds} key={seconds}>{seconds}s</option>)}
+          </select>
+        </label>
+        <label>Overlay
+          <select value={overlay} onChange={(event) => setOverlay(event.target.value as "none" | "theta")}>
+            <option value="none">None</option>
+            <option value="theta">θ ratio</option>
+          </select>
+        </label>
+        <span className="spectrogram-frequency-readout">0–{Math.round(effectiveDisplayMaxHz)} Hz</span>
+        <button type="button" onClick={() => setColorLimitShift((value) => value + 0.1)} title="Raise color limits (Down arrow)">C−</button>
+        <button type="button" onClick={() => setColorLimitShift((value) => value - 0.1)} title="Lower color limits (Up arrow)">C+</button>
+        <button type="button" onClick={() => setShowSpectrogramHelp((value) => !value)} aria-expanded={showSpectrogramHelp} title="Spectrogram controls">?</button>
+      </div>
+      <canvas
+        ref={ref}
+        tabIndex={0}
+        role="img"
+        aria-label={`${label} Buzcode-compatible multitaper spectrogram`}
+        onContextMenu={(event) => event.preventDefault()}
+        onPointerDown={(event) => {
+          if (event.button !== 0 && event.button !== 2) return;
+          event.preventDefault();
+          event.currentTarget.focus();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          interactionRef.current = {
+            pointerId: event.pointerId,
+            button: event.button,
+            detail: event.detail,
+            startX: event.clientX,
+            currentX: event.clientX,
+            originalViewStart: viewStart,
+            mode: action === "zoom" ? "zoom" : "pan",
+          };
+        }}
+        onPointerMove={(event) => {
+          const interaction = interactionRef.current;
+          if (!interaction || interaction.pointerId !== event.pointerId) return;
+          interaction.currentX = event.clientX;
+          const rect = event.currentTarget.getBoundingClientRect();
+          if (interaction.mode === "pan") {
+            if (Math.abs(interaction.currentX - interaction.startX) < 4) return;
+            const next = interaction.originalViewStart
+              - ((interaction.currentX - interaction.startX) / Math.max(1, rect.width - 51)) * viewDuration;
+            onPreviewStart(boundedStart(next));
+          } else {
+            const startRatio = plotRatio(interaction.startX, event.currentTarget);
+            const endRatio = plotRatio(interaction.currentX, event.currentTarget);
+            setZoomSelection({ left: Math.min(startRatio, endRatio) * 100, width: Math.abs(endRatio - startRatio) * 100 });
+          }
+        }}
+        onPointerUp={completeInteraction}
+        onPointerCancel={(event) => {
+          const interaction = interactionRef.current;
+          if (!interaction || interaction.pointerId !== event.pointerId) return;
+          interactionRef.current = null;
+          setZoomSelection(null);
+          onCommitStart(interaction.originalViewStart);
+        }}
+        onKeyDown={(event) => {
+          const key = event.key.toLowerCase();
+          if (!["arrowleft", "arrowright", "arrowup", "arrowdown", "z", "f", "r", "escape"].includes(key)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (key === "arrowleft") onCommitStart(boundedStart(viewStart - viewDuration * 0.15));
+          else if (key === "arrowright") onCommitStart(boundedStart(viewStart + viewDuration * 0.15));
+          else if (key === "arrowup") {
+            if (action === "frequency") {
+              setDisplayMaxHz((value) => Math.min(maximumDisplayHz, value + 10));
+            } else setColorLimitShift((value) => value - 0.1);
+          } else if (key === "arrowdown") {
+            if (action === "frequency") setDisplayMaxHz((value) => Math.max(minimumDisplayHz, value - 10));
+            else setColorLimitShift((value) => value + 0.1);
+          } else if (key === "z") setAction((current) => current === "zoom" ? "browse" : "zoom");
+          else if (key === "f") setAction((current) => current === "frequency" ? "browse" : "frequency");
+          else if (key === "r") onReset();
+          else if (key === "escape") { setAction("browse"); setZoomSelection(null); }
+        }}
+      />
+      {zoomSelection && <i className="spectrogram-zoom-selection" style={{ left: `${zoomSelection.left}%`, width: `${zoomSelection.width}%` }} />}
+      {showSpectrogramHelp && <div className="spectrogram-help" role="status">
+        <strong>TheStateEditor controls</strong>
+        <span>Click center · hold/drag pan · wheel zoom</span>
+        <span>←/→ shift 15% · ↑/↓ color</span>
+        <span>Z zoom · F then ↑/↓ frequency · R reset</span>
+        <span>Zoom: left in · right out · drag range · double-right reset</span>
+      </div>}
+    </div>
   </div>;
 }
 

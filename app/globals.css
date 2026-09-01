@@ -534,17 +534,33 @@ textarea:focus-visible {
 .drop-ghost { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--mint); pointer-events: none; box-shadow: 0 0 9px rgba(87, 223, 183, .5); }
 .drop-ghost span { position: absolute; top: 4px; left: 5px; padding: 3px 5px; border: 1px solid #488577; border-radius: 3px; background: #122c27; color: var(--mint); font: 8px ui-monospace, monospace; white-space: nowrap; }
 
-.spectrogram-panel { position: relative; height: 138px; flex: 0 0 auto; display: grid; grid-template-columns: 70px minmax(0, 1fr); border-bottom: 1px solid #20353c; background: #071216; }
+.signal-and-tracks.with-spectrogram .waveform-wrap { min-height: 0; }
+.spectrogram-panel { position: relative; height: 138px; flex: 0 0 auto; display: grid; grid-template-columns: 70px minmax(0, 1fr); overflow: hidden; border-bottom: 1px solid #20353c; background: #071216; }
 .spectrogram-resize-handle { position: absolute; z-index: 8; left: 0; right: 0; top: -4px; height: 9px; padding: 0; border: 0; background: transparent; cursor: ns-resize; touch-action: none; }
 .spectrogram-resize-handle::before { content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 1px; background: #2a4750; opacity: .8; }
 .spectrogram-resize-handle:hover::before,
 .spectrogram-resize-handle:focus-visible::before { height: 2px; background: var(--mint); box-shadow: 0 0 8px rgba(87, 223, 183, .25); }
-.spectrogram-label { display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 4px; padding: 0 7px; border-right: 1px solid #20353c; background: #0a171b; text-align: right; }
-.spectrogram-label strong { color: #90adb2; font: 8px ui-monospace, monospace; }
-.spectrogram-label span { color: #4e666c; font-size: 6px; line-height: 1.4; }
-.spectrogram-canvas-shell { position: relative; min-width: 0; min-height: 0; }
-.spectrogram-panel canvas { display: block; width: 100%; height: 100%; }
-.spectrogram-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--mint); pointer-events: none; box-shadow: 0 0 6px rgba(87, 223, 183, .32); }
+.spectrogram-label { min-width: 0; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 4px; padding: 0 7px; border-right: 1px solid #20353c; background: #0a171b; text-align: right; }
+.spectrogram-label strong { max-width: 100%; overflow: hidden; color: #a6bdc1; font: 8px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.spectrogram-label span { color: #506a70; font: 6px ui-monospace, monospace; line-height: 1.2; }
+.spectrogram-canvas-shell { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.spectrogram-panel canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; cursor: grab; }
+.spectrogram-panel canvas:active { cursor: grabbing; }
+.spectrogram-panel.action-zoom canvas { cursor: crosshair; }
+.spectrogram-toolbar { position: absolute; z-index: 6; top: 4px; left: 47px; right: 6px; height: 25px; display: flex; align-items: center; gap: 3px; pointer-events: none; }
+.spectrogram-toolbar > * { pointer-events: auto; }
+.spectrogram-toolbar button,
+.spectrogram-toolbar select { height: 20px; border: 1px solid #315058; border-radius: 3px; background: rgba(9, 24, 29, .94); color: #9fb7bb; font: 7px ui-monospace, monospace; }
+.spectrogram-toolbar button { min-width: 21px; padding: 0 5px; cursor: pointer; font-weight: 800; }
+.spectrogram-toolbar button:hover,
+.spectrogram-toolbar button.active { border-color: var(--mint); color: var(--mint); }
+.spectrogram-toolbar label { height: 20px; display: flex; align-items: center; gap: 3px; padding-left: 4px; color: #698188; font: 6px ui-monospace, monospace; }
+.spectrogram-toolbar select { max-width: 66px; padding: 0 3px; }
+.spectrogram-action-readout { min-width: 39px; color: var(--mint); font: 700 6px ui-monospace, monospace; letter-spacing: .06em; }
+.spectrogram-frequency-readout { margin-left: auto; color: #8fa8ad; font: 7px ui-monospace, monospace; white-space: nowrap; }
+.spectrogram-zoom-selection { position: absolute; z-index: 4; top: 34px; bottom: 22px; border: 1px dashed rgba(255, 255, 255, .9); background: rgba(255, 255, 255, .13); pointer-events: none; }
+.spectrogram-help { position: absolute; z-index: 9; top: 31px; right: 7px; display: flex; flex-direction: column; gap: 4px; max-width: 330px; padding: 9px 10px; border: 1px solid #426169; border-radius: 5px; background: rgba(7, 18, 22, .97); box-shadow: 0 12px 32px rgba(0, 0, 0, .48); color: #9fb3b7; font: 7px ui-monospace, monospace; pointer-events: none; }
+.spectrogram-help strong { color: #e1edeb; font-size: 8px; }
 
 .timeline { position: relative; flex: 0 0 auto; border-bottom: 1px solid var(--border); background: #0a161b; user-select: none; }
 .timeline.box-selecting { cursor: crosshair; }
