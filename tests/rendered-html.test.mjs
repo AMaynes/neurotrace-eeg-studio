@@ -526,9 +526,7 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(pointerHandlers, /inspectionBox: inspectionMode && pointerRef\.current\.moved/);
   assert.match(pointerHandlers, /if \(pending\.inspectionBox\) setInspectionRange\(pending\.inspectionBox\)/);
   assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end\)/);
-  assert.match(pointerHandlers, /setInspectionRowRange\(\{/);
-  assert.match(pointerHandlers, /start: fullDisplayStartRow \+ range\.startRow/);
-  assert.match(pointerHandlers, /end: fullDisplayStartRow \+ range\.endRow/);
+  assert.doesNotMatch(pointerHandlers, /setInspectionRowRange|setSelectedChannels|setExpandedChannels/, "box zoom preserves every visible channel");
   assert.match(pointerHandlers, /setSelection\(\{ start: Math\.min\(pointer\.startTime, time\), end: Math\.max\(pointer\.startTime, time\) \}\)/);
   assert.match(pointerHandlers, /choose a label/);
 
@@ -536,13 +534,15 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(page, /className="wave-inspection-range"/);
   assert.match(page, /top: `\$\{inspectionRange\.top \* 100\}%`/);
   assert.match(page, /height: `\$\{Math\.max\(0, inspectionRange\.bottom - inspectionRange\.top\) \* 100\}%`/);
-  assert.match(page, /Drag a box to zoom into both its time range and channels\./);
-  assert.match(page, /function applyDisplayRowRange/);
-  assert.match(page, /data: display\.data\.slice\(start, afterEnd\)/);
-  assert.match(page, /sourceIndices: display\.sourceIndices\.slice\(start, afterEnd\)/);
+  assert.match(page, /Drag a box to zoom its time range and inspect every channel inside it\./);
+  assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
+  assert.match(page, /const selected = inspectionDragging \? isInspectionRowHighlighted\(channel\) : channel === focusedChannel/);
+  assert.match(page, /const focused = !inspectionDragging && focusedChannel === index/);
+  assert.match(page, /inspectionHighlighted \? "inspection-highlighted"/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
   assert.match(css, /\.canvas-shell\.inspection-mode canvas\s*\{[^}]*cursor:\s*zoom-in/);
   assert.match(css, /\.wave-inspection-range\s*\{[^}]*min-height:\s*12px/);
+  assert.match(css, /\.channel-rail button\.inspection-highlighted\s*\{/);
   assert.doesNotMatch(css, /\.wave-inspection-range\s*\{[^}]*(?:top:\s*0|bottom:\s*0)/);
   assert.match(css, /\.general-info-panel\s*\{/);
 });
@@ -799,8 +799,8 @@ test("highlights a focused channel and provides compact or vertically scrollable
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /className=\{`\$\{focusedChannel\s*===\s*index\s*\?\s*"focused"\s*:\s*""\}/);
-  assert.match(page, /aria-pressed=\{focusedChannel\s*===\s*index\}/);
+  assert.match(page, /const focused = !inspectionDragging && focusedChannel === index/);
+  assert.match(page, /aria-pressed=\{focused \|\| inspectionHighlighted\}/);
   assert.match(page, /setFocusedChannel\(index\)/);
   assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
   assert.match(page, /--channel-content-height/);

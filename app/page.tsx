@@ -64,7 +64,6 @@ type AnnotationOrigin = "manual" | "imported" | "detector" | "legacy";
 type PlacementIntent = "native" | "instance" | "windowed" | "context-instance" | "context-window";
 type AnnotationDragPatch = Pick<Annotation, "start" | "end" | "track" | "geometry">;
 type AnnotationSelectionBox = { left: number; top: number; width: number; height: number };
-type DisplayRowRange = { start: number; end: number };
 type InspectionBox = {
   start: number;
   end: number;
@@ -727,26 +726,6 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function applyDisplayRowRange(display: DisplayWindow, range: DisplayRowRange | null): DisplayWindow {
-  if (!range || display.labels.length === 0) return display;
-  const start = clamp(Math.floor(Math.min(range.start, range.end)), 0, display.labels.length - 1);
-  const end = clamp(Math.ceil(Math.max(range.start, range.end)), start, display.labels.length - 1);
-  if (start === 0 && end === display.labels.length - 1) return display;
-  const afterEnd = end + 1;
-  return {
-    ...display,
-    data: display.data.slice(start, afterEnd),
-    envelopes: display.envelopes.slice(start, afterEnd),
-    labels: display.labels.slice(start, afterEnd),
-    sampleRates: display.sampleRates.slice(start, afterEnd),
-    sourceSampleRates: display.sourceSampleRates.slice(start, afterEnd),
-    startSecs: display.startSecs.slice(start, afterEnd),
-    units: display.units.slice(start, afterEnd),
-    sourceIndices: display.sourceIndices.slice(start, afterEnd),
-    primarySourceIndices: display.primarySourceIndices.slice(start, afterEnd),
-  };
-}
-
 function snapTime(value: number, mode: "1s" | "100ms" | "sample", sampleRate: number, bypass = false) {
   if (bypass) return value;
   if (mode === "1s") return Math.round(value);
@@ -1229,7 +1208,6 @@ export default function Home() {
   const [annotationSelectionBox, setAnnotationSelectionBox] = useState<AnnotationSelectionBox | null>(null);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
   const [inspectionRange, setInspectionRange] = useState<InspectionBox | null>(null);
-  const [inspectionRowRange, setInspectionRowRange] = useState<DisplayRowRange | null>(null);
   const [inspectionDragging, setInspectionDragging] = useState(false);
   const [cursorTime, setCursorTime] = useState(0);
   const [cursorAmplitude, setCursorAmplitude] = useState(0);
@@ -1541,7 +1519,6 @@ export default function Home() {
     setSelectedAnnotationIds(snapshot.selectedAnnotationId ? new Set([snapshot.selectedAnnotationId]) : new Set());
     setSelection(snapshot.selection);
     setInspectionRange(null);
-    setInspectionRowRange(null);
     setInspectionDragging(false);
     setCursorTime(snapshot.cursorTime);
     setCursorAmplitude(snapshot.cursorAmplitude);
@@ -2447,7 +2424,7 @@ export default function Home() {
           ).map((region) => ({ startSec: region.startSec, endSec: region.endSec }));
           const effectiveRate = 1 / envelopeWindow.bucketDurationSec;
           displayAppliedRequestIdRef.current = requestId;
-          const nextDisplay = applyDisplayRowRange({
+          const nextDisplay: DisplayWindow = {
             data,
             envelopes,
             labels: indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`),
@@ -2460,7 +2437,7 @@ export default function Home() {
             warnings: [],
             viewStart,
             flatlineRegions,
-          }, inspectionRowRange);
+          };
           setDisplay(nextDisplay);
           setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
           setLoadingSignal(false);
@@ -2663,7 +2640,7 @@ export default function Home() {
           return contributorUnits.length === 1 ? contributorUnits[0] : contributorUnits.length ? "mixed" : "a.u.";
         });
         displayAppliedRequestIdRef.current = requestId;
-        const nextDisplay = applyDisplayRowRange({
+        const nextDisplay: DisplayWindow = {
           data: montageResult.data,
           envelopes: montageResult.data.map(() => null),
           labels: montageResult.labels,
@@ -2676,7 +2653,7 @@ export default function Home() {
           warnings: [...montageWarnings, ...montageResult.warnings],
           viewStart,
           flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > viewStart && region.startSec < viewStart + timebase),
-        }, inspectionRowRange);
+        };
         setDisplay(nextDisplay);
         setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
         setLoadingSignal(false);
@@ -2704,7 +2681,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [badChannels, filters, hasRecording, inspectionRowRange, meta, montage, selectedChannels, spectrogramOpen, timebase, viewStart, waveformWidth]);
+  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, spectrogramOpen, timebase, viewStart, waveformWidth]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -2782,6 +2759,12 @@ export default function Home() {
         : Math.max(1, height - plotTop);
       const rowHeight = expandedChannels ? 60 : plotHeight / channelRowLayout.totalUnits;
       const rowScrollOffset = expandedChannels ? channelScrollOffset : 0;
+      const isInspectionRowHighlighted = (channel: number) => Boolean(
+        inspectionDragging
+        && inspectionRange
+        && channel >= inspectionRange.startRow
+        && channel <= inspectionRange.endRow,
+      );
 
       if (activeCandidateItem && activeCandidateItem.time >= displayStart && activeCandidateItem.time <= displayEnd) {
         const eventX = ((activeCandidateItem.time - displayStart) / timebase) * width;
@@ -2805,11 +2788,12 @@ export default function Home() {
           context.strokeStyle = "rgba(87, 223, 183, .22)";
           context.beginPath(); context.moveTo(0, rowTop - rowHeight * 2); context.lineTo(width, rowTop - rowHeight * 2); context.stroke();
         }
-        if (channel === focusedChannel) {
-          context.fillStyle = "rgba(87, 223, 183, .065)";
+        const inspectionHighlighted = isInspectionRowHighlighted(channel);
+        if (inspectionHighlighted || (!inspectionDragging && channel === focusedChannel)) {
+          context.fillStyle = inspectionHighlighted ? "rgba(102, 174, 255, .09)" : "rgba(87, 223, 183, .065)";
           context.fillRect(0, rowTop, width, rowHeight);
           if (rowHeight >= 2) {
-            context.strokeStyle = "rgba(87, 223, 183, .28)";
+            context.strokeStyle = inspectionHighlighted ? "rgba(102, 174, 255, .46)" : "rgba(87, 223, 183, .28)";
             context.strokeRect(.5, rowTop + .5, width - 1, rowHeight - 1);
           }
         }
@@ -2853,7 +2837,7 @@ export default function Home() {
         const scale = legacyRawCountDisplay
           ? (rowHeight * gain) / LEGACY_RAW_COUNTS_PER_ROW
           : (rowHeight * 0.36 * gain) / 100;
-        const selected = channel === focusedChannel;
+        const selected = inspectionDragging ? isInspectionRowHighlighted(channel) : channel === focusedChannel;
         let overflow = false;
         context.save();
         context.beginPath();
@@ -3038,7 +3022,7 @@ export default function Home() {
     };
     waveDrawRef.current = draw;
     draw();
-  }, [activeCandidateItem, activeSessionContentView, annotations, channelRowLayout, channelScrollOffset, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase]);
+  }, [activeCandidateItem, activeSessionContentView, annotations, channelRowLayout, channelScrollOffset, display, expandedChannels, focusedChannel, gain, inspectionDragging, inspectionRange, legacyRawCountDisplay, markOnset, timebase]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -3245,14 +3229,6 @@ export default function Home() {
       setInspectionRange(range);
       const horizontalDrag = Math.abs(event.clientX - pointer.startX) > 3;
       if (horizontalDrag && range.end > range.start) {
-        const fullDisplayStartRow = inspectionRowRange?.start ?? 0;
-        setInspectionRowRange({
-          start: fullDisplayStartRow + range.startRow,
-          end: fullDisplayStartRow + range.endRow,
-        });
-        setExpandedChannels(false);
-        setChannelScrollOffset(0);
-        setFocusedChannel(0);
         zoomToTimeRange(range.start, range.end);
         setToast(`Zoomed to ${range.end - range.start < 1 ? "a 1 s window" : `${(range.end - range.start).toFixed(2)} s`} across ${range.channelLabels.length} channel${range.channelLabels.length === 1 ? "" : "s"}`);
       } else {
@@ -3819,7 +3795,6 @@ export default function Home() {
     setCursorLocked(false);
     setSelection(null);
     setInspectionRange(null);
-    setInspectionRowRange(null);
     setInspectionDragging(false);
     setMarkOnset(null);
     setActiveTool("cursor");
@@ -4689,14 +4664,12 @@ export default function Home() {
     if (view === "inspect") {
       setSelection(null);
       setInspectionRange(null);
-      setInspectionRowRange(null);
       setInspectionDragging(false);
       setMarkOnset(null);
       setActiveTool("cursor");
       setToast("General info mode — click a waveform point to inspect it, or drag a box to zoom");
     } else {
       setInspectionRange(null);
-      setInspectionRowRange(null);
       setInspectionDragging(false);
       setToast("Labeling mode — drag across time to select a labeling window");
     }
@@ -4967,13 +4940,22 @@ export default function Home() {
               <div className="channel-rail" style={{ gridTemplateRows: `repeat(${channelRowLayout.totalUnits}, 1fr)` }}>
                 <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 <button className={`channel-layout-button ${expandedChannels ? "active" : ""}`} aria-label={`${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`} aria-pressed={expandedChannels} title={`${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`} onClick={() => setExpandedChannels((value) => !value)}>E</button>
-                {display.labels.map((label, index) => <button
-                  key={`${label}-${index}`}
-                  className={`${focusedChannel === index ? "focused" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
-                  style={{ gridRow: `${channelRowLayout.rowStartUnits[index] + 1} / span 1` }}
-                  aria-pressed={focusedChannel === index}
-                  onClick={() => setFocusedChannel(index)}
-                ><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>)}
+                {display.labels.map((label, index) => {
+                  const inspectionHighlighted = Boolean(
+                    inspectionDragging
+                    && inspectionRange
+                    && index >= inspectionRange.startRow
+                    && index <= inspectionRange.endRow,
+                  );
+                  const focused = !inspectionDragging && focusedChannel === index;
+                  return <button
+                    key={`${label}-${index}`}
+                    className={`${focused ? "focused" : ""} ${inspectionHighlighted ? "inspection-highlighted" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
+                    style={{ gridRow: `${channelRowLayout.rowStartUnits[index] + 1} / span 1` }}
+                    aria-pressed={focused || inspectionHighlighted}
+                    onClick={() => setFocusedChannel(index)}
+                  ><strong>{label}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>;
+                })}
               </div>
               <div className="canvas-column">
                 <div
@@ -4983,7 +4965,7 @@ export default function Home() {
                   onDrop={onLabelDrop}
                   onDragLeave={() => setDragGhost(null)}
                 >
-                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to zoom in time and channels." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
+                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to zoom in time and inspect its channels." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
                   {!inspectionMode && selection && <div className="wave-selection" style={{
                     left: `${((Math.max(display.viewStart, selection.start) - display.viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(display.viewStart + timebase, selection.end) - Math.max(display.viewStart, selection.start)) / timebase) * 100)}%`,
@@ -5693,7 +5675,7 @@ function GeneralInfoPanel({
     <header className="general-info-heading">
       <span>WAVEFORM INSPECTOR</span>
       <h2>General info</h2>
-      <p>Click a waveform point to inspect it. Drag a box to zoom into both its time range and channels.</p>
+      <p>Click a waveform point to inspect it. Drag a box to zoom its time range and inspect every channel inside it.</p>
     </header>
 
     {!hasRecording ? <div className="general-info-empty"><span>⌁</span><strong>No recording loaded</strong><p>Load a recording, then select a point or area in the waveform.</p></div> : !inspectionRange ? <div className="general-info-empty ready"><span>⌖</span><strong>Ready to inspect</strong><p>Choose any waveform row. Your selected channel, timing, amplitude, source, and nearby labels will appear here.</p></div> : <>
