@@ -233,6 +233,9 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(qc, /displayWarningKey/);
   assert.match(refresh, /maximumRawDuration/);
   assert.match(refresh, /detectEnvelopeSynchronizedFlatlines/);
+  assert.match(refresh, /const overviewColumnCount\s*=\s*waveformOverviewColumnBudget\(timebase, waveformWidth\)/);
+  assert.match(refresh, /const requiredBucketDuration\s*=\s*timebase\s*\/\s*overviewColumnCount/);
+  assert.match(refresh, /minimumCacheBuckets[\s\S]*?overviewColumnCount/);
   assert.match(refresh, /processDisplaySignalsOffThread/);
   assert.match(refresh, /requestId\s*!==\s*displayRequestIdRef\.current/);
   assert.match(refresh, /rawOwnerIsCached\s*=\s*rawWindowCacheRef\.current\.includes\(rawWindow\)/);
@@ -256,11 +259,20 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(spectrum, /No sufficiently complete signal frames/);
 
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
+  const groupedExtrema = section(page, "function drawGroupedExtrema", "function expectedEDFRecordBytes");
   assert.match(drawing, /if\s*\(rowTop\s*\+\s*rowHeight\s*<\s*plotTop\s*\|\|\s*rowTop\s*>\s*height\)\s*continue/);
   assert.match(drawing, /display\.envelopes\[channel\]/);
   assert.match(drawing, /waveformGeometryFitsBudget/);
   assert.match(drawing, /maximumExtremaGroupsForBudget/);
+  assert.match(drawing, /extremaGroupBudget/);
+  assert.match(page, /WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER\s*=\s*1\.5/);
   assert.match(drawing, /drawGroupedExtrema/);
+  assert.match(drawing, /context\.fill\(\)/);
+  assert.match(groupedExtrema, /context\.rect\(/);
+  assert.match(groupedExtrema, /interrupted/);
+  assert.match(groupedExtrema, /Math\.max\(0,\s*width\s*-\s*1\)/);
+  assert.match(groupedExtrema, /bottom\s*-\s*top\s*>\s*1/);
+  assert.doesNotMatch(groupedExtrema, /context\.stroke\(\)/);
   assert.match(drawing, /cachedGeometry/);
   assert.match(page, /MAX_WAVEFORM_CANVAS_SCALE\s*=\s*1/);
   assert.match(page, /getContext\("2d",\s*\{\s*alpha:\s*false,\s*desynchronized:\s*true\s*\}\)/);

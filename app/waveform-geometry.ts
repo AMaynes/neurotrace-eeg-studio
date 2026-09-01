@@ -42,6 +42,14 @@ export interface WaveformGeometryBudget {
   maxStrokeLengthPx: number;
 }
 
+export type GroupedExtremaVisitor = (
+  startIndex: number,
+  endIndex: number,
+  minimum: number,
+  maximum: number,
+  interrupted: boolean,
+) => void;
+
 function validateProjection(projection: TraceGeometryProjection) {
   if (!(projection.widthPx > 0) || !Number.isFinite(projection.widthPx)) {
     throw new Error("Waveform geometry width must be positive and finite.");
@@ -226,9 +234,10 @@ export function waveformGeometryGroupingStride(
 }
 
 /**
- * Produces a hard upper bound for an exact-extrema fallback. Every group costs
- * one move plus one line command and can paint at most one full row height, so
- * the returned group count remains inside both budgets for any signal values.
+ * Produces a hard path-complexity bound for an outlined exact-extrema fallback.
+ * A group contributes at most two rectangles (ten path verbs). Raster area is
+ * already bounded by the clipped row, so stroke length is only used when
+ * deciding whether the original polyline needs this fallback.
  */
 export function maximumExtremaGroupsForBudget(
   sourceCount: number,
@@ -241,7 +250,65 @@ export function maximumExtremaGroupsForBudget(
     throw new Error("Waveform geometry source count must be a non-negative whole number.");
   }
   if (sourceCount === 0) return 0;
-  const commandGroups = Math.floor(budget.maxCommands / 2);
-  const strokeGroups = Math.floor(budget.maxStrokeLengthPx / projection.rowHeightPx);
-  return Math.max(0, Math.min(sourceCount, commandGroups, strokeGroups));
+  const commandGroups = Math.floor(budget.maxCommands / 10);
+  return Math.max(0, Math.min(sourceCount, commandGroups, Math.ceil(projection.widthPx)));
+}
+
+/**
+ * Visits exact extrema groups in one source pass without allocating output
+ * arrays or dropping the finite portion of a partially missing group.
+ */
+export function visitGroupedWaveformExtrema(
+  minima: ArrayLike<number>,
+  maxima: ArrayLike<number>,
+  gaps: ArrayLike<number> | undefined,
+  maximumGroups: number,
+  visit: GroupedExtremaVisitor,
+) {
+  if (maxima.length !== minima.length || (gaps && gaps.length !== minima.length)) {
+    throw new Error("Grouped waveform extrema arrays must have equal lengths.");
+  }
+  if (!Number.isSafeInteger(maximumGroups) || maximumGroups < 1) {
+    throw new Error("Grouped waveform extrema count must be a positive whole number.");
+  }
+  if (!minima.length) return 0;
+  const groupSize = Math.max(1, Math.ceil(minima.length / maximumGroups));
+  let emittedGroups = 0;
+  for (let groupStart = 0; groupStart < minima.length; groupStart += groupSize) {
+    const groupEnd = Math.min(minima.length, groupStart + groupSize);
+    let minimum = Number.POSITIVE_INFINITY;
+    let maximum = Number.NEGATIVE_INFINITY;
+    let interrupted = false;
+    for (let index = groupStart; index < groupEnd; index += 1) {
+      const candidateMinimum = minima[index];
+      const candidateMaximum = maxima[index];
+      if (gaps?.[index] || !Number.isFinite(candidateMinimum) || !Number.isFinite(candidateMaximum)) {
+        interrupted = true;
+        continue;
+      }
+      minimum = Math.min(minimum, candidateMinimum);
+      maximum = Math.max(maximum, candidateMaximum);
+    }
+    if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) continue;
+    visit(groupStart, groupEnd, minimum, maximum, interrupted);
+    emittedGroups += 1;
+  }
+  return emittedGroups;
+}
+
+/**
+ * Hours-wide EEG views are navigational overviews. Rendering one envelope
+ * bucket per CSS pixel on a 4K display creates large typed-array churn without
+ * adding clinically resolvable detail. The tiered cap keeps close views crisp
+ * and makes minute/hour navigation independent of monitor width.
+ */
+export function waveformOverviewColumnBudget(durationSec: number, widthPx: number) {
+  if (!(durationSec > 0) || !Number.isFinite(durationSec)) return 1;
+  if (!(widthPx > 0) || !Number.isFinite(widthPx)) return 1;
+  const maximumColumns = durationSec >= 60 * 60
+    ? 512
+    : durationSec >= 5 * 60
+      ? 1_024
+      : Math.floor(widthPx);
+  return Math.max(1, Math.min(Math.floor(widthPx), maximumColumns));
 }

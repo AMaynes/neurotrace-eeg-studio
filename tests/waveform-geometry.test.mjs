@@ -21,6 +21,8 @@ import {
   measureRawTraceGeometry,
   waveformGeometryGroupingStride,
   waveformGeometryFitsBudget,
+  waveformOverviewColumnBudget,
+  visitGroupedWaveformExtrema,
 } from "../app/waveform-geometry.ts";
 
 const projection = {
@@ -129,10 +131,54 @@ test("hard-bounds exact-extrema fallback groups for any signal activity", () => 
   };
   const groups = maximumExtremaGroupsForBudget(3_600, projection, budget);
 
-  assert.equal(groups, Math.floor(budget.maxStrokeLengthPx / projection.rowHeightPx));
-  assert.ok(groups * 2 <= budget.maxCommands);
-  assert.ok(groups * projection.rowHeightPx <= budget.maxStrokeLengthPx);
+  assert.equal(groups, Math.min(
+    Math.floor(budget.maxCommands / 10),
+    Math.ceil(projection.widthPx),
+  ));
+  assert.ok(groups * 10 <= budget.maxCommands);
+  assert.ok(groups <= Math.ceil(projection.widthPx));
   assert.equal(maximumExtremaGroupsForBudget(0, projection, budget), 0);
+});
+
+test("caps overview columns aggressively for minute and hour-scale windows", () => {
+  assert.equal(waveformOverviewColumnBudget(20, 3_712), 3_712);
+  assert.equal(waveformOverviewColumnBudget(5 * 60, 3_712), 1_024);
+  assert.equal(waveformOverviewColumnBudget(60 * 60, 3_712), 512);
+  assert.equal(waveformOverviewColumnBudget(6 * 60 * 60, 3_712), 512);
+  assert.equal(waveformOverviewColumnBudget(6 * 60 * 60, 320), 320);
+  assert.equal(waveformOverviewColumnBudget(0, 3_712), 1);
+  assert.equal(waveformOverviewColumnBudget(Number.NaN, 3_712), 1);
+});
+
+test("groups exact extrema once while preserving partial gaps", () => {
+  const groups = [];
+  const emitted = visitGroupedWaveformExtrema(
+    Float32Array.of(3, 1, Number.NaN, Number.NaN, Number.NaN, Number.NaN),
+    Float32Array.of(4, 7, Number.NaN, Number.NaN, Number.NaN, Number.NaN),
+    Uint8Array.of(0, 0, 1, 1, 1, 1),
+    2,
+    (start, end, minimum, maximum, interrupted) => {
+      groups.push({ start, end, minimum, maximum, interrupted });
+    },
+  );
+
+  assert.equal(emitted, 1, "an all-gap group is omitted");
+  assert.deepEqual(groups, [{ start: 0, end: 3, minimum: 1, maximum: 7, interrupted: true }]);
+
+  const constantGroups = [];
+  visitGroupedWaveformExtrema(
+    Float32Array.of(5, 5, 5, 5),
+    Float32Array.of(5, 5, 5, 5),
+    undefined,
+    2,
+    (start, end, minimum, maximum, interrupted) => {
+      constantGroups.push({ start, end, minimum, maximum, interrupted });
+    },
+  );
+  assert.deepEqual(constantGroups, [
+    { start: 0, end: 2, minimum: 5, maximum: 5, interrupted: false },
+    { start: 2, end: 4, minimum: 5, maximum: 5, interrupted: false },
+  ]);
 });
 
 test("rejects invalid projections, mismatched envelopes, and invalid budgets", () => {
@@ -160,6 +206,10 @@ test("rejects invalid projections, mismatched envelopes, and invalid budgets", (
   assert.throws(
     () => maximumExtremaGroupsForBudget(-1, projection, { maxCommands: 10, maxStrokeLengthPx: 10 }),
     /source count/i,
+  );
+  assert.throws(
+    () => visitGroupedWaveformExtrema(Float32Array.of(1), Float32Array.of(1, 2), undefined, 1, () => {}),
+    /equal lengths/i,
   );
   assert.throws(
     () => waveformGeometryGroupingStride(measureRawTraceGeometry(Float32Array.of(1), projection), {

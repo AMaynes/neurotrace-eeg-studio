@@ -80,6 +80,8 @@ import {
   measureEnvelopeTraceGeometry,
   measureRawTraceGeometry,
   waveformGeometryFitsBudget,
+  waveformOverviewColumnBudget,
+  visitGroupedWaveformExtrema,
   type TraceGeometryProjection,
   type WaveformGeometryBudget,
   type WaveformGeometrySummary,
@@ -758,6 +760,7 @@ const MAX_WAVEFORM_CANVAS_SCALE = 1;
 const WAVEFORM_VIEW_STROKE_BUDGET_MULTIPLIER = 48;
 const WAVEFORM_MIN_ROW_STROKE_BUDGET_MULTIPLIER = 4;
 const WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER = 2.25;
+const WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER = 1.5;
 const MAX_REUSABLE_ENVELOPE_BUCKETS = 524_288;
 // A full-session index is an overview, not a replacement for exact local
 // windows. Keeping 32 source buckets per nominal display column is ample for
@@ -877,35 +880,52 @@ function drawGroupedExtrema(
   baseline: number,
   scale: number,
   alpha: number,
+  gaps?: ArrayLike<number>,
 ) {
   if (!minima.length || maxima.length !== minima.length || maximumGroups < 1) return false;
-  const groupSize = Math.max(1, Math.ceil(minima.length / maximumGroups));
   let overflow = false;
+  const rowBottom = rowTop + rowHeight;
   context.save();
   context.globalAlpha = alpha;
+  context.fillStyle = context.strokeStyle;
   context.beginPath();
-  for (let groupStart = 0; groupStart < minima.length; groupStart += groupSize) {
-    const groupEnd = Math.min(minima.length, groupStart + groupSize);
-    let minimum = Number.POSITIVE_INFINITY;
-    let maximum = Number.NEGATIVE_INFINITY;
-    for (let index = groupStart; index < groupEnd; index += 1) {
-      const candidateMinimum = minima[index];
-      const candidateMaximum = maxima[index];
-      if (Number.isFinite(candidateMinimum)) minimum = Math.min(minimum, candidateMinimum);
-      if (Number.isFinite(candidateMaximum)) maximum = Math.max(maximum, candidateMaximum);
-    }
-    if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) continue;
-    const groupTime = startSec + ((groupStart + groupEnd) / 2) * bucketDurationSec;
-    const x = ((groupTime - displayStart) / timebase) * width;
-    if (x < -1 || x > width + 1) continue;
-    const maximumY = center - (maximum - baseline) * scale;
-    const minimumY = center - (minimum - baseline) * scale;
-    if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
-      || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
-    context.moveTo(x, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
-    context.lineTo(x, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
-  }
-  context.stroke();
+  visitGroupedWaveformExtrema(
+    minima,
+    maxima,
+    gaps,
+    maximumGroups,
+    (groupStart, groupEnd, minimum, maximum, interrupted) => {
+      const maximumY = center - (maximum - baseline) * scale;
+      const minimumY = center - (minimum - baseline) * scale;
+      if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
+        || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
+      let top = confineTraceYValueToRow(maximumY, rowTop, rowHeight);
+      let bottom = confineTraceYValueToRow(minimumY, rowTop, rowHeight);
+      if (bottom - top < 1) {
+        const midpoint = (top + bottom) / 2;
+        top = clamp(midpoint - .5, rowTop, Math.max(rowTop, rowBottom - 1));
+        bottom = Math.min(rowBottom, top + 1);
+      }
+      const rawLeft = ((startSec + groupStart * bucketDurationSec - displayStart) / timebase) * width;
+      const rawRight = ((startSec + groupEnd * bucketDurationSec - displayStart) / timebase) * width;
+      if (rawRight < -1 || rawLeft > width + 1) return;
+      const left = interrupted
+        ? clamp((rawLeft + rawRight) / 2 - .5, 0, Math.max(0, width - 1))
+        : clamp(rawLeft, -1, width + 1);
+      if (interrupted) {
+        context.rect(left, top, 1, Math.max(1, bottom - top));
+        return;
+      }
+      const right = clamp(rawRight, -1, width + 1);
+      const binWidth = Math.max(1, right - left);
+      // Outline the exact min/max band instead of filling its interior. Busy,
+      // saturated traces then paint a fixed pair of thin horizontal strips
+      // rather than thousands of costly vertical strokes or a full-row blend.
+      context.rect(left, top, binWidth, 1);
+      if (bottom - top > 1) context.rect(left, bottom - 1, binWidth, 1);
+    },
+  );
+  context.fill();
   context.restore();
   return overflow;
 }
@@ -2677,7 +2697,8 @@ export default function Home() {
         }
 
         if (useEnvelopePath && source.getEnvelopeWindow) {
-          const requiredBucketDuration = timebase / Math.max(1, waveformWidth);
+          const overviewColumnCount = waveformOverviewColumnBudget(timebase, waveformWidth);
+          const requiredBucketDuration = timebase / overviewColumnCount;
           const reusableEnvelopeEntries = envelopeWindowCacheRef.current.filter((entry) =>
             entry.source === source
             && entry.startSec <= viewStart + 1e-9
@@ -2696,7 +2717,7 @@ export default function Home() {
           } else {
             const cacheDuration = Math.max(1e-9, cacheEnd - cacheStart);
             const minimumCacheBuckets = Math.ceil(
-              (cacheDuration / Math.max(1e-9, timebase)) * Math.max(1, waveformWidth),
+              (cacheDuration / Math.max(1e-9, timebase)) * overviewColumnCount,
             );
             const coversFullSession = cacheStart <= 1e-9
               && cacheEnd >= meta.durationSec - 1e-9;
@@ -2832,7 +2853,10 @@ export default function Home() {
             1,
             Math.floor(timebase / requestedEnvelopeLevel.bucketDurationSec + 1e-9),
           );
-          const displayBucketCount = Math.min(Math.max(1, waveformWidth), maximumAggregateBuckets);
+          const displayBucketCount = Math.min(
+            overviewColumnCount,
+            maximumAggregateBuckets,
+          );
           const visibleEnvelope = aggregateEnvelopeWindow(
             requestedEnvelopeLevel,
             viewStart,
@@ -3438,6 +3462,10 @@ export default function Home() {
           WAVEFORM_VIEW_STROKE_BUDGET_MULTIPLIER / visibleTraceCount,
         ),
       };
+      const extremaGroupBudget = Math.max(
+        1,
+        Math.floor(width * WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER / visibleTraceCount),
+      );
       const cachedBaseline = (values: Float32Array) => {
         const cached = traceBaselineCacheRef.current.get(values);
         if (cached !== undefined) return cached;
@@ -3497,10 +3525,9 @@ export default function Home() {
             ),
           );
           if (!waveformGeometryFitsBudget(geometry, traceGeometryBudget)) {
-            const maximumGroups = maximumExtremaGroupsForBudget(
-              values.length,
-              projection,
-              traceGeometryBudget,
+            const maximumGroups = Math.min(
+              extremaGroupBudget,
+              maximumExtremaGroupsForBudget(values.length, projection, traceGeometryBudget),
             );
             overflow = drawGroupedExtrema(
               context,
@@ -3518,6 +3545,7 @@ export default function Home() {
               baseline,
               scale,
               selected ? .72 : .42,
+              envelope.gaps,
             );
           } else {
             context.save();
@@ -3573,10 +3601,9 @@ export default function Home() {
             () => measureRawTraceGeometry(values, projection),
           );
           if (!waveformGeometryFitsBudget(geometry, traceGeometryBudget)) {
-            const maximumGroups = maximumExtremaGroupsForBudget(
-              values.length,
-              projection,
-              traceGeometryBudget,
+            const maximumGroups = Math.min(
+              extremaGroupBudget,
+              maximumExtremaGroupsForBudget(values.length, projection, traceGeometryBudget),
             );
             overflow = drawGroupedExtrema(
               context,
@@ -3678,10 +3705,9 @@ export default function Home() {
             () => measureEnvelopeTraceGeometry(minima, maxima, midpoints, gaps, projection),
           );
           if (!waveformGeometryFitsBudget(geometry, traceGeometryBudget)) {
-            const maximumGroups = maximumExtremaGroupsForBudget(
-              pixelColumns,
-              projection,
-              traceGeometryBudget,
+            const maximumGroups = Math.min(
+              extremaGroupBudget,
+              maximumExtremaGroupsForBudget(pixelColumns, projection, traceGeometryBudget),
             );
             overflow = drawGroupedExtrema(
               context,
@@ -3699,6 +3725,7 @@ export default function Home() {
               baseline,
               scale,
               selected ? .72 : .42,
+              gaps,
             );
           } else {
             context.save();
