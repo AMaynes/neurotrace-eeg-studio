@@ -9,6 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "build:pages": "vite build --config vite.pages.config.ts",
+    "preview:local": "vite preview --config vite.pages.config.ts --host 127.0.0.1 --strictPort",
     "start": "vinext start",
     "test": "npm run build && npm run build:pages && node --experimental-strip-types --test tests/*.test.mjs",
     "test:pages": "npm run build:pages && node --test tests/pages-release.test.mjs",

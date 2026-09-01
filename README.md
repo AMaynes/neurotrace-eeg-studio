@@ -10,6 +10,14 @@ NeuroTrace is a research annotation and data-curation workspace. It is not a dia
 
 NeuroTrace supports current macOS, Linux, and Windows development environments with Node.js 22.13 or newer.
 
+### One-click local launch on macOS
+
+Double-click **`Launch NeuroTrace.command`** in the copied or cloned project folder. Enter any available port from 1024 through 65535 in the popup and select **Start**. The launcher prepares the viewer when needed, hosts it only on this Mac, and opens it in the default browser.
+
+Keep the Terminal window opened by the launcher running while using NeuroTrace. Press **Control-C** in that window to stop the local viewer. The first launch requires an internet connection if the project dependencies have not already been installed.
+
+### Command-line development
+
 ```bash
 npm install
 npm run dev

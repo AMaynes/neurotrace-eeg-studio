@@ -3,7 +3,7 @@
  */
 
 import assert from "node:assert/strict";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import test from "node:test";
 
 const releaseRoot = new URL("../pages-dist/", import.meta.url);
@@ -50,4 +50,29 @@ test("GitHub Pages output is self-contained and uses relative runtime assets", a
     )
   ).join("\n");
   assert.doesNotMatch(javascript, /next\/headers|react-server-dom|dist\/server|\/_next\//i);
+});
+
+test("macOS launcher hosts the static viewer on a chosen loopback port", async () => {
+  const launcherUrl = new URL("../Launch NeuroTrace.command", import.meta.url);
+  const [launcher, launcherStats, packageSource] = await Promise.all([
+    readFile(launcherUrl, "utf8"),
+    stat(launcherUrl),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+  const packageJson = JSON.parse(packageSource);
+
+  assert.notEqual(launcherStats.mode & 0o111, 0, "the Finder launcher is executable");
+  assert.match(launcher, /^#!\/bin\/zsh/);
+  assert.match(launcher, /display dialog[\s\S]*default answer defaultPort[\s\S]*buttons \{"Cancel", "Start"\}/);
+  assert.match(launcher, /numeric_port < 1024 \|\| numeric_port > 65535/);
+  assert.match(launcher, /lsof -nP -iTCP:"\$PORT" -sTCP:LISTEN/);
+  assert.match(launcher, /npm ci/);
+  assert.match(launcher, /npm run build:pages/);
+  assert.match(launcher, /LOCAL_URL="http:\/\/127\.0\.0\.1:\$PORT\/"/);
+  assert.match(launcher, /\/usr\/bin\/open "\$LOCAL_URL"/);
+  assert.match(launcher, /npm run preview:local -- --port "\$PORT"/);
+  assert.equal(
+    packageJson.scripts["preview:local"],
+    "vite preview --config vite.pages.config.ts --host 127.0.0.1 --strictPort",
+  );
 });

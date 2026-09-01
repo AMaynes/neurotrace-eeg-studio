@@ -43,6 +43,7 @@ neurotrace-eeg-studio/
 ├── worker/
 │   └── index.ts — Adapts the vinext application and image endpoint to a Cloudflare Worker.
 ├── .gitignore — Excludes dependencies, builds, local state, secrets, and generated work products.
+├── Launch NeuroTrace.command — Starts a loopback-only local viewer from a macOS Finder double-click.
 ├── README.md — Introduces NeuroTrace, its architecture, privacy model, limits, and validation workflow.
 ├── STRUCTURE.md — Maps the repository and defines subsystem ownership.
 ├── TODO.md — Tracks pressing and eventual engineering outcomes.
@@ -216,6 +217,10 @@ Routes image-optimization requests through Cloudflare Images and delegates all o
 ## `.gitignore`
 
 Excludes dependencies, framework output, local Cloudflare state, secrets, TypeScript build info, generated deployment output, and temporary work products.
+
+## `Launch NeuroTrace.command`
+
+Provides the macOS one-click local entry point. It asks for and validates an unprivileged port, rejects occupied ports, prepares the static Pages build, binds Vite preview to `127.0.0.1`, and opens the default browser only after the local viewer responds.
 
 ## `README.md`
 
