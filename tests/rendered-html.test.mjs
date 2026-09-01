@@ -471,6 +471,7 @@ test("toggles each loaded tab between the recording and file structure analysis"
   assert.match(panel, /Filter file channels/);
   assert.match(page, /meta\.format === "edf" \|\| meta\.format === "edf\+"/);
   assert.match(page, /meta\.format === "mat-v5"/);
+  assert.match(page, /meta\.format === "mat-v7\.3"/);
   assert.match(page, /meta\.format === "raw-int16-le"/);
 
   const structureRule = styles.match(/\.session-tab-structure\s*\{([^}]+)\}/)?.[1] ?? "";

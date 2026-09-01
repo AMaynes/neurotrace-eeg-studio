@@ -8,20 +8,23 @@
  * Calls: Browser File/Blob, TextDecoder, DataView, and DecompressionStream APIs.
  *
  * External Resources
- * User-selected EDF/EDF+, MATLAB v5, and raw signed-int16 DAT files.
+ * User-selected EDF/EDF+, MATLAB v5/v7.3, and raw signed-int16 DAT files.
  *
  * Notes
  * This module has no Node.js dependencies. EDF and DAT remain file-backed and
  * are read with File.slice(); MAT v5 is decoded in memory because compressed
- * MATLAB elements are not independently seekable. All state is caller-owned.
+ * MATLAB elements are not independently seekable. MAT v7.3 stays file-backed
+ * through an HDF5 worker. All state is caller-owned.
  */
 
+import { Mat73WorkerClient } from "./mat73-worker-client.ts";
 
 export type RecordingFormat =
   | "demo"
   | "edf"
   | "edf+"
   | "mat-v5"
+  | "mat-v7.3"
   | "raw-int16-le";
 
 export interface RecordingMeta {
@@ -1693,6 +1696,13 @@ async function parseMatElements(bytes: Uint8Array, context: MatParseContext, dep
   }
 }
 
+export async function isMat73File(file: File) {
+  const firstBytes = new Uint8Array(await file.slice(0, Math.min(file.size, 128)).arrayBuffer());
+  const signature = String.fromCharCode(...firstBytes.subarray(0, 8));
+  const headerText = new TextDecoder("windows-1252").decode(firstBytes);
+  return signature === "\u0089HDF\r\n\u001a\n" || /MATLAB\s+7\.3\s+MAT-file/i.test(headerText);
+}
+
 async function loadMatV5Context(file: File): Promise<MatParseContext> {
   const firstBytes = new Uint8Array(await file.slice(0, Math.min(file.size, 128)).arrayBuffer());
   const signature = String.fromCharCode(...firstBytes.subarray(0, 8));
@@ -1884,6 +1894,147 @@ function decodeMatSignalMatrix(descriptor: MatNumericDescriptor): {
   return { data, sampleCount, channelCount, sampleAxis };
 }
 
+/** File-backed MATLAB v7.3/HDF5 signal source. */
+export class Mat73Source implements SignalSource {
+  readonly meta: RecordingMeta;
+  readonly matrixName: string;
+  private readonly client: Mat73WorkerClient;
+  private readonly sampleCount: number;
+
+  private constructor(
+    file: File,
+    client: Mat73WorkerClient,
+    opened: Awaited<ReturnType<typeof Mat73WorkerClient.create>>["metadata"],
+    options: MatSourceOptions,
+  ) {
+    this.client = client;
+    this.sampleCount = opened.sampleCount;
+    this.matrixName = opened.matrixPath;
+    const sampleRate = options.sampleRate ?? opened.sampleRate;
+    if (!(sampleRate > 0) || !Number.isFinite(sampleRate)) {
+      client.close();
+      throw new SignalFileError("INVALID_HEADER", `MAT sample rate ${String(sampleRate)} is invalid.`);
+    }
+    if (options.channelLabels && options.channelLabels.length !== opened.channelCount) {
+      client.close();
+      throw new SignalFileError(
+        "INVALID_HEADER",
+        `Provided ${options.channelLabels.length} channel labels for a MATLAB v7.3 matrix with ${opened.channelCount} channels.`,
+      );
+    }
+    const labels = options.channelLabels ? [...options.channelLabels] : opened.channelLabels;
+    const units = typeof options.channelUnits === "string"
+      ? labels.map(() => options.channelUnits as string)
+      : Array.from({ length: labels.length }, (_, index) => options.channelUnits?.[index] || "a.u.");
+    const warnings = [...opened.warnings];
+    if (options.sampleRate) {
+      warnings.push(`The verified ${options.sampleRate} Hz user override replaces the embedded sample rate at ${opened.sampleRateSource}.`);
+    }
+    this.meta = {
+      id: deterministicId(`${file.name}:${file.size}:${file.lastModified}:${opened.matrixPath}`, "rec"),
+      name: file.name,
+      fileName: file.name,
+      format: "mat-v7.3",
+      durationSec: opened.sampleCount / sampleRate,
+      channelCount: opened.channelCount,
+      channelLabels: labels,
+      channelUnits: units,
+      units,
+      sampleRates: labels.map(() => sampleRate),
+      sampleRate,
+      recommendedDisplayChannels: labels.slice(0, MAX_RECOMMENDED_DISPLAY_CHANNELS).map((_, index) => index),
+      byteLength: file.size,
+      warnings: [...new Set(warnings)],
+      assumptions: ["largest two-dimensional numeric HDF5 dataset is the signal matrix"],
+      details: {
+        matrixName: opened.matrixPath,
+        matrixDimensions: opened.matrixShape.join("×"),
+        sampleAxis: opened.sampleAxis + 1,
+        sampleRateSource: options.sampleRate ? "user override" : opened.sampleRateSource,
+        hdf5Access: "file-backed worker slices",
+      },
+    };
+  }
+
+  static async create(file: File, options: MatSourceOptions = {}) {
+    let opened: Awaited<ReturnType<typeof Mat73WorkerClient.create>>;
+    try {
+      opened = await Mat73WorkerClient.create(file);
+    } catch (error) {
+      if (error instanceof SignalFileError) throw error;
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "INVALID_HEADER";
+      throw new SignalFileError(
+        code === "NO_SIGNAL_MATRIX" || code === "INVALID_WINDOW" ? code : "INVALID_HEADER",
+        error instanceof Error ? error.message : "MATLAB v7.3 file could not be opened.",
+        { cause: error },
+      );
+    }
+    return new Mat73Source(file, opened.client, opened.metadata, options);
+  }
+
+  async getWindow(
+    startSec: number,
+    durationSec: number,
+    channelIndices?: readonly number[],
+    options: SignalReadOptions = {},
+  ): Promise<WindowData> {
+    const request = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
+    const sampleRate = this.meta.sampleRate;
+    const firstSample = Math.floor(request.startSec * sampleRate);
+    const endSample = Math.min(this.sampleCount, Math.ceil(request.endSec * sampleRate));
+    const result = await this.client.readWindow(
+      firstSample,
+      endSample,
+      request.channelIndices,
+      options.signal,
+    );
+    return makeWindowResult(
+      this.meta,
+      request,
+      result.data,
+      undefined,
+      request.channelIndices.map(() => result.firstSample / sampleRate),
+    );
+  }
+
+  async getEnvelopeWindow(
+    startSec: number,
+    durationSec: number,
+    bucketCount: number,
+    channelIndices?: readonly number[],
+    options: SignalReadOptions = {},
+  ): Promise<EnvelopeWindowData> {
+    validateEnvelopeBucketCount(bucketCount);
+    const request = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
+    const sampleRate = this.meta.sampleRate;
+    const firstSample = Math.floor(request.startSec * sampleRate);
+    const endSample = Math.min(this.sampleCount, Math.ceil(request.endSec * sampleRate));
+    const result = await this.client.readEnvelope({
+      firstSample,
+      endSample,
+      startSec: request.startSec,
+      durationSec: request.durationSec,
+      bucketCount,
+      channelIndices: request.channelIndices,
+    }, options.signal);
+    return {
+      ...makeWindowResult(
+        this.meta,
+        request,
+        result.data,
+        undefined,
+        request.channelIndices.map(() => result.firstSample / sampleRate),
+      ),
+      minima: result.minima,
+      maxima: result.maxima,
+      gaps: result.gaps,
+      bucketDurationSec: result.bucketDurationSec,
+    };
+  }
+}
+
 export class MatSource implements SignalSource {
   readonly meta: RecordingMeta;
   readonly matrixName: string;
@@ -1938,7 +2089,8 @@ export class MatSource implements SignalSource {
     };
   }
 
-  static async create(file: File, options: MatSourceOptions = {}): Promise<MatSource> {
+  static async create(file: File, options: MatSourceOptions = {}): Promise<MatSource | Mat73Source> {
+    if (await isMat73File(file)) return Mat73Source.create(file, options);
     const context = await loadMatV5Context(file);
     const signalCandidates = context.numeric
       .filter((descriptor) => descriptor.elementCount > 1)

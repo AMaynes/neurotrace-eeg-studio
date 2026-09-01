@@ -1705,6 +1705,13 @@ function sourceReadProfile(format: RecordingMeta["format"], hasRecording: boolea
       detail: "The selected MATLAB matrix is decoded once, then visible windows are read from browser memory.",
     };
   }
+  if (format === "mat-v7.3") {
+    return {
+      origin: "Local browser file",
+      access: "Worker-backed HDF5 dataset slices",
+      detail: "The large MATLAB signal matrix stays on disk; only requested time and channel slices are decoded.",
+    };
+  }
   return {
     origin: "Generated in this browser",
     access: "Deterministic synthetic signal",
@@ -7513,6 +7520,15 @@ function fileStructureNodes(meta: RecordingMeta): FileStructureNode[] {
       { title: "Matrix dimensions", detail: String(meta.details?.matrixDimensions ?? "Not reported") },
       { title: "Viewer mapping", detail: `Matrix axis ${String(meta.details?.sampleAxis ?? "?")} is time · ${meta.channelCount} channel rows` },
       { title: "Decoded samples", detail: "The selected matrix is decoded locally into channel-major numeric arrays" },
+    ];
+  }
+  if (meta.format === "mat-v7.3") {
+    return [
+      { title: "MATLAB v7.3 container", detail: "HDF5 groups, typed datasets, attributes, and MATLAB references" },
+      { title: "Selected signal dataset", detail: String(meta.details?.matrixName ?? "Largest numeric dataset") },
+      { title: "Dataset dimensions", detail: String(meta.details?.matrixDimensions ?? "Not reported") },
+      { title: "Viewer mapping", detail: `Dataset axis ${String(meta.details?.sampleAxis ?? "?")} is time · ${meta.channelCount} channel rows` },
+      { title: "File-backed samples", detail: "A dedicated worker reads bounded HDF5 time/channel slices without copying the complete matrix into memory" },
     ];
   }
   if (meta.format === "raw-int16-le") {

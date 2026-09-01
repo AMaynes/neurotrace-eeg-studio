@@ -92,7 +92,7 @@ Provides validated sign-in/sign-out paths and optional identity extraction from 
 
 ### `app/eeg-core.ts`
 
-Defines recording metadata and source contracts, EDF/EDF+ parsing, legacy MAT/DAT mapping, MATLAB v5 decoding, windowed file reads, display filters, montage construction, formatting, and deterministic demo signals. It is browser-compatible and intentionally avoids Node.js dependencies.
+Defines recording metadata and source contracts, EDF/EDF+ parsing, legacy MAT/DAT mapping, MATLAB v5 decoding, MATLAB v7.3 worker-backed HDF5 access, windowed file reads, display filters, montage construction, formatting, and deterministic demo signals. It is browser-compatible and intentionally avoids Node.js dependencies.
 
 ### `app/globals.css`
 
