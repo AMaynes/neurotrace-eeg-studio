@@ -7190,14 +7190,15 @@ export default function Home() {
               ["Instance queue", "File events, instance labels, and non-session context events appear in time order. Select one or use the arrows to jump straight to it."],
               ["Source-event review", "Seizure-keyword file events open around relative time zero. Enter reviewer initials, optionally rate confidence 1–3, mark onset then offset, and Accept or Skip to advance."],
               ["Signal tools", "Spectrum opens the focused-channel spectral view. Montage, filters, window, and gain only change the display; raw samples stay immutable."],
+              ["Waveform display", "Each row draws one continuous, time-aligned centerline. Finite excursions stay connected at the row edge while the voltage-severity line reports their size."],
               ["CH+ channel manager", "Opens detected source channels. Toggle visibility and mark channel quality without losing source-channel provenance."],
               ["Waveform labeling", "Click once to pin a time, then click any ePhys label to create an instance there. Drag across time, then click a label to apply it to that exact window."],
               ["Annotation tracks", "Context may stack, windowed labels occupy spans, and instance labels mark single moments. Drag annotations to move them or between the two ePhys tracks to convert geometry."],
               ["Context Labels", "Clinical Observation, Medication, and Other are the three timed context tools. Whole-session labels are added only with + in the left Session Labels panel."],
-              ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Sleep stages, rhythmic/periodic patterns, seizure state, quality, and spikes are grouped here."],
+              ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Use … to choose which sleep, rhythmic/periodic, seizure, quality, and spike label types stay visible."],
               ["Inspector and deletion", "Select any annotation to edit timing, notes, reviewer, and confidence, commit a revision, or use the trash can. Delete/Backspace also removes the selection."],
               ["Session map", "Session map gives a hoverable, clickable whole-recording view."],
-              ["Navigation", "Trackpad or mouse-wheel movement pans through time. The Window number and unit button stage a new view; the check button applies it. Pinch or Ctrl/⌘ +/- zooms immediately. Escape clears the current interaction."],
+              ["Navigation", "Trackpad or mouse-wheel movement pans through time. The Window number and unit button stage a new view; the check button applies it. Pinch or Ctrl/⌘ +/- zooms immediately and rebuilds a Nyquist-safe, time-aligned trace. Escape clears the current interaction."],
             ].map(([title, copy], index) => <section key={title}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{title}</strong><p>{copy}</p></div></section>)}
           </div>
           <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Clinical deployment requires institutional validation and privacy review.</p></div>

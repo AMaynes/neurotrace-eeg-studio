@@ -77,7 +77,7 @@ BrainVision, EEGLAB, BDF, NWB, and MEF3 files are catalogued when present but ar
 
 ## Review and Export
 
-The workspace provides stacked min/max-envelope traces, recorded/average/bipolar montages, display-only filters, channel quality flags, a Nyquist-bounded spectrogram, exact-time labels, group selection and movement, interval handles, provenance, confidence, local draft recovery, undo/redo, an instance queue, QC checks, and a layered session map. Depth contacts follow the legacy MATLAB reviewer’s left/right/other order and anatomical group spacing. Each waveform is clipped to its own row with an overflow indicator so artifacts cannot obscure neighboring channels.
+The workspace provides stacked Nyquist-resampled traces, recorded/average/bipolar montages, display-only filters, channel quality flags, a Nyquist-bounded spectrogram, exact-time labels, group selection and movement, interval handles, provenance, confidence, local draft recovery, undo/redo, an instance queue, QC checks, and a layered session map. Depth contacts follow the legacy MATLAB reviewer’s left/right/other order and anatomical group spacing. Each waveform is rendered as one continuous centerline and clipped to its own row by default; finite excursions remain connected at the boundary while a voltage-severity line reports overflow.
 
 Seizure source events open in a 20-second event-relative viewport centered on time zero. The review bar supports onset/offset marking, reviewer initials, optional confidence 1–3 (`NA` when unrated), per-event bad/ictal-channel notes, Accept-and-advance, and auditable Skip decisions. Legacy MAT + DAT imports apply the MATLAB seizure-event keywords, let the reviewer choose candidate events before opening the recording, and enforce its 100-channel session threshold. Because browsers do not reveal absolute local file paths, the import confirmation includes editable patient/path fields for MATLAB-compatible resume and export keys.
 
@@ -103,7 +103,7 @@ For uniform 16-bit EDF/DAT recordings, approximate source size is:
 bytes ≈ 2 × channel_count × sample_rate_hz × duration_seconds
 ```
 
-After import, EDF/DAT navigation is windowed: total recording length has little effect on an individual seek. Unfiltered referential views use bounded min/max envelopes when more source samples are visible than the canvas can represent and no clinical FIR/2× preparation is required. Higher-rate clinical preparation, filters, and derived montages retain the MATLAB-compatible signal path but run in a cancellable worker. Adjacent windows are cached under fixed memory budgets, superseded reads are canceled, wheel zoom is frame-coalesced, and expanded channel mode draws only visible rows. MAT v5 import time and memory scale with the complete decoded matrix.
+After import, EDF/DAT navigation is windowed: total recording length has little effect on an individual seek. Wide unfiltered referential views use bounded multiresolution envelopes, but only their Nyquist-filtered representative centerline is drawn; exact minima and maxima remain metadata for clipping and dropout indicators. Higher-rate clinical preparation, filters, and derived montages run in a cancellable worker. Adjacent windows are cached under fixed memory budgets, superseded reads are canceled, wheel zoom is frame-coalesced, and expanded channel mode draws only visible rows. MAT v5 import time and memory scale with the complete decoded matrix.
 
 Measured large-file budgets are tracked in [TODO.md](TODO.md); do not present implementation-level complexity estimates as benchmark results.
 
@@ -134,7 +134,7 @@ The Node test suite covers signal integrity, source hashing, server rendering, a
 - Cloudflare development adapters retained for the original Sites build path
 - Drizzle/D1 scaffolding retained but not used by the current local-first product
 
-## How things work
+## How It Works
 
 NeuroTrace runs locally in the browser. It does not upload the recording, and display filters or montages never rewrite the source file.
 
@@ -146,7 +146,8 @@ NeuroTrace runs locally in the browser. It does not upload the recording, and di
 - Nearby data is reused from three bounded caches: 64 MiB raw windows, 64 MiB processed windows, and 256 MiB zoomed-out envelopes. Older entries are removed when a cache is full.
 - The spectrogram loads one focused channel, with a 32 MiB input limit. Its old result remains visible and correctly time-aligned while the new view is calculated.
 - Panning moves the current waveform and spectrogram every animation frame. After the movement pauses for 180 ms, the app loads and processes the newly visible data.
-- When zoomed out, the app draws a min/max summary instead of every sample. This keeps long recordings fast without hiding short spikes.
+- Every completed signal window is tied to the viewport that requested it. Superseded work is canceled, and stale geometry is not stretched into a new zoom while replacement samples are prepared.
+- Wide views draw one low-pass, Nyquist-safe representative centerline per row. Exact minima and maxima remain available for clipping and dropout indicators rather than appearing as extra waveform strokes.
 
 **Main files:**
 
@@ -155,36 +156,47 @@ NeuroTrace runs locally in the browser. It does not upload the recording, and di
 - `app/file-window.ts` — exact EDF/DAT window reads.
 - `app/edf-envelope.ts` and `app/raw-dat-envelope.ts` — zoomed-out min/max summaries.
 - `app/mat73-worker.ts` — file-backed MATLAB v7.3 reads.
-- `app/waveform-geometry.ts` — limits how much waveform geometry is drawn.
+- `app/waveform-geometry.ts` — bounds clipping, dropout, and waveform drawing work.
 
 ### Filters
 
-Filters only affect the displayed signal. They run in this order:
+Optional filters are disabled by default and affect only the displayed signal. They run in this order:
 
 ```text
 high-pass -> notch -> low-pass
 ```
 
-High-pass and low-pass use second-order Butterworth-style filters. Notch filtering removes either 50 or 60 Hz line noise. Each filter is run forward and backward, which prevents a phase shift in the displayed waveform. Extra samples are loaded around the visible window to reduce edge artifacts. Gaps remain gaps and are not filtered across.
+High-pass and low-pass use second-order Butterworth-style filters. Notch filtering removes either 50 or 60 Hz line noise. Each optional filter is run forward and backward, which prevents a phase shift in the displayed waveform. Extra samples are loaded around the visible window to reduce edge artifacts. Gaps remain gaps and are not filtered across. This bidirectional user-filter path is separate from the single-pass clinical FIR decimator described below.
 
 **Files:** `app/eeg-core.ts` (`applyDisplayFilters`) contains the filter math; `app/display-processing-worker.ts` runs it off the main thread; `app/page.tsx` manages settings, padding, and cropping.
 
 ### Montages
 
 - **Recorded / referential:** shows each channel as it exists in the file.
-- **Average reference (CAR):** subtracts the sample-by-sample average of compatible channels from each channel.
-- **Bipolar:** matches the MATLAB reviewer: contacts stay in `ChannelMat` order within each electrode group, and each result is the following contact minus the current contact. A row labeled `LA1-2` therefore contains `LA2 - LA1`.
+- **Average reference (CAR):** finds the largest group with matching rate, sample count, and start time, then subtracts its finite sample-by-sample average from every channel in that group. Incompatible channels are omitted with a warning.
+- **Bipolar:** matches the MATLAB reviewer: contacts stay in `ChannelMat` order within each electrode group, and each result is the following listed contact minus the current contact. A row labeled `LA1-2` therefore contains `LA2 - LA1`; contact numbers do not need to be consecutive if their source order is consecutive.
 - **Anatomical order:** accepts only letter-and-number contact names, applies the MATLAB exclusion list, then shows left, right, and unlateralized groups while preserving the source order. Four blank row spaces separate electrode groups.
 
 Channels with incompatible units, sample rates, or timing are not combined. Gaps remain gaps.
 
 **Files:** `app/eeg-core.ts` (`buildMontage`, `orderAnatomicalChannelIndices`, and `anatomicalChannelGroup`) contains the montage and ordering algorithms; `app/page.tsx` applies the order, group spacing, unit checks, and source-channel links.
 
-### Aliasing and large windows
+### Clinical 0–200 Hz display preparation
 
-- When zooming out, the viewer chooses a new display rate of about one sample per horizontal pixel.
-- Before resampling, it low-passes below half of that new rate (the Nyquist limit). The zero-phase anti-alias filter is applied before samples are removed, so high-frequency activity does not fold into a false slow waveform.
-- File-backed overviews use the same rule through their multiresolution levels. Min/max values remain available only for clipping and dropout indicators; the waveform itself stays a thin, resampled centerline.
-- When zoomed in, the viewer switches back to exact samples. The existing 97-tap 2× clinical decimator is still used for its 0–200 Hz case.
+The near-view clinical path follows the department’s fixed method:
 
-**Files:** `app/eeg-core.ts` (`displayDecimationFactor`, `prepareClinicalDisplaySignals`, and the envelope-pyramid functions) contains the resampling and anti-aliasing algorithms; `app/display-processing-worker.ts` runs exact-window resampling in the background; `app/page.tsx` selects the correct level and draws the resampled centerline.
+1. The clinical reduction factor is `min(2, floor(samples / horizontal pixels))`. A factor of two is allowed only when `sample_rate / 4 >= 250 Hz`; otherwise the signal remains at its source rate.
+2. Before 2× reduction, each channel receives one causal pass of a 96th-order, 97-tap linear-phase FIR with a Kaiser window (`beta = 5.65`). Its passband edge is 200 Hz, its stopband edge is `min(245 Hz, sample_rate / 4 - 5 Hz)`, and the design cutoff is the midpoint. At 1,000 Hz, the cutoff is 222.5 Hz.
+3. Coefficients are normalized to unity DC gain. The fixed 48-source-sample group delay is removed from the display time base; no forward/backward filtering is used for this FIR.
+4. Every second globally aligned sample and its matching timestamp are retained. Processed display buffers remain single-precision.
+
+If the factor is one, this FIR/2× step is skipped. This preserves the intended 0–200 Hz content whenever the viewport has enough horizontal resolution to show that bandwidth.
+
+### Wide-window resampling and trace rendering
+
+- A window containing more samples than horizontal pixels needs a lower screen-only rate. After the clinical step, a separate zero-phase anti-alias stage low-passes below the new display Nyquist limit before globally aligned samples are removed. Zooming back in returns to the exact or clinical 0–200 Hz path.
+- File-backed overviews apply the same Nyquist rule to their representative signal through multiresolution levels. Exact extrema are retained only for clipping severity and missing-data metadata.
+- The canvas draws one continuous centerline. Only a real gap or non-finite sample breaks the path; a finite value outside its row stays connected at the boundary rather than becoming dots or detached diagonal segments.
+- By default, traces remain inside their rows and a dark-green-to-orange severity line marks excursions beyond ±100 µV from the row baseline.
+
+**Files:** `app/eeg-core.ts` (`clinicalDecimationFactor`, `designClinicalDecimationFir`, `displayDecimationFactor`, `prepareClinicalDisplaySignals`, and the envelope-pyramid functions) contains the clinical and screen-resampling algorithms; `app/display-processing-worker.ts` runs exact-window preparation in the background; `app/waveform-geometry.ts` owns clipping metadata and drawing budgets; `app/page.tsx` selects the correct level and draws the continuous centerline.
