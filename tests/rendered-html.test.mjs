@@ -44,15 +44,9 @@ test("renders the NeuroTrace clinical EEG workspace", async () => {
   assert.match(html, /Medication/);
   assert.match(html, />Other</);
   assert.match(html, /Label palette/);
-  assert.match(html, /GPDs/);
-  assert.match(html, /LPDs/);
-  assert.match(html, /BIPDs/);
-  assert.match(html, /GRDA/);
-  assert.match(html, /LRDA/);
-  assert.match(html, /N1 sleep/);
-  assert.match(html, /N2 sleep/);
-  assert.match(html, /N3 sleep/);
-  assert.match(html, /REM sleep/);
+  assert.match(html, />Ictal</);
+  assert.match(html, /Choose visible ePhys label types/);
+  assert.doesNotMatch(html, /GPDs|LPDs|BIPDs|GRDA|LRDA|N1 sleep|N2 sleep|N3 sleep|REM sleep/, "only Ictal is shown by default");
   assert.match(html, /Load a recording to begin/);
   assert.match(html, /Open Settings/);
   assert.match(html, /og\.png/);
@@ -633,6 +627,22 @@ test("keeps the right panel label view ordered like the ontology palette", async
   assert.ok(contextPosition > searchPosition, "context labels follow ontology search");
   assert.ok(ephysPosition > contextPosition, "ePhys labels follow context labels");
   assert.doesNotMatch(sidebar, /<QcPanel|\bQC\b/, "QC does not compete with the label palette");
+});
+
+test("lets reviewers choose which ePhys label types appear in the right panel", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /useState<Set<string>>\(\(\) => new Set\(\["ictal"\]\)\)/, "only Ictal is enabled initially");
+  assert.match(page, /<h2>ePhys Labels<\/h2>[\s\S]{0,500}aria-label="Choose visible ePhys label types"/, "the menu button follows the ePhys title");
+  assert.match(page, /aria-expanded=\{showEphysLabelPicker\}/);
+  assert.match(page, /checked=\{enabledEphysLabelIds\.has\(label\.id\)\}/, "the picker exposes a checkbox for each type");
+  assert.match(page, /setEnabledEphysLabelIds\(new Set\(selectableEphysLabels\.map/, "all types can be enabled at once");
+  assert.match(page, /setEnabledEphysLabelIds\(new Set\(\)\)/, "all types can be disabled at once");
+  assert.match(page, /enabledEphysLabelIds\.has\(item\.id\)/, "disabled types are filtered from the palette");
+  assert.match(css, /\.ephys-label-picker\s*\{[^}]*position:\s*absolute/, "the picker opens as a compact overlay");
 });
 
 test("switches waveform dragging between labeling selection and two-dimensional general-info zoom", async () => {

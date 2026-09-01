@@ -2365,11 +2365,74 @@ textarea:focus-visible {
 .compact-ephys-palette { flex: 1 0 auto; min-height: 390px; }
 .compact-context-palette h2,
 .compact-ephys-palette h2 {
-  margin: 0 0 12px;
+  margin: 0;
   color: #d9e6e5;
   font-size: 13px;
   text-align: center;
 }
+.compact-context-palette > h2 { margin-bottom: 12px; }
+.ephys-palette-heading {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.ephys-label-menu { position: relative; }
+.ephys-label-menu-toggle {
+  width: 24px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0 0 5px;
+  border: 1px solid #355058;
+  border-radius: 4px;
+  background: #102027;
+  color: #9bb0b3;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.ephys-label-menu-toggle:hover,
+.ephys-label-menu-toggle[aria-expanded="true"] { border-color: #4d8276; color: var(--mint); }
+.ephys-label-picker {
+  position: absolute;
+  z-index: 60;
+  top: 26px;
+  right: -58px;
+  width: 264px;
+  max-height: min(430px, calc(100dvh - 300px));
+  padding: 10px;
+  overflow-y: auto;
+  border: 1px solid #315058;
+  border-radius: 7px;
+  background: #102027;
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+.ephys-label-picker > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ephys-label-picker > header strong { color: #d5e3e2; font-size: 10px; }
+.ephys-label-picker > header span { color: #70888d; font: 8px ui-monospace, monospace; }
+.ephys-label-picker-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 8px 0 9px; }
+.ephys-label-picker-actions button {
+  height: 26px;
+  border: 1px solid #2d4850;
+  border-radius: 4px;
+  background: #0c191e;
+  color: #9eb2b5;
+  cursor: pointer;
+  font-size: 8px;
+}
+.ephys-label-picker-actions button:hover { border-color: #477268; color: var(--mint); }
+.ephys-label-picker-groups { display: flex; flex-direction: column; gap: 9px; }
+.ephys-label-picker fieldset { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin: 0; padding: 0; border: 0; }
+.ephys-label-picker legend { width: 100%; margin-bottom: 4px; color: #6f878c; font-size: 8px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.ephys-label-picker label { min-width: 0; height: 25px; display: grid; grid-template-columns: 13px 5px minmax(0, 1fr); align-items: center; gap: 5px; padding: 0 5px; border-radius: 3px; color: #aebfc1; cursor: pointer; font-size: 8px; }
+.ephys-label-picker label:hover { background: #14262c; color: #deebea; }
+.ephys-label-picker input { width: 12px; height: 12px; margin: 0; accent-color: var(--mint); }
+.ephys-label-picker label i { width: 4px; height: 14px; border-radius: 2px; background: var(--label-color); }
+.ephys-label-picker label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .compact-context-palette > .palette-kind {
   margin: -7px 0 12px;
   color: #657b81;
@@ -2382,6 +2445,7 @@ textarea:focus-visible {
   font-size: 8px;
   text-align: center;
 }
+.empty-ephys-palette { padding: 28px 10px; color: #657b81; font-size: 9px; text-align: center; }
 .palette-kind { color: #81969a; }
 .compact-context-groups,
 .ontology-groups { display: flex; flex-direction: column; gap: 11px; }

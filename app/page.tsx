@@ -1849,6 +1849,8 @@ export default function Home() {
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
   const [expandedChannels, setExpandedChannels] = useState(false);
   const [paletteSearch, setPaletteSearch] = useState("");
+  const [enabledEphysLabelIds, setEnabledEphysLabelIds] = useState<Set<string>>(() => new Set(["ictal"]));
+  const [showEphysLabelPicker, setShowEphysLabelPicker] = useState(false);
   const [channelSearch, setChannelSearch] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [activeCandidate, setActiveCandidate] = useState(0);
@@ -6162,6 +6164,10 @@ export default function Home() {
       if (modalOpen) return;
       if (event.key === "Escape") {
         event.preventDefault();
+        if (showEphysLabelPicker) {
+          setShowEphysLabelPicker(false);
+          return;
+        }
         if (dragAnnotationRef.current) {
           dragAnnotationRef.current = null;
           pendingAnnotationDragRef.current = null;
@@ -6267,7 +6273,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, channelSelectionActive, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, channelSelectionActive, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -6278,6 +6284,18 @@ export default function Home() {
     { label: "Wake / Sleep", ids: ["wake", "sleep-unspecified", "rem", "n1", "n2", "n3"] },
     { label: "Other", ids: ["normal", "abnormal", "artifact", "uncertain"] },
   ] as const;
+  const selectableEphysLabels = activeLabelGroups.flatMap(({ ids }) => ids
+    .map((id) => LABEL_BY_ID.get(id))
+    .filter((label): label is LabelDefinition => label !== undefined && !label.hidden));
+  const rightEphysLabelGroups = activeLabelGroups.map(({ label, ids }) => ({
+    label,
+    labels: ids
+      .map((id) => LABEL_BY_ID.get(id))
+      .filter((item): item is LabelDefinition => item !== undefined
+        && !item.hidden
+        && enabledEphysLabelIds.has(item.id)
+        && item.name.toLowerCase().includes(paletteSearch.toLowerCase())),
+  })).filter(({ labels }) => labels.length > 0);
   const filteredLabels = LABELS.filter((label) => !label.hidden && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
   const entireSessionContexts = filteredLabels.filter((label) => label.track === "context" && label.geometry === "session");
   const rightContextLabels = ["clinical", "medication", "note"]
@@ -6948,23 +6966,55 @@ export default function Home() {
             </div>
           </section>
           <section className="compact-ephys-palette">
-            <h2>ePhys Labels</h2>
+            <div className="ephys-palette-heading">
+              <h2>ePhys Labels</h2>
+              <div className="ephys-label-menu" onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) setShowEphysLabelPicker(false);
+              }}>
+                <button
+                  type="button"
+                  className="ephys-label-menu-toggle"
+                  aria-label="Choose visible ePhys label types"
+                  aria-haspopup="dialog"
+                  aria-expanded={showEphysLabelPicker}
+                  aria-controls="ephys-label-picker"
+                  title="Choose visible ePhys label types"
+                  onClick={() => setShowEphysLabelPicker((value) => !value)}
+                >…</button>
+                {showEphysLabelPicker && <div id="ephys-label-picker" className="ephys-label-picker" role="dialog" aria-label="Visible ePhys label types">
+                  <header><strong>Visible label types</strong><span>{enabledEphysLabelIds.size} of {selectableEphysLabels.length}</span></header>
+                  <div className="ephys-label-picker-actions">
+                    <button type="button" onClick={() => setEnabledEphysLabelIds(new Set(selectableEphysLabels.map((label) => label.id)))}>Enable all</button>
+                    <button type="button" onClick={() => setEnabledEphysLabelIds(new Set())}>Disable all</button>
+                  </div>
+                  <div className="ephys-label-picker-groups">
+                    {activeLabelGroups.map(({ label: groupLabel, ids }) => <fieldset key={groupLabel}>
+                      <legend>{groupLabel}</legend>
+                      {ids.map((id) => LABEL_BY_ID.get(id)).filter((label): label is LabelDefinition => label !== undefined && !label.hidden).map((label) => <label key={label.id}>
+                        <input type="checkbox" checked={enabledEphysLabelIds.has(label.id)} onChange={(event) => setEnabledEphysLabelIds((current) => {
+                          const next = new Set(current);
+                          if (event.target.checked) next.add(label.id);
+                          else next.delete(label.id);
+                          return next;
+                        })} />
+                        <i style={{ "--label-color": label.color } as React.CSSProperties} />
+                        <span>{PALETTE_BUTTON_NAMES[label.id] ?? label.name}</span>
+                      </label>)}
+                    </fieldset>)}
+                  </div>
+                </div>}
+              </div>
+            </div>
             <p><span className="palette-kind">Label palette</span> · click = instance · selected span = window</p>
-            <div className="ontology-groups">
-              {activeLabelGroups.map(({ label: groupLabel, ids }) => {
-                const group = ids
-                  .map((id) => LABEL_BY_ID.get(id))
-                  .filter((label): label is LabelDefinition => label !== undefined && !label.hidden && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
-                if (!group.length) return null;
-                return <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{group.map((label) => <button className="compact-palette-button" key={label.id} disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
+            {rightEphysLabelGroups.length ? <div className="ontology-groups">
+              {rightEphysLabelGroups.map(({ label: groupLabel, labels }) => <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{labels.map((label) => <button className="compact-palette-button" key={label.id} disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
                   event.dataTransfer.setData("application/x-neurotrace-label", label.id);
                   event.dataTransfer.effectAllowed = "copy";
                   setDragGhost({ labelId: label.id, time: cursorTime });
                 }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name}${label.shortcut ? ` · shortcut ${label.shortcut}` : ""}`}>
                   <i />{PALETTE_BUTTON_NAMES[label.id] ?? label.short}
-                </button>)}</div></div>;
-              })}
-            </div>
+                </button>)}</div></div>)}
+            </div> : <div className="empty-ephys-palette">{enabledEphysLabelIds.size ? "No enabled labels match the search." : "No ePhys label types enabled."}</div>}
           </section>
           </>}
           </>}
