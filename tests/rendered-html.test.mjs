@@ -139,6 +139,7 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   assert.match(emptyState, /Load (?:(?:a|an EEG) )?recording to begin/i, "the empty state has a direct load action");
   assert.match(emptyState, /EDF[\s\S]*MAT/i, "the empty state identifies supported EEG formats");
   assert.match(emptyState, /stays on this device[\s\S]*top-right for guidance/i, "the introduction points users to privacy and help information");
+  assert.match(emptyState, /For help or to report bugs[\s\S]*href="mailto:alex\.maynes2001@gmail\.com"[\s\S]*alex\.maynes2001@gmail\.com/, "the introduction provides a direct support and bug-report email");
   assert.ok(emptyState.indexOf("empty-intro") < emptyState.indexOf("empty-load-prompt"), "the introduction occupies the upper section above the load prompt");
   assert.match(emptyState, /<button type="button" className="empty-load-prompt" onClick=\{\(\) => setShowImport\(true\)\}/, "only the lower load prompt opens file selection");
   assert.doesNotMatch(emptyState.slice(0, emptyState.indexOf("empty-load-prompt")), /onClick=/, "the large welcome introduction is not clickable");

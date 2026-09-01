@@ -1587,6 +1587,8 @@ textarea:focus-visible {
   line-height: 1.5;
 }
 .empty-intro-support b { color: #b8d5cf; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.empty-intro-support a { color: #9ecfc4; text-decoration-color: #467d72; text-underline-offset: 2px; }
+.empty-intro-support a:hover { color: var(--mint); }
 .empty-load-prompt {
   width: 100%;
   min-height: 175px;

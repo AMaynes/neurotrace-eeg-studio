@@ -6209,7 +6209,7 @@ export default function Home() {
               <span className="empty-intro-kicker">NEUROTRACE CLINICAL EEG STUDIO</span>
               <strong className="empty-intro-title">Welcome to NeuroTrace</strong>
               <span className="empty-intro-copy">Review, annotate, and quality-check clinical EEG recordings in one focused, browser-based workspace.</span>
-              <span className="empty-intro-support">Your recording stays on this device. Select <b>?</b> in the top-right for guidance, or use Settings to tailor the workspace.</span>
+              <span className="empty-intro-support">Your recording stays on this device. Select <b>?</b> in the top-right for guidance, or use Settings to tailor the workspace. For help or to report bugs, email <a href="mailto:alex.maynes2001@gmail.com">alex.maynes2001@gmail.com</a>.</span>
             </span>
             <button type="button" className="empty-load-prompt" onClick={() => setShowImport(true)}>
               <span className="empty-load-mark" aria-hidden="true">＋</span>
