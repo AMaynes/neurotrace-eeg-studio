@@ -131,8 +131,8 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
 
   // The demo session may remain server-rendered, but production loading must
   // have an explicit conditional empty state instead of a synthetic fallback.
-  const emptyStart = page.indexOf('className="recording-empty-state"');
-  const emptyEnd = page.indexOf("</button>", emptyStart);
+  const emptyStart = page.indexOf('<div className="recording-empty-state">');
+  const emptyEnd = page.indexOf("</div>}", emptyStart);
   assert.ok(emptyStart >= 0 && emptyEnd > emptyStart, "a dedicated empty-recording surface is shipped");
   const emptyState = page.slice(emptyStart, emptyEnd);
   assert.match(emptyState, /Welcome to NeuroTrace/, "the empty state introduces the workspace before file selection");
@@ -140,7 +140,14 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   assert.match(emptyState, /EDF[\s\S]*MAT/i, "the empty state identifies supported EEG formats");
   assert.match(emptyState, /stays on this device[\s\S]*top-right for guidance/i, "the introduction points users to privacy and help information");
   assert.ok(emptyState.indexOf("empty-intro") < emptyState.indexOf("empty-load-prompt"), "the introduction occupies the upper section above the load prompt");
-  assert.match(emptyState, /onClick=\{\(\) => setShowImport\(true\)\}/, "the entire introduction and load surface opens file selection");
+  assert.match(emptyState, /<button type="button" className="empty-load-prompt" onClick=\{\(\) => setShowImport\(true\)\}/, "only the lower load prompt opens file selection");
+  assert.doesNotMatch(emptyState.slice(0, emptyState.indexOf("empty-load-prompt")), /onClick=/, "the large welcome introduction is not clickable");
+
+  const leftStart = page.indexOf('<aside className="left-sidebar">');
+  const leftEnd = page.indexOf("</aside>", leftStart);
+  const leftSidebar = page.slice(leftStart, leftEnd);
+  assert.doesNotMatch(leftSidebar, /compact-load-recording|>Load recording</, "the left panel never shows a duplicate recording loader");
+  assert.match(leftSidebar, /\{hasRecording && <section className="recording-summary">/, "recording details appear in the left panel only after a file loads");
 
   sourceHas(/aria-label="Add channels"/, "CH+ has an accessible action name");
   sourceHas(/>\s*CH\+\s*<\/button>/, "the compact channel action is visible as CH+");

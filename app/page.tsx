@@ -4809,17 +4809,13 @@ export default function Home() {
 
       <div className={`workspace-grid ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
         <aside className="left-sidebar">
-          <section className="recording-summary">
-            {hasRecording ? <>
+          {hasRecording && <section className="recording-summary">
+            <>
               <div className="recording-file-line"><strong title={meta.name}>{shortFileName(meta.name)}</strong><span>File type: {meta.format.toUpperCase()}</span></div>
               <div className="recording-stats">{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</div>
               <label className="recording-type-line"><span>Recording type:</span><select value={recordingType} onChange={(event) => setRecordingType(event.target.value)}><option>SEEG / iEEG</option><option>Scalp EEG</option><option>Simultaneous scalp + iEEG</option><option>Other ephys</option></select></label>
-            </> : <button className="compact-load-recording" onClick={() => setShowImport(true)}>
-              <span aria-hidden="true">＋</span>
-              <strong>Load recording</strong>
-              <small>EDF · MAT · MAT + DAT</small>
-            </button>}
-          </section>
+            </>
+          </section>}
 
           <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
             <span>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
@@ -5112,20 +5108,20 @@ export default function Home() {
               <button className="trash-button" onClick={deleteSelectedAnnotations} title="Delete selected labels" aria-label="Delete selected labels">🗑</button>
             </div>}
           </footer>
-          </> : <button className="recording-empty-state" onClick={() => setShowImport(true)}>
+          </> : <div className="recording-empty-state">
             <span className="empty-intro">
               <span className="empty-intro-kicker">NEUROTRACE CLINICAL EEG STUDIO</span>
               <strong className="empty-intro-title">Welcome to NeuroTrace</strong>
               <span className="empty-intro-copy">Review, annotate, and quality-check clinical EEG recordings in one focused, browser-based workspace.</span>
               <span className="empty-intro-support">Your recording stays on this device. Select <b>?</b> in the top-right for guidance, or use Settings to tailor the workspace.</span>
             </span>
-            <span className="empty-load-prompt">
+            <button type="button" className="empty-load-prompt" onClick={() => setShowImport(true)}>
               <span className="empty-load-mark" aria-hidden="true">＋</span>
               <strong>Load a recording to begin</strong>
               <span>Open EDF / EDF+, MATLAB v5, or a paired MAT + DAT session.</span>
               <small>Click to choose files, or drop them anywhere in this workspace.</small>
-            </span>
-          </button>}
+            </button>
+          </div>}
           </>}
         </section>
 
