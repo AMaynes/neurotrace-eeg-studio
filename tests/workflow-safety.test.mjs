@@ -240,12 +240,12 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(page, /const envelope\s*=\s*display\.envelopes\[row\][\s\S]*?Math\.floor/);
 });
 
-test("measures the waveform after a recording mounts before choosing overview resolution", async () => {
+test("measures the waveform after a recording mounts or returns from file info", async () => {
   const page = await pageSource();
   const resize = section(page, "useLayoutEffect(() => {\n    const canvas = canvasRef.current", "const updateExpandedChannelViewport");
   assert.match(resize, /const measure\s*=\s*\(\)\s*=>/);
   assert.match(resize, /measure\(\);[\s\S]*?new ResizeObserver\(measure\)/);
-  assert.match(resize, /\},\s*\[hasRecording\]\);/);
+  assert.match(resize, /\},\s*\[activeSessionContentView, hasRecording\]\);/);
   assert.match(page, /const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE\s*=\s*64/);
 });
 

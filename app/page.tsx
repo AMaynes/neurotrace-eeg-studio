@@ -1206,6 +1206,7 @@ export default function Home() {
     { id: "initial-session", title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" },
   ]);
   const [activeSessionId, setActiveSessionId] = useState("initial-session");
+  const activeSessionContentView = sessionTabs.find((tab) => tab.id === activeSessionId)?.contentView ?? "recording";
   const [sessionKey, setSessionKey] = useState("blank-initial-session");
   const [recordingType, setRecordingType] = useState("Scalp EEG");
   const [viewStart, setViewStart] = useState(0);
@@ -3037,7 +3038,7 @@ export default function Home() {
     };
     waveDrawRef.current = draw;
     draw();
-  }, [activeCandidateItem, annotations, channelRowLayout, channelScrollOffset, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase]);
+  }, [activeCandidateItem, activeSessionContentView, annotations, channelRowLayout, channelScrollOffset, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, timebase]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -3047,13 +3048,13 @@ export default function Home() {
       setWaveformWidth((current) => current === nextWidth ? current : nextWidth);
       waveDrawRef.current();
     };
-    // The canvas is absent on the blank-session screen, so measure as soon as
-    // a recording mounts it instead of waiting for a later resize notification.
+    // The canvas is absent on blank sessions and in file-structure view, so
+    // measure as soon as the recording view remounts it.
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [hasRecording]);
+  }, [activeSessionContentView, hasRecording]);
 
   const updateExpandedChannelViewport = useCallback(() => {
     const container = waveformScrollRef.current;
@@ -3078,7 +3079,7 @@ export default function Home() {
     const observer = new ResizeObserver(update);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [expandedChannels]);
+  }, [activeSessionContentView, expandedChannels]);
 
   const channelRowFromClientY = useCallback((clientY: number, rect: DOMRect) => {
     const localY = clientY - rect.top;
@@ -3632,7 +3633,7 @@ export default function Home() {
     const handleWheel = (event: WheelEvent) => viewerWheelRef.current(event);
     viewer.addEventListener("wheel", handleWheel, { passive: false, capture: true });
     return () => viewer.removeEventListener("wheel", handleWheel, { capture: true });
-  }, [hasRecording]);
+  }, [activeSessionContentView, hasRecording]);
 
   useEffect(() => () => {
     if (wheelFrameRef.current !== null) window.cancelAnimationFrame(wheelFrameRef.current);
@@ -4680,7 +4681,6 @@ export default function Home() {
     { id: "instance", label: "ePhys Instance Labels" },
   ];
   const gridDivisions = timebase <= 30 ? Math.max(2, Math.ceil(timebase / 5)) : 10;
-  const activeSessionContentView = sessionTabs.find((tab) => tab.id === activeSessionId)?.contentView ?? "recording";
   const resourcePanelActive = rightPanelOpen && rightPanelView === "resources";
   const selectRightPanelTool = (view: "labels" | "inspect") => {
     setLastRightPanelToolView(view);

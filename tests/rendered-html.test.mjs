@@ -359,6 +359,13 @@ test("toggles each loaded tab between the recording and file structure analysis"
   assert.match(toggle, /setPlaying\(false\)/);
 
   assert.match(page, /activeSessionContentView === "structure" && hasRecording \? <FileStructurePanel/);
+  assert.equal(
+    page.match(/\[activeSessionContentView, hasRecording\]/g)?.length,
+    2,
+    "returning to the recording remounts canvas measurement and wheel controls",
+  );
+  assert.match(page, /\[activeCandidateItem, activeSessionContentView,[^\]]+\]/, "returning to the recording redraws the waveform canvas");
+  assert.match(page, /\[activeSessionContentView, expandedChannels\]/, "returning to the recording restores channel viewport measurement");
   const panelStart = page.indexOf("function FileStructurePanel");
   const panelEnd = page.indexOf("function GeneralInfoPanel", panelStart);
   const panel = page.slice(panelStart, panelEnd);
