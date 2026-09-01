@@ -13,13 +13,15 @@ test("exposes TheStateEditor processing controls and linked navigation", async (
   assert.match(panel, /BUZCODE_SMOOTHING_OPTIONS\.map/);
   assert.match(panel, /thetaRatioOverlay/);
   assert.match(panel, /matlabJet/);
-  assert.match(panel, /action === "zoom"/);
+  assert.doesNotMatch(panel, /action === "zoom"|onZoom|zoomSelection|Zoom mode/);
   assert.match(panel, /viewDuration \* 0\.15/);
   assert.match(panel, /value \+ 10/);
   assert.match(panel, /colorLimitShift/);
-  assert.match(panel, /double-right reset/i);
+  assert.match(panel, /waveform controls own zoom/i);
   assert.equal((panel.match(/SPECTROGRAM_DRAG_PAN_SCALE/g) ?? []).length, 2);
-  assert.match(page, /event\.deltaY > 0 \? 1\.25 : 0\.75/);
+  assert.match(page, /\(canvasShell \?\? spectrogramShell\)\?\.getBoundingClientRect\(\) \?\? viewerRect/);
+  assert.match(page, /if \(spectrogramShell && \(event\.ctrlKey \|\| event\.metaKey\)\)[\s\S]*?return/);
+  assert.doesNotMatch(page, /if \(spectrogramShell\)[\s\S]*?setTimeWindow/);
 });
 
 test("lets the spectrogram replace the waveform pane without changing the waveform data path", async () => {

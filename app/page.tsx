@@ -5128,15 +5128,11 @@ export default function Home() {
     const viewerRect = viewer.getBoundingClientRect();
     const canvasShell = event.target instanceof Element ? event.target.closest(".canvas-shell") : null;
     const spectrogramShell = event.target instanceof Element ? event.target.closest(".spectrogram-canvas-shell") : null;
-    if (spectrogramShell) {
+    const rect = (canvasShell ?? spectrogramShell)?.getBoundingClientRect() ?? viewerRect;
+    if (spectrogramShell && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
-      const rect = spectrogramShell.getBoundingClientRect();
-      const anchor = viewStart
-        + clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * timebase;
-      setTimeWindow(timebase * (event.deltaY > 0 ? 1.25 : 0.75), anchor);
       return;
     }
-    const rect = canvasShell?.getBoundingClientRect() ?? viewerRect;
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault();
       zoomWheelDeltaRef.current += event.deltaY;
@@ -7219,9 +7215,6 @@ export default function Home() {
               onPreviewStart={previewViewStartSafe}
               onCommitStart={(start) => commitViewStart(clamp(start, 0, Math.max(0, meta.durationSec - timebase)))}
               onCenter={jumpTo}
-              onZoom={(factor, anchor) => setTimeWindow(timebase * factor, anchor)}
-              onZoomRange={zoomToTimeRange}
-              onReset={() => setTimeWindow(meta.durationSec, meta.durationSec / 2)}
             />}
 
             {bottomTracksOpen && <div
@@ -7707,7 +7700,7 @@ function availableSpectrogramHeight(panel: HTMLDivElement | null) {
   );
 }
 
-type SpectrogramAction = "browse" | "zoom" | "frequency";
+type SpectrogramAction = "browse" | "frequency";
 
 type SpectrogramPanelProps = {
   data?: Float32Array;
@@ -7721,9 +7714,6 @@ type SpectrogramPanelProps = {
   onPreviewStart(start: number): void;
   onCommitStart(start: number): void;
   onCenter(time: number): void;
-  onZoom(factor: number, anchor: number): void;
-  onZoomRange(start: number, end: number): void;
-  onReset(): void;
 };
 
 function matlabJet(value: number) {
@@ -7746,9 +7736,6 @@ function SpectrogramPanel({
   onPreviewStart,
   onCommitStart,
   onCenter,
-  onZoom,
-  onZoomRange,
-  onReset,
 }: SpectrogramPanelProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -7766,19 +7753,15 @@ function SpectrogramPanel({
   const previousHeightRef = useRef(DEFAULT_SPECTROGRAM_HEIGHT);
   const interactionRef = useRef<{
     pointerId: number;
-    button: number;
-    detail: number;
     startX: number;
     currentX: number;
     originalViewStart: number;
-    mode: "pan" | "zoom";
   } | null>(null);
   const [action, setAction] = useState<SpectrogramAction>("browse");
   const [smoothingSeconds, setSmoothingSeconds] = useState(BUZCODE_DEFAULT_SMOOTHING_SECONDS);
   const [displayMaxHz, setDisplayMaxHz] = useState(BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ);
   const [colorLimitShift, setColorLimitShift] = useState(0);
   const [overlay, setOverlay] = useState<"none" | "theta">("none");
-  const [zoomSelection, setZoomSelection] = useState<{ left: number; width: number } | null>(null);
   const [showSpectrogramHelp, setShowSpectrogramHelp] = useState(false);
   const displayedPowers = useMemo(
     () => spectrum ? displaySpectrogramPowers(spectrum, smoothingSeconds) : null,
@@ -8020,27 +8003,16 @@ function SpectrogramPanel({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     const distance = interaction.currentX - interaction.startX;
     const moved = Math.abs(distance) >= 4;
-    if (interaction.mode === "pan") {
-      if (moved) {
-        onCommitStart(boundedStart(
-          interaction.originalViewStart
-          - (distance / Math.max(1, event.currentTarget.getBoundingClientRect().width - 51))
-            * viewDuration
-            * SPECTROGRAM_DRAG_PAN_SCALE,
-        ));
-      } else {
-        onCenter(viewStart + plotRatio(event.clientX, event.currentTarget) * viewDuration);
-      }
-    } else if (moved) {
-      const startTime = viewStart + plotRatio(interaction.startX, event.currentTarget) * viewDuration;
-      const endTime = viewStart + plotRatio(interaction.currentX, event.currentTarget) * viewDuration;
-      onZoomRange(startTime, endTime);
+    if (moved) {
+      onCommitStart(boundedStart(
+        interaction.originalViewStart
+        - (distance / Math.max(1, event.currentTarget.getBoundingClientRect().width - 51))
+          * viewDuration
+          * SPECTROGRAM_DRAG_PAN_SCALE,
+      ));
     } else {
-      const anchor = viewStart + plotRatio(event.clientX, event.currentTarget) * viewDuration;
-      if (interaction.button === 2 && interaction.detail >= 2) onReset();
-      else onZoom(interaction.button === 2 ? 1.25 : interaction.detail >= 2 ? 0.5 : 0.75, anchor);
+      onCenter(viewStart + plotRatio(event.clientX, event.currentTarget) * viewDuration);
     }
-    setZoomSelection(null);
   };
 
   return <div ref={panelRef} className={`spectrogram-panel action-${action}`} style={{ height: spectrogramHeight }}>
@@ -8091,11 +8063,9 @@ function SpectrogramPanel({
     </div>
     <div className="spectrogram-canvas-shell">
       <div className="spectrogram-toolbar" aria-label="Buzcode spectrogram controls">
-        <span className="spectrogram-action-readout">{action === "browse" ? "BROWSE" : action === "zoom" ? "ZOOM" : "FREQ"}</span>
+        <span className="spectrogram-action-readout">{action === "browse" ? "BROWSE" : "FREQ"}</span>
         <button type="button" className={action === "browse" ? "active" : ""} onClick={() => setAction("browse")} title="Browse: click to center, hold and drag to pan">B</button>
-        <button type="button" className={action === "zoom" ? "active" : ""} onClick={() => setAction((current) => current === "zoom" ? "browse" : "zoom")} title="Zoom mode (Z)">Z</button>
         <button type="button" className={action === "frequency" ? "active" : ""} onClick={() => setAction((current) => current === "frequency" ? "browse" : "frequency")} title="Frequency resize mode (F)">F</button>
-        <button type="button" onClick={onReset} title="Reset the full time extent (R)">R</button>
         <label>Smooth
           <select value={smoothingSeconds} onChange={(event) => setSmoothingSeconds(Number(event.target.value))}>
             {BUZCODE_SMOOTHING_OPTIONS.map((seconds) => <option value={seconds} key={seconds}>{seconds}s</option>)}
@@ -8117,20 +8087,16 @@ function SpectrogramPanel({
         tabIndex={0}
         role="img"
         aria-label={`${label} Buzcode-compatible multitaper spectrogram`}
-        onContextMenu={(event) => event.preventDefault()}
         onPointerDown={(event) => {
-          if (event.button !== 0 && event.button !== 2) return;
+          if (event.button !== 0) return;
           event.preventDefault();
           event.currentTarget.focus();
           event.currentTarget.setPointerCapture(event.pointerId);
           interactionRef.current = {
             pointerId: event.pointerId,
-            button: event.button,
-            detail: event.detail,
             startX: event.clientX,
             currentX: event.clientX,
             originalViewStart: viewStart,
-            mode: action === "zoom" ? "zoom" : "pan",
           };
         }}
         onPointerMove={(event) => {
@@ -8138,30 +8104,23 @@ function SpectrogramPanel({
           if (!interaction || interaction.pointerId !== event.pointerId) return;
           interaction.currentX = event.clientX;
           const rect = event.currentTarget.getBoundingClientRect();
-          if (interaction.mode === "pan") {
-            if (Math.abs(interaction.currentX - interaction.startX) < 4) return;
-            const next = interaction.originalViewStart
-              - ((interaction.currentX - interaction.startX) / Math.max(1, rect.width - 51))
-                * viewDuration
-                * SPECTROGRAM_DRAG_PAN_SCALE;
-            onPreviewStart(boundedStart(next));
-          } else {
-            const startRatio = plotRatio(interaction.startX, event.currentTarget);
-            const endRatio = plotRatio(interaction.currentX, event.currentTarget);
-            setZoomSelection({ left: Math.min(startRatio, endRatio) * 100, width: Math.abs(endRatio - startRatio) * 100 });
-          }
+          if (Math.abs(interaction.currentX - interaction.startX) < 4) return;
+          const next = interaction.originalViewStart
+            - ((interaction.currentX - interaction.startX) / Math.max(1, rect.width - 51))
+              * viewDuration
+              * SPECTROGRAM_DRAG_PAN_SCALE;
+          onPreviewStart(boundedStart(next));
         }}
         onPointerUp={completeInteraction}
         onPointerCancel={(event) => {
           const interaction = interactionRef.current;
           if (!interaction || interaction.pointerId !== event.pointerId) return;
           interactionRef.current = null;
-          setZoomSelection(null);
           onCommitStart(interaction.originalViewStart);
         }}
         onKeyDown={(event) => {
           const key = event.key.toLowerCase();
-          if (!["arrowleft", "arrowright", "arrowup", "arrowdown", "z", "f", "r", "escape"].includes(key)) return;
+          if (!["arrowleft", "arrowright", "arrowup", "arrowdown", "f", "escape"].includes(key)) return;
           event.preventDefault();
           event.stopPropagation();
           if (key === "arrowleft") onCommitStart(boundedStart(viewStart - viewDuration * 0.15));
@@ -8173,19 +8132,15 @@ function SpectrogramPanel({
           } else if (key === "arrowdown") {
             if (action === "frequency") setDisplayMaxHz((value) => Math.max(minimumDisplayHz, value - 10));
             else setColorLimitShift((value) => value + 0.1);
-          } else if (key === "z") setAction((current) => current === "zoom" ? "browse" : "zoom");
-          else if (key === "f") setAction((current) => current === "frequency" ? "browse" : "frequency");
-          else if (key === "r") onReset();
-          else if (key === "escape") { setAction("browse"); setZoomSelection(null); }
+          } else if (key === "f") setAction((current) => current === "frequency" ? "browse" : "frequency");
+          else if (key === "escape") setAction("browse");
         }}
       />
-      {zoomSelection && <i className="spectrogram-zoom-selection" style={{ left: `${zoomSelection.left}%`, width: `${zoomSelection.width}%` }} />}
       {showSpectrogramHelp && <div className="spectrogram-help" role="status">
         <strong>TheStateEditor controls</strong>
-        <span>Click center · hold/drag pan · wheel zoom</span>
+        <span>Click center · hold/drag pan · wheel/trackpad pan</span>
         <span>←/→ shift 15% · ↑/↓ color</span>
-        <span>Z zoom · F then ↑/↓ frequency · R reset</span>
-        <span>Zoom: left in · right out · drag range · double-right reset</span>
+        <span>F then ↑/↓ frequency · waveform controls own zoom</span>
       </div>}
     </div>
   </div>;
