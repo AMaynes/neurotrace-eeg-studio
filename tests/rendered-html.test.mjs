@@ -335,6 +335,50 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(page, /!importBusyRef\.current\s*&&\s*event\.dataTransfer\.files\.length/);
 });
 
+test("toggles each loaded tab between the recording and file structure analysis", async () => {
+  const [page, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /contentView:\s*"recording"\s*\|\s*"structure"/);
+  const tabShellStart = page.indexOf('<div className="session-tabs">');
+  const tabShellEnd = page.indexOf("</nav>", tabShellStart);
+  const tabs = page.slice(tabShellStart, tabShellEnd);
+  const structureButton = tabs.indexOf("session-tab-structure");
+  const closeButton = tabs.indexOf("session-tab-close");
+  assert.ok(structureButton >= 0 && structureButton < closeButton, "the structure toggle sits immediately left of the tab close button");
+  assert.match(tabs, /disabled=\{importBusy \|\| !tabHasRecording\}/);
+  assert.match(tabs, /aria-pressed=\{tab\.contentView === "structure"\}/);
+
+  const toggleStart = page.indexOf("const toggleSessionContentView");
+  const toggleEnd = page.indexOf("const updateControlBinding", toggleStart);
+  const toggle = page.slice(toggleStart, toggleEnd);
+  assert.match(toggle, /if \(id !== activeSessionId\) switchSession\(id\)/, "using the control on an inactive tab opens that tab");
+  assert.match(toggle, /contentView:\s*nextView/);
+  assert.match(toggle, /setPlaying\(false\)/);
+
+  assert.match(page, /activeSessionContentView === "structure" && hasRecording \? <FileStructurePanel/);
+  const panelStart = page.indexOf("function FileStructurePanel");
+  const panelEnd = page.indexOf("function GeneralInfoPanel", panelStart);
+  const panel = page.slice(panelStart, panelEnd);
+  for (const content of ["How the file is organized", "File information", "Channel information", "Warnings and assumptions"]) {
+    assert.match(panel, new RegExp(content));
+  }
+  assert.match(panel, /meta\.channelLabels\.map/);
+  assert.match(panel, /Filter file channels/);
+  assert.match(page, /meta\.format === "edf" \|\| meta\.format === "edf\+"/);
+  assert.match(page, /meta\.format === "mat-v5"/);
+  assert.match(page, /meta\.format === "raw-int16-le"/);
+
+  const structureRule = styles.match(/\.session-tab-structure\s*\{([^}]+)\}/)?.[1] ?? "";
+  const closeRule = styles.match(/\.session-tab-close\s*\{([^}]+)\}/)?.[1] ?? "";
+  assert.match(structureRule, /right:\s*31px/);
+  assert.match(closeRule, /right:\s*7px/);
+  assert.match(styles, /\.file-structure-panel\s*\{/);
+  assert.match(styles, /\.file-channel-table\s*\{/);
+});
+
 test("wires channel, Help, and Settings dialogs to operable controls", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 

@@ -194,6 +194,7 @@ type SessionTab = {
   title: string;
   hasRecording: boolean;
   recoveryStatus: "saved" | "error";
+  contentView: "recording" | "structure";
 };
 
 type ResourceCacheUsage = {
@@ -1157,7 +1158,7 @@ export default function Home() {
   const [meta, setMeta] = useState<RecordingMeta>(() => sourceMeta(demoSource));
   const [hasRecording, setHasRecording] = useState(false);
   const [sessionTabs, setSessionTabs] = useState<SessionTab[]>([
-    { id: "initial-session", title: "Session 1", hasRecording: false, recoveryStatus: "saved" },
+    { id: "initial-session", title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" },
   ]);
   const [activeSessionId, setActiveSessionId] = useState("initial-session");
   const [sessionKey, setSessionKey] = useState("blank-initial-session");
@@ -1545,7 +1546,7 @@ export default function Home() {
     const nextNumber = sessionTabs.length + 1;
     const snapshot = blankSessionSnapshot(demoSource, id);
     sessionSnapshotsRef.current.set(id, snapshot);
-    setSessionTabs((current) => [...current, { id, title: `Session ${nextNumber}`, hasRecording: false, recoveryStatus: "saved" }]);
+    setSessionTabs((current) => [...current, { id, title: `Session ${nextNumber}`, hasRecording: false, recoveryStatus: "saved", contentView: "recording" }]);
     setActiveSessionId(id);
     applySessionSnapshot(snapshot);
     setToast("Blank session ready — load a recording");
@@ -1566,7 +1567,7 @@ export default function Home() {
       const replacementId = makeId("session");
       const replacementSnapshot = blankSessionSnapshot(demoSource, replacementId);
       sessionSnapshotsRef.current.set(replacementId, replacementSnapshot);
-      remaining = [{ id: replacementId, title: "Session 1", hasRecording: false, recoveryStatus: "saved" }];
+      remaining = [{ id: replacementId, title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" }];
     }
     setSessionTabs(remaining);
     if (id !== activeSessionId) {
@@ -1580,6 +1581,23 @@ export default function Home() {
     applySessionSnapshot(snapshot);
     setToast(snapshot.hasRecording ? "Session restored" : "Blank session ready — load a recording");
   }, [activeSessionId, applySessionSnapshot, demoSource, importBusy, sessionTabs, storeActiveSession]);
+
+  const toggleSessionContentView = useCallback((id: string) => {
+    if (importBusy) return;
+    const target = sessionTabs.find((tab) => tab.id === id);
+    const targetHasRecording = target && (id === activeSessionId ? hasRecording : target.hasRecording);
+    if (!target || !targetHasRecording) return;
+    const nextView = target.contentView === "structure" ? "recording" : "structure";
+    if (id !== activeSessionId) switchSession(id);
+    setSessionTabs((current) => current.map((tab) => tab.id === id ? { ...tab, contentView: nextView } : tab));
+    if (nextView === "structure") {
+      setPlaying(false);
+      setShowFilters(false);
+      setToast("File structure analysis opened");
+    } else {
+      setToast("Recording display restored");
+    }
+  }, [activeSessionId, hasRecording, importBusy, sessionTabs, switchSession]);
 
   const updateControlBinding = useCallback((binding: keyof ControlBindings, value: string) => {
     setControlBindings((current) => {
@@ -4550,6 +4568,7 @@ export default function Home() {
     { id: "instance", label: "ePhys Instance Labels" },
   ];
   const gridDivisions = timebase <= 30 ? Math.max(2, Math.ceil(timebase / 5)) : 10;
+  const activeSessionContentView = sessionTabs.find((tab) => tab.id === activeSessionId)?.contentView ?? "recording";
   const resourcePanelActive = rightPanelOpen && rightPanelView === "resources";
   const selectRightPanelTool = (view: "labels" | "inspect") => {
     setLastRightPanelToolView(view);
@@ -4609,6 +4628,14 @@ export default function Home() {
                   onClick={() => switchSession(tab.id)}
                   title={`${tab.title}${tabRecovery === "error" ? " · local recovery unavailable" : tabHasRecording ? " · locally recoverable" : " · blank"}`}
                 ><span className={`session-tab-dot ${tabRecovery === "error" ? "error" : tabHasRecording ? "loaded" : "blank"}`} />{tab.title}</button>
+                <button
+                  className={`session-tab-structure ${tab.contentView === "structure" ? "active" : ""}`}
+                  disabled={importBusy || !tabHasRecording}
+                  aria-label={`${tab.contentView === "structure" ? "Show recording" : "Show file structure"} for ${tab.title}`}
+                  aria-pressed={tab.contentView === "structure"}
+                  title={tabHasRecording ? tab.contentView === "structure" ? "Show recording" : "Show file structure" : "Load a recording to inspect its file structure"}
+                  onClick={() => toggleSessionContentView(tab.id)}
+                ><span className="file-structure-glyph" aria-hidden="true"><i /><i /><i /></span></button>
                 <button className="session-tab-close" disabled={importBusy} aria-label={`Close ${tab.title}`} title={`Close ${tab.title}`} onClick={() => closeSession(tab.id)}>×</button>
               </div>;
             })}
@@ -4737,6 +4764,14 @@ export default function Home() {
         </aside>
 
         <section className="review-surface" id="active-session-workspace" role="tabpanel">
+          {activeSessionContentView === "structure" && hasRecording ? <FileStructurePanel
+            meta={meta}
+            selectedChannels={selectedChannels}
+            badChannels={badChannels}
+            recordingType={recordingType}
+            verifyingSource={verifyingSource}
+            sourceHash={sourceHash}
+          /> : <>
           <div className="viewer-toolbar">
             <div className="panel-toggle-pair" aria-label="Workspace panels">
               <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title={`${leftPanelOpen ? "Hide" : "Show"} recording panel`} onClick={() => setLeftPanelOpen((value) => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
@@ -4914,6 +4949,7 @@ export default function Home() {
               <small>Click to choose files, or drop them anywhere in this workspace.</small>
             </span>
           </button>}
+          </>}
         </section>
 
         <aside className="right-sidebar">
@@ -5349,6 +5385,140 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label }: { data?: F
   const duration = data?.length && sampleRate ? data.length / sampleRate : 1;
   const cursorLeft = clamp(((cursor - start) / duration) * 100, 0, 100);
   return <div className="spectrogram-panel"><div className="spectrogram-label"><strong>{label}</strong><span>{sampleRate >= 2 ? `1–${Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only` : "Sampling rate below 2 Hz"}</span></div><div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div></div>;
+}
+
+type FileStructureNode = { title: string; detail: string };
+
+function fileStructureNodes(meta: RecordingMeta): FileStructureNode[] {
+  if (meta.format === "edf" || meta.format === "edf+") {
+    return [
+      { title: "Fixed header", detail: "Patient, recording, timing, version, and signal count fields" },
+      { title: "Per-signal headers", detail: `${meta.channelCount} display channel definitions with labels, units, ranges, and samples per record` },
+      { title: "Data records", detail: `${String(meta.details?.dataRecords ?? "Unknown")} record blocks · ${String(meta.details?.dataRecordDurationSec ?? "Unknown")} s each` },
+      { title: "Signal samples", detail: "Channel sample blocks are calibrated and streamed from the local file on demand" },
+      ...(meta.format === "edf+" ? [{ title: "EDF+ annotations", detail: `${String(meta.details?.annotationChannels ?? 0)} annotation channel(s) parsed separately from waveform signals` }] : []),
+    ];
+  }
+  if (meta.format === "mat-v5") {
+    return [
+      { title: "MATLAB v5 container", detail: "Named typed elements, matrices, strings, and optional compressed blocks" },
+      { title: "Selected signal matrix", detail: String(meta.details?.matrixName ?? "Largest numeric matrix") },
+      { title: "Matrix dimensions", detail: String(meta.details?.matrixDimensions ?? "Not reported") },
+      { title: "Viewer mapping", detail: `Matrix axis ${String(meta.details?.sampleAxis ?? "?")} is time · ${meta.channelCount} channel rows` },
+      { title: "Decoded samples", detail: "The selected matrix is decoded locally into channel-major numeric arrays" },
+    ];
+  }
+  if (meta.format === "raw-int16-le") {
+    return [
+      { title: "Headerless DAT stream", detail: "No embedded labels, timing, or calibration metadata" },
+      { title: "Sample frame", detail: `${meta.channelCount} interleaved channel values per time point` },
+      { title: "Value encoding", detail: "Signed 16-bit integers · little-endian byte order" },
+      { title: "Frame sequence", detail: `${String(meta.details?.totalSampleFrames ?? "Unknown")} sample frames mapped using confirmed companion metadata` },
+      { title: "Physical values", detail: meta.channelUnits.some((unit) => unit === "µV") ? "Raw counts are scaled into microvolts" : "Raw digital counts are retained without an assumed physical scale" },
+    ];
+  }
+  return [
+    { title: "Generated source", detail: "Deterministic in-browser signal source" },
+    { title: "Channel arrays", detail: `${meta.channelCount} generated channel streams` },
+    { title: "Samples", detail: "Samples are generated locally for the requested time window" },
+  ];
+}
+
+function formatFileDetailLabel(key: string) {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (character) => character.toUpperCase());
+}
+
+function FileStructurePanel({
+  meta,
+  selectedChannels,
+  badChannels,
+  recordingType,
+  verifyingSource,
+  sourceHash,
+}: {
+  meta: RecordingMeta;
+  selectedChannels: Set<number>;
+  badChannels: Set<number>;
+  recordingType: string;
+  verifyingSource: boolean;
+  sourceHash: string;
+}) {
+  const [channelQuery, setChannelQuery] = useState("");
+  const normalizedQuery = channelQuery.trim().toLowerCase();
+  const recommendedChannels = new Set(meta.recommendedDisplayChannels ?? []);
+  const channelRows = meta.channelLabels.map((label, index) => ({
+    index,
+    label,
+    unit: meta.channelUnits[index] || "a.u.",
+    sampleRate: meta.sampleRates[index] || meta.sampleRate,
+  })).filter((channel) => !normalizedQuery
+    || channel.label.toLowerCase().includes(normalizedQuery)
+    || channel.unit.toLowerCase().includes(normalizedQuery)
+    || String(channel.sampleRate).includes(normalizedQuery));
+  const sampleRates = [...new Set(meta.sampleRates.filter((rate) => Number.isFinite(rate) && rate > 0))];
+  const units = [...new Set(meta.channelUnits.filter(Boolean))];
+  const approximateValues = meta.sampleRates.reduce((sum, rate) => sum + Math.floor(meta.durationSec * rate), 0);
+  const profile = sourceReadProfile(meta.format, true);
+  const structure = fileStructureNodes(meta);
+  const details = Object.entries(meta.details ?? {});
+  const notices = [
+    ...meta.warnings.map((text) => ({ kind: "warning", text })),
+    ...(meta.assumptions ?? []).map((text) => ({ kind: "assumption", text })),
+  ];
+  const integrity = verifyingSource ? "Verifying source" : sourceHash ? "Source verified" : "Metadata parsed";
+
+  return <section className="file-structure-panel" aria-label="File structure analysis">
+    <header className="file-structure-heading">
+      <div><span>FILE STRUCTURE ANALYSIS</span><h1 title={meta.name}>{meta.name}</h1><p>Parsed information and the detected organization of this recording. Use the small structure button in the tab to return to the waveform.</p></div>
+      <span className={`file-integrity-status ${sourceHash ? "verified" : ""}`}><i />{integrity}</span>
+    </header>
+
+    <div className="file-summary-grid">
+      <article><span>Format</span><strong>{meta.format.replace("raw-int16-le", "DAT").toUpperCase()}</strong><small>{recordingType}</small></article>
+      <article><span>File size</span><strong>{formatByteCount(meta.byteLength)}</strong><small>{profile.origin}</small></article>
+      <article><span>Duration</span><strong>{formatClock(meta.durationSec)}</strong><small>{meta.durationSec.toLocaleString()} seconds</small></article>
+      <article><span>Channels</span><strong>{meta.channelCount.toLocaleString()}</strong><small>{selectedChannels.size} currently shown</small></article>
+      <article><span>Sample rates</span><strong>{sampleRates.length === 1 ? `${sampleRates[0].toLocaleString()} Hz` : `${sampleRates.length} rates`}</strong><small>{sampleRates.length > 1 ? sampleRates.map((rate) => `${rate.toLocaleString()} Hz`).join(" · ") : "Uniform timing"}</small></article>
+      <article><span>Signal values</span><strong>{approximateValues.toLocaleString()}</strong><small>Approximate decoded values</small></article>
+    </div>
+
+    <div className="file-analysis-grid">
+      <section className="file-analysis-card structure-map-card">
+        <header><div><span>DETECTED LAYOUT</span><h2>How the file is organized</h2></div><small>{profile.access}</small></header>
+        <div className="file-structure-map">{structure.map((node, index) => <article key={node.title}><span>{String(index + 1).padStart(2, "0")}</span><i /><div><strong>{node.title}</strong><p>{node.detail}</p></div></article>)}</div>
+        <p className="file-read-note">{profile.detail} Recording data stays on this device.</p>
+      </section>
+
+      <section className="file-analysis-card metadata-card">
+        <header><div><span>EMBEDDED METADATA</span><h2>File information</h2></div><small>{details.length + 4} parsed fields</small></header>
+        <dl>
+          <div><dt>Patient identifier</dt><dd>{meta.patientId || "Not provided"}</dd></div>
+          <div><dt>Recording identifier</dt><dd>{meta.recordingId || "Not provided"}</dd></div>
+          <div><dt>Start time</dt><dd>{formatSessionStart(meta.startedAt)}</dd></div>
+          <div><dt>Units present</dt><dd>{units.length ? units.join(" · ") : "Not provided"}</dd></div>
+          {details.map(([key, value]) => <div key={key}><dt>{formatFileDetailLabel(key)}</dt><dd>{typeof value === "boolean" ? value ? "Yes" : "No" : String(value)}</dd></div>)}
+        </dl>
+      </section>
+    </div>
+
+    <section className="file-analysis-card channel-analysis-card">
+      <header><div><span>CHANNEL DIRECTORY</span><h2>Channel information</h2></div><label><span>Filter</span><input value={channelQuery} onChange={(event) => setChannelQuery(event.target.value)} placeholder="Label, rate, or unit…" aria-label="Filter file channels" /></label></header>
+      <div className="channel-table-summary"><span>{channelRows.length} of {meta.channelCount} channels</span><span>{badChannels.size} quality-excluded · {recommendedChannels.size} initially recommended</span></div>
+      <div className="file-channel-table" role="region" aria-label="Parsed channel information" tabIndex={0}>
+        <table>
+          <thead><tr><th>#</th><th>Source label</th><th>Sample rate</th><th>Approx. samples</th><th>Unit</th><th>Viewer status</th></tr></thead>
+          <tbody>{channelRows.map((channel) => <tr key={`${channel.index}-${channel.label}`} className={badChannels.has(channel.index) ? "bad" : ""}>
+            <td>{channel.index + 1}</td><td><strong>{channel.label}</strong></td><td>{channel.sampleRate.toLocaleString()} Hz</td><td>{Math.floor(meta.durationSec * channel.sampleRate).toLocaleString()}</td><td>{channel.unit}</td><td><span className={badChannels.has(channel.index) ? "bad" : selectedChannels.has(channel.index) ? "shown" : recommendedChannels.has(channel.index) ? "recommended" : "available"}>{badChannels.has(channel.index) ? "Excluded" : selectedChannels.has(channel.index) ? "Shown" : recommendedChannels.has(channel.index) ? "Recommended" : "Available"}</span></td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section className="file-analysis-card source-notices-card">
+      <header><div><span>PARSER NOTES</span><h2>Warnings and assumptions</h2></div><small>{notices.length} item{notices.length === 1 ? "" : "s"}</small></header>
+      {notices.length ? <div>{notices.map((notice, index) => <article className={notice.kind} key={`${notice.kind}-${index}`}><i>{notice.kind === "warning" ? "!" : "i"}</i><p>{notice.text}</p></article>)}</div> : <div className="file-analysis-clean"><span>✓</span><p>No parser warnings or structural assumptions were reported.</p></div>}
+    </section>
+  </section>;
 }
 
 function GeneralInfoPanel({
