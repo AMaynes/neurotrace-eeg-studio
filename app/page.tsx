@@ -6579,7 +6579,6 @@ export default function Home() {
         setSelectedAnnotationIds(new Set());
         setSelection(null);
         setInspectionRange(null);
-        setWaveformVerticalViewport(null);
         setMarkOnset(null);
         setCursorLocked(false);
         setChannelSelectionActive(false);
@@ -6798,7 +6797,6 @@ export default function Home() {
     setLastRightPanelToolView(view);
     setRightPanelView(view);
     setRightPanelOpen(true);
-    setWaveformVerticalViewport(null);
     if (view === "inspect") {
       setSelection(null);
       setInspectionRange(null);

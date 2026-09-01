@@ -109,6 +109,8 @@ test("global shortcuts leave native controls alone and reserve Enter and Space f
   assert.doesNotMatch(modalEscape, /setSelectedAnnotationId\(null\)|setSelectedAnnotationIds\(new Set\(\)\)/);
   assert.match(keyboard, /closest\("\.spectrogram-panel"\) && event\.key !== "Escape"/);
   assert.match(keyboard, /event\.key === "Escape"[\s\S]*?setChannelSelectionActive\(false\)/);
+  const selectionEscape = section(keyboard, 'if (event.key === "Escape")', "if (interactiveTarget) return");
+  assert.doesNotMatch(selectionEscape, /setWaveformVerticalViewport\(null\)/, "Escape preserves the current waveform zoom");
 });
 
 test("critical feedback and dialogs expose accessible semantics", async () => {

@@ -665,6 +665,11 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
   assert.match(page, /unprojectVerticalFraction\(screenFraction, waveformVerticalViewport\)/);
   assert.match(page, /const selected = channelSelectionActive && channel === focusedChannel/);
+  const panelSwitchStart = page.indexOf('const selectRightPanelTool = (view: "labels" | "inspect")');
+  const panelSwitchEnd = page.indexOf("const activeDisplayViews", panelSwitchStart);
+  const panelSwitch = page.slice(panelSwitchStart, panelSwitchEnd);
+  assert.ok(panelSwitchStart >= 0 && panelSwitchEnd > panelSwitchStart, "the right-panel mode switch is present");
+  assert.doesNotMatch(panelSwitch, /setWaveformVerticalViewport\(null\)/, "switching back to Labeling preserves waveform zoom");
   assert.doesNotMatch(
     page,
     /\[activeCandidateTime, activeSessionContentView,[^\]]*inspection(?:Dragging|Range)/,
