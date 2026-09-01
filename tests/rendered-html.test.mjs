@@ -188,6 +188,40 @@ test("keeps requested signal tools in the primary toolbar without legacy clutter
   assert.doesNotMatch(commandStrip, />\s*(?:Spectrum|Controls|Settings|Help)\s*</i);
 });
 
+test("stages a unit-aware window amount until Sync applies it", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /type WindowTimeUnit = "ms" \| "s" \| "hr"/);
+  assert.match(page, /const MIN_WINDOW_AMOUNT = \.001/);
+  assert.match(page, /const MIN_TIME_WINDOW_SECONDS = MIN_WINDOW_AMOUNT \* WINDOW_UNIT_SECONDS\.ms/);
+  assert.match(page, /const \[windowDraftValue, setWindowDraftValue\] = useState<string \| null>\(null\)/);
+
+  const controlsStart = page.indexOf('<div className={`time-window-control');
+  const controlsEnd = page.indexOf('<div className="gain-control"', controlsStart);
+  const controls = page.slice(controlsStart, controlsEnd);
+  assert.match(controls, /className="window-unit-picker"/);
+  assert.match(controls, /cycleWindowDraftUnit\(-1\)/);
+  assert.match(controls, /cycleWindowDraftUnit\(1\)/);
+  assert.match(controls, /min=\{windowDraftMinimum\}/);
+  assert.match(controls, /max=\{windowDraftMaximum\}/);
+  assert.match(controls, /onChange=\{\(event\) => setWindowDraftValue\(event\.target\.value\)\}/);
+  assert.doesNotMatch(controls, /onChange=\{[^}]*setTimeWindow/, "editing the staged amount does not reload the waveform");
+  assert.match(controls, /className="window-sync-button"/);
+  assert.match(controls, /onClick=\{syncWindowDraft\}/);
+
+  const windowLogic = page.slice(page.indexOf("const setTimeWindow"), page.indexOf("const commitMutation"));
+  assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
+  assert.doesNotMatch(windowLogic, /Math\.min\(300/, "the full recording duration is accepted");
+  assert.match(windowLogic, /numericValue \* windowUnitSeconds/);
+  assert.match(windowLogic, /setTimeWindow\(nextWindow\)/);
+  assert.match(windowLogic, /setWindowDraftValue\(null\)/);
+  assert.match(css, /\.window-unit-picker\s*\{/);
+  assert.match(css, /\.time-window-control\.pending\s*\{/);
+  assert.match(css, /\.window-sync-button/);
+});
+
 test("visually subdues controls that are temporarily unavailable", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(css, /:where\(button, input, select, textarea\):disabled\s*\{[^}]*filter:\s*brightness\(\.58\) saturate\(\.3\)[^}]*box-shadow:\s*none !important/s);

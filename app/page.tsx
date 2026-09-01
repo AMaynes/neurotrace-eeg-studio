@@ -62,6 +62,7 @@ type TrackId = "context" | "windowed" | "instance";
 type AnnotationStatus = "draft" | "committed" | "suggestion";
 type AnnotationOrigin = "manual" | "imported" | "detector" | "legacy";
 type PlacementIntent = "native" | "instance" | "windowed" | "context-instance" | "context-window";
+type WindowTimeUnit = "ms" | "s" | "hr";
 type AnnotationDragPatch = Pick<Annotation, "start" | "end" | "track" | "geometry">;
 type AnnotationSelectionBox = { left: number; top: number; width: number; height: number };
 type InspectionBox = {
@@ -708,6 +709,10 @@ const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
 const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES;
 const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 const CANVAS_PIXEL_BUDGET = 8_000_000;
+const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "hr"];
+const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, hr: 3_600 };
+const MIN_WINDOW_AMOUNT = .001;
+const MIN_TIME_WINDOW_SECONDS = MIN_WINDOW_AMOUNT * WINDOW_UNIT_SECONDS.ms;
 
 const DEFAULT_CONTROLS: ControlBindings = {
   undo: "u",
@@ -724,6 +729,11 @@ const CONTROL_OPTIONS = "abcdefghijklmnopqrstuvwxyz".split("");
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function formatWindowAmount(value: number) {
+  if (!Number.isFinite(value)) return "";
+  return Number(value.toPrecision(9)).toString();
 }
 
 function snapTime(value: number, mode: "1s" | "100ms" | "sample", sampleRate: number, bypass = false) {
@@ -1190,6 +1200,8 @@ export default function Home() {
   const [recordingType, setRecordingType] = useState("Scalp EEG");
   const [viewStart, setViewStart] = useState(0);
   const [timebase, setTimebase] = useState(20);
+  const [windowDraftUnit, setWindowDraftUnit] = useState<WindowTimeUnit>("s");
+  const [windowDraftValue, setWindowDraftValue] = useState<string | null>(null);
   const [gain, setGain] = useState(1);
   const [montage, setMontage] = useState<MontageMode>("referential");
   const [filters, setFilters] = useState<DisplayFilterSettings>(DEFAULT_FILTERS);
@@ -1504,6 +1516,8 @@ export default function Home() {
     setReviewer(snapshot.reviewer);
     setViewStart(snapshot.viewStart);
     setTimebase(snapshot.timebase);
+    setWindowDraftUnit("s");
+    setWindowDraftValue(null);
     setGain(snapshot.gain);
     setMontage(snapshot.montage);
     setFilters({ ...snapshot.filters });
@@ -1647,7 +1661,8 @@ export default function Home() {
   }, [meta.durationSec, timebase]);
 
   const setTimeWindow = useCallback((requested: number, anchorTime = viewStart + timebase / 2) => {
-    const next = clamp(requested, 1, Math.min(300, Math.max(1, meta.durationSec)));
+    const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
+    const next = clamp(requested, Math.min(MIN_TIME_WINDOW_SECONDS, maximumWindow), maximumWindow);
     const anchor = clamp(anchorTime, viewStart, viewStart + timebase);
     const anchorRatio = timebase > 0 ? (anchor - viewStart) / timebase : 0.5;
     setViewStart(clamp(anchor - anchorRatio * next, 0, Math.max(0, meta.durationSec - next)));
@@ -1658,7 +1673,8 @@ export default function Home() {
     const rangeStart = clamp(Math.min(start, end), 0, meta.durationSec);
     const rangeEnd = clamp(Math.max(start, end), rangeStart, meta.durationSec);
     const selectedDuration = rangeEnd - rangeStart;
-    const nextDuration = clamp(selectedDuration, 1, Math.min(300, Math.max(1, meta.durationSec)));
+    const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
+    const nextDuration = clamp(selectedDuration, Math.min(MIN_TIME_WINDOW_SECONDS, maximumWindow), maximumWindow);
     const center = (rangeStart + rangeEnd) / 2;
     setViewStart(clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)));
     setTimebase(nextDuration);
@@ -1667,6 +1683,30 @@ export default function Home() {
   const zoomTimeWindow = useCallback((direction: "in" | "out", anchorTime?: number) => {
     setTimeWindow(timebase * (direction === "in" ? 0.8 : 1.25), anchorTime);
   }, [setTimeWindow, timebase]);
+
+  const windowUnitSeconds = WINDOW_UNIT_SECONDS[windowDraftUnit];
+  const windowDraftDisplayValue = windowDraftValue ?? formatWindowAmount(timebase / windowUnitSeconds);
+  const windowDraftMaximum = Math.max(Number.EPSILON, meta.durationSec / windowUnitSeconds);
+  const windowDraftMinimum = Math.min(MIN_WINDOW_AMOUNT, windowDraftMaximum);
+  const cycleWindowDraftUnit = (direction: -1 | 1) => {
+    setWindowDraftValue((current) => current ?? formatWindowAmount(timebase / windowUnitSeconds));
+    const currentIndex = WINDOW_TIME_UNITS.indexOf(windowDraftUnit);
+    setWindowDraftUnit(WINDOW_TIME_UNITS[(currentIndex + direction + WINDOW_TIME_UNITS.length) % WINDOW_TIME_UNITS.length]);
+  };
+  const syncWindowDraft = () => {
+    if (!hasRecording) return;
+    const numericValue = Number(windowDraftDisplayValue);
+    if (!windowDraftDisplayValue.trim() || !Number.isFinite(numericValue) || numericValue <= 0) {
+      setToast("Enter a valid positive window amount before syncing");
+      return;
+    }
+    const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
+    const minimumWindow = Math.min(MIN_WINDOW_AMOUNT * windowUnitSeconds, maximumWindow);
+    const nextWindow = clamp(numericValue * windowUnitSeconds, minimumWindow, maximumWindow);
+    setTimeWindow(nextWindow);
+    setWindowDraftValue(null);
+    setToast(`Window synced to ${formatWindowAmount(nextWindow / windowUnitSeconds)} ${windowDraftUnit}`);
+  };
 
   const commitMutation = useCallback((mutator: (current: Annotation[]) => Annotation[]) => {
     if (sourceVerificationRef.current) {
@@ -3800,6 +3840,8 @@ export default function Home() {
     setActiveTool("cursor");
     setAnnotationDragPreview(null);
     setTimebase(Math.min(20, Math.max(5, nextMeta.durationSec)));
+    setWindowDraftUnit("s");
+    setWindowDraftValue(null);
     setExpandedChannels(recommendedChannels.length > 10);
     setCandidates([]);
     setActiveCandidate(0);
@@ -4872,7 +4914,30 @@ export default function Home() {
             <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} aria-label="Spectrum" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrum</b></button>
             <label className="toolbar-select"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">Anatomical bipolar</option></select></label>
             <button className={`compact-toggle ${showFilters ? "active" : ""}`} aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
-            <div className="time-window-control" aria-label="Window"><span>Window</span><button disabled={!hasRecording} aria-label="Zoom out in time" title="Zoom out · Ctrl/⌘ −" onClick={() => zoomTimeWindow("out")}>−</button><label><input disabled={!hasRecording} aria-label="Visible seconds" type="number" min="1" max="300" step="1" value={Number(timebase.toFixed(1))} onChange={(event) => setTimeWindow(Number(event.target.value))} /><b>s</b></label><button disabled={!hasRecording} aria-label="Zoom in in time" title="Zoom in · Ctrl/⌘ +" onClick={() => zoomTimeWindow("in")}>+</button></div>
+            <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} aria-label="Window">
+              <div className="window-unit-picker">
+                <span>Window</span>
+                <div>
+                  <button disabled={!hasRecording} aria-label="Previous window time unit" title="Previous unit" onClick={() => cycleWindowDraftUnit(-1)}>‹</button>
+                  <b>{windowDraftUnit}</b>
+                  <button disabled={!hasRecording} aria-label="Next window time unit" title="Next unit" onClick={() => cycleWindowDraftUnit(1)}>›</button>
+                </div>
+              </div>
+              <button className="window-zoom-button" disabled={!hasRecording} aria-label="Zoom out in time" title="Zoom out · Ctrl/⌘ −" onClick={() => zoomTimeWindow("out")}>−</button>
+              <label className="window-amount-field"><input
+                disabled={!hasRecording}
+                aria-label={`Window amount in ${windowDraftUnit}`}
+                type="number"
+                min={windowDraftMinimum}
+                max={windowDraftMaximum}
+                step="any"
+                value={windowDraftDisplayValue}
+                onChange={(event) => setWindowDraftValue(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") syncWindowDraft(); }}
+              /></label>
+              <button className="window-zoom-button" disabled={!hasRecording} aria-label="Zoom in in time" title="Zoom in · Ctrl/⌘ +" onClick={() => zoomTimeWindow("in")}>+</button>
+              <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">↻</span><b>Sync</b></button>
+            </div>
             <div className="gain-control" aria-label="Gain"><span>Gain</span><button disabled={!hasRecording} onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button><b>{gain.toFixed(1)}×</b><button disabled={!hasRecording} onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button></div>
             <div className="toolbar-spacer" />
             <div className="transport-group">
@@ -5226,7 +5291,7 @@ export default function Home() {
               ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Sleep stages, rhythmic/periodic patterns, seizure state, quality, and spikes are grouped here."],
               ["Inspector and deletion", "Select any annotation to edit timing, notes, reviewer, and confidence, commit a revision, or use the trash can. Delete/Backspace also removes the selection."],
               ["QC and session map", "QC checks source assumptions and label integrity. Session map gives a hoverable, clickable whole-recording view."],
-              ["Navigation", "Trackpad or mouse-wheel movement pans through time. Pinch or Ctrl/⌘ +/- zooms only the EEG window. Escape clears the current interaction."],
+              ["Navigation", "Trackpad or mouse-wheel movement pans through time. The Window unit arrows and number stage a new view; Sync applies it. Pinch or Ctrl/⌘ +/- zooms immediately. Escape clears the current interaction."],
             ].map(([title, copy], index) => <section key={title}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{title}</strong><p>{copy}</p></div></section>)}
           </div>
           <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Clinical deployment requires institutional validation and privacy review.</p></div>
