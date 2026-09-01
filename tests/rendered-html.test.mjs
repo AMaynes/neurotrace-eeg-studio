@@ -188,6 +188,12 @@ test("keeps requested signal tools in the primary toolbar without legacy clutter
   assert.doesNotMatch(commandStrip, />\s*(?:Spectrum|Controls|Settings|Help)\s*</i);
 });
 
+test("visually subdues controls that are temporarily unavailable", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /:where\(button, input, select, textarea\):disabled\s*\{[^}]*filter:\s*brightness\(\.58\) saturate\(\.3\)[^}]*box-shadow:\s*none !important/s);
+  assert.match(css, /\.legacy-event-picker:disabled\s*\{\s*opacity:\s*\.38/);
+});
+
 test("keeps footer status text separated from annotation actions", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

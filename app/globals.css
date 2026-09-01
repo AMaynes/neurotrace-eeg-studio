@@ -677,7 +677,7 @@ textarea:focus-visible {
 .legacy-export-hints label { display: grid; gap: 3px; color: #647980; font-size: 7px; }
 .legacy-export-hints input { min-width: 0; width: 100%; height: 28px; border: 1px solid #29434a; border-radius: 4px; background: #0e1f24; color: #d9e6e5; padding: 0 5px; }
 .legacy-event-picker { margin: 9px 0; padding: 8px; border: 1px solid #29434a; border-radius: 5px; }
-.legacy-event-picker:disabled { opacity: .55; }
+.legacy-event-picker:disabled { opacity: .38; }
 .legacy-event-picker-head { display: flex !important; justify-content: space-between; align-items: center; gap: 8px !important; color: #91a5a9; font-size: 8px; letter-spacing: .05em; text-transform: uppercase; }
 .legacy-event-picker-head > div { display: flex; gap: 4px; }
 .legacy-event-picker-head button { border: 1px solid #35565e; border-radius: 3px; background: #10242a; color: #9db2b6; font: inherit; padding: 2px 6px; cursor: pointer; }
@@ -2402,6 +2402,12 @@ textarea:focus-visible {
 .session-map-button strong,
 .help-sections strong,
 .settings-heading strong { font-size: 11px; }
+
+/* Unavailable controls should recede clearly from the active clinical workspace. */
+:where(button, input, select, textarea):disabled {
+  filter: brightness(.58) saturate(.3);
+  box-shadow: none !important;
+}
 
 @media (max-width: 1450px) {
   .neuro-app { --recording-pane: 270px; --label-pane: 240px; }
