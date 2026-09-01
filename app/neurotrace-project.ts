@@ -206,10 +206,10 @@ export async function importCustomToolFiles(files: readonly File[]): Promise<Cus
         remainingFiles.push(file);
         continue;
       }
-      totalBytes += asset.byteLength;
-      if (totalBytes > MAX_CUSTOM_TOOL_TOTAL_BYTES) {
+      if (totalBytes + asset.byteLength > MAX_CUSTOM_TOOL_TOTAL_BYTES) {
         throw new RangeError(`Imported custom tools may total at most ${MAX_CUSTOM_TOOL_TOTAL_BYTES / 1024 / 1024} MB.`);
       }
+      totalBytes += asset.byteLength;
       assets.push(asset);
     } catch (error) {
       errors.push({
@@ -444,8 +444,13 @@ export async function createNeurotraceProjectArchive(request: NeurotraceProjectA
     },
   };
   manifest.contents.push({ path: "manifest.json", role: "manifest", byteLength: 0 });
-  const manifestText = jsonContent(manifest);
-  manifest.contents.at(-1)!.byteLength = encoder.encode(manifestText).byteLength;
+  let manifestText = jsonContent(manifest);
+  for (let pass = 0; pass < 4; pass += 1) {
+    const manifestBytes = encoder.encode(manifestText).byteLength;
+    if (manifest.contents.at(-1)!.byteLength === manifestBytes) break;
+    manifest.contents.at(-1)!.byteLength = manifestBytes;
+    manifestText = jsonContent(manifest);
+  }
   entries.unshift({ path: "manifest.json", content: manifestText, role: "manifest" });
 
   const blob = await createStoredZip(entries);

@@ -15,6 +15,7 @@ neurotrace-eeg-studio/
 │   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.
 │   ├── globals.css — Defines the complete NeuroTrace visual system and responsive workspace layout.
 │   ├── layout.tsx — Supplies application metadata, social previews, viewport configuration, and the root HTML shell.
+│   ├── neurotrace-project.ts — Builds versioned `.neurotrace` ZIP containers and safely classifies inert custom definitions.
 │   ├── pages-client.tsx — Mounts the shared workstation for the browser-only GitHub Pages release.
 │   ├── page.tsx — Coordinates the browser workstation, annotation state, session workflow, rendering, and exports.
 │   └── source-integrity.ts — Computes incremental SHA-256 fingerprints without buffering complete recordings.
@@ -39,6 +40,7 @@ neurotrace-eeg-studio/
 ├── tests/
 │   ├── bids-companions.test.mjs — Verifies BIDS inheritance, TSV decoding, event/channel discovery, and additive file selection.
 │   ├── eeg-integrity.test.mjs — Verifies EDF+ annotation decoding and montage safety.
+│   ├── neurotrace-project.test.mjs — Verifies project archives, manifests, binary preservation, and custom-definition safety.
 │   ├── pages-release.test.mjs — Verifies the static Pages artifact and relative runtime assets.
 │   ├── rendered-html.test.mjs — Verifies server rendering and key product interaction contracts.
 │   └── source-integrity.test.mjs — Verifies incremental SHA-256 correctness across chunk boundaries.
@@ -107,6 +109,10 @@ Defines product colors, typography, panel layout, waveform/timeline controls, di
 ### `app/layout.tsx`
 
 Builds host-aware metadata and the root document shell. It references `public/og.png` and declares the canonical GitHub Pages URL.
+
+### `app/neurotrace-project.ts`
+
+Creates the portable, versioned `.neurotrace` ZIP container without duplicating included `Blob` data in memory. It owns archive-path sanitization, the manifest schema, and bounded classification of imported dictionaries, equations, filtering methods, label definitions, and channel groupings as inert text assets.
 
 ### `app/pages-client.tsx`
 
@@ -199,6 +205,10 @@ Contains deterministic Node tests. Tests may import TypeScript source directly u
 ### `tests/eeg-integrity.test.mjs`
 
 Exercises EDF+ text-annotation extraction and rejects unsafe mixed-rate bipolar derivations.
+
+### `tests/neurotrace-project.test.mjs`
+
+Checks selected archive sections, binary recording/supporting-file preservation, manifest consistency, path traversal normalization, and custom-definition classification limits.
 
 ### `tests/bids-companions.test.mjs`
 

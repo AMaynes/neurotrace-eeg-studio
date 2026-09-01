@@ -392,7 +392,7 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   const importStart = page.indexOf("const importFiles");
   const importEnd = page.indexOf("const confirmDatImport", importStart);
   assert.match(page.slice(importStart, importEnd), /importBusyRef\.current/);
-  assert.match(page, /if \(!importBusyRef\.current\) void importFiles\(\[\.\.\.event\.dataTransfer\.files\]\)/);
+  assert.match(page, /if \(!importBusyRef\.current\) void handleUploadedFiles\(\[\.\.\.event\.dataTransfer\.files\]\)/);
 });
 
 test("accepts additive directory companions while retaining actionable damaged-recording errors", async () => {
@@ -427,7 +427,7 @@ test("accepts additive directory companions while retaining actionable damaged-r
   assert.match(modal, /element\.webkitdirectory\s*=\s*true/);
   assert.match(page, /analyzeBidsCompanions\(mergedFiles/);
   assert.match(page, /<UploadedFilesPanel bundle=\{companionBundle\} compact/);
-  assert.match(page, /JSON and TSV metadata will enrich the active session/);
+  assert.match(page, /Dictionaries, words, equations, filters, labels, and channel groups are accepted/);
   assert.match(modal, /uploadError\.files\.join/);
   assert.match(modal, /aria-label="Dismiss upload error"/);
   assert.match(modal, /event\.target\.value\s*=\s*""/, "the same corrected or recopied file can be selected again");
@@ -691,11 +691,14 @@ test("toggles live resource usage from the control left of Help and Settings", a
   const actionsStart = page.indexOf('<div className="top-actions utility-actions">');
   const actionsEnd = page.indexOf("</div>", actionsStart);
   const actions = page.slice(actionsStart, actionsEnd);
+  const savePosition = actions.indexOf("Save NeuroTrace project");
   const resourcePosition = actions.indexOf("Show resource usage");
   const helpPosition = actions.indexOf("Open Help");
   const settingsPosition = actions.indexOf("Open Settings");
   assert.ok(resourcePosition >= 0, "the resource control is present in the top-right utility group");
+  assert.ok(savePosition >= 0 && savePosition < resourcePosition, "project save sits at the far-left edge of the utility group");
   assert.ok(resourcePosition < helpPosition && helpPosition < settingsPosition, "resource usage sits immediately before Help and Settings");
+  assert.match(css, /\.save-project-button\s*\{[^}]*margin-right:\s*auto/, "save is visually separated from resource usage");
   assert.match(actions, /setRightPanelView\("resources"\)[\s\S]*?setRightPanelOpen\(true\)/);
 
   const sidebarStart = page.indexOf('<aside className="right-sidebar">');
@@ -725,6 +728,26 @@ test("toggles live resource usage from the control left of Help and Settings", a
   assert.match(resourcePanel, /Browsers expose the file name, not its full local path/);
   assert.match(css, /\.resource-panel\s*\{/);
   assert.match(css, /\.resource-glyph\s*\{/);
+});
+
+test("saves a selectable one-file project and accepts inert custom definitions", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /createNeurotraceProjectArchive\(\{/);
+  assert.match(page, /showSaveFilePicker\?: ProjectSavePicker/);
+  assert.match(page, /startIn:\s*"downloads"/);
+  assert.match(page, /application\/vnd\.neurotrace\.project\+zip/);
+  for (const option of ["review", "workspace", "labelDefinitions", "customTools", "supportingFiles", "recording"]) {
+    assert.match(page, new RegExp(`key: "${option}"`), `${option} has an explicit save checkbox`);
+  }
+  assert.match(page, /Choose location &amp; save|Choose location & save/);
+  assert.match(page, /Downloads by default/);
+  assert.match(page, /importCustomToolFiles\(files\)/);
+  assert.match(page, /handleUploadedFiles\(\[\.\.\.event\.dataTransfer\.files\]\)/);
+  for (const kind of ["Dictionaries", "equations", "filters", "labels", "channel groups"]) {
+    assert.match(page, new RegExp(kind, "i"));
+  }
+  assert.match(page, /Stored as inactive data/);
 });
 
 test("moves QC into an accessible tab inside the Session Map dialog", async () => {
@@ -977,17 +1000,27 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /const rowTop\s*=\s*rowTopForChannel\(channel\)/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
   assert.match(draw, /context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)[\s\S]*?context\.clip\(\)/, "each channel is clipped to its exact row without a minimum-height bleed");
-  assert.ok((draw.match(/confineTraceYValueToRow\(/g) ?? []).length >= 2, "direct and raw reduction paths hard-limit trace coordinates to the row without allocating point objects");
-  assert.match(page, /function drawOverviewEnvelope[\s\S]*?confineTraceYValueToRow/, "the connected overview envelope is confined by the same row boundary");
-  assert.match(draw, /traceYOverflowsRow/, "overflow reporting remains separate from allocation-free coordinate confinement");
+  const continuousStart = page.indexOf("function drawContinuousTrace");
+  const groupedStart = page.indexOf("function drawGroupedExtrema", continuousStart);
+  const overviewEnvelopeStart = page.indexOf("function drawOverviewEnvelope", groupedStart);
+  const clippingRibbonStart = page.indexOf("function drawSampleClippingRibbon", overviewEnvelopeStart);
+  const continuousTrace = page.slice(continuousStart, groupedStart);
+  const groupedExtrema = page.slice(groupedStart, overviewEnvelopeStart);
+  const overviewEnvelope = page.slice(overviewEnvelopeStart, clippingRibbonStart);
+  assert.match(continuousTrace, /confineTraceYValueToRow/, "direct traces are confined by the allocation-free row helper");
+  assert.match(groupedExtrema, /confineTraceYValueToRow/, "grouped raw reductions are confined by the same row helper");
+  assert.match(overviewEnvelope, /confineTraceYValueToRow/, "the connected overview envelope is confined by the same row boundary");
+  assert.match(continuousTrace, /traceYOverflowsRow/, "direct-trace overflow reporting remains separate from coordinate confinement");
+  assert.match(groupedExtrema, /traceYOverflowsRow/, "grouped-extrema overflow reporting remains separate from coordinate confinement");
   assert.match(draw, /if\s*\(overflow\)[\s\S]*?context\.closePath\(\)/, "clipped excursions leave an overflow marker");
   assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
   assert.match(draw, /if\s*\(rowHeight\s*>=\s*2\)[\s\S]*?context\.strokeRect/, "focused-row borders are omitted when a compact row is too short to contain the stroke");
   assert.match(page, /const ANATOMICAL_GROUP_GAP_ROWS\s*=\s*4/);
   assert.match(page, /const indices = orderAnatomicalChannelIndices\(meta\.channelLabels, selectedIndices\)/, "every recording uses anatomical channel ordering");
   assert.match(page, /channelRowFromFraction\(\s*channelRowLayout/);
-  assert.match(draw, /robustTraceBaseline\(values\)[\s\S]*?max\s*-\s*baseline/, "each trace is centered on a robust display-window baseline");
-  assert.match(draw, /if \(!Number\.isFinite\(value\)\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");
+  assert.match(draw, /cachedBaseline[\s\S]*?robustTraceBaseline\(values\)/, "each trace receives a robust display-window baseline");
+  assert.match(continuousTrace, /value\s*-\s*baseline/, "direct traces are centered on that baseline");
+  assert.match(continuousTrace, /if \(!Number\.isFinite\(value\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");
   assert.match(draw, /const traceOrder[\s\S]*?focusedChannel/, "the focused trace is drawn last for readability");
   assert.match(draw, /legacyRawCountDisplay[\s\S]*?LEGACY_RAW_COUNTS_PER_ROW/, "uncalibrated legacy DAT uses MATLAB's raw-count row spacing");
   assert.match(draw, /barValue\s*=\s*\(legacyRawCountDisplay\s*\?\s*5_000\s*:\s*100\)\s*\/\s*gain/, "the scale bar stays inside one row as gain changes");

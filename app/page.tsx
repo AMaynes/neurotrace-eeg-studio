@@ -116,6 +116,12 @@ import {
   type BidsEventRecord,
   type UploadedFileRecord,
 } from "./bids-companions";
+import {
+  createNeurotraceProjectArchive,
+  importCustomToolFiles,
+  mergeCustomToolAssets,
+  type NeurotraceCustomToolAsset,
+} from "./neurotrace-project";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -278,6 +284,29 @@ type UploadErrorMessage = {
   files: string[];
 };
 
+type ProjectSaveSelection = {
+  review: boolean;
+  workspace: boolean;
+  labelDefinitions: boolean;
+  customTools: boolean;
+  supportingFiles: boolean;
+  recording: boolean;
+};
+
+type ProjectFileHandle = {
+  createWritable(): Promise<{
+    write(data: Blob): Promise<void>;
+    close(): Promise<void>;
+    abort?(): Promise<void>;
+  }>;
+};
+
+type ProjectSavePicker = (options: {
+  suggestedName: string;
+  startIn: string;
+  types: Array<{ description: string; accept: Record<string, string[]> }>;
+}) => Promise<ProjectFileHandle>;
+
 type SourceImportContext = {
   primaryFile: File;
   uploadedFileInputs: File[];
@@ -392,6 +421,7 @@ type SessionWorkspaceSnapshot = {
   primaryFile: File | null;
   uploadedFileInputs: File[];
   companionBundle: BidsCompanionBundle;
+  customTools: NeurotraceCustomToolAsset[];
   meta: RecordingMeta;
   sessionKey: string;
   recordingType: string;
@@ -455,6 +485,14 @@ const LABELS: LabelDefinition[] = [
 ];
 
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
+const DEFAULT_PROJECT_SAVE_SELECTION: ProjectSaveSelection = {
+  review: true,
+  workspace: true,
+  labelDefinitions: true,
+  customTools: true,
+  supportingFiles: true,
+  recording: false,
+};
 const CHANNEL_RAIL_HEADER_HEIGHT = 28;
 const ANATOMICAL_GROUP_GAP_ROWS = 4;
 const DEFAULT_SPECTROGRAM_HEIGHT = 138;
@@ -1719,6 +1757,7 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     primaryFile: null,
     uploadedFileInputs: [],
     companionBundle: emptyBidsCompanionBundle(),
+    customTools: [],
     meta: sourceMeta(source),
     sessionKey: `blank-${id}`,
     recordingType: "Scalp EEG",
@@ -1975,6 +2014,7 @@ export default function Home() {
   const [primaryFile, setPrimaryFile] = useState<File | null>(null);
   const [uploadedFileInputs, setUploadedFileInputs] = useState<File[]>([]);
   const [companionBundle, setCompanionBundle] = useState<BidsCompanionBundle>(() => emptyBidsCompanionBundle());
+  const [customTools, setCustomTools] = useState<NeurotraceCustomToolAsset[]>([]);
   const [sessionTabs, setSessionTabs] = useState<SessionTab[]>([
     { id: "initial-session", title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" },
   ]);
@@ -2036,6 +2076,10 @@ export default function Home() {
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
   const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [showProjectSave, setShowProjectSave] = useState(false);
+  const [projectSaveBusy, setProjectSaveBusy] = useState(false);
+  const [projectSaveError, setProjectSaveError] = useState("");
+  const [projectSaveSelection, setProjectSaveSelection] = useState<ProjectSaveSelection>(DEFAULT_PROJECT_SAVE_SELECTION);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [rightPanelView, setRightPanelView] = useState<"labels" | "inspect" | "resources">("labels");
@@ -2228,6 +2272,7 @@ export default function Home() {
       primaryFile,
       uploadedFileInputs,
       companionBundle,
+      customTools,
       meta,
       sessionKey,
       recordingType,
@@ -2281,7 +2326,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recordingType, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, uploadedFileInputs, viewStart]);
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recordingType, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, uploadedFileInputs, viewStart]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2320,6 +2365,7 @@ export default function Home() {
     setPrimaryFile(snapshot.primaryFile);
     setUploadedFileInputs(snapshot.uploadedFileInputs);
     setCompanionBundle(snapshot.companionBundle);
+    setCustomTools(snapshot.customTools ?? []);
     setMeta(snapshot.meta);
     setSessionKey(snapshot.sessionKey);
     setRecordingType(snapshot.recordingType);
@@ -2373,6 +2419,9 @@ export default function Home() {
     setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: "" });
     setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
     setShowImport(false);
+    setShowProjectSave(false);
+    setProjectSaveBusy(false);
+    setProjectSaveError("");
     setShowFilters(false);
     setConfirmCommit([]);
     setCommitAdvanceAfter(false);
@@ -5843,6 +5892,31 @@ export default function Home() {
     }
   };
 
+  const handleUploadedFiles = async (files: File[]) => {
+    if (!files.length || importBusyRef.current) return;
+    const customImport = await importCustomToolFiles(files);
+    if (customImport.assets.length) {
+      setCustomTools((current) => mergeCustomToolAssets(current, customImport.assets));
+    }
+    if (customImport.remainingFiles.length) {
+      await importFiles(customImport.remainingFiles);
+      if (customImport.assets.length) {
+        setToast((current) => `${current} · ${customImport.assets.length} custom tool${customImport.assets.length === 1 ? "" : "s"} imported`);
+      }
+    } else if (customImport.assets.length) {
+      setShowImport(false);
+      setToast(`${customImport.assets.length} custom tool${customImport.assets.length === 1 ? "" : "s"} imported as safe, inactive definitions`);
+    }
+    if (customImport.errors.length) {
+      setUploadError({
+        title: "Some custom tools could not be imported",
+        message: "Custom definitions must be valid, text-based files no larger than 4 MB each. Nothing imported here is executed as code.",
+        files: customImport.errors.map(({ fileName, message }) => `${fileName}: ${message}`),
+      });
+      setShowImport(true);
+    }
+  };
+
   const confirmDatImport = async () => {
     if (!pendingDat || importBusyRef.current) return;
     if (!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0)
@@ -6230,8 +6304,128 @@ export default function Home() {
     setToast(`Exported ${committed.length} committed labels + ${Math.ceil(meta.durationSec / 30)} training windows`);
   };
 
+  const supportingFileCandidates = uploadedFileInputs.filter((file) => {
+    if (!primaryFile) return true;
+    if (file === primaryFile) return false;
+    return relativeFilePath(file).toLowerCase() !== relativeFilePath(primaryFile).toLowerCase();
+  });
+  const projectTitle = hasRecording
+    ? recordingLabel(meta)
+    : sessionTabs.find((tab) => tab.id === activeSessionId)?.title ?? "NeuroTrace project";
+  const projectFileName = `${projectTitle.replace(/[^a-zA-Z0-9._ -]+/g, "_").replace(/\.[^.]+$/, "").trim() || "NeuroTrace project"}.neurotrace`;
+  const selectedProjectSectionCount = Object.entries(projectSaveSelection)
+    .filter(([key, selected]) => selected && (key !== "recording" || primaryFile !== null))
+    .length;
+  const saveNeurotraceProject = async () => {
+    if (projectSaveBusy) return;
+    setProjectSaveError("");
+
+    let fileHandle: ProjectFileHandle | null = null;
+    const picker = (window as Window & { showSaveFilePicker?: ProjectSavePicker }).showSaveFilePicker;
+    if (picker) {
+      try {
+        fileHandle = await picker.call(window, {
+          suggestedName: projectFileName,
+          startIn: "downloads",
+          types: [{
+            description: "NeuroTrace project",
+            accept: { "application/vnd.neurotrace.project+zip": [".neurotrace"] },
+          }],
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        const message = error instanceof Error ? error.message : "The save location could not be opened.";
+        setProjectSaveError(message);
+        setToast("Project save could not start");
+        return;
+      }
+    }
+
+    setProjectSaveBusy(true);
+    try {
+      const result = await createNeurotraceProjectArchive({
+        projectId: sessionKey,
+        title: projectTitle,
+        appVersion: "0.1.0",
+        recording: hasRecording ? {
+          name: primaryFile?.name ?? meta.name,
+          format: meta.format,
+          byteLength: primaryFile?.size ?? meta.byteLength ?? 0,
+          durationSec: meta.durationSec,
+          channelCount: meta.channelLabels.length,
+          sourceContentSha256: rawSourceHash,
+          sessionInterpretationSha256: sourceHash,
+        } : null,
+        review: projectSaveSelection.review ? {
+          schema: "neurotrace-review",
+          version: 1,
+          annotations,
+          candidates,
+          activeCandidate,
+          badChannels: [...badChannels],
+          reviewer,
+          recordingType,
+          sourceInterpretation,
+          sourceContentSha256: rawSourceHash,
+          sessionInterpretationSha256: sourceHash,
+          history: { undo: undoRef.current, redo: redoRef.current },
+          savedAt: new Date().toISOString(),
+        } : undefined,
+        workspace: projectSaveSelection.workspace ? {
+          schema: "neurotrace-workspace",
+          version: 1,
+          viewStart,
+          timebase,
+          gain,
+          montage,
+          filters,
+          selectedChannels: [...selectedChannels],
+          badChannels: [...badChannels],
+          focusedChannel,
+          cursor: { time: cursorTime, amplitude: cursorAmplitude, locked: cursorLocked },
+          snapMode,
+          spectrogramOpen,
+          expandedChannels,
+          controlBindings,
+          recordingMeta: hasRecording ? {
+            ...meta,
+            startedAt: meta.startedAt?.toISOString() ?? null,
+          } : null,
+        } : undefined,
+        labelDefinitions: projectSaveSelection.labelDefinitions
+          ? { schema: "neurotrace-labels", version: 1, labels: LABELS }
+          : undefined,
+        customTools: projectSaveSelection.customTools ? customTools : undefined,
+        supportingFiles: projectSaveSelection.supportingFiles ? supportingFileCandidates : undefined,
+        recordingFile: projectSaveSelection.recording ? primaryFile : null,
+      });
+
+      if (fileHandle) {
+        const writable = await fileHandle.createWritable();
+        try {
+          await writable.write(result.blob);
+          await writable.close();
+        } catch (error) {
+          await writable.abort?.().catch(() => {});
+          throw error;
+        }
+      } else {
+        downloadBlob(result.fileName, result.blob);
+      }
+      setShowProjectSave(false);
+      setProjectSaveError("");
+      setToast(`Saved ${result.fileName} as one portable project file`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The project could not be saved.";
+      setProjectSaveError(message);
+      setToast("Project save failed");
+    } finally {
+      setProjectSaveBusy(false);
+    }
+  };
+
   useEffect(() => {
-    const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+    const modalOpen = showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -6271,7 +6465,7 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings]);
+  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -6281,7 +6475,7 @@ export default function Home() {
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
-      const modalOpen = showHelp || showSettings || showChannels || showImport || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+      const modalOpen = showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
       if (modalOpen && zoomModifier && (zoomInKey || zoomOutKey)) {
         event.preventDefault();
         event.stopPropagation();
@@ -6300,6 +6494,7 @@ export default function Home() {
         else if (showPatientInfo) setShowPatientInfo(false);
         else if (showAnnotationEditor) setShowAnnotationEditor(false);
         else if (queueDetailEntry) setQueueDetailTarget(null);
+        else if (showProjectSave && !projectSaveBusy) setShowProjectSave(false);
         else if (showImport && !importBusy) setShowImport(false);
         return;
       }
@@ -6411,7 +6606,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -6440,6 +6635,51 @@ export default function Home() {
     { key: "ictalOnset", label: "Set ictal onset" },
     { key: "ictalOffset", label: "Set ictal offset" },
     { key: "toggleBadChannel", label: "Toggle focused channel quality" },
+  ];
+  const projectSaveOptions: Array<{
+    key: keyof ProjectSaveSelection;
+    title: string;
+    detail: string;
+    amount: string;
+    disabled?: boolean;
+  }> = [
+    {
+      key: "review",
+      title: "Annotations & review decisions",
+      detail: "Labels, candidates, reviewer data, quality flags, and undo history",
+      amount: `${annotations.length} label${annotations.length === 1 ? "" : "s"}`,
+    },
+    {
+      key: "workspace",
+      title: "Workspace setup",
+      detail: "Viewer position, montage, filters, gain, channels, spectrum, and controls",
+      amount: "Current view",
+    },
+    {
+      key: "labelDefinitions",
+      title: "Label definitions",
+      detail: "The built-in ontology used to interpret saved annotations",
+      amount: `${LABELS.length} labels`,
+    },
+    {
+      key: "customTools",
+      title: "Custom tools & definitions",
+      detail: "Imported dictionaries, equations, filters, labels, and channel groups",
+      amount: `${customTools.length} file${customTools.length === 1 ? "" : "s"}`,
+    },
+    {
+      key: "supportingFiles",
+      title: "Other uploaded files",
+      detail: "BIDS metadata and companion files uploaded with this session",
+      amount: `${supportingFileCandidates.length} · ${formatByteCount(supportingFileCandidates.reduce((sum, file) => sum + file.size, 0))}`,
+    },
+    {
+      key: "recording",
+      title: "Copy of the recording",
+      detail: "Makes the project self-contained, but can make the save much larger",
+      amount: primaryFile ? formatByteCount(primaryFile.size) : "No source file",
+      disabled: !primaryFile,
+    },
   ];
   const renderAnnotations = useMemo(() => annotationDragPreview
     ? annotations.map((item) => annotationDragPreview.patches[item.id]
@@ -6536,10 +6776,10 @@ export default function Home() {
         event.preventDefault();
         fileDragDepthRef.current = 0;
         setFileDragActive(false);
-        if (!importBusyRef.current) void importFiles([...event.dataTransfer.files]);
+        if (!importBusyRef.current) void handleUploadedFiles([...event.dataTransfer.files]);
       }}
     >
-      {fileDragActive && <div className="file-drop-overlay" aria-hidden="true"><span>＋</span><strong>Add recording or companion files</strong><small>JSON and TSV metadata will enrich the active session</small></div>}
+      {fileDragActive && <div className="file-drop-overlay" aria-hidden="true"><span>＋</span><strong>Add recordings, companions, or custom definitions</strong><small>Dictionaries, words, equations, filters, labels, and channel groups are accepted</small></div>}
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /><i /></span>
@@ -6590,6 +6830,15 @@ export default function Home() {
           <button className="add-session-tab" disabled={importBusy} aria-label="Add blank session" title="Add blank session" onClick={createBlankSession}>+</button>
         </nav>
         <div className="top-actions utility-actions">
+          <button
+            className="utility-button save-project-button"
+            aria-label="Save NeuroTrace project"
+            title={`Save one portable project file${customTools.length ? ` · ${customTools.length} custom definition${customTools.length === 1 ? "" : "s"}` : ""}`}
+            onClick={() => {
+              setProjectSaveError("");
+              setShowProjectSave(true);
+            }}
+          ><span aria-hidden="true">⇩</span></button>
           <button
             className={`utility-button ${resourcePanelActive ? "active" : ""}`}
             aria-label={resourcePanelActive ? "Return to right panel tools" : "Show resource usage"}
@@ -7047,18 +7296,18 @@ export default function Home() {
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN A RECORDING</span>
           <h2>Bring in the recording and everything around it.</h2>
-          <p>Open one signal file, or scan a directory. NeuroTrace catalogs every file and applies matching BIDS JSON/TSV metadata, channel quality, participant fields, and events.</p>
-          <button className={`drop-zone ${importBusy ? "busy" : ""} ${uploadError ? "has-error" : ""}`} disabled={importBusy} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void importFiles([...event.dataTransfer.files]); }}>
-            <span className="upload-mark">⇧</span><strong>{importBusy ? "Hunting for recording information…" : "Drop recordings or companion files"}</strong><small>Files stay in this browser and can be added again later</small>
+          <p>Open a signal, scan a directory, or add custom dictionaries, equations, filtering methods, label definitions, and channel groups. NeuroTrace catalogs them locally.</p>
+          <button className={`drop-zone ${importBusy ? "busy" : ""} ${uploadError ? "has-error" : ""}`} disabled={importBusy} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void handleUploadedFiles([...event.dataTransfer.files]); }}>
+            <span className="upload-mark">⇧</span><strong>{importBusy ? "Hunting for recording information…" : "Drop recordings, companions, or custom definitions"}</strong><small>Dictionaries, words, equations, filters, labels, and channel groups remain local and inactive</small>
           </button>
           <div className="import-source-actions">
             <button type="button" disabled={importBusy} onClick={() => fileInputRef.current?.click()}>Choose files</button>
             <button type="button" disabled={importBusy} onClick={() => directoryInputRef.current?.click()}>Choose directory</button>
           </div>
-          <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat,.json,.tsv,.vhdr,.vmrk,.eeg,.set,.fdt,.bdf,.nwb,.mefd" onChange={(event: ChangeEvent<HTMLInputElement>) => {
+          <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat,.json,.tsv,.vhdr,.vmrk,.eeg,.set,.fdt,.bdf,.nwb,.mefd,.yaml,.yml,.txt,.csv,.dict,.dictionary,.words,.equation,.formula,.filter,.method,.labels,.channelgroup" onChange={(event: ChangeEvent<HTMLInputElement>) => {
             const files = [...(event.target.files ?? [])];
             event.target.value = "";
-            void importFiles(files);
+            void handleUploadedFiles(files);
           }} />
           <input ref={(element) => {
             directoryInputRef.current = element;
@@ -7066,7 +7315,7 @@ export default function Home() {
           }} hidden type="file" multiple onChange={(event: ChangeEvent<HTMLInputElement>) => {
             const files = [...(event.target.files ?? [])];
             event.target.value = "";
-            void importFiles(files);
+            void handleUploadedFiles(files);
           }} />
           {uploadError && <div className="upload-error" role="alert" aria-live="assertive">
             <span aria-hidden="true">!</span>
@@ -7102,6 +7351,41 @@ export default function Home() {
           </div>}
           <div className="format-cards"><div><strong>EDF / EDF+</strong><span>Calibrated signals, channel metadata, full recording timeline</span></div><div><strong>MAT v5</strong><span>Automatic largest-matrix detection with sampling-rate discovery</span></div><div><strong>MAT + DAT</strong><span>Manual binary confirmation for legacy Buzcode sessions</span></div></div>
           <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Hospital deployment still requires institutional privacy, security, and validation review.</p></div>
+        </div>
+      </div>}
+
+      {showProjectSave && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !projectSaveBusy) setShowProjectSave(false); }}>
+        <div className="modal project-save-modal" role="dialog" aria-modal="true" aria-label="Save NeuroTrace project" tabIndex={-1}>
+          <button className="modal-close" disabled={projectSaveBusy} onClick={() => setShowProjectSave(false)} aria-label="Close project save">×</button>
+          <span className="modal-eyebrow">SAVE PROJECT</span>
+          <h2>Keep the whole workspace in one file.</h2>
+          <p><strong>{projectFileName}</strong> is a versioned, ZIP-compatible NeuroTrace project. Choose exactly what belongs inside.</p>
+          <div className="project-save-options">
+            {projectSaveOptions.map((option) => <label className={option.disabled ? "disabled" : ""} key={option.key}>
+              <input
+                type="checkbox"
+                disabled={option.disabled || projectSaveBusy}
+                checked={projectSaveSelection[option.key] && !option.disabled}
+                onChange={(event) => setProjectSaveSelection((current) => ({ ...current, [option.key]: event.target.checked }))}
+              />
+              <span><strong>{option.title}</strong><small>{option.detail}</small></span>
+              <b>{option.amount}</b>
+            </label>)}
+          </div>
+          {customTools.length > 0 && <section className="project-tool-list">
+            <header><strong>Imported custom definitions</strong><span>Stored as inactive data</span></header>
+            <div>{customTools.map((tool) => <article key={tool.id}>
+              <span>{tool.kind.replaceAll("-", " ")}</span>
+              <strong title={tool.sourceName}>{tool.sourceName}</strong>
+              <small>{formatByteCount(tool.byteLength)}</small>
+              <button type="button" disabled={projectSaveBusy} aria-label={`Remove ${tool.sourceName}`} title="Remove from this session" onClick={() => setCustomTools((current) => current.filter((item) => item.id !== tool.id))}>×</button>
+            </article>)}</div>
+          </section>}
+          {projectSaveError && <div className="project-save-error" role="alert">{projectSaveError}</div>}
+          <footer className="project-save-footer">
+            <span><strong>Downloads by default.</strong> Your system save dialog can choose any other folder.</span>
+            <button className="button primary" disabled={projectSaveBusy || selectedProjectSectionCount === 0} onClick={() => void saveNeurotraceProject()}>{projectSaveBusy ? "Building project…" : "Choose location & save"}</button>
+          </footer>
         </div>
       </div>}
 
