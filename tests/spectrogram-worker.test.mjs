@@ -2,45 +2,81 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  BUZCODE_DEFAULT_SMOOTHING_SECONDS,
-  BUZCODE_FFT_SIZE,
-  BUZCODE_TAPER_COUNT,
   computeSpectrogram,
-  displaySpectrogramPowers,
   spectrogramTransferList,
-  thetaRatioOverlay,
 } from "../app/spectrogram-compute.ts";
 import { computeSpectrogramOffThread } from "../app/spectrogram-worker-client.ts";
 
-test("uses TheStateEditor's one-second five-taper 3072-point spectral layout", () => {
-  const sampleRate = 128;
-  let noiseState = 0x12345678;
-  const data = Float32Array.from({ length: sampleRate * 12 }, (_, index) => {
-    noiseState = (1664525 * noiseState + 1013904223) >>> 0;
-    const noise = (noiseState / 0xffffffff - 0.5) * 0.35;
-    return Math.sin((2 * Math.PI * 10 * index) / sampleRate) + noise;
-  });
-  const result = computeSpectrogram({ data, sampleRate });
-  assert.equal(result.windowSize, sampleRate);
-  assert.equal(result.hop, sampleRate);
-  assert.equal(result.frames, 12);
-  assert.equal(result.fftSize, BUZCODE_FFT_SIZE);
-  assert.equal(result.tapers, BUZCODE_TAPER_COUNT);
-  assert.ok(result.maxHz < sampleRate / 2);
-  assert.ok(result.maxHz > sampleRate / 2 - 1);
-  assert.equal(result.metrics.finiteFrames, 12);
-  assert.equal(result.powers.length, result.frames * result.bins);
-  assert.equal(result.frequencies.length, result.bins);
-  assert.equal(result.times.length, result.frames);
-  const spacings = [...result.frequencies].slice(1).map((frequency, index) => frequency - result.frequencies[index]);
-  assert.ok(spacings.every((spacing) => Math.abs(spacing - 0.5) < 0.02));
+function originalSpectrogram(data, sampleRate) {
+  const nominalWindowSize = Math.min(256, 2 ** Math.floor(Math.log2(Math.max(32, sampleRate))));
+  const windowSize = Math.max(1, Math.min(data.length, nominalWindowSize));
+  const targetHop = Math.max(1, Math.floor(windowSize / 4));
+  const possibleFrames = Math.max(1, Math.floor((data.length - windowSize) / targetHop) + 1);
+  const frames = Math.min(90, possibleFrames);
+  const hop = frames > 1
+    ? Math.max(1, Math.floor((data.length - windowSize) / (frames - 1)))
+    : 1;
+  const maxHz = Math.min(150, sampleRate / 2);
+  const bins = 56;
+  const powers = Array.from({ length: bins }, () => Array(frames).fill(Number.NaN));
+  for (let frame = 0; frame < frames; frame += 1) {
+    const offset = Math.min(Math.max(0, data.length - windowSize), frame * hop);
+    let finiteSamples = 0;
+    let mean = 0;
+    for (let sample = 0; sample < windowSize; sample += 1) {
+      const value = data[offset + sample];
+      if (!Number.isFinite(value)) continue;
+      mean += value;
+      finiteSamples += 1;
+    }
+    if (finiteSamples / windowSize < 0.75) continue;
+    mean /= finiteSamples;
+    const coverageGain = windowSize / finiteSamples;
+    for (let bin = 0; bin < bins; bin += 1) {
+      const frequency = Math.exp(Math.log(1) + (bin / (bins - 1)) * Math.log(Math.max(1.01, maxHz)));
+      let re = 0;
+      let im = 0;
+      for (let sample = 0; sample < windowSize; sample += 1) {
+        const sourceValue = data[offset + sample];
+        if (!Number.isFinite(sourceValue)) continue;
+        const value = sourceValue - mean;
+        const hann = 0.5 - 0.5 * Math.cos((2 * Math.PI * sample) / Math.max(1, windowSize - 1));
+        const angle = (2 * Math.PI * frequency * sample) / sampleRate;
+        re += value * hann * Math.cos(angle);
+        im -= value * hann * Math.sin(angle);
+      }
+      re *= coverageGain;
+      im *= coverageGain;
+      powers[bin][frame] = Math.log10(re * re + im * im + 1e-9);
+    }
+  }
+  return { powers, frames, bins, maxHz, windowSize, hop };
+}
 
-  const displayed = displaySpectrogramPowers(result, BUZCODE_DEFAULT_SMOOTHING_SECONDS);
-  assert.equal(displayed.length, result.powers.length);
-  assert.ok([...displayed].some(Number.isFinite));
-  const theta = thetaRatioOverlay(result, BUZCODE_DEFAULT_SMOOTHING_SECONDS);
-  assert.equal(theta.length, result.frames);
-  assert.ok([...theta].some(Number.isFinite));
+function assertSameNumber(actual, expected) {
+  if (Number.isNaN(expected)) assert.ok(Number.isNaN(actual));
+  else assert.equal(actual, expected);
+}
+
+test("matches the existing spectrogram algorithm exactly for finite and incomplete frames", () => {
+  const data = Float32Array.from({ length: 387 }, (_, index) => (
+    index % 19 === 0 ? Number.NaN : Math.sin(index / 6) * 31 + Math.cos(index / 17) * 4
+  ));
+  for (const sampleRate of [2, 31.5, 128, 512]) {
+    const expected = originalSpectrogram(data, sampleRate);
+    const actual = computeSpectrogram({ data, sampleRate });
+    assert.deepEqual(
+      { frames: actual.frames, bins: actual.bins, maxHz: actual.maxHz, windowSize: actual.windowSize, hop: actual.hop },
+      { frames: expected.frames, bins: expected.bins, maxHz: expected.maxHz, windowSize: expected.windowSize, hop: expected.hop },
+    );
+    for (let bin = 0; bin < actual.bins; bin += 1) {
+      for (let frame = 0; frame < actual.frames; frame += 1) {
+        assertSameNumber(actual.powers[bin * actual.frames + frame], expected.powers[bin][frame]);
+      }
+    }
+    assert.ok(actual.metrics.computeMs >= 0);
+    assert.equal(actual.metrics.inputSamples, data.length);
+  }
 });
 
 test("marks frames with less than 75 percent finite coverage as unavailable", () => {
@@ -53,11 +89,11 @@ test("marks frames with less than 75 percent finite coverage as unavailable", ()
   assert.equal(result.metrics.dftTerms, 0);
 });
 
-test("returns unique transferable result buffers and validates unsupported input", () => {
+test("returns a unique transferable power buffer and validates unsupported input", () => {
   const result = computeSpectrogram({ data: Float32Array.of(1, 2, 3, 4), sampleRate: 4 });
   const transfers = spectrogramTransferList(result);
-  assert.deepEqual(transfers, [result.powers.buffer, result.frequencies.buffer, result.times.buffer]);
-  assert.equal(new Set(transfers).size, 3);
+  assert.deepEqual(transfers, [result.powers.buffer]);
+  assert.equal(new Set(transfers).size, 1);
   assert.throws(() => computeSpectrogram({ data: new Float32Array(), sampleRate: 128 }), /at least one sample/i);
   assert.throws(() => computeSpectrogram({ data: Float32Array.of(1), sampleRate: 1 }), /at least 2 Hz/i);
 });
