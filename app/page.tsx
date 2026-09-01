@@ -2721,11 +2721,22 @@ export default function Home() {
             );
             const coversFullSession = cacheStart <= 1e-9
               && cacheEnd >= meta.durationSec - 1e-9;
-            const bucketCount = reusableEnvelopeBucketCount(
+            const requestedBucketCount = reusableEnvelopeBucketCount(
               indices.length,
               minimumCacheBuckets,
               coversFullSession,
             );
+            const maximumSourceSampleRate = indices.reduce((maximum, index) => {
+              const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
+              return Number.isFinite(sampleRate) && sampleRate > 0
+                ? Math.max(maximum, sampleRate)
+                : maximum;
+            }, 1);
+            const maximumUsefulBucketCount = Math.max(
+              1,
+              Math.ceil(cacheDuration * maximumSourceSampleRate),
+            );
+            const bucketCount = Math.min(requestedBucketCount, maximumUsefulBucketCount);
             const expectedBytes = source instanceof EDFSource
               ? expectedEDFRecordBytes(source, cacheStart, cacheDuration)
               : source instanceof RawDatSource

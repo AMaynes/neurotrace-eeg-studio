@@ -2216,7 +2216,8 @@ function finishEnvelopeAccumulator(accumulator: EnvelopeAccumulator) {
     const minimum = accumulator.minima[bucket];
     const maximum = accumulator.maxima[bucket];
     if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) {
-      accumulator.gaps[bucket] = 1;
+      // Empty oversampling buckets are neutral. addEnvelopeSample already marks
+      // a real non-finite source value explicitly in the gap mask.
       accumulator.minima[bucket] = Number.NaN;
       accumulator.maxima[bucket] = Number.NaN;
       continue;
@@ -2252,8 +2253,9 @@ function makeEnvelopeWindowResult(
  * Conservatively coarsens a cached exact-extrema envelope without rereading the
  * source signal. Target buckets may crop or straddle cached bucket boundaries;
  * every cached bucket with positive overlap contributes its full extrema. A
- * propagated gap keeps midpoint data missing while retaining any known extrema
- * for waveform/QC rendering.
+ * propagated source gap keeps midpoint data missing while retaining any known
+ * extrema for waveform/QC rendering. Empty buckets created only because an
+ * index is finer than the source sample cadence are neutral, not data loss.
  */
 export function aggregateEnvelopeWindow(
   source: EnvelopeWindowData,
@@ -2349,7 +2351,7 @@ export function aggregateEnvelopeWindow(
     channel.fill(Number.NaN);
     return channel;
   });
-  const gaps = data.map(() => new Uint8Array(targetBucketCount).fill(1));
+  const gaps = data.map(() => new Uint8Array(targetBucketCount));
   const relativeIndexTolerance = 1e-9;
 
   for (let targetBucket = 0; targetBucket < targetBucketCount; targetBucket += 1) {
@@ -2376,16 +2378,15 @@ export function aggregateEnvelopeWindow(
         if (!Number.isFinite(sourceMinimum)
           || !Number.isFinite(sourceMaximum)
           || sourceMaximum < sourceMinimum) {
-          missing = true;
           continue;
         }
         minimum = Math.min(minimum, sourceMinimum);
         maximum = Math.max(maximum, sourceMaximum);
       }
+      gaps[channel][targetBucket] = missing ? 1 : 0;
       if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) continue;
       minima[channel][targetBucket] = minimum;
       maxima[channel][targetBucket] = maximum;
-      gaps[channel][targetBucket] = missing ? 1 : 0;
       if (!missing) data[channel][targetBucket] = (minimum + maximum) / 2;
     }
   }

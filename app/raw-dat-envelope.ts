@@ -196,9 +196,10 @@ function finishAccumulator(accumulator: ChannelAccumulator, signal?: AbortSignal
     const minimum = accumulator.minima[bucket];
     const maximum = accumulator.maxima[bucket];
     if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) {
+      // Oversampling the index creates empty time bins between valid frames;
+      // those bins are neutral and must not masquerade as recording loss.
       accumulator.minima[bucket] = Number.NaN;
       accumulator.maxima[bucket] = Number.NaN;
-      accumulator.gaps[bucket] = 1;
     } else {
       accumulator.data[bucket] = (minimum + maximum) / 2;
     }

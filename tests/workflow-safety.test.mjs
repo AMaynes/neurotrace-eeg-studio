@@ -236,6 +236,8 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /const overviewColumnCount\s*=\s*waveformOverviewColumnBudget\(timebase, waveformWidth\)/);
   assert.match(refresh, /const requiredBucketDuration\s*=\s*timebase\s*\/\s*overviewColumnCount/);
   assert.match(refresh, /minimumCacheBuckets[\s\S]*?overviewColumnCount/);
+  assert.match(refresh, /maximumUsefulBucketCount[\s\S]*?cacheDuration\s*\*\s*maximumSourceSampleRate/);
+  assert.match(refresh, /Math\.min\(requestedBucketCount,\s*maximumUsefulBucketCount\)/);
   assert.match(refresh, /processDisplaySignalsOffThread/);
   assert.match(refresh, /requestId\s*!==\s*displayRequestIdRef\.current/);
   assert.match(refresh, /rawOwnerIsCached\s*=\s*rawWindowCacheRef\.current\.includes\(rawWindow\)/);

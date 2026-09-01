@@ -193,7 +193,8 @@ function finishAccumulator(accumulator: EnvelopeAccumulator, signal?: AbortSigna
     const minimum = accumulator.minima[bucket];
     const maximum = accumulator.maxima[bucket];
     if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) {
-      accumulator.gaps[bucket] = 1;
+      // A bucket finer than the source cadence can legitimately contain no
+      // sample. Keep it neutral; only decoded non-finite values mark gaps.
       accumulator.minima[bucket] = Number.NaN;
       accumulator.maxima[bucket] = Number.NaN;
     } else {

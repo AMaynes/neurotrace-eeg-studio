@@ -11,7 +11,11 @@ import {
   edfEnvelopeTransferList,
 } from "../app/edf-envelope.ts";
 import { executeEDFEnvelopeBuild } from "../app/edf-envelope-integrity.ts";
-import { parseEDFHeader } from "../app/eeg-core.ts";
+import {
+  aggregateEnvelopeWindow,
+  parseEDFHeader,
+  selectEnvelopePyramidLevel,
+} from "../app/eeg-core.ts";
 import { sha256Blob } from "../app/source-integrity.ts";
 
 function latin1Bytes(text, width) {
@@ -107,6 +111,61 @@ function fixtureFile() {
   ]);
 }
 
+function longContinuousFixtureFile(recordCount = 3 * 60 * 60, sampleRate = 200) {
+  const headerBytes = 512;
+  const header = new Uint8Array(headerBytes).fill(0x20);
+  let offset = 0;
+  offset = writeFixed(header, offset, "0", 8);
+  offset = writeFixed(header, offset, "LONG TEST PATIENT", 80);
+  offset = writeFixed(header, offset, "THREE HOUR RECORDING", 80);
+  offset = writeFixed(header, offset, "01.01.25", 8);
+  offset = writeFixed(header, offset, "00.00.00", 8);
+  offset = writeFixed(header, offset, headerBytes, 8);
+  offset = writeFixed(header, offset, "EDF+C", 44);
+  offset = writeFixed(header, offset, recordCount, 8);
+  offset = writeFixed(header, offset, 1, 8);
+  writeFixed(header, offset, 1, 4);
+
+  offset = 256;
+  const signal = {
+    label: "EEG Fp1",
+    transducer: "",
+    dimension: "uV",
+    physicalMinimum: -1_000,
+    physicalMaximum: 1_000,
+    digitalMinimum: -1_000,
+    digitalMaximum: 1_000,
+    prefilter: "",
+    samplesPerRecord: sampleRate,
+    signalReserved: "",
+  };
+  for (const [key, width] of [
+    ["label", 16],
+    ["transducer", 80],
+    ["dimension", 8],
+    ["physicalMinimum", 8],
+    ["physicalMaximum", 8],
+    ["digitalMinimum", 8],
+    ["digitalMaximum", 8],
+    ["prefilter", 80],
+    ["samplesPerRecord", 8],
+    ["signalReserved", 32],
+  ]) {
+    offset = writeFixed(header, offset, signal[key], width);
+  }
+
+  const sampleCount = recordCount * sampleRate;
+  const data = new Uint8Array(sampleCount * Int16Array.BYTES_PER_ELEMENT);
+  const view = new DataView(data.buffer);
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    // The two incommensurate components keep every 20-second window visibly
+    // non-flat while remaining deterministic and exactly representable as EDF.
+    const value = Math.round(180 * Math.sin(sample * .071) + 55 * Math.sin(sample * .013));
+    view.setInt16(sample * Int16Array.BYTES_PER_ELEMENT, value, true);
+  }
+  return new File([header, data], "three-hour-200hz.edf", { lastModified: 1 });
+}
+
 test("builds calibrated mixed-rate EDF envelopes in requested display-channel order", async () => {
   const file = fixtureFile();
   const header = await parseEDFHeader(file);
@@ -144,6 +203,44 @@ test("builds calibrated mixed-rate EDF envelopes in requested display-channel or
   assert.deepEqual(progress.map((entry) => entry.phase), [
     "reading", "decoding", "reading", "decoding", "complete",
   ]);
+});
+
+test("three-hour cached EDF overview remains finite after zooming to a 20-second window", { timeout: 30_000 }, async () => {
+  const file = longContinuousFixtureFile();
+  const header = await parseEDFHeader(file);
+  const fullSession = await buildEDFEnvelopeWindow({
+    blob: file,
+    header,
+    startSec: 0,
+    durationSec: 3 * 60 * 60,
+    bucketCount: 65_536,
+    channelIndices: [0],
+    pyramidMinimumBucketCount: 64,
+  });
+  const requiredBucketDurationSec = 20 / 2_048;
+  assert.ok(
+    fullSession.window.bucketDurationSec > requiredBucketDurationSec * 1.05,
+    "the cached full-session overview is intentionally too coarse for this zoom",
+  );
+
+  // This mirrors the viewer's local 3x read-ahead cache and 4x refinement when
+  // the full-session overview cannot serve a 20-second, 2,048-column window.
+  const local = await buildEDFEnvelopeWindow({
+    blob: file,
+    header,
+    startSec: 0,
+    durationSec: 60,
+    bucketCount: 24_576,
+    channelIndices: [0],
+    pyramidMinimumBucketCount: 64,
+  });
+  const level = selectEnvelopePyramidLevel(local.pyramidLevels, requiredBucketDurationSec);
+  const visible = aggregateEnvelopeWindow(level, 0, 20, 2_048);
+
+  assert.equal(visible.minima[0].filter(Number.isFinite).length, 2_048);
+  assert.equal(visible.maxima[0].filter(Number.isFinite).length, 2_048);
+  assert.equal(visible.data[0].filter(Number.isFinite).length, 2_048);
+  assert.equal(visible.gaps[0].filter(Boolean).length, 0);
 });
 
 test("exposes one ordered full-file chunk stream for shared hashing and indexing", async () => {

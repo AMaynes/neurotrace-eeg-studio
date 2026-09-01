@@ -398,6 +398,29 @@ test("cached envelope aggregation includes every partially overlapping source bu
   assert.equal(cropped.bucketDurationSec, 1.5);
 });
 
+test("oversampled empty envelope buckets do not become recording gaps", () => {
+  const source = {
+    data: [new Float32Array([1, Number.NaN, 3, Number.NaN])],
+    minima: [new Float32Array([1, Number.NaN, 3, Number.NaN])],
+    maxima: [new Float32Array([1, Number.NaN, 3, Number.NaN])],
+    gaps: [new Uint8Array(4)],
+    bucketDurationSec: 0.25,
+    sampleRates: [4],
+    channelStartSecs: [0],
+    startSec: 0,
+    durationSec: 1,
+    channelIndices: [0],
+    channelLabels: ["Fp1"],
+    channelUnits: ["µV"],
+  };
+
+  const aggregated = aggregateEnvelopeWindow(source, 0, 1, 2);
+  assert.deepEqual([...aggregated.minima[0]], [1, 3]);
+  assert.deepEqual([...aggregated.maxima[0]], [1, 3]);
+  assert.deepEqual([...aggregated.data[0]], [1, 3]);
+  assert.deepEqual([...aggregated.gaps[0]], [0, 0]);
+});
+
 test("cached envelope aggregation rejects missing coverage and invented resolution", () => {
   const source = {
     data: [new Float32Array([1, Number.NaN, 3, 4])],

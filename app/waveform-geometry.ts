@@ -282,7 +282,8 @@ export function visitGroupedWaveformExtrema(
     for (let index = groupStart; index < groupEnd; index += 1) {
       const candidateMinimum = minima[index];
       const candidateMaximum = maxima[index];
-      if (gaps?.[index] || !Number.isFinite(candidateMinimum) || !Number.isFinite(candidateMaximum)) {
+      if (gaps?.[index]) interrupted = true;
+      if (!Number.isFinite(candidateMinimum) || !Number.isFinite(candidateMaximum)) {
         interrupted = true;
         continue;
       }

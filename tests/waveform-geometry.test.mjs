@@ -179,6 +179,20 @@ test("groups exact extrema once while preserving partial gaps", () => {
     { start: 0, end: 2, minimum: 5, maximum: 5, interrupted: false },
     { start: 2, end: 4, minimum: 5, maximum: 5, interrupted: false },
   ]);
+
+  const retainedGapExtrema = [];
+  visitGroupedWaveformExtrema(
+    Float32Array.of(-8, -3),
+    Float32Array.of(9, 4),
+    Uint8Array.of(1, 0),
+    1,
+    (start, end, minimum, maximum, interrupted) => {
+      retainedGapExtrema.push({ start, end, minimum, maximum, interrupted });
+    },
+  );
+  assert.deepEqual(retainedGapExtrema, [
+    { start: 0, end: 2, minimum: -8, maximum: 9, interrupted: true },
+  ], "a real gap breaks continuity without discarding its known extrema");
 });
 
 test("rejects invalid projections, mismatched envelopes, and invalid budgets", () => {

@@ -216,7 +216,7 @@ test("Raw DAT envelope and exact SHA-256 share one sequential source pass", asyn
   assert.equal(updates.at(-1).integrityMs, result.metrics.integrityMs);
 });
 
-test("Raw DAT envelope builder marks buckets with no source frame as gaps", async () => {
+test("Raw DAT envelope builder keeps oversampled empty buckets neutral", async () => {
   const blob = rawDatBlob([[10], [20]]);
   const result = await buildRawDatEnvelopeWindow({
     blob,
@@ -236,7 +236,7 @@ test("Raw DAT envelope builder marks buckets with no source frame as gaps", asyn
   assert.ok(Number.isNaN(result.window.data[0][1]));
   assert.equal(result.window.data[0][2], 20);
   assert.ok(Number.isNaN(result.window.data[0][3]));
-  assert.deepEqual([...result.window.gaps[0]], [0, 1, 0, 1]);
+  assert.deepEqual([...result.window.gaps[0]], [0, 0, 0, 0]);
   assert.ok(Number.isNaN(result.window.minima[0][1]));
   assert.ok(Number.isNaN(result.window.maxima[0][3]));
 });
