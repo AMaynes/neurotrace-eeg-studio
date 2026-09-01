@@ -445,13 +445,45 @@ test("keeps the right panel label view ordered like the ontology palette", async
   assert.ok(sidebarStart >= 0 && sidebarEnd > sidebarStart, "the right label panel is present");
   const sidebar = page.slice(sidebarStart, sidebarEnd);
 
+  const switchPosition = sidebar.indexOf("right-panel-mode-switch");
   const searchPosition = sidebar.search(/Search ontology/i);
   const contextPosition = sidebar.indexOf("Context Labels");
   const ephysPosition = sidebar.indexOf("ePhys Labels");
+  assert.ok(switchPosition >= 0, "the panel mode switch is available at the top of the right panel");
+  assert.ok(searchPosition > switchPosition, "ontology search follows the panel mode switch");
   assert.ok(searchPosition >= 0, "ontology search is available at the top of the right panel");
   assert.ok(contextPosition > searchPosition, "context labels follow ontology search");
   assert.ok(ephysPosition > contextPosition, "ePhys labels follow context labels");
-  assert.doesNotMatch(sidebar, /right-tabs|rightTab|<QcPanel|\bQC\b|inspector-section/, "QC and annotation inspection do not compete with the label palette");
+  assert.doesNotMatch(sidebar, /<QcPanel|\bQC\b/, "QC does not compete with the label palette");
+});
+
+test("switches waveform dragging between labeling selection and general-info zoom", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /useState<"labels" \| "inspect" \| "resources">\("labels"\)/);
+  assert.match(page, /className="right-panel-mode-switch" role="tablist" aria-label="Right panel tools"/);
+  assert.match(page, /role="tab"[^>]*>[\s\S]{0,80}Labeling tools/);
+  assert.match(page, /role="tab"[^>]*>[\s\S]{0,80}General info/);
+  assert.match(page, /rightPanelView === "inspect" \? <GeneralInfoPanel/);
+
+  const pointerStart = page.indexOf("const onWavePointerDown");
+  const pointerEnd = page.indexOf("const onLabelDrop", pointerStart);
+  const pointerHandlers = page.slice(pointerStart, pointerEnd);
+  assert.match(pointerHandlers, /if \(inspectionMode\) setInspectionRange\(pending\.selection\)/);
+  assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end\)/);
+  assert.match(pointerHandlers, /setSelection\(\{ start: Math\.min\(pointer\.startTime, time\), end: Math\.max\(pointer\.startTime, time\) \}\)/);
+  assert.match(pointerHandlers, /choose a label/);
+
+  assert.match(page, /className=\{`canvas-shell \$\{inspectionMode \? "inspection-mode" : ""\}`\}/);
+  assert.match(page, /className="wave-inspection-range"/);
+  assert.match(page, /Click a waveform point to inspect it\. Drag horizontally to zoom into a time range\./);
+  assert.match(css, /\.right-panel-mode-switch\s*\{/);
+  assert.match(css, /\.canvas-shell\.inspection-mode canvas\s*\{[^}]*cursor:\s*zoom-in/);
+  assert.match(css, /\.wave-inspection-range\s*\{/);
+  assert.match(css, /\.general-info-panel\s*\{/);
 });
 
 test("toggles live resource usage from the control left of Help and Settings", async () => {
@@ -460,7 +492,7 @@ test("toggles live resource usage from the control left of Help and Settings", a
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /const \[rightPanelView,\s*setRightPanelView\]\s*=\s*useState<"labels" \| "resources">\("labels"\)/);
+  assert.match(page, /const \[rightPanelView,\s*setRightPanelView\]\s*=\s*useState<"labels" \| "inspect" \| "resources">\("labels"\)/);
   const actionsStart = page.indexOf('<div className="top-actions utility-actions">');
   const actionsEnd = page.indexOf("</div>", actionsStart);
   const actions = page.slice(actionsStart, actionsEnd);

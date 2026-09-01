@@ -1181,6 +1181,7 @@ export default function Home() {
   const [selectedAnnotationIds, setSelectedAnnotationIds] = useState<Set<string>>(() => new Set());
   const [annotationSelectionBox, setAnnotationSelectionBox] = useState<AnnotationSelectionBox | null>(null);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
+  const [inspectionRange, setInspectionRange] = useState<{ start: number; end: number } | null>(null);
   const [cursorTime, setCursorTime] = useState(0);
   const [cursorAmplitude, setCursorAmplitude] = useState(0);
   const [cursorLocked, setCursorLocked] = useState(false);
@@ -1211,7 +1212,8 @@ export default function Home() {
   const [showImport, setShowImport] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [rightPanelView, setRightPanelView] = useState<"labels" | "resources">("labels");
+  const [rightPanelView, setRightPanelView] = useState<"labels" | "inspect" | "resources">("labels");
+  const [lastRightPanelToolView, setLastRightPanelToolView] = useState<"labels" | "inspect">("labels");
   const [bottomTracksOpen, setBottomTracksOpen] = useState(true);
   const [contextTrackHeight, setContextTrackHeight] = useState(76);
   const [sessionLabelsHeight, setSessionLabelsHeight] = useState(145);
@@ -1489,6 +1491,7 @@ export default function Home() {
     setSelectedAnnotationId(snapshot.selectedAnnotationId);
     setSelectedAnnotationIds(snapshot.selectedAnnotationId ? new Set([snapshot.selectedAnnotationId]) : new Set());
     setSelection(snapshot.selection);
+    setInspectionRange(null);
     setCursorTime(snapshot.cursorTime);
     setCursorAmplitude(snapshot.cursorAmplitude);
     setCursorLocked(snapshot.cursorLocked);
@@ -1605,6 +1608,16 @@ export default function Home() {
     setViewStart(clamp(anchor - anchorRatio * next, 0, Math.max(0, meta.durationSec - next)));
     setTimebase(next);
   }, [meta.durationSec, timebase, viewStart]);
+
+  const zoomToTimeRange = useCallback((start: number, end: number) => {
+    const rangeStart = clamp(Math.min(start, end), 0, meta.durationSec);
+    const rangeEnd = clamp(Math.max(start, end), rangeStart, meta.durationSec);
+    const selectedDuration = rangeEnd - rangeStart;
+    const nextDuration = clamp(selectedDuration, 1, Math.min(300, Math.max(1, meta.durationSec)));
+    const center = (rangeStart + rangeEnd) / 2;
+    setViewStart(clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)));
+    setTimebase(nextDuration);
+  }, [meta.durationSec]);
 
   const zoomTimeWindow = useCallback((direction: "in" | "out", anchorTime?: number) => {
     setTimeWindow(timebase * (direction === "in" ? 0.8 : 1.25), anchorTime);
@@ -3027,12 +3040,15 @@ export default function Home() {
     );
   }, [activeTool, display, meta, snapMode, timebase]);
 
+  const inspectionMode = rightPanelView === "inspect"
+    || (rightPanelView === "resources" && lastRightPanelToolView === "inspect");
+
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || loadingSignal || !display.data.length) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const row = channelRowFromClientY(event.clientY, rect);
     if (row === null) return;
-    const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
+    const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     const values = display.data[row];
     const sample = sampleIndexForDisplayRow(display, row, time);
     pointerRef.current = { pointerId: event.pointerId, startX: event.clientX, startTime: time, moved: false };
@@ -3041,6 +3057,10 @@ export default function Home() {
     setCursorLocked(true);
     setFocusedChannel(row);
     setCursorAmplitude(values?.[sample] ?? 0);
+    if (inspectionMode) {
+      setSelection(null);
+      setInspectionRange({ start: time, end: time });
+    }
   };
 
   const onWavePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -3048,7 +3068,7 @@ export default function Home() {
     const rect = event.currentTarget.getBoundingClientRect();
     const row = channelRowFromClientY(event.clientY, rect);
     if (row === null) return;
-    const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
+    const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     const values = display.data[row];
     const sample = sampleIndexForDisplayRow(display, row, time);
     if (Math.abs(event.clientX - pointerRef.current.startX) > 3) {
@@ -3070,7 +3090,10 @@ export default function Home() {
       setCursorTime(pending.time);
       setFocusedChannel(pending.row);
       setCursorAmplitude(pending.amplitude);
-      if (pending.selection) setSelection(pending.selection);
+      if (pending.selection) {
+        if (inspectionMode) setInspectionRange(pending.selection);
+        else setSelection(pending.selection);
+      }
     });
   };
 
@@ -3090,14 +3113,24 @@ export default function Home() {
       return;
     }
     const row = hitRow ?? clamp(focusedChannel, 0, Math.max(0, display.data.length - 1));
-    const time = timeFromPointer(event, event.currentTarget, row, event.altKey);
+    const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     const values = display.data[row];
     const sample = sampleIndexForDisplayRow(display, row, time);
     setCursorTime(time);
     setCursorLocked(true);
     setFocusedChannel(row);
     setCursorAmplitude(values?.[sample] ?? 0);
-    if (activeTool === "seizure" && !pointer.moved) {
+    if (inspectionMode) {
+      const range = { start: Math.min(pointer.startTime, time), end: Math.max(pointer.startTime, time) };
+      setSelection(null);
+      setInspectionRange(range);
+      if (pointer.moved && range.end > range.start) {
+        zoomToTimeRange(range.start, range.end);
+        setToast(`Zoomed to ${range.end - range.start < 1 ? "a 1 s window around" : `${(range.end - range.start).toFixed(2)} s at`} ${formatClock(range.start, true)}`);
+      } else {
+        setToast(`Inspecting ${display.labels[row] ?? "waveform"} at ${formatClock(time, true)} — drag to zoom`);
+      }
+    } else if (activeTool === "seizure" && !pointer.moved) {
       if (markOnset === null) {
         setMarkOnset(time);
         setToast(`Onset placed at ${formatClock(time, true)} — click offset`);
@@ -3656,6 +3689,7 @@ export default function Home() {
     setCursorTime(0);
     setCursorLocked(false);
     setSelection(null);
+    setInspectionRange(null);
     setMarkOnset(null);
     setActiveTool("cursor");
     setAnnotationDragPreview(null);
@@ -4517,6 +4551,20 @@ export default function Home() {
   ];
   const gridDivisions = timebase <= 30 ? Math.max(2, Math.ceil(timebase / 5)) : 10;
   const resourcePanelActive = rightPanelOpen && rightPanelView === "resources";
+  const selectRightPanelTool = (view: "labels" | "inspect") => {
+    setLastRightPanelToolView(view);
+    setRightPanelView(view);
+    setRightPanelOpen(true);
+    if (view === "inspect") {
+      setSelection(null);
+      setMarkOnset(null);
+      setActiveTool("cursor");
+      setToast("General info mode — click a waveform point to inspect it, or drag across time to zoom");
+    } else {
+      setInspectionRange(null);
+      setToast("Labeling mode — drag across time to select a labeling window");
+    }
+  };
   const activeDisplayBytes = display.data.reduce((sum, channel) => sum + channel.byteLength, 0)
     + display.envelopes.reduce((sum, envelope) => sum + (envelope
       ? envelope.minima.byteLength + envelope.maxima.byteLength + envelope.gaps.byteLength
@@ -4570,14 +4618,15 @@ export default function Home() {
         <div className="top-actions utility-actions">
           <button
             className={`utility-button ${resourcePanelActive ? "active" : ""}`}
-            aria-label={resourcePanelActive ? "Show label panel" : "Show resource usage"}
+            aria-label={resourcePanelActive ? "Return to right panel tools" : "Show resource usage"}
             aria-pressed={resourcePanelActive}
-            title={resourcePanelActive ? "Return to labels" : "Resource usage"}
+            title={resourcePanelActive ? "Return to right panel tools" : "Resource usage"}
             onClick={() => {
               if (resourcePanelActive) {
-                setRightPanelView("labels");
+                setRightPanelView(lastRightPanelToolView);
                 return;
               }
+              if (rightPanelView !== "resources") setLastRightPanelToolView(rightPanelView);
               setRightPanelView("resources");
               setRightPanelOpen(true);
             }}
@@ -4691,7 +4740,7 @@ export default function Home() {
           <div className="viewer-toolbar">
             <div className="panel-toggle-pair" aria-label="Workspace panels">
               <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title={`${leftPanelOpen ? "Hide" : "Show"} recording panel`} onClick={() => setLeftPanelOpen((value) => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
-              <button className={`panel-icon-button ${rightPanelOpen ? "active" : ""}`} aria-label={`${rightPanelOpen ? "Hide" : "Show"} right panel`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} ${rightPanelView === "resources" ? "resource usage" : "context and label"} panel`} onClick={() => setRightPanelOpen((value) => !value)}><span className="panel-glyph right" aria-hidden="true"><i /><i /><i /></span></button>
+              <button className={`panel-icon-button ${rightPanelOpen ? "active" : ""}`} aria-label={`${rightPanelOpen ? "Hide" : "Show"} right panel`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} ${rightPanelView === "resources" ? "resource usage" : rightPanelView === "inspect" ? "general info" : "context and label"} panel`} onClick={() => setRightPanelOpen((value) => !value)}><span className="panel-glyph right" aria-hidden="true"><i /><i /><i /></span></button>
               <button className={`panel-bottom-button ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} title={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} onClick={() => setBottomTracksOpen((value) => !value)}><span className="bottom-panel-glyph" aria-hidden="true"><i /><i /><i /></span></button>
             </div>
             <span className="toolbar-kicker">Signal tools</span>
@@ -4776,16 +4825,20 @@ export default function Home() {
               </div>
               <div className="canvas-column">
                 <div
-                  className="canvas-shell"
+                  className={`canvas-shell ${inspectionMode ? "inspection-mode" : ""}`}
                   style={expandedChannels ? { height: channelViewportHeight } : undefined}
                   onDragOver={onLabelDragOver}
                   onDrop={onLabelDrop}
                   onDragLeave={() => setDragGhost(null)}
                 >
-                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label="Interactive EEG waveform. Use the pointer to pin a time or select a window." onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
-                  {selection && <div className="wave-selection" style={{
+                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag across time to zoom." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
+                  {!inspectionMode && selection && <div className="wave-selection" style={{
                     left: `${((Math.max(display.viewStart, selection.start) - display.viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(display.viewStart + timebase, selection.end) - Math.max(display.viewStart, selection.start)) / timebase) * 100)}%`,
+                  }} />}
+                  {inspectionMode && inspectionRange && inspectionRange.end > inspectionRange.start && <div className="wave-inspection-range" style={{
+                    left: `${((Math.max(display.viewStart, inspectionRange.start) - display.viewStart) / timebase) * 100}%`,
+                    width: `${Math.max(0, ((Math.min(display.viewStart + timebase, inspectionRange.end) - Math.max(display.viewStart, inspectionRange.start)) / timebase) * 100)}%`,
                   }} />}
                   {cursorLocked && cursorTime >= display.viewStart && cursorTime <= display.viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - display.viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
                   {loadingSignal && <div className="signal-loading"><span /> Preparing signal window…</div>}
@@ -4878,6 +4931,23 @@ export default function Home() {
             activeDisplayBytes={activeDisplayBytes}
             readCacheUsage={readResourceCacheUsage}
           /> : <>
+          <div className="right-panel-mode-switch" role="tablist" aria-label="Right panel tools">
+            <button role="tab" aria-selected={rightPanelView === "labels"} className={rightPanelView === "labels" ? "active" : ""} onClick={() => selectRightPanelTool("labels")}><span aria-hidden="true">✎</span>Labeling tools</button>
+            <button role="tab" aria-selected={rightPanelView === "inspect"} className={rightPanelView === "inspect" ? "active" : ""} onClick={() => selectRightPanelTool("inspect")}><span aria-hidden="true">⌖</span>General info</button>
+          </div>
+          {rightPanelView === "inspect" ? <GeneralInfoPanel
+            meta={meta}
+            display={display}
+            annotations={annotations}
+            focusedChannel={focusedChannel}
+            cursorTime={cursorTime}
+            cursorAmplitude={cursorAmplitude}
+            inspectionRange={inspectionRange}
+            montage={montage}
+            viewStart={viewStart}
+            timebase={timebase}
+            hasRecording={hasRecording}
+          /> : <>
           <div className="ontology-search-row">
             <input className="palette-search" aria-label="Search label ontology" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
           </div>
@@ -4913,6 +4983,7 @@ export default function Home() {
               })}
             </div>
           </section>
+          </>}
           </>}
         </aside>
       </div>
@@ -5278,6 +5349,101 @@ function SpectrogramPanel({ data, sampleRate, start, cursor, label }: { data?: F
   const duration = data?.length && sampleRate ? data.length / sampleRate : 1;
   const cursorLeft = clamp(((cursor - start) / duration) * 100, 0, 100);
   return <div className="spectrogram-panel"><div className="spectrogram-label"><strong>{label}</strong><span>{sampleRate >= 2 ? `1–${Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only` : "Sampling rate below 2 Hz"}</span></div><div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div></div>;
+}
+
+function GeneralInfoPanel({
+  meta,
+  display,
+  annotations,
+  focusedChannel,
+  cursorTime,
+  cursorAmplitude,
+  inspectionRange,
+  montage,
+  viewStart,
+  timebase,
+  hasRecording,
+}: {
+  meta: RecordingMeta;
+  display: DisplayWindow;
+  annotations: Annotation[];
+  focusedChannel: number;
+  cursorTime: number;
+  cursorAmplitude: number;
+  inspectionRange: { start: number; end: number } | null;
+  montage: MontageMode;
+  viewStart: number;
+  timebase: number;
+  hasRecording: boolean;
+}) {
+  const rangeStart = inspectionRange ? Math.min(inspectionRange.start, inspectionRange.end) : cursorTime;
+  const rangeEnd = inspectionRange ? Math.max(inspectionRange.start, inspectionRange.end) : cursorTime;
+  const duration = rangeEnd - rangeStart;
+  const isArea = inspectionRange !== null && duration > 0.0005;
+  const displayLabel = display.labels[focusedChannel] ?? "—";
+  const sourceIndices = display.sourceIndices[focusedChannel] ?? [];
+  const sourceLabels = sourceIndices.map((index) => meta.channelLabels[index]).filter(Boolean);
+  const primarySourceIndex = display.primarySourceIndices[focusedChannel];
+  const primarySourceLabel = meta.channelLabels[primarySourceIndex] ?? sourceLabels[0] ?? "—";
+  const sampleRate = sourceRateForDisplayRow(display, meta, focusedChannel);
+  const pointTolerance = Math.max(sampleRate > 0 ? 1 / sampleRate : 0, timebase * 0.005);
+  const relatedAnnotations = inspectionRange ? annotations.filter((annotation) => {
+    const geometry = annotationGeometry(annotation);
+    if (geometry === "session") return true;
+    if (geometry === "point") {
+      return annotation.start >= rangeStart - pointTolerance && annotation.start <= rangeEnd + pointTolerance;
+    }
+    return annotation.start <= rangeEnd && annotation.end >= rangeStart;
+  }).sort((left, right) => Math.abs(left.start - rangeStart) - Math.abs(right.start - rangeStart)).slice(0, 6) : [];
+  const montageLabel = montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : "Anatomical bipolar";
+
+  return <section className="general-info-panel" aria-label="General waveform information">
+    <header className="general-info-heading">
+      <span>WAVEFORM INSPECTOR</span>
+      <h2>General info</h2>
+      <p>Click a waveform point to inspect it. Drag horizontally to zoom into a time range.</p>
+    </header>
+
+    {!hasRecording ? <div className="general-info-empty"><span>⌁</span><strong>No recording loaded</strong><p>Load a recording, then select a point or area in the waveform.</p></div> : !inspectionRange ? <div className="general-info-empty ready"><span>⌖</span><strong>Ready to inspect</strong><p>Choose any waveform row. Your selected channel, timing, amplitude, source, and nearby labels will appear here.</p></div> : <>
+      <section className="general-info-focus-card">
+        <span>{isArea ? "SELECTED AREA" : "CLICKED POINT"}</span>
+        <strong>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : formatClock(rangeStart, true)}</strong>
+        <small>{isArea ? `${formatClock(rangeStart, true)}–${formatClock(rangeEnd, true)}` : `${displayLabel} · ${formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}`}</small>
+      </section>
+
+      <section className="general-info-section">
+        <header><h3>Selection</h3><span>{isArea ? "ZOOMED RANGE" : "POINT"}</span></header>
+        <dl>
+          <div><dt>Start</dt><dd>{formatClock(rangeStart, true)}</dd></div>
+          <div><dt>End</dt><dd>{isArea ? formatClock(rangeEnd, true) : "Same point"}</dd></div>
+          <div><dt>Duration</dt><dd>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : "Instant"}</dd></div>
+          <div><dt>Pointer amplitude</dt><dd>{formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}</dd></div>
+          <div><dt>Source sample</dt><dd>{Math.round(cursorTime * sampleRate).toLocaleString()}</dd></div>
+        </dl>
+      </section>
+
+      <section className="general-info-section">
+        <header><h3>Signal source</h3><span>{meta.format.toUpperCase()}</span></header>
+        <dl>
+          <div><dt>Displayed channel</dt><dd>{displayLabel}</dd></div>
+          <div><dt>Primary source</dt><dd>{primarySourceLabel}</dd></div>
+          <div><dt>Source channels</dt><dd>{sourceLabels.length ? sourceLabels.join(" · ") : "—"}</dd></div>
+          <div><dt>Sample rate</dt><dd>{sampleRate > 0 ? `${sampleRate.toLocaleString()} Hz` : "—"}</dd></div>
+          <div><dt>Montage</dt><dd>{montageLabel}</dd></div>
+          <div><dt>Visible window</dt><dd>{formatClock(viewStart, true)}–{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
+        </dl>
+      </section>
+
+      <section className="general-info-section nearby-labels">
+        <header><h3>Labels in area</h3><span>{relatedAnnotations.length}</span></header>
+        {relatedAnnotations.length ? <div>{relatedAnnotations.map((annotation) => {
+          const label = LABEL_BY_ID.get(annotation.labelId);
+          const point = annotationGeometry(annotation) === "point";
+          return <article key={annotation.id} style={{ "--label-color": label?.color ?? "#6f8990" } as React.CSSProperties}><i /><span><strong>{label?.name ?? annotation.labelId}</strong><small>{point ? formatClock(annotation.start, true) : `${formatClock(annotation.start, true)}–${formatClock(annotation.end, true)}`}</small></span></article>;
+        })}</div> : <p>No labels overlap this {isArea ? "area" : "point"}.</p>}
+      </section>
+    </>}
+  </section>;
 }
 
 function ResourceUsagePanel({
