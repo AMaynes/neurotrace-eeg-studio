@@ -1838,6 +1838,7 @@ export default function Home() {
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
   const [inspectionRange, setInspectionRange] = useState<InspectionBox | null>(null);
   const [inspectionDragging, setInspectionDragging] = useState(false);
+  const [boxZoomActive, setBoxZoomActive] = useState(false);
   const [waveformVerticalViewport, setWaveformVerticalViewport] = useState<NormalizedVerticalViewport | null>(null);
   const [cursorTime, setCursorTime] = useState(0);
   const [cursorAmplitude, setCursorAmplitude] = useState(0);
@@ -4271,8 +4272,7 @@ export default function Home() {
     if (waveformScrollRef.current) waveformScrollRef.current.scrollTop = 0;
   }, [channelRowLayout.totalUnits, expandedChannels]);
 
-  const inspectionMode = rightPanelView === "inspect"
-    || (rightPanelView === "resources" && lastRightPanelToolView === "inspect");
+  const inspectionMode = boxZoomActive;
 
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || loadingSignal || !display.data.length) return;
@@ -4300,6 +4300,8 @@ export default function Home() {
       setSelection(null);
       setInspectionDragging(true);
       setInspectionRange(inspectionBoxFromPointer(pointerRef.current, row, time, event.clientY, rect));
+    } else {
+      setInspectionRange(null);
     }
   };
 
@@ -6186,6 +6188,7 @@ export default function Home() {
         setDragGhost(null);
         setShowSessionContextPicker(false);
         setActiveTool("cursor");
+        setBoxZoomActive(false);
         setToast("Selections, active channel, and pinned cursor cleared");
         return;
       }
@@ -6411,16 +6414,13 @@ export default function Home() {
     setRightPanelView(view);
     setRightPanelOpen(true);
     if (view === "inspect") {
-      setSelection(null);
-      setInspectionRange(null);
-      setInspectionDragging(false);
-      setMarkOnset(null);
-      setActiveTool("cursor");
-      setToast("General info mode — click a waveform point to inspect it, or drag a box to zoom");
+      setToast(inspectionRange || selection || channelSelectionActive
+        ? "General info opened for the current waveform selection"
+        : "General info ready — select a waveform point or range");
     } else {
-      setInspectionRange(null);
-      setInspectionDragging(false);
-      setToast("Labeling mode — drag across time to select a labeling window");
+      setToast(boxZoomActive
+        ? "Labeling tools open — Box zoom remains active"
+        : "Labeling mode — drag across time to select a labeling window");
     }
   };
   const activeDisplayViews: ArrayBufferView[] = [
@@ -6693,6 +6693,23 @@ export default function Home() {
             </div>
             <div className="gain-control" role="group" aria-label="Gain"><span>Gain</span><b>{gain.toFixed(1)}×</b><div className="gain-step-buttons"><button disabled={!hasRecording} aria-label="Increase gain" title="Increase gain" onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button><button disabled={!hasRecording} aria-label="Decrease gain" title="Decrease gain" onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button></div></div>
             <div className="toolbar-spacer" />
+            <button
+              className={`tool-button box-zoom-button ${boxZoomActive ? "active" : ""}`}
+              disabled={!hasRecording}
+              aria-label="Box zoom"
+              aria-pressed={boxZoomActive}
+              title={boxZoomActive ? "Turn off box zoom" : "Drag a waveform box to zoom its time and channel area"}
+              onClick={() => {
+                const nextActive = !boxZoomActive;
+                setBoxZoomActive(nextActive);
+                setInspectionDragging(false);
+                if (nextActive) {
+                  setMarkOnset(null);
+                  setActiveTool("cursor");
+                }
+                setToast(nextActive ? "Box zoom active — drag a rectangle on the waveform" : "Box zoom off — waveform drag creates labeling windows");
+              }}
+            ><span aria-hidden="true">⌗</span></button>
             <div className="transport-group">
               <button disabled={!hasRecording} aria-label="Previous page" onClick={() => setViewStartSafe((value) => value - timebase)}>‹</button>
               <button disabled={!hasRecording} className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => setPlaying((value) => !value)}>{playing ? "Ⅱ" : "▶"}</button>
@@ -6944,6 +6961,8 @@ export default function Home() {
             cursorTime={cursorTime}
             cursorAmplitude={cursorAmplitude}
             inspectionRange={inspectionRange}
+            selection={selection}
+            channelSelectionActive={channelSelectionActive}
             montage={montage}
             viewStart={viewStart}
             timebase={timebase}
@@ -8017,6 +8036,8 @@ function GeneralInfoPanel({
   cursorTime,
   cursorAmplitude,
   inspectionRange,
+  selection,
+  channelSelectionActive,
   montage,
   viewStart,
   timebase,
@@ -8030,15 +8051,19 @@ function GeneralInfoPanel({
   cursorTime: number;
   cursorAmplitude: number;
   inspectionRange: InspectionBox | null;
+  selection: { start: number; end: number } | null;
+  channelSelectionActive: boolean;
   montage: MontageMode;
   viewStart: number;
   timebase: number;
   hasRecording: boolean;
 }) {
-  const rangeStart = inspectionRange ? Math.min(inspectionRange.start, inspectionRange.end) : cursorTime;
-  const rangeEnd = inspectionRange ? Math.max(inspectionRange.start, inspectionRange.end) : cursorTime;
+  const waveformRange = inspectionRange ?? selection;
+  const hasWaveformSelection = Boolean(waveformRange || channelSelectionActive);
+  const rangeStart = waveformRange ? Math.min(waveformRange.start, waveformRange.end) : cursorTime;
+  const rangeEnd = waveformRange ? Math.max(waveformRange.start, waveformRange.end) : cursorTime;
   const duration = rangeEnd - rangeStart;
-  const isArea = inspectionRange?.dragged ?? false;
+  const isArea = inspectionRange?.dragged ?? Boolean(selection && selection.end > selection.start);
   const displayLabel = formatDisplayChannelLabel(display.labels[focusedChannel] ?? "—");
   const selectedChannelLabels = inspectionRange?.channelLabels.length
     ? inspectionRange.channelLabels.map(formatDisplayChannelLabel)
@@ -8049,7 +8074,7 @@ function GeneralInfoPanel({
   const primarySourceLabel = meta.channelLabels[primarySourceIndex] ?? sourceLabels[0] ?? "—";
   const sampleRate = sourceRateForDisplayRow(display, meta, focusedChannel);
   const pointTolerance = Math.max(sampleRate > 0 ? 1 / sampleRate : 0, timebase * 0.005);
-  const relatedAnnotations = inspectionRange ? annotations.filter((annotation) => {
+  const relatedAnnotations = hasWaveformSelection ? annotations.filter((annotation) => {
     const geometry = annotationGeometry(annotation);
     if (geometry === "session") return true;
     if (geometry === "point") {
@@ -8063,10 +8088,10 @@ function GeneralInfoPanel({
     <header className="general-info-heading">
       <span>WAVEFORM INSPECTOR</span>
       <h2>General info</h2>
-      <p>Click a waveform point to inspect it. Drag a box to fit that exact time and channel area to the full waveform view. All channels stay enabled.</p>
+      <p>Shows the current waveform point or range. Use Box zoom in the toolbar to fit an exact time and channel area to the waveform view.</p>
     </header>
 
-    {!hasRecording ? <div className="general-info-empty"><span>⌁</span><strong>No recording loaded</strong><p>Load a recording, then select a point or area in the waveform.</p></div> : !inspectionRange ? <div className="general-info-empty ready"><span>⌖</span><strong>Ready to inspect</strong><p>Choose any waveform row. Your selected channel, timing, amplitude, source, and nearby labels will appear here.</p></div> : <>
+    {!hasRecording ? <div className="general-info-empty"><span>⌁</span><strong>No recording loaded</strong><p>Load a recording, then select a point or area in the waveform.</p></div> : !hasWaveformSelection ? <div className="general-info-empty ready"><span>⌖</span><strong>Ready to inspect</strong><p>Choose any waveform row. Your selected channel, timing, amplitude, source, and nearby labels will appear here.</p></div> : <>
       <section className="general-info-focus-card">
         <span>{isArea ? "SELECTED AREA" : "CLICKED POINT"}</span>
         <strong>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : formatClock(rangeStart, true)}</strong>
@@ -8074,7 +8099,7 @@ function GeneralInfoPanel({
       </section>
 
       <section className="general-info-section">
-        <header><h3>Selection</h3><span>{isArea ? "ZOOMED RANGE" : "POINT"}</span></header>
+        <header><h3>Selection</h3><span>{inspectionRange?.dragged ? "ZOOMED RANGE" : isArea ? "SELECTED RANGE" : "POINT"}</span></header>
         <dl>
           <div><dt>Start</dt><dd>{formatClock(rangeStart, true)}</dd></div>
           <div><dt>End</dt><dd>{isArea ? formatClock(rangeEnd, true) : "Same point"}</dd></div>

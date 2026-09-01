@@ -442,6 +442,8 @@ textarea:focus-visible {
 .tool-button span { color: #70888e; font-size: 12px; }
 .tool-button.active { background: #17312f; border-color: #37645d; color: #e4f4ef; box-shadow: inset 0 -2px 0 var(--mint); }
 .tool-button.active span { color: var(--mint); }
+.box-zoom-button { width: 31px; justify-content: center; padding: 0; }
+.box-zoom-button span { font: 16px/1 ui-monospace, monospace; }
 .toolbar-spacer { flex: 1; }
 .toolbar-select { display: flex; align-items: center; gap: 6px; height: 31px; padding: 0 5px 0 8px; border: 1px solid #263d45; border-radius: 5px; background: #102027; }
 .toolbar-select span,

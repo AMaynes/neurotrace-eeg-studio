@@ -645,7 +645,7 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
   assert.match(css, /\.ephys-label-picker\s*\{[^}]*position:\s*absolute/, "the picker opens as a compact overlay");
 });
 
-test("switches waveform dragging between labeling selection and two-dimensional general-info zoom", async () => {
+test("keeps box zoom in the toolbar while General Info follows the current waveform selection", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -656,6 +656,12 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(page, /role="tab"[^>]*>[\s\S]{0,80}Labeling tools/);
   assert.match(page, /role="tab"[^>]*>[\s\S]{0,80}General info/);
   assert.match(page, /rightPanelView === "inspect" \? <GeneralInfoPanel/);
+  assert.match(page, /const \[boxZoomActive, setBoxZoomActive\] = useState\(false\)/);
+  assert.match(page, /const inspectionMode = boxZoomActive/);
+  const boxZoomButton = page.indexOf('className={`tool-button box-zoom-button');
+  const transportControls = page.indexOf('<div className="transport-group">', boxZoomButton);
+  assert.ok(boxZoomButton >= 0 && transportControls > boxZoomButton, "Box zoom sits immediately left of the page and play controls");
+  assert.match(page.slice(boxZoomButton, transportControls), /aria-label="Box zoom"[\s\S]*?aria-pressed=\{boxZoomActive\}/);
 
   const pointerStart = page.indexOf("const onWavePointerDown");
   const pointerEnd = page.indexOf("const onLabelDrop", pointerStart);
@@ -674,7 +680,7 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(page, /className="wave-inspection-range"/);
   assert.match(page, /top: `\$\{inspectionRange\.top \* 100\}%`/);
   assert.match(page, /height: `\$\{Math\.max\(0, inspectionRange\.bottom - inspectionRange\.top\) \* 100\}%`/);
-  assert.match(page, /Drag a box to fit that exact time and channel area to the full waveform view\. All channels stay enabled\./);
+  assert.match(page, /Use Box zoom in the toolbar to fit an exact time and channel area to the waveform view\./);
   assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
   assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
   assert.match(page, /unprojectVerticalFraction\(screenFraction, waveformVerticalViewport\)/);
@@ -684,6 +690,11 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   const panelSwitch = page.slice(panelSwitchStart, panelSwitchEnd);
   assert.ok(panelSwitchStart >= 0 && panelSwitchEnd > panelSwitchStart, "the right-panel mode switch is present");
   assert.doesNotMatch(panelSwitch, /setWaveformVerticalViewport\(null\)/, "switching back to Labeling preserves waveform zoom");
+  assert.doesNotMatch(panelSwitch, /setSelection\(null\)|setInspectionRange\(null\)/, "opening General Info preserves the current waveform selection");
+  assert.match(page, /inspectionRange=\{inspectionRange\}[\s\S]*?selection=\{selection\}[\s\S]*?channelSelectionActive=\{channelSelectionActive\}/);
+  assert.match(page, /const waveformRange = inspectionRange \?\? selection/);
+  assert.match(page, /const hasWaveformSelection = Boolean\(waveformRange \|\| channelSelectionActive\)/);
+  assert.match(page, /!hasWaveformSelection \? <div className="general-info-empty ready"/);
   assert.doesNotMatch(
     page,
     /\[activeCandidateTime, activeSessionContentView,[^\]]*inspection(?:Dragging|Range)/,
@@ -692,6 +703,7 @@ test("switches waveform dragging between labeling selection and two-dimensional 
   assert.match(page, /const focused = channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
   assert.doesNotMatch(page, /inspectionHighlighted|inspection-highlighted/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
+  assert.match(css, /\.box-zoom-button\s*\{[^}]*width:\s*31px/);
   assert.match(css, /\.canvas-shell canvas\s*\{[^}]*cursor:\s*crosshair/);
   assert.doesNotMatch(css, /cursor:\s*zoom-in/, "General Info keeps the normal waveform crosshair");
   assert.match(css, /\.wave-inspection-range\s*\{[^}]*min-height:\s*12px/);
