@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  envelopeTraceRenderMode,
   maximumExtremaGroupsForBudget,
   measureEnvelopeTraceGeometry,
   measureRawTraceGeometry,
@@ -124,6 +125,91 @@ test("evaluates explicit command and stroke budgets without timing-flaky benchma
   assert.equal(waveformGeometryGroupingStride(busyGeometry, budget), 9);
 });
 
+test("keeps smooth overview traces continuous before grouping busy extrema", () => {
+  const bucketCount = projection.widthPx;
+  const quietMidpoints = Float32Array.from(
+    { length: bucketCount },
+    (_, index) => Math.sin(index / 80),
+  );
+  const quietMinima = Float32Array.from(quietMidpoints, (value) => value - .1);
+  const quietMaxima = Float32Array.from(quietMidpoints, (value) => value + .1);
+  const gaps = new Uint8Array(bucketCount);
+  const budget = {
+    maxCommands: Math.floor(projection.widthPx * 2.25),
+    maxStrokeLengthPx: projection.widthPx * 4,
+  };
+  const quietDetailed = measureEnvelopeTraceGeometry(
+    quietMinima,
+    quietMaxima,
+    quietMidpoints,
+    gaps,
+    projection,
+  );
+  const quietMidpoint = measureRawTraceGeometry(quietMidpoints, projection);
+
+  assert.equal(waveformGeometryFitsBudget(quietDetailed, budget), false);
+  assert.equal(waveformGeometryFitsBudget(quietMidpoint, budget), true);
+  assert.equal(envelopeTraceRenderMode(quietDetailed, quietMidpoint, budget), "midpoint");
+
+  const busyMidpoints = Float32Array.from(
+    { length: bucketCount },
+    (_, index) => index % 2 ? -100 : 100,
+  );
+  const busyDetailed = measureEnvelopeTraceGeometry(
+    new Float32Array(bucketCount).fill(-100),
+    new Float32Array(bucketCount).fill(100),
+    busyMidpoints,
+    gaps,
+    projection,
+  );
+  const busyMidpoint = measureRawTraceGeometry(busyMidpoints, projection);
+
+  assert.equal(envelopeTraceRenderMode(busyDetailed, busyMidpoint, budget), "grouped-extrema");
+
+  const sparseDetailed = measureEnvelopeTraceGeometry(
+    Float32Array.of(-1, -1),
+    Float32Array.of(1, 1),
+    Float32Array.of(0, 0),
+    Uint8Array.of(0, 0),
+    projection,
+  );
+  assert.equal(
+    envelopeTraceRenderMode(sparseDetailed, measureRawTraceGeometry(Float32Array.of(0, 0), projection), budget),
+    "detailed",
+  );
+
+  const clinicalBudget = {
+    maxCommands: Math.floor(projection.widthPx * 3.25),
+    maxStrokeLengthPx: projection.widthPx * 4,
+  };
+  assert.equal(
+    envelopeTraceRenderMode(quietDetailed, quietMidpoint, clinicalBudget),
+    "detailed",
+    "one envelope bucket per pixel retains its exact extrema and continuous midpoint",
+  );
+  assert.equal(
+    envelopeTraceRenderMode(busyDetailed, busyMidpoint, clinicalBudget),
+    "grouped-extrema",
+    "extra command headroom does not bypass the activity-dependent stroke budget",
+  );
+  const symmetricBusyDetailed = measureEnvelopeTraceGeometry(
+    new Float32Array(bucketCount).fill(-100),
+    new Float32Array(bucketCount).fill(100),
+    new Float32Array(bucketCount),
+    gaps,
+    projection,
+  );
+  assert.equal(
+    envelopeTraceRenderMode(
+      symmetricBusyDetailed,
+      measureRawTraceGeometry(new Float32Array(bucketCount), projection),
+      clinicalBudget,
+    ),
+    "grouped-extrema",
+    "a quiet midpoint cannot hide a high-activity exact envelope",
+  );
+});
+
 test("hard-bounds exact-extrema fallback groups for any signal activity", () => {
   const budget = {
     maxCommands: 4_096,
@@ -132,10 +218,10 @@ test("hard-bounds exact-extrema fallback groups for any signal activity", () => 
   const groups = maximumExtremaGroupsForBudget(3_600, projection, budget);
 
   assert.equal(groups, Math.min(
-    Math.floor(budget.maxCommands / 10),
+    Math.floor(budget.maxCommands / 20),
     Math.ceil(projection.widthPx),
   ));
-  assert.ok(groups * 10 <= budget.maxCommands);
+  assert.ok(groups * 20 <= budget.maxCommands);
   assert.ok(groups <= Math.ceil(projection.widthPx));
   assert.equal(maximumExtremaGroupsForBudget(0, projection, budget), 0);
 });

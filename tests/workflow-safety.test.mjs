@@ -265,6 +265,8 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(drawing, /if\s*\(rowTop\s*\+\s*rowHeight\s*<\s*plotTop\s*\|\|\s*rowTop\s*>\s*height\)\s*continue/);
   assert.match(drawing, /display\.envelopes\[channel\]/);
   assert.match(drawing, /waveformGeometryFitsBudget/);
+  assert.match(drawing, /envelopeTraceRenderMode/);
+  assert.match(drawing, /drawContinuousTrace/);
   assert.match(drawing, /maximumExtremaGroupsForBudget/);
   assert.match(drawing, /extremaGroupBudget/);
   assert.match(page, /WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER\s*=\s*1\.5/);
@@ -274,8 +276,11 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(groupedExtrema, /interrupted/);
   assert.match(groupedExtrema, /Math\.max\(0,\s*width\s*-\s*1\)/);
   assert.match(groupedExtrema, /bottom\s*-\s*top\s*>\s*1/);
+  assert.match(groupedExtrema, /previousTop/);
+  assert.match(groupedExtrema, /connectorX/);
   assert.doesNotMatch(groupedExtrema, /context\.stroke\(\)/);
   assert.match(drawing, /cachedGeometry/);
+  assert.match(page, /WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER\s*=\s*3\.25/);
   assert.match(page, /MAX_WAVEFORM_CANVAS_SCALE\s*=\s*1/);
   assert.match(page, /getContext\("2d",\s*\{\s*alpha:\s*false,\s*desynchronized:\s*true\s*\}\)/);
   assert.match(page, /context\.lineJoin\s*=\s*"bevel"/);

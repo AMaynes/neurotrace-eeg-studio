@@ -76,6 +76,7 @@ import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { adaptiveTimeGridInterval } from "./time-grid";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
+  envelopeTraceRenderMode,
   maximumExtremaGroupsForBudget,
   measureEnvelopeTraceGeometry,
   measureRawTraceGeometry,
@@ -126,7 +127,7 @@ type CachedPixelEnvelope = {
   midpoints: Float64Array;
   baseline: number;
 };
-type CachedTraceGeometry = { key: string; summary: WaveformGeometrySummary };
+type CachedTraceGeometry = Array<{ key: string; summary: WaveformGeometrySummary }>;
 
 type LabelDefinition = {
   id: string;
@@ -759,7 +760,11 @@ const CANVAS_PIXEL_BUDGET = 4_000_000;
 const MAX_WAVEFORM_CANVAS_SCALE = 1;
 const WAVEFORM_VIEW_STROKE_BUDGET_MULTIPLIER = 48;
 const WAVEFORM_MIN_ROW_STROKE_BUDGET_MULTIPLIER = 4;
-const WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER = 2.25;
+// A one-column-per-pixel envelope needs roughly three path commands per
+// column: min/max plus its continuous midpoint. Keep enough command headroom
+// for that ordinary clinical view; the independent stroke-length limit still
+// sends genuinely busy traces to the bounded extrema fallback.
+const WAVEFORM_ROW_COMMAND_BUDGET_MULTIPLIER = 3.25;
 const WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER = 1.5;
 const MAX_REUSABLE_ENVELOPE_BUCKETS = 524_288;
 // A full-session index is an overview, not a replacement for exact local
@@ -864,6 +869,51 @@ function traceYOverflowsRow(y: number, rowTop: number, rowHeight: number) {
   return !Number.isFinite(y) || y < rowTop || y > rowTop + rowHeight;
 }
 
+function drawContinuousTrace(
+  context: CanvasRenderingContext2D,
+  values: ArrayLike<number>,
+  startSec: number,
+  sampleDurationSec: number,
+  sampleTimeOffset: number,
+  displayStart: number,
+  timebase: number,
+  width: number,
+  center: number,
+  rowTop: number,
+  rowHeight: number,
+  baseline: number,
+  scale: number,
+  gaps?: ArrayLike<number>,
+) {
+  let overflow = false;
+  let connected = false;
+  context.beginPath();
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!Number.isFinite(value) || gaps?.[index]) {
+      connected = false;
+      continue;
+    }
+    const sampleTime = startSec + (index + sampleTimeOffset) * sampleDurationSec;
+    const x = ((sampleTime - displayStart) / timebase) * width;
+    if (x < -1 || x > width + 1) continue;
+    const rawY = center - (value - baseline) * scale;
+    const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
+    if (traceYOverflowsRow(rawY, rowTop, rowHeight)) {
+      overflow = true;
+      if (connected) context.lineTo(x, y);
+      else { context.moveTo(x - .5, y); context.lineTo(x + .5, y); }
+      connected = false;
+    } else {
+      if (connected) context.lineTo(x, y);
+      else context.moveTo(x, y);
+      connected = true;
+    }
+  }
+  context.stroke();
+  return overflow;
+}
+
 function drawGroupedExtrema(
   context: CanvasRenderingContext2D,
   minima: ArrayLike<number>,
@@ -889,6 +939,9 @@ function drawGroupedExtrema(
   context.globalAlpha = alpha;
   context.fillStyle = context.strokeStyle;
   context.beginPath();
+  let previousTop: number | null = null;
+  let previousBottom: number | null = null;
+  let previousRight: number | null = null;
   visitGroupedWaveformExtrema(
     minima,
     maxima,
@@ -914,6 +967,9 @@ function drawGroupedExtrema(
         : clamp(rawLeft, -1, width + 1);
       if (interrupted) {
         context.rect(left, top, 1, Math.max(1, bottom - top));
+        previousTop = null;
+        previousBottom = null;
+        previousRight = null;
         return;
       }
       const right = clamp(rawRight, -1, width + 1);
@@ -923,6 +979,24 @@ function drawGroupedExtrema(
       // rather than thousands of costly vertical strokes or a full-row blend.
       context.rect(left, top, binWidth, 1);
       if (bottom - top > 1) context.rect(left, bottom - 1, binWidth, 1);
+      if (previousTop !== null && previousBottom !== null && previousRight !== null) {
+        const connectorX = clamp((previousRight + left) / 2 - .5, 0, Math.max(0, width - 1));
+        context.rect(
+          connectorX,
+          Math.min(previousTop, top),
+          1,
+          Math.max(1, Math.abs(top - previousTop) + 1),
+        );
+        context.rect(
+          connectorX,
+          Math.min(previousBottom, bottom) - 1,
+          1,
+          Math.max(1, Math.abs(bottom - previousBottom) + 1),
+        );
+      }
+      previousTop = top;
+      previousBottom = bottom;
+      previousRight = right;
     },
   );
   context.fill();
@@ -3489,10 +3563,14 @@ export default function Home() {
         key: string,
         measure: () => WaveformGeometrySummary,
       ) => {
-        const cached = traceGeometryCacheRef.current.get(values);
-        if (cached?.key === key) return cached.summary;
+        const cached = traceGeometryCacheRef.current.get(values) ?? [];
+        const matching = cached.find((entry) => entry.key === key);
+        if (matching) return matching.summary;
         const summary = measure();
-        traceGeometryCacheRef.current.set(values, { key, summary });
+        traceGeometryCacheRef.current.set(values, [
+          ...cached.filter((entry) => entry.key !== key).slice(-1),
+          { key, summary },
+        ]);
         return summary;
       };
       for (const channel of traceOrder) {
@@ -3524,7 +3602,7 @@ export default function Home() {
         if (envelope) {
           const baseline = cachedBaseline(values);
           const projection = { ...traceProjection, baseline };
-          const geometry = cachedGeometry(
+          const detailedGeometry = cachedGeometry(
             values,
             `envelope:${width}:${rowHeight}:${baseline}:${scale}`,
             () => measureEnvelopeTraceGeometry(
@@ -3535,7 +3613,17 @@ export default function Home() {
               projection,
             ),
           );
-          if (!waveformGeometryFitsBudget(geometry, traceGeometryBudget)) {
+          const midpointGeometry = cachedGeometry(
+            values,
+            `envelope-midpoint:${width}:${rowHeight}:${baseline}:${scale}`,
+            () => measureRawTraceGeometry(values, projection),
+          );
+          const renderMode = envelopeTraceRenderMode(
+            detailedGeometry,
+            midpointGeometry,
+            traceGeometryBudget,
+          );
+          if (renderMode === "grouped-extrema") {
             const maximumGroups = Math.min(
               extremaGroupBudget,
               maximumExtremaGroupsForBudget(values.length, projection, traceGeometryBudget),
@@ -3559,49 +3647,43 @@ export default function Home() {
               envelope.gaps,
             );
           } else {
-            context.save();
-            context.globalAlpha = selected ? .72 : .42;
-            context.beginPath();
-            for (let bucket = 0; bucket < values.length; bucket += 1) {
-              const minimum = envelope.minima[bucket];
-              const maximum = envelope.maxima[bucket];
-              if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
-              const bucketTime = envelope.startSec + (bucket + .5) * envelope.bucketDurationSec;
-              const x = ((bucketTime - displayStart) / timebase) * width;
-              if (x < -1 || x > width + 1) continue;
-              const maximumY = center - (maximum - baseline) * scale;
-              const minimumY = center - (minimum - baseline) * scale;
-              if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
-                || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
-              context.moveTo(x, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
-              context.lineTo(x, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
-            }
-            context.stroke();
-            context.restore();
-            context.beginPath();
-            let connected = false;
-            for (let bucket = 0; bucket < values.length; bucket += 1) {
-              const value = values[bucket];
-              if (!Number.isFinite(value) || envelope.gaps[bucket]) {
-                connected = false;
-                continue;
+            if (renderMode === "detailed") {
+              context.save();
+              context.globalAlpha = selected ? .72 : .42;
+              context.beginPath();
+              for (let bucket = 0; bucket < values.length; bucket += 1) {
+                const minimum = envelope.minima[bucket];
+                const maximum = envelope.maxima[bucket];
+                if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
+                const bucketTime = envelope.startSec + (bucket + .5) * envelope.bucketDurationSec;
+                const x = ((bucketTime - displayStart) / timebase) * width;
+                if (x < -1 || x > width + 1) continue;
+                const maximumY = center - (maximum - baseline) * scale;
+                const minimumY = center - (minimum - baseline) * scale;
+                if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
+                  || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
+                context.moveTo(x, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
+                context.lineTo(x, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
               }
-              const bucketTime = envelope.startSec + (bucket + .5) * envelope.bucketDurationSec;
-              const x = ((bucketTime - displayStart) / timebase) * width;
-              if (x < -1 || x > width + 1) continue;
-              const rawY = center - (value - baseline) * scale;
-              const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
-              if (traceYOverflowsRow(rawY, rowTop, rowHeight)) {
-                if (connected) context.lineTo(x, y);
-                else { context.moveTo(x - .5, y); context.lineTo(x + .5, y); }
-                connected = false;
-              } else {
-                if (connected) context.lineTo(x, y);
-                else context.moveTo(x, y);
-                connected = true;
-              }
+              context.stroke();
+              context.restore();
             }
-            context.stroke();
+            overflow = drawContinuousTrace(
+              context,
+              values,
+              envelope.startSec,
+              envelope.bucketDurationSec,
+              .5,
+              displayStart,
+              timebase,
+              width,
+              center,
+              rowTop,
+              rowHeight,
+              baseline,
+              scale,
+              envelope.gaps,
+            ) || overflow;
           }
         } else if (values.length <= Math.max(2, width * 1.5)) {
           const baseline = cachedBaseline(values);
@@ -3710,12 +3792,22 @@ export default function Home() {
           }
           const { minima, maxima, gaps, midpoints, baseline } = pixelEnvelope;
           const projection = { ...traceProjection, baseline };
-          const geometry = cachedGeometry(
+          const detailedGeometry = cachedGeometry(
             values,
             `pixels:${pixelColumns}:${displayStart}:${timebase}:${rowStartSec}:${sampleRate}:${rowHeight}:${baseline}:${scale}`,
             () => measureEnvelopeTraceGeometry(minima, maxima, midpoints, gaps, projection),
           );
-          if (!waveformGeometryFitsBudget(geometry, traceGeometryBudget)) {
+          const midpointGeometry = cachedGeometry(
+            values,
+            `pixels-midpoint:${pixelColumns}:${displayStart}:${timebase}:${rowStartSec}:${sampleRate}:${rowHeight}:${baseline}:${scale}`,
+            () => measureRawTraceGeometry(midpoints, projection),
+          );
+          const renderMode = envelopeTraceRenderMode(
+            detailedGeometry,
+            midpointGeometry,
+            traceGeometryBudget,
+          );
+          if (renderMode === "grouped-extrema") {
             const maximumGroups = Math.min(
               extremaGroupBudget,
               maximumExtremaGroupsForBudget(pixelColumns, projection, traceGeometryBudget),
@@ -3739,43 +3831,40 @@ export default function Home() {
               gaps,
             );
           } else {
-            context.save();
-            context.globalAlpha = selected ? .72 : .42;
-            context.beginPath();
-            for (let x = 0; x < pixelColumns; x += 1) {
-              const min = minima[x];
-              const max = maxima[x];
-              if (min === Number.POSITIVE_INFINITY) continue;
-              const maximumY = center - (max - baseline) * scale;
-              const minimumY = center - (min - baseline) * scale;
-              if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
-                || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
-              context.moveTo(x + .5, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
-              context.lineTo(x + .5, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
-            }
-            context.stroke();
-            context.restore();
-            context.beginPath();
-            let connected = false;
-            for (let x = 0; x < pixelColumns; x += 1) {
-              const value = midpoints[x];
-              if (!Number.isFinite(value)) {
-                connected = false;
-                continue;
+            if (renderMode === "detailed") {
+              context.save();
+              context.globalAlpha = selected ? .72 : .42;
+              context.beginPath();
+              for (let x = 0; x < pixelColumns; x += 1) {
+                const min = minima[x];
+                const max = maxima[x];
+                if (min === Number.POSITIVE_INFINITY) continue;
+                const maximumY = center - (max - baseline) * scale;
+                const minimumY = center - (min - baseline) * scale;
+                if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
+                  || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
+                context.moveTo(x + .5, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
+                context.lineTo(x + .5, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
               }
-              const rawY = center - (value - baseline) * scale;
-              const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
-              if (traceYOverflowsRow(rawY, rowTop, rowHeight)) {
-                if (connected) context.lineTo(x + .5, y);
-                else { context.moveTo(x, y); context.lineTo(x + 1, y); }
-                connected = false;
-              } else {
-                if (connected) context.lineTo(x + .5, y);
-                else context.moveTo(x + .5, y);
-                connected = true;
-              }
+              context.stroke();
+              context.restore();
             }
-            context.stroke();
+            overflow = drawContinuousTrace(
+              context,
+              midpoints,
+              displayStart,
+              timebase / pixelColumns,
+              .5,
+              displayStart,
+              timebase,
+              width,
+              center,
+              rowTop,
+              rowHeight,
+              baseline,
+              scale,
+              gaps,
+            ) || overflow;
           }
         }
         context.restore();

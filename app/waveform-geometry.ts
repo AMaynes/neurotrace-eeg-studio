@@ -42,6 +42,8 @@ export interface WaveformGeometryBudget {
   maxStrokeLengthPx: number;
 }
 
+export type EnvelopeTraceRenderMode = "detailed" | "midpoint" | "grouped-extrema";
+
 export type GroupedExtremaVisitor = (
   startIndex: number,
   endIndex: number,
@@ -207,6 +209,26 @@ export function waveformGeometryFitsBudget(
 }
 
 /**
+ * Chooses the least lossy bounded envelope renderer. A full envelope includes
+ * one min/max stroke plus the midpoint trace per bucket, so its command count
+ * can exceed a row's command budget even when the visible signal is quiet. In
+ * that command-only case, the continuous gap-aware midpoint is preferable to
+ * visually disconnected extrema groups. Extrema-heavy traces still group even
+ * when their midpoint happens to look quiet, so oscillation and transients are
+ * never erased by a misleading average.
+ */
+export function envelopeTraceRenderMode(
+  detailedGeometry: WaveformGeometrySummary,
+  midpointGeometry: WaveformGeometrySummary,
+  budget: WaveformGeometryBudget,
+): EnvelopeTraceRenderMode {
+  if (waveformGeometryFitsBudget(detailedGeometry, budget)) return "detailed";
+  if (detailedGeometry.strokeLengthPx <= budget.maxStrokeLengthPx
+    && waveformGeometryFitsBudget(midpointGeometry, budget)) return "midpoint";
+  return "grouped-extrema";
+}
+
+/**
  * Returns the deterministic grouping stride needed to bring a trace under its
  * command and screen-space stroke budgets. A renderer using the returned value
  * must preserve each group's finite minimum and maximum rather than simply
@@ -235,9 +257,10 @@ export function waveformGeometryGroupingStride(
 
 /**
  * Produces a hard path-complexity bound for an outlined exact-extrema fallback.
- * A group contributes at most two rectangles (ten path verbs). Raster area is
- * already bounded by the clipped row, so stroke length is only used when
- * deciding whether the original polyline needs this fallback.
+ * A connected group contributes at most two horizontal and two vertical
+ * rectangles (twenty path verbs). Raster area is already bounded by the
+ * clipped row, so stroke length is only used when deciding whether the
+ * original polyline needs this fallback.
  */
 export function maximumExtremaGroupsForBudget(
   sourceCount: number,
@@ -250,7 +273,7 @@ export function maximumExtremaGroupsForBudget(
     throw new Error("Waveform geometry source count must be a non-negative whole number.");
   }
   if (sourceCount === 0) return 0;
-  const commandGroups = Math.floor(budget.maxCommands / 10);
+  const commandGroups = Math.floor(budget.maxCommands / 20);
   return Math.max(0, Math.min(sourceCount, commandGroups, Math.ceil(projection.widthPx)));
 }
 
