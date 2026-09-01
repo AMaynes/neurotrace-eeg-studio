@@ -243,13 +243,20 @@ test("groups exact extrema once while preserving partial gaps", () => {
     Float32Array.of(4, 7, Number.NaN, Number.NaN, Number.NaN, Number.NaN),
     Uint8Array.of(0, 0, 1, 1, 1, 1),
     2,
-    (start, end, minimum, maximum, interrupted) => {
-      groups.push({ start, end, minimum, maximum, interrupted });
+    (start, end, minimum, maximum, interrupted, representativeMean) => {
+      groups.push({ start, end, minimum, maximum, interrupted, representativeMean });
     },
   );
 
   assert.equal(emitted, 1, "an all-gap group is omitted");
-  assert.deepEqual(groups, [{ start: 0, end: 3, minimum: 1, maximum: 7, interrupted: true }]);
+  assert.deepEqual(groups, [{
+    start: 0,
+    end: 3,
+    minimum: 1,
+    maximum: 7,
+    interrupted: true,
+    representativeMean: 3.75,
+  }]);
 
   const constantGroups = [];
   visitGroupedWaveformExtrema(
@@ -257,13 +264,13 @@ test("groups exact extrema once while preserving partial gaps", () => {
     Float32Array.of(5, 5, 5, 5),
     undefined,
     2,
-    (start, end, minimum, maximum, interrupted) => {
-      constantGroups.push({ start, end, minimum, maximum, interrupted });
+    (start, end, minimum, maximum, interrupted, representativeMean) => {
+      constantGroups.push({ start, end, minimum, maximum, interrupted, representativeMean });
     },
   );
   assert.deepEqual(constantGroups, [
-    { start: 0, end: 2, minimum: 5, maximum: 5, interrupted: false },
-    { start: 2, end: 4, minimum: 5, maximum: 5, interrupted: false },
+    { start: 0, end: 2, minimum: 5, maximum: 5, interrupted: false, representativeMean: 5 },
+    { start: 2, end: 4, minimum: 5, maximum: 5, interrupted: false, representativeMean: 5 },
   ]);
 
   const retainedGapExtrema = [];
@@ -272,12 +279,12 @@ test("groups exact extrema once while preserving partial gaps", () => {
     Float32Array.of(9, 4),
     Uint8Array.of(1, 0),
     1,
-    (start, end, minimum, maximum, interrupted) => {
-      retainedGapExtrema.push({ start, end, minimum, maximum, interrupted });
+    (start, end, minimum, maximum, interrupted, representativeMean) => {
+      retainedGapExtrema.push({ start, end, minimum, maximum, interrupted, representativeMean });
     },
   );
   assert.deepEqual(retainedGapExtrema, [
-    { start: 0, end: 2, minimum: -8, maximum: 9, interrupted: true },
+    { start: 0, end: 2, minimum: -8, maximum: 9, interrupted: true, representativeMean: .5 },
   ], "a real gap breaks continuity without discarding its known extrema");
 });
 

@@ -918,6 +918,7 @@ function drawGroupedExtrema(
   context: CanvasRenderingContext2D,
   minima: ArrayLike<number>,
   maxima: ArrayLike<number>,
+  representatives: ArrayLike<number>,
   maximumGroups: number,
   startSec: number,
   bucketDurationSec: number,
@@ -932,29 +933,21 @@ function drawGroupedExtrema(
   alpha: number,
   gaps?: ArrayLike<number>,
 ) {
-  if (!minima.length || maxima.length !== minima.length || maximumGroups < 1) return false;
+  if (!minima.length
+    || maxima.length !== minima.length
+    || representatives.length !== minima.length
+    || maximumGroups < 1) return false;
   let overflow = false;
   const rowBottom = rowTop + rowHeight;
   context.save();
-  context.globalAlpha = alpha;
-  context.fillStyle = context.strokeStyle;
+  context.globalAlpha = Math.min(1, alpha * 1.5);
   context.beginPath();
-  let previousTop: number | null = null;
-  let previousBottom: number | null = null;
-  let previousRight: number | null = null;
-  let previousGroupEnd: number | null = null;
   visitGroupedWaveformExtrema(
     minima,
     maxima,
     gaps,
     maximumGroups,
-    (groupStart, groupEnd, minimum, maximum, interrupted) => {
-      if (previousGroupEnd !== groupStart) {
-        previousTop = null;
-        previousBottom = null;
-        previousRight = null;
-      }
-      previousGroupEnd = groupEnd;
+    (groupStart, groupEnd, minimum, maximum) => {
       const maximumY = center - (maximum - baseline) * scale;
       const minimumY = center - (minimum - baseline) * scale;
       if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
@@ -969,44 +962,39 @@ function drawGroupedExtrema(
       const rawLeft = ((startSec + groupStart * bucketDurationSec - displayStart) / timebase) * width;
       const rawRight = ((startSec + groupEnd * bucketDurationSec - displayStart) / timebase) * width;
       if (rawRight < -1 || rawLeft > width + 1) return;
-      const left = interrupted
-        ? clamp((rawLeft + rawRight) / 2 - .5, 0, Math.max(0, width - 1))
-        : clamp(rawLeft, -1, width + 1);
-      if (interrupted) {
-        context.rect(left, top, 1, Math.max(1, bottom - top));
-        previousTop = null;
-        previousBottom = null;
-        previousRight = null;
-        return;
-      }
-      const right = clamp(rawRight, -1, width + 1);
-      const binWidth = Math.max(1, right - left);
-      // Outline the exact min/max band instead of filling its interior. Busy,
-      // saturated traces then paint a fixed pair of thin horizontal strips
-      // rather than thousands of costly vertical strokes or a full-row blend.
-      context.rect(left, top, binWidth, 1);
-      if (bottom - top > 1) context.rect(left, bottom - 1, binWidth, 1);
-      if (previousTop !== null && previousBottom !== null && previousRight !== null) {
-        const connectorX = clamp((previousRight + left) / 2 - .5, 0, Math.max(0, width - 1));
-        context.rect(
-          connectorX,
-          Math.min(previousTop, top),
-          1,
-          Math.max(1, Math.abs(top - previousTop) + 1),
-        );
-        context.rect(
-          connectorX,
-          Math.min(previousBottom, bottom) - 1,
-          1,
-          Math.max(1, Math.abs(bottom - previousBottom) + 1),
-        );
-      }
-      previousTop = top;
-      previousBottom = bottom;
-      previousRight = right;
+      const x = clamp((rawLeft + rawRight) / 2, 0, width);
+      // A one-column exact-extrema whisker preserves every transient without
+      // turning the entire group width into a rectangular staircase.
+      context.moveTo(x, top);
+      context.lineTo(x, bottom);
     },
   );
-  context.fill();
+  let representativeConnected = false;
+  let representativeGroupEnd: number | null = null;
+  visitGroupedWaveformExtrema(
+    representatives,
+    representatives,
+    gaps,
+    maximumGroups,
+    (...group) => {
+      const [groupStart, groupEnd, , , interrupted, representativeMean] = group;
+      if (representativeGroupEnd !== groupStart) representativeConnected = false;
+      representativeGroupEnd = groupEnd;
+      if (interrupted) {
+        representativeConnected = false;
+        return;
+      }
+      const groupTime = startSec + ((groupStart + groupEnd) / 2) * bucketDurationSec;
+      const x = ((groupTime - displayStart) / timebase) * width;
+      if (x < -1 || x > width + 1) return;
+      const rawY = center - (representativeMean - baseline) * scale;
+      const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
+      if (representativeConnected) context.lineTo(x, y);
+      else context.moveTo(x, y);
+      representativeConnected = true;
+    },
+  );
+  context.stroke();
   context.restore();
   return overflow;
 }
@@ -3639,6 +3627,7 @@ export default function Home() {
               context,
               envelope.minima,
               envelope.maxima,
+              values,
               maximumGroups,
               envelope.startSec,
               envelope.bucketDurationSec,
@@ -3707,6 +3696,7 @@ export default function Home() {
             );
             overflow = drawGroupedExtrema(
               context,
+              values,
               values,
               values,
               maximumGroups,
@@ -3823,6 +3813,7 @@ export default function Home() {
               context,
               minima,
               maxima,
+              midpoints,
               maximumGroups,
               displayStart,
               timebase / pixelColumns,

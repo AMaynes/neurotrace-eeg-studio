@@ -50,6 +50,7 @@ export type GroupedExtremaVisitor = (
   minimum: number,
   maximum: number,
   interrupted: boolean,
+  representativeMean: number,
 ) => void;
 
 function validateProjection(projection: TraceGeometryProjection) {
@@ -257,10 +258,9 @@ export function waveformGeometryGroupingStride(
 
 /**
  * Produces a hard path-complexity bound for an outlined exact-extrema fallback.
- * A connected group contributes at most two horizontal and two vertical
- * rectangles (twenty path verbs). Raster area is already bounded by the
- * clipped row, so stroke length is only used when deciding whether the
- * original polyline needs this fallback.
+ * The fallback uses one extrema whisker plus one representative point per
+ * group. The deliberately conservative twenty-verb allowance leaves room for
+ * gap boundaries and Canvas path bookkeeping while bounding raster work.
  */
 export function maximumExtremaGroupsForBudget(
   sourceCount: number,
@@ -302,6 +302,8 @@ export function visitGroupedWaveformExtrema(
     let minimum = Number.POSITIVE_INFINITY;
     let maximum = Number.NEGATIVE_INFINITY;
     let interrupted = false;
+    let representativeMean = 0;
+    let representativeCount = 0;
     for (let index = groupStart; index < groupEnd; index += 1) {
       const candidateMinimum = minima[index];
       const candidateMaximum = maxima[index];
@@ -312,9 +314,12 @@ export function visitGroupedWaveformExtrema(
       }
       minimum = Math.min(minimum, candidateMinimum);
       maximum = Math.max(maximum, candidateMaximum);
+      const candidateRepresentative = candidateMinimum / 2 + candidateMaximum / 2;
+      representativeCount += 1;
+      representativeMean += (candidateRepresentative - representativeMean) / representativeCount;
     }
     if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) continue;
-    visit(groupStart, groupEnd, minimum, maximum, interrupted);
+    visit(groupStart, groupEnd, minimum, maximum, interrupted, representativeMean);
     emittedGroups += 1;
   }
   return emittedGroups;
