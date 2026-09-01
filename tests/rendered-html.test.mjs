@@ -213,6 +213,8 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.doesNotMatch(controls, /zoomTimeWindow\(/, "the amount buttons stage numeric changes instead of immediately zooming");
   assert.match(controls, /className="window-sync-button"/);
   assert.match(controls, /onClick=\{syncWindowDraft\}/);
+  assert.match(controls, /className="window-sync-button"[\s\S]*?<span aria-hidden="true">↻<\/span><\/button>/);
+  assert.doesNotMatch(controls, />Sync</, "the icon-only Sync button does not repeat its accessible name visually");
 
   const windowLogic = page.slice(page.indexOf("const setTimeWindow"), page.indexOf("const commitMutation"));
   assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
