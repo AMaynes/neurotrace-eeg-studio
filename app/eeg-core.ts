@@ -2067,7 +2067,7 @@ export function clinicalDecimationFactor(
   if (!(pixelCount > 0) || !Number.isFinite(pixelCount)) {
     throw new Error("Clinical display pixel count must be positive and finite.");
   }
-  const resolutionFactor = Math.min(2, Math.floor(sampleCount / Math.max(1, Math.floor(pixelCount))));
+  const resolutionFactor = Math.min(2, Math.floor(sampleCount / pixelCount));
   return sampleRate / 4 >= 250 && resolutionFactor >= 2 ? 2 : 1;
 }
 

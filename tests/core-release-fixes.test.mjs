@@ -786,6 +786,12 @@ test("clinical FIR and conditional 2x decimation satisfy release invariants", ()
   assert.equal(clinicalDecimationFactor(999, 10_000, 1000), 1);
   assert.equal(clinicalDecimationFactor(1000, 1999, 1000), 1);
   assert.equal(clinicalDecimationFactor(1000, 2000, 1000), 2);
+  assert.equal(
+    clinicalDecimationFactor(1000, 2000, 1000.1),
+    1,
+    "the exact nSamples/nPixels ratio must be used for fractional canvas widths",
+  );
+  assert.equal(clinicalDecimationFactor(1000, 2001, 1000.1), 2);
 
   const short = new Float32Array([1, 2, 3]);
   const untouched = decimateClinicalDisplayTrace(short, 1000, 10);
@@ -799,6 +805,7 @@ test("clinical FIR and conditional 2x decimation satisfy release invariants", ()
   assert.equal(decimated.data.length, 1000);
   assert.equal(decimated.compensatedGroupDelaySamples, 48);
   assert.equal(decimated.retainedSampleTimeCorrectionSec, -0.048);
+  assert.ok(decimated.data instanceof Float32Array, "the processed display cache remains single precision");
   assert.ok(decimated.data.every(Number.isFinite));
   assert.ok(Math.abs(decimated.data[100] - 1) < 1e-6);
 
