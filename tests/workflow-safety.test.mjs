@@ -304,6 +304,22 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(page, /const envelope\s*=\s*display\.envelopes\[row\][\s\S]*?Math\.floor/);
 });
 
+test("finite clipped waveform samples remain connected when zoom rebuilds the trace", async () => {
+  const page = await pageSource();
+  const continuousTrace = section(page, "function drawContinuousTrace", "function drawGroupedExtrema");
+  const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
+  const directTrace = section(
+    drawing,
+    "} else if (values.length <= Math.max(2, width * 1.5)) {",
+    "} else {\n          const pixelColumns",
+  );
+
+  assert.match(continuousTrace, /if\s*\(!Number\.isFinite\(value\)\s*\|\|\s*gaps\?\.\[index\]\)\s*\{\s*connected\s*=\s*false/);
+  assert.match(continuousTrace, /if\s*\(traceYOverflowsRow\(rawY,\s*rowTop,\s*rowHeight\)\)\s*\{\s*overflow\s*=\s*true;\s*\}\s*if\s*\(connected\)\s*context\.lineTo\(x,\s*y\)/);
+  assert.doesNotMatch(continuousTrace, /traceYOverflowsRow[\s\S]*?connected\s*=\s*false/, "finite clipped samples remain connected at row boundaries");
+  assert.match(directTrace, /overflow\s*=\s*drawContinuousTrace\(/, "zoomed raw traces reuse the continuous clipping path");
+});
+
 test("measures the waveform after a recording mounts or returns from file info", async () => {
   const page = await pageSource();
   const resize = section(page, "useLayoutEffect(() => {\n    const canvas = canvasRef.current", "const updateExpandedChannelViewport");

@@ -1032,14 +1032,10 @@ function drawContinuousTrace(
     const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
     if (traceYOverflowsRow(rawY, rowTop, rowHeight)) {
       overflow = true;
-      if (connected) context.lineTo(x, y);
-      else { context.moveTo(x - .5, y); context.lineTo(x + .5, y); }
-      connected = false;
-    } else {
-      if (connected) context.lineTo(x, y);
-      else context.moveTo(x, y);
-      connected = true;
     }
+    if (connected) context.lineTo(x, y);
+    else context.moveTo(x, y);
+    connected = true;
   }
   context.stroke();
   return overflow;
@@ -4003,30 +3999,21 @@ export default function Home() {
               selected ? .72 : .42,
             );
           } else {
-            context.beginPath();
-            let connected = false;
-            for (let sample = 0; sample < values.length; sample += 1) {
-              const value = values[sample];
-              if (!Number.isFinite(value)) {
-                connected = false;
-                continue;
-              }
-              const sampleTime = rowStartSec + sample / sampleRate;
-              const x = ((sampleTime - displayStart) / timebase) * width;
-              const rawY = center - (value - baseline) * scale;
-              const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
-              if (traceYOverflowsRow(rawY, rowTop, rowHeight)) {
-                overflow = true;
-                if (connected) context.lineTo(x, y);
-                else { context.moveTo(x - .5, y); context.lineTo(x + .5, y); }
-                connected = false;
-              } else {
-                if (connected) context.lineTo(x, y);
-                else context.moveTo(x, y);
-                connected = true;
-              }
-            }
-            context.stroke();
+            overflow = drawContinuousTrace(
+              context,
+              values,
+              rowStartSec,
+              1 / sampleRate,
+              0,
+              displayStart,
+              timebase,
+              width,
+              center,
+              rowTop,
+              rowHeight,
+              baseline,
+              scale,
+            );
           }
           if (showMicrovoltClipping) {
             drawSampleClippingRibbon(
