@@ -2047,6 +2047,7 @@ export default function Home() {
   const [exactSpectrogramSignal, setExactSpectrogramSignal] = useState<{
     sourceIndex: number;
     viewStart: number;
+    dataStart: number;
     duration: number;
     data: Float32Array;
     sampleRate: number;
@@ -3951,6 +3952,7 @@ export default function Home() {
         setExactSpectrogramSignal({
           sourceIndex,
           viewStart: signalViewStart,
+          dataStart: windowData.channelStartSecs[0] ?? windowData.startSec,
           duration: timebase,
           data,
           sampleRate: windowData.sampleRates[0] ?? sampleRate,
@@ -6830,6 +6832,10 @@ export default function Home() {
   const spectrogramSampleRate = matchingExactSpectrogramSignal?.sampleRate
     ?? display.sampleRates[focusedChannel]
     ?? primarySampleRate(meta);
+  const spectrogramDataStart = matchingExactSpectrogramSignal?.dataStart
+    ?? display.startSecs[focusedChannel]
+    ?? display.viewStart;
+  const spectrogramSignalKey = `${montage}:${focusedSourceIndex ?? -1}:${display.labels[focusedChannel] ?? ""}`;
 
   return (
     <main
@@ -7208,6 +7214,8 @@ export default function Home() {
 
             {spectrogramOpen && <SpectrogramPanel
               data={spectrogramData}
+              dataStart={spectrogramDataStart}
+              signalKey={spectrogramSignalKey}
               sampleRate={spectrogramSampleRate}
               viewStart={viewStart}
               viewDuration={timebase}
@@ -7707,6 +7715,8 @@ type SpectrogramAction = "browse" | "frequency";
 
 type SpectrogramPanelProps = {
   data?: Float32Array;
+  dataStart: number;
+  signalKey: string;
   sampleRate: number;
   viewStart: number;
   viewDuration: number;
@@ -7729,6 +7739,8 @@ function matlabJet(value: number) {
 
 function SpectrogramPanel({
   data,
+  dataStart,
+  signalKey,
   sampleRate,
   viewStart,
   viewDuration,
@@ -7746,13 +7758,22 @@ function SpectrogramPanel({
   const [spectrogramHeight, setSpectrogramHeight] = useState(DEFAULT_SPECTROGRAM_HEIGHT);
   const [spectrumState, setSpectrumState] = useState<{
     data?: Float32Array;
+    dataStart: number;
+    signalKey: string;
     sampleRate: number;
     result: SpectrogramComputeResult | null;
     error: string;
-  }>({ data: undefined, sampleRate: 0, result: null, error: "" });
-  const spectrumStateMatches = spectrumState.data === data && spectrumState.sampleRate === sampleRate;
-  const spectrum = spectrumStateMatches ? spectrumState.result : null;
-  const computeError = spectrumStateMatches ? spectrumState.error : "";
+  }>({ data: undefined, dataStart: 0, signalKey: "", sampleRate: 0, result: null, error: "" });
+  const spectrumInputMatches = spectrumState.data === data
+    && spectrumState.dataStart === dataStart
+    && spectrumState.signalKey === signalKey
+    && spectrumState.sampleRate === sampleRate;
+  const retainedSpectrumMatchesSignal = spectrumState.signalKey === signalKey
+    && spectrumState.sampleRate === sampleRate;
+  const spectrum = retainedSpectrumMatchesSignal ? spectrumState.result : null;
+  const spectrumDataStart = retainedSpectrumMatchesSignal ? spectrumState.dataStart : dataStart;
+  const spectrumSampleRate = retainedSpectrumMatchesSignal ? spectrumState.sampleRate : sampleRate;
+  const computeError = spectrumInputMatches ? spectrumState.error : "";
   const previousHeightRef = useRef(DEFAULT_SPECTROGRAM_HEIGHT);
   const interactionRef = useRef<{
     pointerId: number;
@@ -7817,13 +7838,15 @@ function SpectrogramPanel({
           durationMs: result.metrics.computeMs + (result.metrics.inputCopyMs ?? 0),
           transientAllocatedBytes: inputBytes,
         });
-        setSpectrumState({ data, sampleRate, result, error: "" });
+        setSpectrumState({ data, dataStart, signalKey, sampleRate, result, error: "" });
       },
       (error: unknown) => {
         const aborted = isAbortFailure(error);
         operation[aborted ? "cancel" : "fail"]();
         if (!aborted) setSpectrumState({
           data,
+          dataStart,
+          signalKey,
           sampleRate,
           result: null,
           error: error instanceof Error ? error.message : "Spectrum computation failed",
@@ -7834,7 +7857,7 @@ function SpectrogramPanel({
       abortController.abort(new DOMException("Spectrogram view changed", "AbortError"));
       operation.cancel();
     };
-  }, [data, overview, sampleRate]);
+  }, [data, dataStart, overview, sampleRate, signalKey]);
 
   useLayoutEffect(() => {
     const canvas = ref.current;
@@ -7902,6 +7925,23 @@ function SpectrogramPanel({
         const automaticHigh = flat.at(-1) ?? automaticLow + 1;
         const low = automaticLow + colorLimitShift;
         const high = automaticHigh + colorLimitShift;
+        const plotEnd = plotLeft + plotWidth;
+        const frameDuration = spectrum.windowSize / spectrumSampleRate;
+        const frameGeometry = Array.from({ length: spectrum.frames }, (_, frame) => {
+          const centerTime = spectrumDataStart + spectrum.times[frame];
+          const frameStart = centerTime - frameDuration / 2;
+          const frameEnd = centerTime + frameDuration / 2;
+          const rawLeft = plotLeft + ((frameStart - viewStart) / viewDuration) * plotWidth;
+          const rawRight = plotLeft + ((frameEnd - viewStart) / viewDuration) * plotWidth;
+          if (rawRight <= plotLeft || rawLeft >= plotEnd) return null;
+          const left = Math.max(plotLeft, rawLeft);
+          const right = Math.min(plotEnd, rawRight);
+          return {
+            centerX: plotLeft + ((centerTime - viewStart) / viewDuration) * plotWidth,
+            left,
+            width: Math.max(1, right - left + 1),
+          };
+        });
         for (const bin of visibleBins) {
           const centerFrequency = spectrum.frequencies[bin];
           const lowerFrequency = bin > 0
@@ -7913,7 +7953,8 @@ function SpectrogramPanel({
           const yTop = plotTop + plotHeight * (1 - clamp(upperFrequency / effectiveDisplayMaxHz, 0, 1));
           const yBottom = plotTop + plotHeight * (1 - clamp(lowerFrequency / effectiveDisplayMaxHz, 0, 1));
           for (let frame = 0; frame < spectrum.frames; frame += 1) {
-            const x = plotLeft + (frame / spectrum.frames) * plotWidth;
+            const geometry = frameGeometry[frame];
+            if (!geometry) continue;
             const power = displayedPowers[bin * spectrum.frames + frame];
             if (!Number.isFinite(power)) {
               ctx.fillStyle = "#071216";
@@ -7921,9 +7962,9 @@ function SpectrogramPanel({
               ctx.fillStyle = matlabJet((power - low) / Math.max(1e-9, high - low));
             }
             ctx.fillRect(
-              x,
+              geometry.left,
               yTop,
-              plotWidth / spectrum.frames + 1,
+              geometry.width,
               Math.max(1, yBottom - yTop + 1),
             );
           }
@@ -7962,12 +8003,18 @@ function SpectrogramPanel({
           let drawing = false;
           for (let frame = 0; frame < spectrum.frames; frame += 1) {
             const ratio = thetaRatio[frame];
-            if (!Number.isFinite(ratio)) { drawing = false; continue; }
-            const x = plotLeft + ((frame + 0.5) / spectrum.frames) * plotWidth;
+            const geometry = frameGeometry[frame];
+            if (!Number.isFinite(ratio)
+              || !geometry
+              || geometry.centerX < plotLeft
+              || geometry.centerX > plotEnd) {
+              drawing = false;
+              continue;
+            }
             const overlayFrequency = effectiveDisplayMaxHz / 2 + ratio * (effectiveDisplayMaxHz / 2);
             const y = plotTop + plotHeight * (1 - overlayFrequency / effectiveDisplayMaxHz);
-            if (drawing) ctx.lineTo(x, y);
-            else { ctx.moveTo(x, y); drawing = true; }
+            if (drawing) ctx.lineTo(geometry.centerX, y);
+            else { ctx.moveTo(geometry.centerX, y); drawing = true; }
           }
           ctx.stroke();
         }
@@ -7992,7 +8039,7 @@ function SpectrogramPanel({
       observer.disconnect();
       performanceDiagnostics.removeCanvasSurface("spectrogram");
     };
-  }, [colorLimitShift, computeError, cursor, displayedPowers, effectiveDisplayMaxHz, overview, sampleRate, spectrum, thetaRatio, viewDuration, viewStart]);
+  }, [colorLimitShift, computeError, cursor, displayedPowers, effectiveDisplayMaxHz, overview, sampleRate, spectrum, spectrumDataStart, spectrumSampleRate, thetaRatio, viewDuration, viewStart]);
 
   const plotRatio = (clientX: number, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();

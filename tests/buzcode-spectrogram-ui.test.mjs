@@ -40,6 +40,18 @@ test("lets the spectrogram replace the waveform pane without changing the wavefo
   assert.match(panelResizeSection(page), /resize\.startHeight - \(event\.clientY - resize\.startY\)/);
 });
 
+test("keeps spectrogram bins aligned with continuous horizontal panning", async () => {
+  const page = await readFile(projectFile("app/page.tsx"), "utf8");
+  const panel = panelResizeSection(page);
+
+  assert.match(page, /dataStart=\{spectrogramDataStart\}/, "the panel receives the actual start time of its signal data");
+  assert.match(page, /signalKey=\{spectrogramSignalKey\}/, "cached results are retained only for the same displayed signal");
+  assert.match(panel, /retainedSpectrumMatchesSignal/, "the previous result stays visible while its replacement is computing");
+  assert.match(panel, /centerTime\s*=\s*spectrumDataStart\s*\+\s*spectrum\.times\[frame\]/, "each frame keeps its absolute recording time");
+  assert.match(panel, /rawLeft\s*=\s*plotLeft\s*\+\s*\(\(frameStart\s*-\s*viewStart\)\s*\/\s*viewDuration\)/, "panning reprojects cached frames into the live viewport");
+  assert.doesNotMatch(panel, /frame\s*\/\s*spectrum\.frames/, "cached frames are not stretched back across every new viewport");
+});
+
 function panelResizeSection(page) {
   const start = page.indexOf("function SpectrogramPanel");
   const end = page.indexOf("type FileStructureNode", start);
