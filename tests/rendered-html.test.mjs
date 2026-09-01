@@ -727,7 +727,7 @@ test("toggles live resource usage from the control left of Help and Settings", a
   assert.match(sidebar, /rightPanelView\s*===\s*"resources"\s*\?\s*<ResourceUsagePanel/);
 
   const resourcePanelStart = page.indexOf("function ResourceUsagePanel");
-  const resourcePanelEnd = page.indexOf("function QcPanel", resourcePanelStart);
+  const resourcePanelEnd = page.indexOf("function SessionMap", resourcePanelStart);
   const resourcePanel = page.slice(resourcePanelStart, resourcePanelEnd);
   assert.match(resourcePanel, /performance as PerformanceWithMemory/);
   assert.match(resourcePanel, /navigator\.storage/);
@@ -770,24 +770,22 @@ test("saves a selectable one-file project and accepts inert custom definitions",
   assert.match(page, /Stored as inactive data/);
 });
 
-test("moves QC into an accessible tab inside the Session Map dialog", async () => {
+test("keeps Session Map focused on whole-recording navigation", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const sessionMapStart = page.indexOf("function SessionMap(");
   assert.ok(sessionMapStart >= 0, "SessionMap is present");
   const sessionMap = page.slice(sessionMapStart);
 
-  assert.match(sessionMap, /role="tablist"/, "Session Map exposes its view switcher as a tab list");
-  assert.match(sessionMap, /role="tab"[\s\S]{0,300}Session map/i, "the map remains the primary tab");
-  assert.match(sessionMap, /role="tab"[\s\S]{0,300}>QC(?:\s|<)/i, "QC is available as a sibling tab");
-  assert.match(sessionMap, /<QcPanel\b/, "the existing QC report renders inside Session Map");
+  assert.match(sessionMap, /aria-label="Session map"/);
+  assert.match(sessionMap, /className="map-timeline"/);
+  assert.doesNotMatch(sessionMap, /role="tablist"|<QcPanel\b|>QC(?:\s|<)/i);
 
   const invocationStart = page.indexOf("{showSessionMap && <SessionMap");
   const invocationEnd = page.indexOf("/>}", invocationStart);
   assert.ok(invocationStart >= 0 && invocationEnd > invocationStart, "the Session Map dialog is wired from the workspace");
   const invocation = page.slice(invocationStart, invocationEnd);
-  assert.match(invocation, /(?:issues|qcIssues)=\{qcIssues\}/, "QC findings are passed into Session Map");
-  assert.match(invocation, /badChannels=\{badChannels\}/);
-  assert.match(invocation, /recoveryStatus=\{recoveryStatus\}/);
+  assert.match(invocation, /annotations=\{annotations\}/);
+  assert.doesNotMatch(invocation, /issues=|badChannels=|recoveryStatus=/);
 });
 
 test("opens patient information as a modal instead of expanding the left panel", async () => {

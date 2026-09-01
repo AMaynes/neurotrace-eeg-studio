@@ -1859,7 +1859,6 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [showChannels, setShowChannels] = useState(false);
   const [showSessionMap, setShowSessionMap] = useState(false);
-  const [sessionMapTab, setSessionMapTab] = useState<"map" | "qc">("map");
   const [showSessionContextPicker, setShowSessionContextPicker] = useState(false);
   const [showPatientInfo, setShowPatientInfo] = useState(false);
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
@@ -5741,8 +5740,6 @@ export default function Home() {
       return;
     }
     if (meta.details?.discontinuous === true) {
-      setSessionMapTab("qc");
-      setShowSessionMap(true);
       setToast("Export blocked: EDF+D gaps need a discontinuous time-axis conversion before model-ready export");
       return;
     }
@@ -6549,10 +6546,7 @@ export default function Home() {
             <span>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
           </button>
 
-          <button className="session-map-row" disabled={!hasRecording} onClick={() => {
-            setSessionMapTab("map");
-            setShowSessionMap(true);
-          }}><span>Session Map</span><b aria-hidden="true">↗</b></button>
+          <button className="session-map-row" disabled={!hasRecording} onClick={() => setShowSessionMap(true)}><span>Session Map</span><b aria-hidden="true">↗</b></button>
 
           <section className="session-labels-section" ref={sessionLabelsSectionRef} style={{ height: sessionLabelsHeight }}>
             <div className="sidebar-centered-heading">
@@ -7128,7 +7122,7 @@ export default function Home() {
               ["Context Labels", "Clinical Observation, Medication, and Other are the three timed context tools. Whole-session labels are added only with + in the left Session Labels panel."],
               ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Sleep stages, rhythmic/periodic patterns, seizure state, quality, and spikes are grouped here."],
               ["Inspector and deletion", "Select any annotation to edit timing, notes, reviewer, and confidence, commit a revision, or use the trash can. Delete/Backspace also removes the selection."],
-              ["QC and session map", "QC checks source assumptions and label integrity. Session map gives a hoverable, clickable whole-recording view."],
+              ["Session map", "Session map gives a hoverable, clickable whole-recording view."],
               ["Navigation", "Trackpad or mouse-wheel movement pans through time. The Window number and unit button stage a new view; the check button applies it. Pinch or Ctrl/⌘ +/- zooms immediately. Escape clears the current interaction."],
             ].map(([title, copy], index) => <section key={title}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{title}</strong><p>{copy}</p></div></section>)}
           </div>
@@ -7270,11 +7264,6 @@ export default function Home() {
       {showSessionMap && <SessionMap
         meta={meta}
         annotations={annotations}
-        tab={sessionMapTab}
-        onTabChange={setSessionMapTab}
-        issues={qcIssues}
-        badChannels={badChannels}
-        recoveryStatus={recoveryStatus}
         onClose={() => setShowSessionMap(false)}
         onOpenAnnotation={(item) => {
           setSelectedAnnotationId(item.id);
@@ -8285,37 +8274,14 @@ function ResourceUsagePanel({
   </section>;
 }
 
-function QcPanel({ issues, annotations, badChannels, meta, recoveryStatus, onSelect }: { issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }>; annotations: Annotation[]; badChannels: Set<number>; meta: RecordingMeta; recoveryStatus: "saved" | "error"; onSelect: (id: string) => void }) {
-  const committed = annotations.filter((item) => item.status === "committed").length;
-  const drafts = annotations.filter((item) => item.status === "draft").length;
-  const warningCount = issues.filter((item) => item.level === "warning").length;
-  const score = Math.max(0, 100 - warningCount * 8);
-  return <div className="qc-panel">
-    <section className="qc-score"><div className="score-ring"><strong>{score}</strong><span>QC</span></div><div><strong>Export readiness</strong><span>{warningCount ? `${warningCount} warning${warningCount === 1 ? "" : "s"} need review` : "All integrity checks passed"}</span></div></section>
-    <section className="qc-metrics"><div><strong>{committed}</strong><span>Committed</span></div><div><strong>{drafts}</strong><span>Drafts</span></div><div><strong>{badChannels.size}</strong><span>Bad ch</span></div></section>
-    <section className="qc-checks"><div className="qc-heading"><strong>Checks</strong><span>{issues.length} findings</span></div>{issues.length ? issues.map((issue, index) => <button key={`${issue.text}-${index}`} onClick={() => issue.annotationId && onSelect(issue.annotationId)}><i className={issue.level} /><div><strong>{issue.level === "warning" ? "Advisory" : "Review note"}</strong><span>{issue.text}</span></div><b>›</b></button>) : <div className="qc-clean"><span>✓</span><strong>No integrity conflicts</strong><p>Bounds, provenance, sleep exclusivity, and duplicate checks passed.</p></div>}</section>
-    <section className="file-qc"><div className="qc-heading"><strong>Source integrity</strong><span>{meta.format}</span></div><ul>{meta.warnings.length ? meta.warnings.map((warning) => <li key={warning} className="source-warning"><span>!</span>{warning}</li>) : <li><span>✓</span> No parser assumptions reported</li>}<li><span>✓</span> {meta.channelLabels.length} named channels retained</li><li><span>✓</span> Raw source remains immutable</li>{recoveryStatus === "saved" ? <li><span>✓</span> Local project recovery saved</li> : <li className="source-warning"><span>!</span>Local recovery unavailable; export now</li>}</ul></section>
-  </div>;
-}
-
 function SessionMap({
   meta,
   annotations,
-  tab,
-  onTabChange,
-  issues,
-  badChannels,
-  recoveryStatus,
   onClose,
   onOpenAnnotation,
 }: {
   meta: RecordingMeta;
   annotations: Annotation[];
-  tab: "map" | "qc";
-  onTabChange: (tab: "map" | "qc") => void;
-  issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }>;
-  badChannels: Set<number>;
-  recoveryStatus: "saved" | "error";
   onClose: () => void;
   onOpenAnnotation: (annotation: Annotation) => void;
 }) {
@@ -8328,13 +8294,9 @@ function SessionMap({
     { id: "windowed", label: "ePhys window labels", matches: (item) => item.track === "windowed" },
     { id: "instance", label: "ePhys instance labels", matches: (item) => item.track === "instance" },
   ];
-  return <div className="modal-backdrop map-backdrop"><div className="session-map-modal" role="dialog" aria-modal="true" aria-label="Session map and quality review" tabIndex={-1}>
+  return <div className="modal-backdrop map-backdrop"><div className="session-map-modal" role="dialog" aria-modal="true" aria-label="Session map" tabIndex={-1}>
     <header><div><span className="modal-eyebrow">MODEL-READY SESSION MAP</span><h2>{patientLabel(meta)} <i>/</i> {recordingLabel(meta)}</h2><p>{meta.channelLabels.length} channels · {formatClock(meta.durationSec)} · {primarySampleRate(meta)} Hz</p></div><button onClick={onClose} aria-label="Close session map">×</button></header>
-    <div className="session-map-tabs" role="tablist" aria-label="Session review views">
-      <button role="tab" aria-selected={tab === "map"} className={tab === "map" ? "active" : ""} onClick={() => onTabChange("map")}>Session map</button>
-      <button role="tab" aria-selected={tab === "qc"} className={tab === "qc" ? "active" : ""} onClick={() => onTabChange("qc")}>QC <span>{issues.length}</span></button>
-    </div>
-    {tab === "map" ? <div className="session-map-tab-panel" role="tabpanel">
+    <div className="session-map-tab-panel">
       <div className="map-equation"><span>entire-session context</span><b>＋</b><span>context labels</span><b>＋</b><span>ePhys window labels</span><b>＋</b><span>ePhys instance labels</span><b>→</b><strong>training data</strong></div>
       <div className={`map-inspection ${inspected ? "active" : ""}`}>
       {inspected?.kind === "annotation" ? <>
@@ -8360,10 +8322,7 @@ function SessionMap({
         })}</div></div>;
       })}
       </div>
-    </div> : <div className="session-map-qc" role="tabpanel"><QcPanel issues={issues} annotations={annotations} badChannels={badChannels} meta={meta} recoveryStatus={recoveryStatus} onSelect={(id) => {
-      const annotation = annotations.find((item) => item.id === id);
-      if (annotation) onOpenAnnotation(annotation);
-    }} /></div>}
-    <footer>{tab === "map" ? <div className="geometry-legend"><span><i className="duration" />Duration</span><span><i className="point" />Single moment</span></div> : <span className="qc-footer-note">{issues.length ? `${issues.length} QC finding${issues.length === 1 ? "" : "s"}` : "All integrity checks passed"}</span>}<button className="button primary" onClick={onClose}>Return to review</button></footer>
+    </div>
+    <footer><div className="geometry-legend"><span><i className="duration" />Duration</span><span><i className="point" />Single moment</span></div><button className="button primary" onClick={onClose}>Return to review</button></footer>
   </div></div>;
 }

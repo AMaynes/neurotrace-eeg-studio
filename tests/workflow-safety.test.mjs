@@ -118,7 +118,7 @@ test("critical feedback and dialogs expose accessible semantics", async () => {
   assert.match(page, /<canvas[^>]*tabIndex=\{0\}[^>]*role="img"[^>]*onPointerCancel=\{onWavePointerCancel\}/);
   assert.match(page, /className="command-status"\s*role="status"\s*aria-live="polite"\s*aria-atomic="true"/);
   assert.match(page, /className="modal confirm-modal"\s*role="dialog"\s*aria-modal="true"\s*aria-label="Commit advisory"/);
-  assert.match(page, /className="session-map-modal"\s*role="dialog"\s*aria-modal="true"\s*aria-label="Session map and quality review"/);
+  assert.match(page, /className="session-map-modal"\s*role="dialog"\s*aria-modal="true"\s*aria-label="Session map"/);
 });
 
 test("recovery validates saved structures, preserves unreadable data, and falls back to a valid draft", async () => {
@@ -255,7 +255,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(baseline, /Number\.isFinite\(value\)/);
   assert.match(baseline, /reservoir sampling/i);
 
-  const spectrum = section(page, "function SpectrogramPanel", "function QcPanel");
+  const spectrum = section(page, "function SpectrogramPanel", "function FileStructurePanel");
   assert.match(spectrum, /computeSpectrogramOffThread/);
   assert.match(spectrum, /if\s*\(overview\s*\|\|/);
   assert.match(spectrum, /dark green → lime → yellow → orange marks distance beyond ±100 µV/);
