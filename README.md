@@ -133,3 +133,124 @@ The Node test suite covers signal integrity, source hashing, server rendering, a
 - Next.js-compatible React components compiled through vinext and Vite
 - Cloudflare development adapters retained for the original Sites build path
 - Drizzle/D1 scaffolding retained but not used by the current local-first product
+
+## How things work
+
+This section describes the implemented signal path for a technical or PI review. The application is a local, browser-based viewer: recording bytes remain on the user's computer, and the processing below changes the displayed traces rather than rewriting the source file.
+
+### How is loading, panning, and zooming fast?
+
+1. **It opens metadata before scanning the full recording.** EDF import initially reads the 256-byte fixed header and then the declared header, which is enough to identify channels, rates, units, and duration. The UI installs a read-only preview before the full SHA-256/EDF+ annotation pass finishes. For EDF and DAT, that background pass also builds the reusable overview in the same sequential read, avoiding another whole-file pass.
+2. **Large recordings stay file-backed.** EDF, raw DAT, and MATLAB v7.3/HDF5 readers request only the time and channels needed for the view. Exact EDF/DAT windows are read in bounded 8 MiB chunks; their overview builders use bounded 4 MiB chunks. MATLAB v7.3 uses a persistent HDF5 worker. MATLAB v5 is the exception: compressed MAT v5 elements cannot be independently sliced, so that format is decoded into memory.
+3. **Zoomed-out views use exact extrema instead of millions of samples.** When an unfiltered referential window has more samples than horizontal pixels, the source is reduced into time buckets containing the finite minimum, maximum, midpoint, gap flag, and variation. A multiresolution pyramid repeatedly combines adjacent buckets conservatively. The viewer selects the coarsest level that still meets the screen resolution, then aggregates it to the exact visible columns. This bounds drawing work while retaining spikes and both polarities.
+4. **The expensive work is off the UI thread.** Exact file-window decoding, EDF/DAT envelope generation, display filtering/decimation, MATLAB v7.3 reads, source hashing, and spectrogram calculation run in Web Workers. Typed-array buffers are transferred back instead of copied where possible. The common unfiltered, non-decimated path returns zero-copy views.
+5. **Nearby work is reused, and stale work is discarded.** The viewer has bounded raw-window, processed-window, and envelope caches (64 MiB, 64 MiB, and 256 MiB respectively) and reads ahead by up to two additional view widths within a 96 MiB source-read budget. A new navigation request aborts the old request, and only the newest result may update the display.
+6. **Interaction and data loading are separated.** Wheel events are combined into one update per animation frame. During a pan, the already-rendered waveform and spectrogram move continuously with the live `viewStart`; after a 180 ms settle period, `signalViewStart` triggers the new exact read and recomputation. The old spectrogram remains positioned at its real recording timestamps until its replacement is ready, so it does not jump to a new time origin or disappear between updates.
+7. **Very large windows have explicit budgets.** Under five minutes, overview columns can follow canvas width; at five minutes or more they are capped at 1,024, and at one hour or more at 512. The canvas backing store is capped at one device pixel per CSS pixel and four million pixels. If filters or a derived montage require actual samples and the requested span would exceed bounded memory/file-read budgets, the app narrows the timebase rather than attempting an unbounded allocation.
+
+**Algorithm locations:**
+
+- `app/page.tsx` — `loadSource`, the display refresh effect, cache/read-ahead budgets, request cancellation, `onViewerWheel`, spectrogram retention, and canvas rendering.
+- `app/eeg-core.ts` — `SignalSource`, `EDFSource`, `RawDatSource`, `MatSource`, `Mat73Source`, `buildEnvelopePyramid`, `selectEnvelopePyramidLevel`, and envelope aggregation.
+- `app/file-window.ts`, `app/file-window-worker.ts`, `app/file-window-worker-client.ts` — bounded exact EDF/DAT window decoding.
+- `app/edf-envelope.ts`, `app/edf-envelope-integrity.ts`, `app/edf-envelope-worker.ts`, `app/edf-envelope-worker-client.ts` — EDF extrema overview, shared integrity/annotation scan, and worker control.
+- `app/raw-dat-envelope.ts`, `app/raw-dat-envelope-worker.ts`, `app/raw-dat-envelope-worker-client.ts` — raw DAT extrema overview and worker control.
+- `app/mat73-worker.ts`, `app/mat73-worker-client.ts` — file-backed HDF5 metadata, exact slices, and envelopes.
+- `app/display-processing-worker.ts`, `app/display-processing-worker-client.ts` — off-thread filtering/decimation, cancellation, transfer, and the zero-copy fast path.
+- `app/waveform-geometry.ts` — overview column limits and bounded detailed/midpoint/grouped-extrema render policy.
+- `app/spectrogram-compute.ts`, `app/spectrogram-worker.ts`, `app/spectrogram-worker-client.ts` — spectrogram algorithm and off-thread execution.
+
+### What is actually loaded at any given time, and where?
+
+Selecting a file does **not** normally copy the complete recording into the application's JavaScript memory. The browser retains a local `File`/`Blob` reference; the browser and operating system manage its backing storage. NeuroTrace materializes only requested byte slices and decoded typed arrays. The major resident layers are:
+
+| Layer | What is resident | Where and for how long |
+| --- | --- | --- |
+| Source handle and metadata | The local `File` reference plus channel labels, rates, units, duration, and format metadata. | Main browser thread for the open session. This is a reference to the local file, not an application-created copy or upload. |
+| Transient source chunks | Record-aligned EDF or frame-aligned DAT bytes: normally up to 8 MiB for exact windows and 4 MiB for overview/integrity work. | Worker memory while that chunk is decoded/hashed; the previous chunk becomes reclaimable as the next is read. The complete file is not retained by these readers. |
+| Raw-window cache | Calibrated/decoded `Float32Array` samples for the selected channels, requested padded viewport, and bounded read-ahead. | Main-thread JavaScript heap; global 64 MiB ceiling. Cache entries are keyed by source, channels, and time coverage. Recently reused entries move to the back; oldest entries are evicted when over budget. |
+| Processed-window cache | Filtered and/or anti-aliased/decimated `Float32Array` samples, keyed by the owning raw window plus filter settings, sample ranges, and decimation factors. | Main-thread JavaScript heap; separate 64 MiB ceiling. The identity path reuses raw buffers and is not added as a duplicate processed allocation. |
+| Envelope cache | For each cached channel and time bucket: midpoint, minimum, maximum, gap flag, variation, and coarser pyramid levels. | Main-thread JavaScript heap; global 256 MiB ceiling and at most 524,288 finest-level buckets per reusable base envelope. Full-session overviews are built for the recommended initial channels; another selected channel set can create a bounded reusable entry. |
+| Active waveform display | The exact cropped window, montage output, or visible aggregated envelope currently used by Canvas. | React/main-thread state. Exact crops normally use typed-array views over cached backing buffers; a derived montage allocates new output arrays. Envelope display arrays are screen-column-sized. |
+| Spectrogram | One focused channel's exact input when it fits the 32 MiB input ceiling, plus its computed time/frequency/power arrays. | Input and retained result live in the spectrogram component; computation is in a worker. While a replacement computes, the previous result remains available and time-aligned. A large envelope-only overview does not force an unbounded exact-sample allocation. |
+| Verification/indexing | SHA-256 state, optional EDF+ annotation parsing state, one transient source chunk, and the envelope output being built. | Short-lived worker memory. The worker terminates after verification; only the hash, annotations, metadata, and budgeted envelope pyramid are retained. |
+
+Format-specific behavior matters:
+
+- **EDF and raw DAT:** only metadata, current/cached decoded windows, and cached envelopes are in application RAM; source bytes remain file-backed.
+- **MATLAB v7.3/HDF5:** the persistent MAT worker keeps the local file mounted and the HDF5 dataset open. Each `dataset.slice(...)` materializes only the requested sample/channel region or bounded envelope chunk; NeuroTrace does not create a whole-matrix JavaScript copy.
+- **MATLAB v5:** the full file must be read/decompressed during import, and the selected signal matrix remains in main-thread RAM as channel-major `Float32Array` data. Requested display windows are then sliced from that in-memory matrix. This is why MAT v5 has a larger memory cost than the other supported large-file paths.
+- **Session changes:** raw, processed, and envelope entries are source-keyed and may remain available across session-tab/source switches for fast return navigation, but the three global ceilings still apply and evict older entries.
+- **Persistent browser storage:** annotations/recovery state can be written to local storage, but raw EEG samples and these signal caches are not. Closing/reloading the page releases the in-memory source objects and caches.
+
+**Algorithm locations:**
+
+- `app/page.tsx` — `RawWindowCache`, `ProcessedWindowCache`, `EnvelopeWindowCache`, the three cache refs, byte-budget constants, eviction logic, source installation, active display state, and exact-spectrogram input ceiling.
+- `app/file-window.ts`, `app/edf-envelope.ts`, `app/raw-dat-envelope.ts` — `File.slice(...).arrayBuffer()` chunk materialization and chunk-size constants.
+- `app/eeg-core.ts` — file-backed source objects, MAT v5 full decode/retained `MatSource.data`, and returned typed-array windows.
+- `app/mat73-worker.ts` — WORKERFS mount, persistent HDF5 handle, `dataset.slice(...)` exact-window reads, and bounded envelope reads.
+- `app/spectrogram-compute.ts` and `app/page.tsx` — spectrogram input/result arrays and retained-result replacement behavior.
+
+### How do the low-pass, high-pass, and notch filters work?
+
+The filters are **display-only**: they never alter the raw recording. Each selected channel is filtered at its own sample rate before montage arithmetic.
+
+The high-pass and low-pass stages are second-order biquads with `Q = 1/sqrt(2)`, giving a Butterworth-style response. The notch is a second-order biquad centered at 50 or 60 Hz with default `Q = 30`; `0` disables it. A cutoff at or above that channel's Nyquist frequency is rejected/skipped. Enabled stages run in this order:
+
+```text
+high-pass -> notch -> low-pass
+```
+
+By default, every stage runs once forward and once backward. This removes phase delay for offline display, squares the magnitude response, and makes each enabled second-order section act like a fourth-order zero-phase magnitude response. Missing/non-finite samples remain gaps: a gap is copied to the output and resets filter state, so the filter does not bridge a recording break. The viewer reads 2–12 seconds of extra signal around the requested window (scaled as `3 / highPassHz` for low high-pass cutoffs), filters the padded window, and crops back to the exact viewport to reduce edge transients.
+
+**Algorithm locations:**
+
+- `app/eeg-core.ts` — `DisplayFilterSettings`, `designBiquad`, `biquadPass`, `applyBiquad`, and `applyDisplayFilters` contain the coefficients, state update, gap behavior, forward/backward pass, and stage order.
+- `app/display-processing-worker.ts` — applies the display filters before any display decimation.
+- `app/display-processing-worker-client.ts` — worker lifecycle, cancellation, and typed-array transfer.
+- `app/page.tsx` — filter controls/defaults, padded window calculation, processed-window caching, exact crop, and the call into the worker.
+
+These are visualization filters, not acquisition filters or a claim of clinical-device certification.
+
+### How does each montage work?
+
+Montaging occurs after optional display filtering, anti-alias preparation, and exact viewport cropping. Arithmetic is only performed between channels with compatible units, sample rates, and aligned start times.
+
+- **Recorded / referential:** no subtraction is performed. Each displayed trace remains the signal as stored in the recording, with one-to-one source provenance. “Referential” therefore does not reconstruct an unknown original reference; it displays the recorded reference.
+- **Average reference (CAR):** the app finds the largest compatible cohort with equal sample count, sample rate, start time, and unit. At each sample it computes the mean of finite values in that cohort, then returns `channel - mean`. Non-finite input or an unavailable mean produces a gap. Labels receive `(CAR)`, and provenance records all channels contributing to the reference.
+- **Bipolar:** labels are normalized and parsed as an electrode group plus contact number. Scalp and auxiliary labels are not treated as depth contacts. Within each group, only true adjacent contacts are paired: `N` with `N+1`; the app never bridges a missing contact. `LA1-LA2` means `LA1 minus LA2`. Duplicate contact numbers are treated as ambiguous and omitted. Differently sampled or time-misaligned pairs are omitted instead of being silently resampled; equal-rate arrays of different lengths are clipped to the shorter window. A gap in either input remains a gap in the derived trace.
+
+Channel ordering is independent of the arithmetic: scalp labels are ordered front-to-back/left-to-right, depth contacts by side/group/contact, and auxiliary channels last, while original source-channel identity is retained for provenance and export.
+
+**Algorithm locations:**
+
+- `app/eeg-core.ts` — `cleanElectrodeLabel`, `scalpChannelPosition`, `parseContactLabel`, `anatomicalChannelGroup`, `orderAnatomicalChannelIndices`, and `buildMontage` implement label parsing, ordering, recorded/reference mapping, CAR, bipolar pairing, polarity, compatibility checks, gaps, warnings, and provenance.
+- `app/page.tsx` — the display refresh effect enforces compatible units, calls `buildMontage`, maps derived traces back to source-channel indices, and reports montage warnings.
+- `tests/core-release-fixes.test.mjs` and `tests/eeg-integrity.test.mjs` — regression coverage for polarity, gaps, provenance, adjacent contacts, duplicate contacts, excluded/incompatible inputs, and mixed-rate safety.
+
+### How are aliasing and large zoom windows handled?
+
+There are two separate aliasing problems, and the code treats them separately.
+
+**Signal aliasing during sample-rate reduction:** The viewer only decimates by a factor of two, only when the source rate is at least 1,000 Hz and at least two source samples would map to each display pixel. Before retaining every second global sample, it applies a fixed 96th-order/97-tap symmetric Kaiser-window FIR low-pass. The passband edge is 200 Hz; the stopband edge is `min(245 Hz, sourceRate / 4 - 5 Hz)`, and the FIR cutoff is the midpoint of that transition. Coefficients are normalized to unity DC gain. The known 48-input-sample group delay is compensated, and retained samples remain on the recording-global even-sample grid so adjacent windows line up. Any source gap contributing to an output remains a gap. Lower-rate data and close zooms remain at their original rate, so no sample-rate reduction is performed.
+
+**Visual aliasing when many samples share one pixel:** The app does not draw an average-only waveform. Each bucket preserves its exact minimum and maximum, plus a gap-aware representative midpoint. Coarser pyramid levels combine minima with minima and maxima with maxima, so a short spike cannot disappear just because the user zoomed out. If even that path would exceed canvas command/stroke budgets, adjacent buckets are grouped again while preserving the finite extrema of every group. Raw samples are used again when the view reaches approximately 1.5 samples per pixel or less.
+
+This creates a multiscale path:
+
+```text
+close view: exact samples
+    -> denser view: per-pixel exact min/max envelopes
+    -> minutes/hours: cached multiresolution extrema pyramid
+    -> extreme path complexity: bounded grouped extrema, still retaining min/max
+```
+
+Filtered and derived-montage views cannot reuse a raw referential envelope because filtering and subtraction change the signal. Those views process real padded samples within the fixed budgets; if the requested interval is too large, the UI reduces the window duration and explains why.
+
+**Algorithm locations:**
+
+- `app/eeg-core.ts` — `clinicalDecimationFactor`, `designClinicalDecimationFir`, `decimateClinicalDisplayTrace`, and `prepareClinicalDisplaySignals` implement anti-alias filtering, conditional 2x decimation, delay compensation, global sample alignment, and gap preservation. `EnvelopeWindowData`, `aggregateEnvelopeWindow`, `buildEnvelopePyramid`, and `selectEnvelopePyramidLevel` implement loss-aware zoomed-out data.
+- `app/display-processing-worker.ts` — guarantees filtering occurs before decimation.
+- `app/page.tsx` — chooses exact-sample versus envelope paths, selects/aggregates cached pyramid levels, enforces memory budgets, and renders absolute-time-aligned traces.
+- `app/waveform-geometry.ts` — `waveformOverviewColumnBudget`, `envelopeTraceRenderMode`, `maximumExtremaGroupsForBudget`, and `visitGroupedWaveformExtrema` bound rendering without dropping extrema.
+- `tests/core-release-fixes.test.mjs` and `tests/waveform-geometry.test.mjs` — regression coverage for FIR response and delay, global-grid continuity, 24-hour pyramid scaling, exact extrema, gaps, and bounded render geometry.
