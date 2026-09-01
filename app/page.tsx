@@ -4848,10 +4848,18 @@ export default function Home() {
             </div>}
           </footer>
           </> : <button className="recording-empty-state" onClick={() => setShowImport(true)}>
-            <span className="empty-load-mark" aria-hidden="true">＋</span>
-            <strong>Load a recording to begin</strong>
-            <p>Open EDF / EDF+, MATLAB v5, or a paired MAT + DAT session.</p>
-            <small>Click to choose files, or drop them anywhere in this workspace.</small>
+            <span className="empty-intro">
+              <span className="empty-intro-kicker">NEUROTRACE CLINICAL EEG STUDIO</span>
+              <strong className="empty-intro-title">Welcome to NeuroTrace</strong>
+              <span className="empty-intro-copy">Review, annotate, and quality-check clinical EEG recordings in one focused, browser-based workspace.</span>
+              <span className="empty-intro-support">Your recording stays on this device. Select <b>?</b> in the top-right for guidance, or use Settings to tailor the workspace.</span>
+            </span>
+            <span className="empty-load-prompt">
+              <span className="empty-load-mark" aria-hidden="true">＋</span>
+              <strong>Load a recording to begin</strong>
+              <span>Open EDF / EDF+, MATLAB v5, or a paired MAT + DAT session.</span>
+              <small>Click to choose files, or drop them anywhere in this workspace.</small>
+            </span>
           </button>}
         </section>
 

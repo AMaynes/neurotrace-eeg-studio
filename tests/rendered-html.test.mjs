@@ -135,8 +135,12 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   const emptyEnd = page.indexOf("</button>", emptyStart);
   assert.ok(emptyStart >= 0 && emptyEnd > emptyStart, "a dedicated empty-recording surface is shipped");
   const emptyState = page.slice(emptyStart, emptyEnd);
+  assert.match(emptyState, /Welcome to NeuroTrace/, "the empty state introduces the workspace before file selection");
   assert.match(emptyState, /Load (?:(?:a|an EEG) )?recording to begin/i, "the empty state has a direct load action");
   assert.match(emptyState, /EDF[\s\S]*MAT/i, "the empty state identifies supported EEG formats");
+  assert.match(emptyState, /stays on this device[\s\S]*top-right for guidance/i, "the introduction points users to privacy and help information");
+  assert.ok(emptyState.indexOf("empty-intro") < emptyState.indexOf("empty-load-prompt"), "the introduction occupies the upper section above the load prompt");
+  assert.match(emptyState, /onClick=\{\(\) => setShowImport\(true\)\}/, "the entire introduction and load surface opens file selection");
 
   sourceHas(/aria-label="Add channels"/, "CH+ has an accessible action name");
   sourceHas(/>\s*CH\+\s*<\/button>/, "the compact channel action is visible as CH+");
