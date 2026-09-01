@@ -107,6 +107,15 @@ import {
   unprojectVerticalFraction,
   type NormalizedVerticalViewport,
 } from "./waveform-viewport";
+import {
+  analyzeBidsCompanions,
+  emptyBidsCompanionBundle,
+  mergeSelectedFiles,
+  relativeFilePath,
+  type BidsCompanionBundle,
+  type BidsEventRecord,
+  type UploadedFileRecord,
+} from "./bids-companions";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -269,6 +278,14 @@ type UploadErrorMessage = {
   files: string[];
 };
 
+type SourceImportContext = {
+  primaryFile: File;
+  uploadedFileInputs: File[];
+  companionBundle: BidsCompanionBundle;
+  importedAnnotations: Annotation[];
+  badChannelIndices: number[];
+};
+
 type ControlBindings = {
   undo: string;
   redo: string;
@@ -372,6 +389,9 @@ type EnvelopeWindowCache = {
 type SessionWorkspaceSnapshot = {
   hasRecording: boolean;
   source: SignalSource;
+  primaryFile: File | null;
+  uploadedFileInputs: File[];
+  companionBundle: BidsCompanionBundle;
   meta: RecordingMeta;
   sessionKey: string;
   recordingType: string;
@@ -481,17 +501,9 @@ function recordingExtension(file: File) {
 }
 
 function validateUploadSelection(files: readonly File[]): UploadErrorMessage | null {
-  const unsupported = files.filter((file) => !SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)));
-  if (unsupported.length) {
-    return {
-      title: "Unsupported file type",
-      message: "NeuroTrace accepts EDF/EDF+, MATLAB v5 MAT, and signed-int16 DAT recordings. Choose a supported recording file and try again.",
-      files: unsupported.map((file) => file.name),
-    };
-  }
-
   const incomplete = files.filter((file) => {
     const extension = recordingExtension(file);
+    if (!SUPPORTED_RECORDING_EXTENSIONS.has(extension)) return false;
     if (file.size === 0) return true;
     if (extension === "edf") return file.size < 256;
     if (extension === "mat") return file.size < 128;
@@ -504,29 +516,148 @@ function validateUploadSelection(files: readonly File[]): UploadErrorMessage | n
       files: incomplete.map((file) => file.name),
     };
   }
+  return null;
+}
 
-  const edfFiles = files.filter((file) => recordingExtension(file) === "edf");
-  const matFiles = files.filter((file) => recordingExtension(file) === "mat");
-  const datFiles = files.filter((file) => recordingExtension(file) === "dat");
-  if (edfFiles.length > 1 || datFiles.length > 1 || matFiles.length > 1 || (edfFiles.length && files.length > 1)) {
-    return {
-      title: "Choose one recording",
-      message: "Open one EDF, one MAT, one DAT, or one same-name MAT + DAT pair at a time. Additional recordings can be opened in separate session tabs.",
-      files: files.map((file) => file.name),
-    };
+function choosePrimaryRecording(files: readonly File[]): File | null {
+  const supported = files
+    .filter((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))
+    .sort((left, right) => relativeFilePath(left).localeCompare(relativeFilePath(right), undefined, { numeric: true }));
+  const edf = supported.find((file) => recordingExtension(file) === "edf");
+  if (edf) return edf;
+  const dat = supported.find((file) => recordingExtension(file) === "dat");
+  if (dat) return dat;
+  return supported.find((file) => recordingExtension(file) === "mat") ?? null;
+}
+
+function compactMetadataValue(value: unknown): string | number | boolean | null {
+  if (typeof value === "string") return value.length > 240 ? `${value.slice(0, 237)}…` : value;
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (value === null) return "n/a";
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized.length > 240 ? `${serialized.slice(0, 237)}…` : serialized;
+  } catch {
+    return null;
   }
-  if (datFiles.length === 1 && matFiles.length === 1) {
-    const datStem = datFiles[0].name.replace(/\.dat$/i, "").toLowerCase();
-    const matStem = matFiles[0].name.replace(/\.mat$/i, "").toLowerCase();
-    if (datStem !== matStem) {
-      return {
-        title: "MAT and DAT files do not match",
-        message: "A companion MAT + DAT session must use the same base filename. Rename or select the matching pair, or select the DAT alone for manual mapping.",
-        files: [matFiles[0].name, datFiles[0].name],
-      };
+}
+
+function applyCompanionBundleToMeta(meta: RecordingMeta, bundle: BidsCompanionBundle) {
+  if (bundle.channels.length === meta.channelCount) {
+    const labels = bundle.channels.map((channel) => channel.name);
+    if (new Set(labels.map((label) => label.toLowerCase())).size === labels.length) {
+      meta.channelLabels = labels;
     }
   }
-  return null;
+  if (bundle.subjectId) meta.patientId = bundle.subjectId;
+  const acquisitionTime = typeof bundle.metadata.acq_time === "string"
+    ? bundle.metadata.acq_time
+    : typeof bundle.metadata.AcquisitionTime === "string"
+      ? bundle.metadata.AcquisitionTime
+      : null;
+  if (acquisitionTime) {
+    const parsed = new Date(acquisitionTime);
+    if (!Number.isNaN(parsed.getTime())) {
+      meta.startedAt = parsed;
+      meta.startDateTime = parsed.toISOString();
+    }
+  }
+  const bidsDetails: Record<string, string | number | boolean> = {
+    bidsCompanionFiles: bundle.files.filter((file) => file.status === "applied").length,
+    bidsMetadataSources: bundle.metadataSources.length,
+    bidsTables: bundle.tables.length,
+    bidsEvents: bundle.events.length,
+  };
+  for (const [key, value] of Object.entries(bundle.metadata).slice(0, 40)) {
+    const compact = compactMetadataValue(value);
+    if (compact !== null) bidsDetails[key] = compact;
+  }
+  meta.details = { ...(meta.details ?? {}), ...bidsDetails };
+  meta.warnings = [...new Set([...meta.warnings, ...bundle.warnings])];
+}
+
+function bidsEventLabelId(event: BidsEventRecord): string {
+  const normalized = `${event.label} ${event.description}`.trim().toLowerCase();
+  if (/pre[-_ ]?ictal/.test(normalized)) return "preictal";
+  if (/post[-_ ]?ictal/.test(normalized)) return "postictal";
+  if (/ictal|seizure|\bsz\b/.test(normalized)) return "ictal";
+  if (/spike|sharp wave/.test(normalized)) return "spikes";
+  if (/slowing/.test(normalized)) return "slowing";
+  if (/suppression/.test(normalized)) return "suppression";
+  if (/artifact|artefact/.test(normalized)) return "artifact";
+  if (/medication|medicine|drug/.test(normalized)) return "medication";
+  if (/\brem\b/.test(normalized)) return "rem";
+  if (/\bn1\b/.test(normalized)) return "n1";
+  if (/\bn2\b/.test(normalized)) return "n2";
+  if (/\bn3\b/.test(normalized)) return "n3";
+  if (/\bwake\b/.test(normalized)) return "wake";
+  if (/sleep/.test(normalized)) return "sleep-unspecified";
+  return event.duration > 0 ? "uncertain" : "clinical";
+}
+
+function bidsEventAnnotations(
+  bundle: BidsCompanionBundle,
+  durationSec: number,
+  channelLabels: readonly string[],
+): Annotation[] {
+  const channelLookup = new Map(channelLabels.map((label, index) => [label.trim().toLowerCase(), index]));
+  const timestamp = new Date().toISOString();
+  return bundle.events.flatMap((event): Annotation[] => {
+    if (event.onset >= durationSec || event.onset + event.duration < 0) return [];
+    const labelId = bidsEventLabelId(event);
+    const definition = LABEL_BY_ID.get(labelId) ?? LABEL_BY_ID.get("clinical")!;
+    const start = clamp(event.onset, 0, durationSec);
+    const end = clamp(event.onset + event.duration, start, durationSec);
+    const geometry: Geometry = event.duration > 0 && end > start ? "interval" : "point";
+    const channels = event.channels.flatMap((label) => {
+      const index = channelLookup.get(label.toLowerCase());
+      return index === undefined ? [] : [index];
+    });
+    const sourceNote = `${event.label}${event.description && event.description !== event.label ? ` · ${event.description}` : ""}`;
+    return [{
+      id: event.id,
+      labelId: definition.id,
+      start,
+      end: geometry === "point" ? start : end,
+      track: geometry === "point" ? "instance" : definition.track,
+      geometry,
+      channels,
+      confidence: 0,
+      reliability: "silver",
+      origin: "imported",
+      reviewer: "",
+      notes: `${sourceNote} · ${event.sourcePath} row ${event.rowIndex + 2}`,
+      status: "draft",
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }];
+  });
+}
+
+async function prepareSourceImportContext(
+  source: SignalSource,
+  primary: File,
+  files: readonly File[],
+): Promise<SourceImportContext> {
+  const uploadedFileInputs = mergeSelectedFiles([], files);
+  const bundle = await analyzeBidsCompanions(uploadedFileInputs, {
+    recordingFile: primary,
+    channelCount: source.meta.channelCount,
+  });
+  const additionalRecordings = bundle.files.filter((file) =>
+    file.role === "recording" && file.status === "available").length;
+  if (additionalRecordings) {
+    bundle.warnings.push(`${additionalRecordings} additional supported recording file${additionalRecordings === 1 ? " was" : "s were"} catalogued but not opened in this session.`);
+  }
+  applyCompanionBundleToMeta(source.meta, bundle);
+  return {
+    primaryFile: primary,
+    uploadedFileInputs,
+    companionBundle: bundle,
+    importedAnnotations: bidsEventAnnotations(bundle, source.meta.durationSec, source.meta.channelLabels),
+    badChannelIndices: bundle.badChannelIndices,
+  };
 }
 
 function uploadErrorFrom(error: unknown, files: readonly File[]): UploadErrorMessage {
@@ -1065,62 +1196,77 @@ function drawGroupedExtrema(
     || representatives.length !== minima.length
     || maximumGroups < 1) return false;
   let overflow = false;
-  const rowBottom = rowTop + rowHeight;
-  context.save();
-  context.globalAlpha = Math.min(1, alpha * 1.5);
-  context.beginPath();
+  const groups: Array<{
+    start: number;
+    end: number;
+    minimum: number;
+    maximum: number;
+    interrupted: boolean;
+    representativeMean: number;
+  }> = [];
   visitGroupedWaveformExtrema(
     minima,
     maxima,
     gaps,
     maximumGroups,
-    (groupStart, groupEnd, minimum, maximum) => {
-      const maximumY = center - (maximum - baseline) * scale;
-      const minimumY = center - (minimum - baseline) * scale;
-      if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
-        || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
-      let top = confineTraceYValueToRow(maximumY, rowTop, rowHeight);
-      let bottom = confineTraceYValueToRow(minimumY, rowTop, rowHeight);
-      if (bottom - top < 1) {
-        const midpoint = (top + bottom) / 2;
-        top = clamp(midpoint - .5, rowTop, Math.max(rowTop, rowBottom - 1));
-        bottom = Math.min(rowBottom, top + 1);
-      }
-      const rawLeft = ((startSec + groupStart * bucketDurationSec - displayStart) / timebase) * width;
-      const rawRight = ((startSec + groupEnd * bucketDurationSec - displayStart) / timebase) * width;
-      if (rawRight < -1 || rawLeft > width + 1) return;
-      const x = clamp((rawLeft + rawRight) / 2, 0, width);
-      // A one-column exact-extrema whisker preserves every transient without
-      // turning the entire group width into a rectangular staircase.
-      context.moveTo(x, top);
-      context.lineTo(x, bottom);
+    (start, end, minimum, maximum, interrupted, representativeMean) => {
+      groups.push({ start, end, minimum, maximum, interrupted, representativeMean });
     },
   );
+  if (!groups.length) return false;
+
+  context.save();
+  context.globalAlpha = Math.min(1, alpha * 1.5);
+  context.beginPath();
+  const drawBoundary = (valueForGroup: (group: typeof groups[number]) => number) => {
+    let connected = false;
+    let previousGroupEnd: number | null = null;
+    for (const group of groups) {
+      const rawLeft = ((startSec + group.start * bucketDurationSec - displayStart) / timebase) * width;
+      const rawRight = ((startSec + group.end * bucketDurationSec - displayStart) / timebase) * width;
+      if (rawRight < -1 || rawLeft > width + 1) {
+        connected = false;
+        previousGroupEnd = group.end;
+        continue;
+      }
+      const rawY = center - (valueForGroup(group) - baseline) * scale;
+      if (traceYOverflowsRow(rawY, rowTop, rowHeight)) overflow = true;
+      const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
+      const left = clamp(rawLeft, 0, width);
+      const right = clamp(rawRight, 0, width);
+      if (!connected || previousGroupEnd !== group.start || group.interrupted) context.moveTo(left, y);
+      else context.lineTo(left, y);
+      context.lineTo(right, y);
+      connected = !group.interrupted;
+      previousGroupEnd = group.end;
+    }
+  };
+  // Preserve extrema as continuous upper/lower boundaries. Independent
+  // vertical whiskers read as artificial tick marks during intermediate zoom.
+  drawBoundary((group) => group.maximum);
+  drawBoundary((group) => group.minimum);
+
   let representativeConnected = false;
   let representativeGroupEnd: number | null = null;
-  visitGroupedWaveformExtrema(
-    representatives,
-    representatives,
-    gaps,
-    maximumGroups,
-    (...group) => {
-      const [groupStart, groupEnd, , , interrupted, representativeMean] = group;
-      if (representativeGroupEnd !== groupStart) representativeConnected = false;
-      representativeGroupEnd = groupEnd;
-      if (interrupted) {
-        representativeConnected = false;
-        return;
-      }
-      const groupTime = startSec + ((groupStart + groupEnd) / 2) * bucketDurationSec;
-      const x = ((groupTime - displayStart) / timebase) * width;
-      if (x < -1 || x > width + 1) return;
-      const rawY = center - (representativeMean - baseline) * scale;
-      const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
-      if (representativeConnected) context.lineTo(x, y);
-      else context.moveTo(x, y);
-      representativeConnected = true;
-    },
-  );
+  for (const group of groups) {
+    if (representativeGroupEnd !== group.start) representativeConnected = false;
+    representativeGroupEnd = group.end;
+    if (group.interrupted) {
+      representativeConnected = false;
+      continue;
+    }
+    const groupTime = startSec + ((group.start + group.end) / 2) * bucketDurationSec;
+    const x = ((groupTime - displayStart) / timebase) * width;
+    if (x < -1 || x > width + 1) {
+      representativeConnected = false;
+      continue;
+    }
+    const rawY = center - (group.representativeMean - baseline) * scale;
+    const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
+    if (representativeConnected) context.lineTo(x, y);
+    else context.moveTo(x, y);
+    representativeConnected = true;
+  }
   context.stroke();
   context.restore();
   return overflow;
@@ -1562,6 +1708,9 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
   return {
     hasRecording: false,
     source,
+    primaryFile: null,
+    uploadedFileInputs: [],
+    companionBundle: emptyBidsCompanionBundle(),
     meta: sourceMeta(source),
     sessionKey: `blank-${id}`,
     recordingType: "Scalp EEG",
@@ -1748,6 +1897,8 @@ export default function Home() {
   const waveDrawRef = useRef<() => void>(() => {});
   const viewerWheelRef = useRef<(event: WheelEvent) => void>(() => {});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const directoryInputRef = useRef<HTMLInputElement>(null);
+  const fileDragDepthRef = useRef(0);
   const annotationsRef = useRef<Annotation[]>([]);
   const candidatesRef = useRef<Candidate[]>([]);
   const activeCandidateIndexRef = useRef(0);
@@ -1813,6 +1964,9 @@ export default function Home() {
 
   const [meta, setMeta] = useState<RecordingMeta>(() => sourceMeta(demoSource));
   const [hasRecording, setHasRecording] = useState(false);
+  const [primaryFile, setPrimaryFile] = useState<File | null>(null);
+  const [uploadedFileInputs, setUploadedFileInputs] = useState<File[]>([]);
+  const [companionBundle, setCompanionBundle] = useState<BidsCompanionBundle>(() => emptyBidsCompanionBundle());
   const [sessionTabs, setSessionTabs] = useState<SessionTab[]>([
     { id: "initial-session", title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" },
   ]);
@@ -1860,6 +2014,7 @@ export default function Home() {
   const [toast, setToast] = useState("Blank session ready — load a recording");
   const [uploadError, setUploadError] = useState<UploadErrorMessage | null>(null);
   const [importBusy, setImportBusy] = useState(false);
+  const [fileDragActive, setFileDragActive] = useState(false);
   const [verifyingSource, setVerifyingSource] = useState(false);
   const [dragGhost, setDragGhost] = useState<{ labelId: string; time: number } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
@@ -1883,6 +2038,7 @@ export default function Home() {
   const [pendingDat, setPendingDat] = useState<File | null>(null);
   const [pendingLegacyMatFile, setPendingLegacyMatFile] = useState<File | null>(null);
   const [pendingLegacyMeta, setPendingLegacyMeta] = useState<LegacyMatMetadata | null>(null);
+  const [pendingImportFiles, setPendingImportFiles] = useState<File[]>([]);
   const [selectedLegacyEventIndices, setSelectedLegacyEventIndices] = useState<Set<number>>(new Set());
   const [datMapping, setDatMapping] = useState<RawDatMapping>({ sampleRate: 0, channelCount: 0, physicalScale: "" });
   const [legacyExportHints, setLegacyExportHints] = useState({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
@@ -2061,6 +2217,9 @@ export default function Home() {
     const snapshot: SessionWorkspaceSnapshot = {
       hasRecording,
       source: sourceRef.current,
+      primaryFile,
+      uploadedFileInputs,
+      companionBundle,
       meta,
       sessionKey,
       recordingType,
@@ -2114,7 +2273,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, cursorAmplitude, cursorLocked, cursorTime, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, rawSourceHash, recordingType, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, viewStart]);
+  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recordingType, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, uploadedFileInputs, viewStart]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2150,6 +2309,9 @@ export default function Home() {
     contextResizeRef.current = null;
     sourceRef.current = snapshot.source;
     setHasRecording(snapshot.hasRecording);
+    setPrimaryFile(snapshot.primaryFile);
+    setUploadedFileInputs(snapshot.uploadedFileInputs);
+    setCompanionBundle(snapshot.companionBundle);
     setMeta(snapshot.meta);
     setSessionKey(snapshot.sessionKey);
     setRecordingType(snapshot.recordingType);
@@ -2198,6 +2360,7 @@ export default function Home() {
     setPendingDat(null);
     setPendingLegacyMatFile(null);
     setPendingLegacyMeta(null);
+    setPendingImportFiles([]);
     setSelectedLegacyEventIndices(new Set());
     setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: "" });
     setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
@@ -2206,6 +2369,7 @@ export default function Home() {
     setConfirmCommit([]);
     setCommitAdvanceAfter(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    if (directoryInputRef.current) directoryInputRef.current.value = "";
     undoRef.current = snapshot.undo;
     redoRef.current = snapshot.redo;
   }, [commitViewStart]);
@@ -4130,22 +4294,24 @@ export default function Home() {
             );
           } else {
             if (renderMode === "detailed") {
-              context.save();
-              context.globalAlpha = selected ? .72 : .42;
-              context.beginPath();
-              for (let x = 0; x < pixelColumns; x += 1) {
-                const min = minima[x];
-                const max = maxima[x];
-                if (min === Number.POSITIVE_INFINITY) continue;
-                const maximumY = center - (max - baseline) * scale;
-                const minimumY = center - (min - baseline) * scale;
-                if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
-                  || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
-                context.moveTo(x + .5, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
-                context.lineTo(x + .5, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
-              }
-              context.stroke();
-              context.restore();
+              overflow = drawOverviewEnvelope(
+                context,
+                minima,
+                maxima,
+                displayStart,
+                timebase / pixelColumns,
+                displayStart,
+                timebase,
+                width,
+                center,
+                rowTop,
+                rowHeight,
+                baseline,
+                scale,
+                selected,
+                false,
+                gaps,
+              );
             }
             overflow = drawContinuousTrace(
               context,
@@ -5044,7 +5210,12 @@ export default function Home() {
     setToast(`${entry.detail}: ${entry.label}`);
   }, [annotations, candidates, instanceQueueEntries, jumpTo, selectCandidate]);
 
-  const loadSource = useCallback(async (source: SignalSource, file: File, interpretation?: Record<string, unknown>) => {
+  const loadSource = useCallback(async (
+    source: SignalSource,
+    file: File,
+    interpretation?: Record<string, unknown>,
+    importContext?: SourceImportContext,
+  ) => {
     const targetSessionId = activeSessionId;
     const nextMeta = sourceMeta(source);
     storeActiveSession();
@@ -5069,6 +5240,9 @@ export default function Home() {
     setVerifyingSource(true);
     sourceRef.current = source;
     setHasRecording(true);
+    setPrimaryFile(importContext?.primaryFile ?? file);
+    setUploadedFileInputs(importContext?.uploadedFileInputs ?? [file]);
+    setCompanionBundle(importContext?.companionBundle ?? emptyBidsCompanionBundle());
     setMeta(nextMeta);
     setSessionKey(`verifying:${nextMeta.id}`);
     setRawSourceHash("");
@@ -5326,6 +5500,38 @@ export default function Home() {
       id !== targetSessionId && snapshot.hasRecording && snapshot.sourceHash === interpretationHash);
     if (duplicateEntry) {
       const [duplicateId, duplicateSnapshot] = duplicateEntry;
+      if (importContext) {
+        const mergedInputs = mergeSelectedFiles(duplicateSnapshot.uploadedFileInputs, importContext.uploadedFileInputs);
+        const mergedBundle = await analyzeBidsCompanions(mergedInputs, {
+          recordingFile: duplicateSnapshot.primaryFile ?? file,
+          channelCount: duplicateSnapshot.source.meta.channelCount,
+        });
+        applyCompanionBundleToMeta(duplicateSnapshot.source.meta, mergedBundle);
+        const imported = bidsEventAnnotations(
+          mergedBundle,
+          duplicateSnapshot.source.meta.durationSec,
+          duplicateSnapshot.source.meta.channelLabels,
+        );
+        const existingIds = new Set(duplicateSnapshot.annotations.map((annotation) => annotation.id));
+        duplicateSnapshot.primaryFile = duplicateSnapshot.primaryFile ?? file;
+        duplicateSnapshot.uploadedFileInputs = mergedInputs;
+        duplicateSnapshot.companionBundle = mergedBundle;
+        duplicateSnapshot.meta = {
+          ...duplicateSnapshot.source.meta,
+          channelLabels: [...duplicateSnapshot.source.meta.channelLabels],
+          warnings: [...duplicateSnapshot.source.meta.warnings],
+          details: { ...(duplicateSnapshot.source.meta.details ?? {}) },
+        };
+        duplicateSnapshot.annotations = [
+          ...duplicateSnapshot.annotations,
+          ...imported.filter((annotation) => !existingIds.has(annotation.id)),
+        ];
+        duplicateSnapshot.badChannels = [...new Set([
+          ...duplicateSnapshot.badChannels,
+          ...mergedBundle.badChannelIndices,
+        ])];
+        if (mergedBundle.recordingType) duplicateSnapshot.recordingType = mergedBundle.recordingType;
+      }
       if (sourceVerificationAbortRef.current === verificationAbortController) {
         sourceVerificationAbortRef.current = null;
       }
@@ -5341,7 +5547,8 @@ export default function Home() {
     let restoredActiveCandidate = 0;
     let restoredBadChannels: number[] = [];
     let restoredReviewer: string | null = null;
-    let restoredRecordingType = nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG";
+    let restoredRecordingType = importContext?.companionBundle.recordingType
+      ?? (nextMeta.channelLabels.length > 64 ? "SEEG / iEEG" : "Scalp EEG");
     let restoredMatlabExportIdentity: MatlabExportIdentity | null = null;
     let recoveryWarning: string | null = null;
     let usedLegacyRecoveryKey = false;
@@ -5414,6 +5621,14 @@ export default function Home() {
     if (usedLegacyRecoveryKey && !recoveryWarning) {
       recoveryWarning = "Recovered prior DAT review state and migrated it to the unscaled raw-count display.";
     }
+    if (importContext) {
+      const restoredIds = new Set(restored.map((annotation) => annotation.id));
+      restored = [
+        ...restored,
+        ...importContext.importedAnnotations.filter((annotation) => !restoredIds.has(annotation.id)),
+      ];
+      restoredBadChannels = [...new Set([...restoredBadChannels, ...importContext.badChannelIndices])];
+    }
     if (activeSessionIdRef.current !== targetSessionId) {
       throw new Error("The active session changed while the recording was opening. Load it again in the intended tab.");
     }
@@ -5463,15 +5678,55 @@ export default function Home() {
     importBusyRef.current = true;
     setImportBusy(true);
     try {
-      const edf = files.find((file) => /\.edf$/i.test(file.name));
-      const dat = files.find((file) => /\.dat$/i.test(file.name));
+      const incomingPrimary = choosePrimaryRecording(files);
+      if (!incomingPrimary) {
+        const mergedFiles = mergeSelectedFiles(uploadedFileInputs, files);
+        const bundle = await analyzeBidsCompanions(mergedFiles, {
+          recordingFile: primaryFile,
+          channelCount: hasRecording ? sourceRef.current.meta.channelCount : undefined,
+        });
+        setUploadedFileInputs(mergedFiles);
+        setCompanionBundle(bundle);
+        if (hasRecording && primaryFile) {
+          applyCompanionBundleToMeta(sourceRef.current.meta, bundle);
+          setMeta({
+            ...sourceRef.current.meta,
+            channelLabels: [...sourceRef.current.meta.channelLabels],
+            warnings: [...sourceRef.current.meta.warnings],
+            details: { ...(sourceRef.current.meta.details ?? {}) },
+          });
+          setBadChannels((current) => new Set([...current, ...bundle.badChannelIndices]));
+          const imported = bidsEventAnnotations(bundle, sourceRef.current.meta.durationSec, sourceRef.current.meta.channelLabels);
+          setAnnotations((current) => {
+            const existingIds = new Set(current.map((annotation) => annotation.id));
+            const next = [...current, ...imported.filter((annotation) => !existingIds.has(annotation.id))];
+            annotationsRef.current = next;
+            return next;
+          });
+          if (bundle.recordingType) setRecordingType(bundle.recordingType);
+          setToast(`${files.length} file${files.length === 1 ? "" : "s"} added · ${bundle.files.filter((file) => file.status === "applied").length} companions applied · ${bundle.events.length} BIDS events found`);
+        } else {
+          setToast(`${files.length} file${files.length === 1 ? "" : "s"} catalogued · add a supported EDF, MAT, or DAT recording to attach the metadata`);
+          setRightPanelView("inspect");
+          setRightPanelOpen(true);
+        }
+        setShowImport(false);
+        return;
+      }
+
+      const allFiles = hasRecording
+        ? mergeSelectedFiles([], files)
+        : mergeSelectedFiles(uploadedFileInputs, files);
+      const extension = recordingExtension(incomingPrimary);
+      const dat = extension === "dat" ? incomingPrimary : null;
       const datStem = dat?.name.replace(/\.dat$/i, "").toLowerCase();
       const mat = dat
-        ? files.find((file) => /\.mat$/i.test(file.name) && file.name.replace(/\.mat$/i, "").toLowerCase() === datStem)
-        : files.find((file) => /\.mat$/i.test(file.name));
-      if (edf) {
-        const source = await EDFSource.create(edf, { parseAnnotations: false });
-        const opened = await loadSource(source, edf);
+        ? allFiles.find((file) => recordingExtension(file) === "mat" && file.name.replace(/\.mat$/i, "").toLowerCase() === datStem)
+        : extension === "mat" ? incomingPrimary : null;
+      if (extension === "edf") {
+        const source = await EDFSource.create(incomingPrimary, { parseAnnotations: false });
+        const importContext = await prepareSourceImportContext(source, incomingPrimary, allFiles);
+        const opened = await loadSource(source, incomingPrimary, undefined, importContext);
         if (!opened) return;
         const hasAnnotationChannels = source.header.signals.some((signal) => signal.isAnnotation);
         // loadSource extracted EDF+ TALs during the same exact pass used for
@@ -5503,6 +5758,8 @@ export default function Home() {
           setToast(`${importedCandidates.length} EDF+ source event${importedCandidates.length === 1 ? "" : "s"} indexed in the source pass`);
         } else if (hasAnnotationChannels) {
           setToast("EDF+ annotation index complete — no seizure-keyword events found");
+        } else if (importContext.companionBundle.files.length > 1) {
+          setToast(`${source.meta.format.toUpperCase()} ready · ${importContext.companionBundle.files.filter((file) => file.status === "applied").length} companions applied · ${importContext.companionBundle.events.length} BIDS events imported`);
         }
       } else if (dat) {
         let legacyMetadata: LegacyMatMetadata | null = null;
@@ -5546,6 +5803,7 @@ export default function Home() {
         setPendingDat(dat);
         setPendingLegacyMatFile(mat ?? null);
         setPendingLegacyMeta(legacyMetadata);
+        setPendingImportFiles(allFiles);
         setShowImport(true);
         if (legacyMetadata) {
           const reviewableEvents = legacyMetadata.events.filter((event) => isLegacySeizureCandidate(event.label)).length;
@@ -5558,9 +5816,13 @@ export default function Home() {
           "MATLAB signal matrix",
           () => MatSource.create(mat),
         );
-        await loadSource(source, mat);
+        const importContext = await prepareSourceImportContext(source, mat, allFiles);
+        await loadSource(source, mat, undefined, importContext);
       } else {
-        throw new Error("Choose an EDF, self-contained MAT, or paired MAT + DAT recording.");
+        const bundle = await analyzeBidsCompanions(allFiles);
+        setUploadedFileInputs(allFiles);
+        setCompanionBundle(bundle);
+        throw new Error("The selected directory was catalogued, but it does not contain an EDF, self-contained MAT, or DAT recording that NeuroTrace can display yet.");
       }
     } catch (error) {
       const uploadFailure = uploadErrorFrom(error, files);
@@ -5672,7 +5934,14 @@ export default function Home() {
         display_amplitude_mode: verifiedPhysicalScale === undefined ? "legacy-raw-counts" : "calibrated-microvolts",
         layout: "sample-major channel-interleaved signed int16 little-endian",
       };
-      const opened = await loadSource(source, pendingDat, interpretation);
+      const importContext = await prepareSourceImportContext(
+        source,
+        pendingDat,
+        pendingImportFiles.length
+          ? pendingImportFiles
+          : [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null),
+      );
+      const opened = await loadSource(source, pendingDat, interpretation, importContext);
       if (!opened) return;
       if (pendingLegacyMeta?.events.length && datMapping.channelCount >= 100) {
         const importedCandidates = pendingLegacyMeta.events
@@ -5717,6 +5986,7 @@ export default function Home() {
       setPendingDat(null);
       setPendingLegacyMatFile(null);
       setPendingLegacyMeta(null);
+      setPendingImportFiles([]);
       setSelectedLegacyEventIndices(new Set());
       setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
     } catch (error) {
@@ -6238,9 +6508,30 @@ export default function Home() {
   const activeDisplayBytes = [...activeBackingBuffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
 
   return (
-    <main className="neuro-app" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
-      if (!importBusyRef.current && event.dataTransfer.files.length) importFiles([...event.dataTransfer.files]);
-    }}>
+    <main
+      className={`neuro-app ${fileDragActive ? "file-drag-active" : ""}`}
+      onDragEnter={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        fileDragDepthRef.current += 1;
+        setFileDragActive(true);
+      }}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+      }}
+      onDragLeave={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+        if (fileDragDepthRef.current === 0) setFileDragActive(false);
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.files.length) return;
+        event.preventDefault();
+        fileDragDepthRef.current = 0;
+        setFileDragActive(false);
+        if (!importBusyRef.current) void importFiles([...event.dataTransfer.files]);
+      }}
+    >
+      {fileDragActive && <div className="file-drop-overlay" aria-hidden="true"><span>＋</span><strong>Add recording or companion files</strong><small>JSON and TSV metadata will enrich the active session</small></div>}
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /><i /></span>
@@ -6410,6 +6701,7 @@ export default function Home() {
         <section className="review-surface" id="active-session-workspace" role="tabpanel">
           {activeSessionContentView === "structure" && hasRecording ? <FileStructurePanel
             meta={meta}
+            companionBundle={companionBundle}
             selectedChannels={selectedChannels}
             badChannels={badChannels}
             recordingType={recordingType}
@@ -6660,8 +6952,8 @@ export default function Home() {
             <button type="button" className="empty-load-prompt" onClick={() => setShowImport(true)}>
               <span className="empty-load-mark" aria-hidden="true">＋</span>
               <strong>Load a recording to begin</strong>
-              <span>Open EDF / EDF+, MATLAB v5, or a paired MAT + DAT session.</span>
-              <small>Click to choose files, or drop them anywhere in this workspace.</small>
+              <span>Open EDF / EDF+, MATLAB v5, MAT + DAT, or scan a BIDS directory for JSON/TSV companions.</span>
+              <small>Choose files, choose a directory, or drop more files anywhere at any time.</small>
             </button>
           </div>}
           </>}
@@ -6690,6 +6982,7 @@ export default function Home() {
           </div>
           {rightPanelView === "inspect" ? <GeneralInfoPanel
             meta={meta}
+            companionBundle={companionBundle}
             display={display}
             annotations={annotations}
             focusedChannel={focusedChannel}
@@ -6745,12 +7038,24 @@ export default function Home() {
         <div className="modal import-modal" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN A RECORDING</span>
-          <h2>Bring the signal to the labels.</h2>
-          <p>EDF/EDF+ streams by time window. Self-contained MATLAB v5 matrices are mapped locally. Legacy Buzcode sessions can pair a MAT with its same-basename DAT.</p>
-          <button className={`drop-zone ${importBusy ? "busy" : ""} ${uploadError ? "has-error" : ""}`} disabled={importBusy} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); importFiles([...event.dataTransfer.files]); }}>
-            <span className="upload-mark">⇧</span><strong>{importBusy ? "Reading headers…" : "Drop EDF, MAT, or MAT + DAT"}</strong><small>or choose files · recordings never leave this browser</small>
+          <h2>Bring in the recording and everything around it.</h2>
+          <p>Open one signal file, or scan a directory. NeuroTrace catalogs every file and applies matching BIDS JSON/TSV metadata, channel quality, participant fields, and events.</p>
+          <button className={`drop-zone ${importBusy ? "busy" : ""} ${uploadError ? "has-error" : ""}`} disabled={importBusy} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void importFiles([...event.dataTransfer.files]); }}>
+            <span className="upload-mark">⇧</span><strong>{importBusy ? "Hunting for recording information…" : "Drop recordings or companion files"}</strong><small>Files stay in this browser and can be added again later</small>
           </button>
-          <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat" onChange={(event: ChangeEvent<HTMLInputElement>) => {
+          <div className="import-source-actions">
+            <button type="button" disabled={importBusy} onClick={() => fileInputRef.current?.click()}>Choose files</button>
+            <button type="button" disabled={importBusy} onClick={() => directoryInputRef.current?.click()}>Choose directory</button>
+          </div>
+          <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat,.json,.tsv,.vhdr,.vmrk,.eeg,.set,.fdt,.bdf,.nwb,.mefd" onChange={(event: ChangeEvent<HTMLInputElement>) => {
+            const files = [...(event.target.files ?? [])];
+            event.target.value = "";
+            void importFiles(files);
+          }} />
+          <input ref={(element) => {
+            directoryInputRef.current = element;
+            if (element) element.webkitdirectory = true;
+          }} hidden type="file" multiple onChange={(event: ChangeEvent<HTMLInputElement>) => {
             const files = [...(event.target.files ?? [])];
             event.target.value = "";
             void importFiles(files);
@@ -7551,8 +7856,39 @@ function formatFileDetailLabel(key: string) {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (character) => character.toUpperCase());
 }
 
+function uploadedFileRoleLabel(file: UploadedFileRecord) {
+  if (file.status === "primary") return "SOURCE";
+  if (file.status === "error") return "ERROR";
+  if (file.role === "recording-companion") return "SIGNAL PART";
+  return file.role.toUpperCase();
+}
+
+function UploadedFilesPanel({ bundle, compact = false }: { bundle: BidsCompanionBundle; compact?: boolean }) {
+  const applied = bundle.files.filter((file) => file.status === "applied").length;
+  const errors = bundle.files.filter((file) => file.status === "error").length;
+  const visibleFiles = bundle.files.slice(0, compact ? 120 : 500);
+  if (!bundle.files.length) return null;
+  return <section className={`${compact ? "general-info-section " : "file-analysis-card "}uploaded-files-card`}>
+    <header>
+      {compact
+        ? <><h3>Uploaded files</h3><span>{bundle.files.length} TOTAL</span></>
+        : <><div><span>LOCAL FILE INVENTORY</span><h2>Uploaded files</h2></div><small>{applied} applied · {errors} errors · {bundle.files.length} total</small></>}
+    </header>
+    <div className="uploaded-file-summary"><span>{bundle.metadataSources.length} metadata source{bundle.metadataSources.length === 1 ? "" : "s"}</span><span>{bundle.tables.length} table{bundle.tables.length === 1 ? "" : "s"}</span><span>{bundle.events.length} event{bundle.events.length === 1 ? "" : "s"}</span></div>
+    <div className="uploaded-file-list">
+      {visibleFiles.map((file) => <article className={file.status} key={file.key}>
+        <i>{uploadedFileRoleLabel(file)}</i>
+        <span><strong title={file.path}>{file.path}</strong><small>{formatByteCount(file.size)} · {file.detail}</small></span>
+        <b aria-label={file.status}>{file.status === "primary" ? "●" : file.status === "applied" ? "✓" : file.status === "error" ? "!" : "·"}</b>
+      </article>)}
+    </div>
+    {visibleFiles.length < bundle.files.length && <p className="uploaded-file-limit">Showing the first {visibleFiles.length.toLocaleString()} files; all {bundle.files.length.toLocaleString()} remain catalogued in this session.</p>}
+  </section>;
+}
+
 function FileStructurePanel({
   meta,
+  companionBundle,
   selectedChannels,
   badChannels,
   recordingType,
@@ -7560,6 +7896,7 @@ function FileStructurePanel({
   sourceHash,
 }: {
   meta: RecordingMeta;
+  companionBundle: BidsCompanionBundle;
   selectedChannels: Set<number>;
   badChannels: Set<number>;
   recordingType: string;
@@ -7641,11 +7978,14 @@ function FileStructurePanel({
       <header><div><span>PARSER NOTES</span><h2>Warnings and assumptions</h2></div><small>{notices.length} item{notices.length === 1 ? "" : "s"}</small></header>
       {notices.length ? <div>{notices.map((notice, index) => <article className={notice.kind} key={`${notice.kind}-${index}`}><i>{notice.kind === "warning" ? "!" : "i"}</i><p>{notice.text}</p></article>)}</div> : <div className="file-analysis-clean"><span>✓</span><p>No parser warnings or structural assumptions were reported.</p></div>}
     </section>
+
+    <UploadedFilesPanel bundle={companionBundle} />
   </section>;
 }
 
 function GeneralInfoPanel({
   meta,
+  companionBundle,
   display,
   annotations,
   focusedChannel,
@@ -7658,6 +7998,7 @@ function GeneralInfoPanel({
   hasRecording,
 }: {
   meta: RecordingMeta;
+  companionBundle: BidsCompanionBundle;
   display: DisplayWindow;
   annotations: Annotation[];
   focusedChannel: number;
@@ -7740,6 +8081,7 @@ function GeneralInfoPanel({
         })}</div> : <p>No labels overlap this {isArea ? "area" : "point"}.</p>}
       </section>
     </>}
+    <UploadedFilesPanel bundle={companionBundle} compact />
   </section>;
 }
 

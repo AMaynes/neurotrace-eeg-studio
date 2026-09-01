@@ -66,6 +66,7 @@ See [STRUCTURE.md](STRUCTURE.md) for the authoritative repository map and [TODO.
 
 ## Recording Ingestion
 
+- **Directory and additive companion discovery:** A directory picker catalogs every selected file and opens the first supported EDF, MAT, or DAT recording in path order. Matching BIDS JSON/TSV files are resolved by subject/session/task/run entities and inheritance specificity. Recording sidecars, participant/session/scan rows, channel names and `bad` flags, and events are applied best-effort; unrelated and unsupported files remain visible in the uploaded-file inventory. Additional companion files can be dropped anywhere onto an active workspace without replacing its waveform.
 - **EDF and EDF+:** Header metadata is parsed first, so a read-only waveform preview can open without waiting for the full file scan. Signal data is read from the local `File` in bounded time windows. A background pass verifies the exact SHA-256 identity and extracts EDF+ annotation records together; seizure-keyword events are then imported into the source-event review queue. Review edits and export remain locked until verification finishes.
 - **MATLAB v5:** The largest viable numeric signal matrix is decoded in memory. Compressed elements are supported.
 - **MATLAB v7.3/HDF5:** The largest viable two-dimensional numeric dataset stays file-backed and is read through bounded worker slices. Scalar `Fs`/sample-rate datasets and MATLAB cell-array channel labels are applied when present.

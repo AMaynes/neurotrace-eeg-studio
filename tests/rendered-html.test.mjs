@@ -392,10 +392,10 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   const importStart = page.indexOf("const importFiles");
   const importEnd = page.indexOf("const confirmDatImport", importStart);
   assert.match(page.slice(importStart, importEnd), /importBusyRef\.current/);
-  assert.match(page, /!importBusyRef\.current\s*&&\s*event\.dataTransfer\.files\.length/);
+  assert.match(page, /if \(!importBusyRef\.current\) void importFiles\(\[\.\.\.event\.dataTransfer\.files\]\)/);
 });
 
-test("shows actionable upload errors for unsupported, incomplete, or mismatched recordings", async () => {
+test("accepts additive directory companions while retaining actionable damaged-recording errors", async () => {
   const [page, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -404,12 +404,12 @@ test("shows actionable upload errors for unsupported, incomplete, or mismatched 
   const validationStart = page.indexOf("function validateUploadSelection");
   const validationEnd = page.indexOf("function uploadErrorFrom", validationStart);
   const validation = page.slice(validationStart, validationEnd);
-  assert.match(validation, /Unsupported file type/);
+  assert.match(validation, /SUPPORTED_RECORDING_EXTENSIONS\.has\(extension\)/);
   assert.match(validation, /file\.size\s*===\s*0/);
   assert.match(validation, /file\.size\s*<\s*256/);
   assert.match(validation, /file\.size\s*<\s*128/);
   assert.match(validation, /file\.size\s*%\s*2\s*!==\s*0/);
-  assert.match(validation, /MAT and DAT files do not match/);
+  assert.doesNotMatch(validation, /Unsupported file type|MAT and DAT files do not match/);
 
   const importStart = page.indexOf("const importFiles");
   const importEnd = page.indexOf("const confirmDatImport", importStart);
@@ -423,6 +423,11 @@ test("shows actionable upload errors for unsupported, incomplete, or mismatched 
   const modal = page.slice(modalStart, modalEnd);
   assert.match(modal, /className="upload-error"[^>]*role="alert"/);
   assert.match(modal, /aria-live="assertive"/);
+  assert.match(modal, /Choose directory/);
+  assert.match(modal, /element\.webkitdirectory\s*=\s*true/);
+  assert.match(page, /analyzeBidsCompanions\(mergedFiles/);
+  assert.match(page, /<UploadedFilesPanel bundle=\{companionBundle\} compact/);
+  assert.match(page, /JSON and TSV metadata will enrich the active session/);
   assert.match(modal, /uploadError\.files\.join/);
   assert.match(modal, /aria-label="Dismiss upload error"/);
   assert.match(modal, /event\.target\.value\s*=\s*""/, "the same corrected or recopied file can be selected again");

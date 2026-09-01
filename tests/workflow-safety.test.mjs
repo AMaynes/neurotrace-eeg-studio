@@ -273,11 +273,12 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(page, /WAVEFORM_VIEW_EXTREMA_GROUP_BUDGET_MULTIPLIER\s*=\s*1\.5/);
   assert.match(drawing, /drawGroupedExtrema/);
   assert.match(drawing, /context\.fill\(\)/);
-  assert.match(groupedExtrema, /context\.moveTo\(x,\s*top\)/);
-  assert.match(groupedExtrema, /context\.lineTo\(x,\s*bottom\)/);
+  assert.doesNotMatch(drawing, /context\.lineTo\(x\s*\+\s*\.5,\s*confineTraceYValueToRow\(minimumY/);
+  assert.match(groupedExtrema, /drawBoundary\(\(group\)\s*=>\s*group\.maximum\)/);
+  assert.match(groupedExtrema, /drawBoundary\(\(group\)\s*=>\s*group\.minimum\)/);
+  assert.doesNotMatch(groupedExtrema, /context\.lineTo\(x,\s*bottom\)/);
   assert.match(groupedExtrema, /interrupted/);
-  assert.match(groupedExtrema, /clamp\(\(rawLeft\s*\+\s*rawRight\)\s*\/\s*2,\s*0,\s*width\)/);
-  assert.match(groupedExtrema, /representativeGroupEnd\s*!==\s*groupStart/);
+  assert.match(groupedExtrema, /representativeGroupEnd\s*!==\s*group\.start/);
   assert.match(groupedExtrema, /representativeConnected/);
   assert.match(groupedExtrema, /representativeMean/);
   assert.doesNotMatch(groupedExtrema, /binWidth/);

@@ -138,8 +138,9 @@ export function measureRawTraceGeometry(
 }
 
 /**
- * Measures the two paths used for an exact-extrema overview: one independent
- * vertical min/max stroke per finite bucket and one connected midpoint trace.
+ * Conservatively measures an exact-extrema overview using every bucket's
+ * visible span plus the connected midpoint trace. This upper-bounds both the
+ * filled envelope band and its upper/lower outlines without requiring Canvas.
  * `gaps` break the midpoint trace exactly as they do in the viewer.
  */
 export function measureEnvelopeTraceGeometry(
@@ -265,9 +266,9 @@ export function waveformGeometryGroupingStride(
 
 /**
  * Produces a hard path-complexity bound for an outlined exact-extrema fallback.
- * The fallback uses one extrema whisker plus one representative point per
- * group. The deliberately conservative twenty-verb allowance leaves room for
- * gap boundaries and Canvas path bookkeeping while bounding raster work.
+ * The fallback uses upper/lower boundary segments plus one representative
+ * point per group. The deliberately conservative twenty-verb allowance leaves
+ * room for gap boundaries and Canvas path bookkeeping while bounding work.
  */
 export function maximumExtremaGroupsForBudget(
   sourceCount: number,

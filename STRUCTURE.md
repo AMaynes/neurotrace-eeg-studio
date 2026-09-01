@@ -10,6 +10,7 @@ neurotrace-eeg-studio/
 ├── .openai/
 │   └── hosting.json — Retains the legacy Sites project identifier and optional logical storage bindings.
 ├── app/
+│   ├── bids-companions.ts — Catalogs selected files and resolves matching BIDS JSON/TSV metadata, tables, channels, and events.
 │   ├── chatgpt-auth.ts — Provides optional ChatGPT-host authentication helpers; unused by the public GitHub build.
 │   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.
 │   ├── globals.css — Defines the complete NeuroTrace visual system and responsive workspace layout.
@@ -36,6 +37,7 @@ neurotrace-eeg-studio/
 ├── public/
 │   └── og.png — Provides the NeuroTrace social-preview image.
 ├── tests/
+│   ├── bids-companions.test.mjs — Verifies BIDS inheritance, TSV decoding, event/channel discovery, and additive file selection.
 │   ├── eeg-integrity.test.mjs — Verifies EDF+ annotation decoding and montage safety.
 │   ├── pages-release.test.mjs — Verifies the static Pages artifact and relative runtime assets.
 │   ├── rendered-html.test.mjs — Verifies server rendering and key product interaction contracts.
@@ -89,6 +91,10 @@ Owns the product-facing React application and browser-only signal domain. Record
 ### `app/chatgpt-auth.ts`
 
 Provides validated sign-in/sign-out paths and optional identity extraction from trusted ChatGPT hosting headers. No current NeuroTrace route imports it, and the public GitHub build does not use it.
+
+### `app/bids-companions.ts`
+
+Catalogs every file selected through individual upload, directory selection, or later drag-and-drop. It parses bounded JSON/TSV companions, applies BIDS entity compatibility and inheritance specificity, extracts matching participant/session/scan rows, channels, channel-quality flags, and events, and retains unassociated files in the visible provenance inventory.
 
 ### `app/eeg-core.ts`
 
@@ -193,6 +199,10 @@ Contains deterministic Node tests. Tests may import TypeScript source directly u
 ### `tests/eeg-integrity.test.mjs`
 
 Exercises EDF+ text-annotation extraction and rejects unsafe mixed-rate bipolar derivations.
+
+### `tests/bids-companions.test.mjs`
+
+Exercises directory-style BIDS discovery, metadata specificity, participant matching, channel and event parsing, quoted TSV fields, malformed companions, and additive file replacement.
 
 ### `tests/pages-release.test.mjs`
 
