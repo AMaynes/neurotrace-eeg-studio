@@ -855,6 +855,15 @@ export class EDFSource implements SignalSource {
     return new EDFSource(file, header, annotations.events, annotations.warnings, shouldParseAnnotations);
   }
 
+  /**
+   * Read-only access for the dedicated envelope worker. The browser still owns
+   * the local File; passing it to a worker does not upload or duplicate the
+   * recording and lets decoding stay off the UI thread.
+   */
+  get sourceBlob(): Blob {
+    return this.file;
+  }
+
   async loadAnnotations(options: SignalReadOptions = {}): Promise<readonly SourceEvent[]> {
     if (this.annotationsLoaded) return this.events;
     if (this.annotationLoadPromise) return this.annotationLoadPromise;
@@ -1148,6 +1157,19 @@ export class RawDatSource implements SignalSource {
 
   static async create(file: File, options: RawDatSourceOptions): Promise<RawDatSource> {
     return new RawDatSource(file, options);
+  }
+
+  /** Serializable inputs used by the dedicated DAT envelope worker. */
+  get envelopeWorkerSource() {
+    return {
+      blob: this.file as Blob,
+      sampleRate: this.meta.sampleRates[0],
+      channelCount: this.meta.channelCount,
+      channelLabels: [...this.meta.channelLabels],
+      channelUnits: [...this.meta.channelUnits],
+      physicalScales: [...this.scale],
+      physicalOffsets: [...this.physicalOffset],
+    };
   }
 
   async getWindow(
@@ -2226,6 +2248,322 @@ function makeEnvelopeWindowResult(
   };
 }
 
+/**
+ * Conservatively coarsens a cached exact-extrema envelope without rereading the
+ * source signal. Target buckets may crop or straddle cached bucket boundaries;
+ * every cached bucket with positive overlap contributes its full extrema. A
+ * propagated gap keeps midpoint data missing while retaining any known extrema
+ * for waveform/QC rendering.
+ */
+export function aggregateEnvelopeWindow(
+  source: EnvelopeWindowData,
+  targetStartSec: number,
+  targetDurationSec: number,
+  targetBucketCount: number,
+): EnvelopeWindowData {
+  validateEnvelopeBucketCount(targetBucketCount);
+  if (!Number.isFinite(targetStartSec)
+    || !Number.isFinite(targetDurationSec)
+    || !(targetDurationSec > 0)) {
+    throw new SignalFileError(
+      "INVALID_WINDOW",
+      "An aggregated envelope window must use finite seconds and a positive duration.",
+    );
+  }
+  if (!Number.isFinite(source.startSec)
+    || !Number.isFinite(source.durationSec)
+    || !(source.durationSec > 0)
+    || !Number.isFinite(source.bucketDurationSec)
+    || !(source.bucketDurationSec > 0)) {
+    throw new SignalFileError("INVALID_WINDOW", "The cached envelope has invalid time coverage.");
+  }
+
+  const channelCount = source.data.length;
+  const metadataLengths = [
+    source.minima.length,
+    source.maxima.length,
+    source.gaps.length,
+    source.sampleRates.length,
+    source.channelStartSecs.length,
+    source.channelIndices.length,
+    source.channelLabels.length,
+    source.channelUnits.length,
+  ];
+  if (metadataLengths.some((length) => length !== channelCount)) {
+    throw new SignalFileError("INVALID_WINDOW", "The cached envelope channel metadata is inconsistent.");
+  }
+
+  const sourceBucketCount = channelCount > 0
+    ? source.data[0].length
+    : Math.round(source.durationSec / source.bucketDurationSec);
+  if (!Number.isSafeInteger(sourceBucketCount) || sourceBucketCount <= 0) {
+    throw new SignalFileError("INVALID_WINDOW", "The cached envelope contains no source buckets.");
+  }
+  for (let channel = 0; channel < channelCount; channel += 1) {
+    if (source.data[channel].length !== sourceBucketCount
+      || source.minima[channel].length !== sourceBucketCount
+      || source.maxima[channel].length !== sourceBucketCount
+      || source.gaps[channel].length !== sourceBucketCount) {
+      throw new SignalFileError("INVALID_WINDOW", "The cached envelope channel bucket counts are inconsistent.");
+    }
+  }
+
+  const declaredSourceEndSec = source.startSec + source.durationSec;
+  const bucketSourceEndSec = source.startSec + sourceBucketCount * source.bucketDurationSec;
+  const targetEndSec = targetStartSec + targetDurationSec;
+  if (!Number.isFinite(declaredSourceEndSec)
+    || !Number.isFinite(bucketSourceEndSec)
+    || !Number.isFinite(targetEndSec)) {
+    throw new SignalFileError("INVALID_WINDOW", "Envelope time coverage exceeds the finite time range.");
+  }
+  const sourceEndSec = Math.min(declaredSourceEndSec, bucketSourceEndSec);
+  const timeTolerance = Math.max(
+    1e-9,
+    Math.max(Math.abs(source.startSec), Math.abs(sourceEndSec), Math.abs(targetEndSec)) * Number.EPSILON * 16,
+  );
+  if (targetStartSec < source.startSec - timeTolerance
+    || targetEndSec > sourceEndSec + timeTolerance) {
+    throw new SignalFileError("INVALID_WINDOW", "The target envelope window is outside cached coverage.");
+  }
+
+  const targetBucketDurationSec = targetDurationSec / targetBucketCount;
+  if (targetBucketDurationSec < source.bucketDurationSec - timeTolerance) {
+    throw new SignalFileError(
+      "INVALID_WINDOW",
+      "A cached envelope cannot be resampled to finer time buckets.",
+    );
+  }
+
+  const data = Array.from({ length: channelCount }, () => {
+    const channel = new Float32Array(targetBucketCount);
+    channel.fill(Number.NaN);
+    return channel;
+  });
+  const minima = data.map(() => {
+    const channel = new Float32Array(targetBucketCount);
+    channel.fill(Number.NaN);
+    return channel;
+  });
+  const maxima = data.map(() => {
+    const channel = new Float32Array(targetBucketCount);
+    channel.fill(Number.NaN);
+    return channel;
+  });
+  const gaps = data.map(() => new Uint8Array(targetBucketCount).fill(1));
+  const relativeIndexTolerance = 1e-9;
+
+  for (let targetBucket = 0; targetBucket < targetBucketCount; targetBucket += 1) {
+    const bucketStartSec = targetStartSec + targetBucket * targetBucketDurationSec;
+    const bucketEndSec = targetBucket === targetBucketCount - 1
+      ? targetEndSec
+      : targetStartSec + (targetBucket + 1) * targetBucketDurationSec;
+    const firstSourceBucket = Math.max(0, Math.floor(
+      (bucketStartSec - source.startSec) / source.bucketDurationSec + relativeIndexTolerance,
+    ));
+    const lastSourceBucket = Math.min(sourceBucketCount, Math.ceil(
+      (bucketEndSec - source.startSec) / source.bucketDurationSec - relativeIndexTolerance,
+    ));
+    if (lastSourceBucket <= firstSourceBucket) continue;
+
+    for (let channel = 0; channel < channelCount; channel += 1) {
+      let minimum = Number.POSITIVE_INFINITY;
+      let maximum = Number.NEGATIVE_INFINITY;
+      let missing = false;
+      for (let sourceBucket = firstSourceBucket; sourceBucket < lastSourceBucket; sourceBucket += 1) {
+        const sourceMinimum = source.minima[channel][sourceBucket];
+        const sourceMaximum = source.maxima[channel][sourceBucket];
+        if (source.gaps[channel][sourceBucket]) missing = true;
+        if (!Number.isFinite(sourceMinimum)
+          || !Number.isFinite(sourceMaximum)
+          || sourceMaximum < sourceMinimum) {
+          missing = true;
+          continue;
+        }
+        minimum = Math.min(minimum, sourceMinimum);
+        maximum = Math.max(maximum, sourceMaximum);
+      }
+      if (minimum === Number.POSITIVE_INFINITY || maximum === Number.NEGATIVE_INFINITY) continue;
+      minima[channel][targetBucket] = minimum;
+      maxima[channel][targetBucket] = maximum;
+      gaps[channel][targetBucket] = missing ? 1 : 0;
+      if (!missing) data[channel][targetBucket] = (minimum + maximum) / 2;
+    }
+  }
+
+  const effectiveRate = targetBucketCount / targetDurationSec;
+  return {
+    data,
+    minima,
+    maxima,
+    gaps,
+    bucketDurationSec: targetBucketDurationSec,
+    sampleRates: source.sampleRates.map(() => effectiveRate),
+    channelStartSecs: source.channelStartSecs.map(() => targetStartSec),
+    startSec: targetStartSec,
+    durationSec: targetDurationSec,
+    channelIndices: source.channelIndices.slice(),
+    channelLabels: source.channelLabels.slice(),
+    channelUnits: source.channelUnits.slice(),
+  };
+}
+
+/**
+ * Projects a cached envelope onto a requested source-channel order without
+ * copying its potentially large typed-array sample buffers. Only the small
+ * channel-list and metadata arrays are rebuilt; each selected data/extrema/gap
+ * entry is the exact typed-array object retained by `source`.
+ */
+export function projectEnvelopeChannels(
+  source: EnvelopeWindowData,
+  requestedChannelIndices: readonly number[],
+): EnvelopeWindowData {
+  const channelCount = source.channelIndices.length;
+  const channelCollections: readonly (readonly unknown[])[] = [
+    source.data,
+    source.minima,
+    source.maxima,
+    source.gaps,
+    source.sampleRates,
+    source.channelStartSecs,
+    source.channelLabels,
+    source.channelUnits,
+  ];
+  if (channelCollections.some((collection) => collection.length !== channelCount)) {
+    throw new SignalFileError(
+      "INVALID_WINDOW",
+      "The cached envelope channel metadata is inconsistent.",
+    );
+  }
+
+  const sourcePositionByIndex = new Map<number, number>();
+  source.channelIndices.forEach((sourceIndex, position) => {
+    if (sourcePositionByIndex.has(sourceIndex)) {
+      throw new SignalFileError(
+        "INVALID_WINDOW",
+        `The cached envelope contains source channel ${sourceIndex} more than once.`,
+      );
+    }
+    sourcePositionByIndex.set(sourceIndex, position);
+  });
+
+  const requestedSeen = new Set<number>();
+  const sourcePositions = requestedChannelIndices.map((sourceIndex) => {
+    if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0) {
+      throw new SignalFileError(
+        "INVALID_WINDOW",
+        `Requested envelope source channel ${String(sourceIndex)} is invalid.`,
+      );
+    }
+    if (requestedSeen.has(sourceIndex)) {
+      throw new SignalFileError(
+        "INVALID_WINDOW",
+        `Envelope source channel ${sourceIndex} was requested more than once.`,
+      );
+    }
+    requestedSeen.add(sourceIndex);
+    const position = sourcePositionByIndex.get(sourceIndex);
+    if (position === undefined) {
+      throw new SignalFileError(
+        "INVALID_WINDOW",
+        `Requested envelope source channel ${sourceIndex} is not present in the cached envelope.`,
+      );
+    }
+    return position;
+  });
+
+  return {
+    data: sourcePositions.map((position) => source.data[position]),
+    minima: sourcePositions.map((position) => source.minima[position]),
+    maxima: sourcePositions.map((position) => source.maxima[position]),
+    gaps: sourcePositions.map((position) => source.gaps[position]),
+    bucketDurationSec: source.bucketDurationSec,
+    sampleRates: sourcePositions.map((position) => source.sampleRates[position]),
+    channelStartSecs: sourcePositions.map((position) => source.channelStartSecs[position]),
+    startSec: source.startSec,
+    durationSec: source.durationSec,
+    channelIndices: Array.from(requestedChannelIndices),
+    channelLabels: sourcePositions.map((position) => source.channelLabels[position]),
+    channelUnits: sourcePositions.map((position) => source.channelUnits[position]),
+  };
+}
+
+/**
+ * Builds full-coverage envelope levels from finest to coarsest. Every level is
+ * approximately half the preceding bucket count and is derived exclusively by
+ * conservative extrema/gap aggregation. Including the caller-owned base, the
+ * retained bucket storage never exceeds roughly twice that base level.
+ */
+export function buildEnvelopePyramid(
+  base: EnvelopeWindowData,
+  minimumBucketCount = 64,
+): EnvelopeWindowData[] {
+  if (!Number.isSafeInteger(minimumBucketCount) || minimumBucketCount <= 0) {
+    throw new SignalFileError("INVALID_WINDOW", "Envelope pyramid minimum bucket count must be a positive whole number.");
+  }
+  const baseBucketCount = base.data[0]?.length
+    ?? Math.round(base.durationSec / base.bucketDurationSec);
+  if (!Number.isSafeInteger(baseBucketCount) || baseBucketCount <= 0) {
+    throw new SignalFileError("INVALID_WINDOW", "Envelope pyramid base must contain at least one time bucket.");
+  }
+  const channelArrays = [base.data, base.minima, base.maxima, base.gaps];
+  if (channelArrays.some((channels) => channels.length !== base.data.length)
+    || base.data.some((channel) => channel.length !== baseBucketCount)
+    || base.minima.some((channel) => channel.length !== baseBucketCount)
+    || base.maxima.some((channel) => channel.length !== baseBucketCount)
+    || base.gaps.some((channel) => channel.length !== baseBucketCount)) {
+    throw new SignalFileError("INVALID_WINDOW", "Envelope pyramid base channel bucket counts are inconsistent.");
+  }
+
+  const levels = [base];
+  let current = base;
+  let currentBucketCount = baseBucketCount;
+  let retainedBucketCount = baseBucketCount;
+  while (currentBucketCount > minimumBucketCount) {
+    const nextBucketCount = Math.max(minimumBucketCount, Math.ceil(currentBucketCount / 2));
+    if (nextBucketCount >= currentBucketCount
+      || retainedBucketCount + nextBucketCount > baseBucketCount * 2) break;
+    const next = aggregateEnvelopeWindow(
+      current,
+      base.startSec,
+      base.durationSec,
+      nextBucketCount,
+    );
+    levels.push(next);
+    current = next;
+    currentBucketCount = nextBucketCount;
+    retainedBucketCount += nextBucketCount;
+  }
+  return levels;
+}
+
+/**
+ * Chooses the coarsest pyramid level that still supports the requested display
+ * bucket duration. The small tolerance absorbs floating-point bucket ratios;
+ * callers should aggregate the returned level to their exact pixel count.
+ */
+export function selectEnvelopePyramidLevel(
+  levels: readonly EnvelopeWindowData[],
+  requiredBucketDurationSec: number,
+): EnvelopeWindowData {
+  if (!levels.length) {
+    throw new SignalFileError("INVALID_WINDOW", "An envelope pyramid must contain at least one level.");
+  }
+  if (!(requiredBucketDurationSec > 0) || !Number.isFinite(requiredBucketDurationSec)) {
+    throw new SignalFileError(
+      "INVALID_WINDOW",
+      "Envelope pyramid selection requires a positive finite bucket duration.",
+    );
+  }
+  for (let index = levels.length - 1; index >= 0; index -= 1) {
+    const level = levels[index];
+    if (!(level.bucketDurationSec > 0) || !Number.isFinite(level.bucketDurationSec)) {
+      throw new SignalFileError("INVALID_WINDOW", "Envelope pyramid levels must use positive finite bucket durations.");
+    }
+    if (level.bucketDurationSec <= requiredBucketDurationSec * 1.05) return level;
+  }
+  return levels[0];
+}
+
 /** Applies the clinical rule independently to mixed-rate raw/display channels. */
 export function prepareClinicalDisplaySignals(
   data: readonly Float32Array[],
@@ -2331,6 +2669,8 @@ export function detectEnvelopeSynchronizedFlatlines(
   let runMinimum = Number.POSITIVE_INFINITY;
   let previousFlat = new Uint8Array(minima.length);
   let previousValues = new Float32Array(minima.length);
+  let currentFlat = new Uint8Array(minima.length);
+  let currentValues = new Float32Array(minima.length);
   const finishRun = (endBucketExclusive: number) => {
     if (runStartBucket < 0) return;
     const durationSec = (endBucketExclusive - runStartBucket) * bucketDurationSec;
@@ -2348,8 +2688,11 @@ export function detectEnvelopeSynchronizedFlatlines(
   };
 
   for (let bucket = 0; bucket < bucketCount; bucket += 1) {
-    const currentFlat = new Uint8Array(minima.length);
-    const currentValues = new Float32Array(minima.length);
+    // Reuse two fixed channel buffers instead of allocating a pair of typed
+    // arrays for every display-time bucket. Full-session envelopes can contain
+    // thousands of buckets, so the former allocation pattern created avoidable
+    // garbage-collection pressure while panning and zooming cached overviews.
+    currentFlat.fill(0);
     let flatChannels = 0;
     for (let channel = 0; channel < minima.length; channel += 1) {
       const minimum = minima[channel][bucket];
@@ -2386,8 +2729,12 @@ export function detectEnvelopeSynchronizedFlatlines(
         runMinimum = flatChannels;
       }
     }
+    const reusableFlat = previousFlat;
     previousFlat = currentFlat;
+    currentFlat = reusableFlat;
+    const reusableValues = previousValues;
     previousValues = currentValues;
+    currentValues = reusableValues;
   }
   finishRun(bucketCount);
   return output;

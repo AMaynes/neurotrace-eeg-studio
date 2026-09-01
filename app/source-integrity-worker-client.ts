@@ -22,6 +22,7 @@ export type SourceVerificationResult = {
 
 export type SourceVerificationOptions = Sha256BlobOptions & {
   edfHeader?: EDFHeader;
+  fallbackToMainThread?: boolean;
 };
 
 async function verifySourceDirectly(
@@ -39,15 +40,18 @@ export async function verifySourceOffThread(
   blob: Blob,
   options: SourceVerificationOptions = {},
 ): Promise<SourceVerificationResult> {
+  const allowFallback = options.fallbackToMainThread !== false;
   if (typeof Worker === "undefined") {
-    return verifySourceDirectly(blob, options);
+    if (allowFallback) return verifySourceDirectly(blob, options);
+    throw new Error("This browser does not provide a module worker for source verification.");
   }
 
   let worker: Worker;
   try {
     worker = new Worker(new URL("./source-hash-worker.ts", import.meta.url), { type: "module" });
-  } catch {
-    return verifySourceDirectly(blob, options);
+  } catch (error) {
+    if (allowFallback) return verifySourceDirectly(blob, options);
+    throw error;
   }
 
   return new Promise<SourceVerificationResult>((resolve, reject) => {
@@ -67,7 +71,11 @@ export async function verifySourceOffThread(
         reject(error);
       }
     });
-    const fallbackToDirect = () => finish(() => {
+    const fallbackToDirect = (workerError?: unknown) => finish(() => {
+      if (!allowFallback) {
+        reject(workerError instanceof Error ? workerError : new Error("Source verification worker failed."));
+        return;
+      }
       if (options.signal?.aborted) {
         if (options.signal.reason !== undefined) reject(options.signal.reason);
         else {
@@ -86,12 +94,12 @@ export async function verifySourceOffThread(
       } else if (response.type === "complete") {
         finish(() => resolve({ hash: response.hash, edfAnnotations: response.edfAnnotations }));
       } else {
-        fallbackToDirect();
+        fallbackToDirect(new Error(response.message));
       }
     };
     worker.onerror = (event) => {
       event.preventDefault();
-      fallbackToDirect();
+      fallbackToDirect(new Error(event.message || "Source verification worker failed."));
     };
     if (options.signal?.aborted) {
       onAbort();
@@ -110,8 +118,8 @@ export async function verifySourceOffThread(
     } : undefined;
     try {
       worker.postMessage({ blob, edfAnnotationPlan });
-    } catch {
-      fallbackToDirect();
+    } catch (error) {
+      fallbackToDirect(error);
     }
   });
 }

@@ -200,16 +200,38 @@ test("mixed-rate interaction keeps channel provenance and sample timing", async 
 });
 
 test("large-window memory and missing-data rendering stay bounded and explicit", async () => {
-  const page = await pageSource();
+  const [page, spectrogramCore] = await Promise.all([
+    pageSource(),
+    readFile(new URL("../app/spectrogram-compute.ts", import.meta.url), "utf8"),
+  ]);
   const refresh = section(page, "const refreshWindow", "const timer = window.setInterval");
   assert.match(page, /displayAbortRef\.current\?\.abort\(\)/);
   assert.match(refresh, /typeof source\.getEnvelopeWindow\s*===\s*"function"/);
-  assert.match(refresh, /const requiresClinicalPreparation[\s\S]*?clinicalDecimationFactor/);
-  assert.match(refresh, /&&\s*!requiresClinicalPreparation/);
+  assert.doesNotMatch(refresh, /&&\s*!requiresClinicalPreparation/);
+  assert.doesNotMatch(refresh, /&&\s*!spectrogramOpen/);
   assert.match(refresh, /waveformWidth\s*>=\s*MIN_WAVEFORM_WIDTH_FOR_ENVELOPE/);
   assert.match(refresh, /SOURCE_READ_AHEAD_BUDGET_BYTES/);
   assert.match(refresh, /ENVELOPE_CACHE_BUDGET_BYTES/);
-  assert.match(refresh, /maxBucketsByBudget/);
+  assert.match(refresh, /reusableEnvelopeBucketCount/);
+  assert.match(refresh, /aggregateEnvelopeWindow/);
+  assert.match(refresh, /buildEDFEnvelopeWindowOffThread/);
+  assert.match(refresh, /buildRawDatEnvelopeWindowOffThread/);
+  assert.match(refresh, /buildEDFFileWindowOffThread/);
+  assert.match(refresh, /buildRawDatFileWindowOffThread/);
+  assert.match(refresh, /pyramidMinimumBucketCount:\s*64/);
+  assert.match(refresh, /fallbackToMainThread:\s*false/);
+  assert.match(refresh, /sourceVerificationRef\.current[\s\S]*?requiredDuration\s*>\s*maximumEnvelopeReadDuration/);
+  assert.match(page, /FULL_SESSION_ENVELOPE_REFINEMENT\s*=\s*32/);
+  assert.match(page, /adaptiveTimeGridInterval\(timebase/);
+  assert.match(page, /MAX_INTERACTIVE_TIMELINE_ANNOTATIONS\s*=\s*400/);
+  assert.match(page, /clusterTimelineDensity\(/);
+  assert.match(page, /timelineUsesDensity\s*\?/);
+  const qc = section(page, "const qcIssues", "const advanceFromCandidate");
+  assert.doesNotMatch(qc, /annotations\.some\(/);
+  assert.match(qc, /committedIctalCandidateIds/);
+  assert.match(qc, /latestSleepEndByLabel/);
+  assert.match(qc, /displayWarningKey/);
+  assert.match(refresh, /maximumRawDuration/);
   assert.match(refresh, /detectEnvelopeSynchronizedFlatlines/);
   assert.match(refresh, /processDisplaySignalsOffThread/);
   assert.match(refresh, /requestId\s*!==\s*displayRequestIdRef\.current/);
@@ -225,9 +247,12 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(baseline, /reservoir sampling/i);
 
   const spectrum = section(page, "function SpectrogramPanel", "function QcPanel");
-  assert.match(spectrum, /finiteSamples\s*\/\s*windowSize\s*<\s*\.75/);
-  assert.match(spectrum, /if\s*\(!Number\.isFinite\(sourceValue\)\)\s*continue/);
-  assert.match(spectrum, /powers\.flat\(\)\.filter\(Number\.isFinite\)/);
+  assert.match(spectrum, /computeSpectrogramOffThread/);
+  assert.match(spectrum, /if\s*\(overview\s*\|\|/);
+  assert.match(spectrum, /wide views stay on the fast exact-extrema overview/);
+  assert.match(spectrogramCore, /finiteSamples\s*\/\s*windowSize\s*<\s*0\.75/);
+  assert.match(spectrogramCore, /if\s*\(!Number\.isFinite\(sourceValue\)\)\s*continue/);
+  assert.match(spectrum, /Array\.from\(powers\)\.filter\(Number\.isFinite\)/);
   assert.match(spectrum, /No sufficiently complete signal frames/);
 
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
@@ -267,10 +292,13 @@ test("large source verification stays off the UI thread and combines EDF hashing
   assert.match(worker, /hash:\s*sha256\.hexDigest\(\)/);
   assert.match(page, /sourceVerificationAbortRef\.current/);
   assert.match(page, /className="verification-cancel"/);
-  assert.match(page, /verifySourceOffThread\(pendingLegacyMatFile\)/);
+  assert.match(page, /verifySourceOffThread\(\s*pendingLegacyMatFile/);
   assert.match(displayClient, /new Worker\(new URL\("\.\/display-processing-worker\.ts",\s*import\.meta\.url\)/);
   assert.match(displayClient, /options\.signal\?\.addEventListener\("abort"/);
   assert.match(displayClient, /fallbackToDirect[\s\S]*?processDirectly/);
   assert.match(displayWorker, /applyDisplayFilters/);
   assert.match(displayWorker, /prepareClinicalDisplaySignals/);
+  assert.doesNotMatch(page, /source\.loadAnnotations\(/, "EDF+ events reuse the shared hash/index pass instead of rereading the source");
+  const applySnapshot = section(page, "const applySessionSnapshot", "const switchSession");
+  assert.doesNotMatch(applySnapshot, /(?:rawWindow|processedWindow|envelopeWindow)CacheRef\.current\s*=\s*\[\]/, "switching tabs retains source-keyed signal indexes");
 });

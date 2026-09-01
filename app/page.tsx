@@ -35,10 +35,11 @@ import {
   EDFSource,
   MatSource,
   RawDatSource,
+  aggregateEnvelopeWindow,
+  buildEnvelopePyramid,
   anatomicalChannelGroup,
   buildMontage,
   clinicalDecimationFactor,
-  confineTraceYToRow,
   detectEnvelopeSynchronizedFlatlines,
   detectRawSynchronizedFlatlines,
   formatClock,
@@ -46,15 +47,34 @@ import {
   makeId,
   orderAnatomicalChannelIndices,
   parseLegacyMatMetadata,
+  projectEnvelopeChannels,
+  selectEnvelopePyramidLevel,
   type DisplayFilterSettings,
+  type EnvelopeWindowData,
   type LegacyMatMetadata,
   type MontageMode,
   type RecordingMeta,
   type SignalSource,
 } from "./eeg-core";
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
+import {
+  buildEDFFileWindowOffThread,
+  buildRawDatFileWindowOffThread,
+} from "./file-window-worker-client";
+import { buildEDFEnvelopeWindowOffThread } from "./edf-envelope-worker-client";
+import type { EDFEnvelopeProgress } from "./edf-envelope";
+import { buildRawDatEnvelopeWindowOffThread } from "./raw-dat-envelope-worker-client";
+import { computeSpectrogramOffThread } from "./spectrogram-worker-client";
+import type { SpectrogramComputeResult } from "./spectrogram-compute";
+import {
+  PerformanceDiagnosticsCollector,
+  type DiagnosticsOperationHandle,
+  type PerformanceDiagnosticsSnapshot,
+} from "./performance-diagnostics";
 import { sha256Blob } from "./source-integrity";
 import { verifySourceOffThread } from "./source-integrity-worker-client";
+import { adaptiveTimeGridInterval } from "./time-grid";
+import { clusterTimelineDensity } from "./timeline-density";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -292,12 +312,7 @@ type EnvelopeWindowCache = {
   channelKey: string;
   startSec: number;
   endSec: number;
-  data: Float32Array[];
-  minima: Float32Array[];
-  maxima: Float32Array[];
-  gaps: Uint8Array[];
-  bucketDurationSec: number;
-  channelUnits: string[];
+  levels: EnvelopeWindowData[];
   byteLength: number;
 };
 
@@ -704,15 +719,29 @@ const EMPTY_DISPLAY: DisplayWindow = {
 };
 
 const RAW_WINDOW_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
-const ENVELOPE_CACHE_BUDGET_BYTES = 32 * 1024 * 1024;
+// Large desktop recordings benefit far more from a reusable multiresolution
+// index than from leaving nearly the entire browser memory allowance idle.
+const ENVELOPE_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
 const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
+const INITIAL_PREVIEW_READ_BUDGET_BYTES = 16 * 1024 * 1024;
 const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES;
 const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 const CANVAS_PIXEL_BUDGET = 8_000_000;
+const MAX_REUSABLE_ENVELOPE_BUCKETS = 524_288;
+// A full-session index is an overview, not a replacement for exact local
+// windows. Keeping 32 source buckets per nominal display column is ample for
+// hours-wide navigation while avoiding the former ~245 MiB, 524k-bucket
+// pyramid for an ordinary 18-channel recording.
+const FULL_SESSION_ENVELOPE_REFINEMENT = 32;
+const LOCAL_ENVELOPE_REFINEMENT = 4;
 const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "hr"];
 const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, hr: 3_600 };
 const MIN_WINDOW_AMOUNT = .001;
 const MIN_TIME_WINDOW_SECONDS = MIN_WINDOW_AMOUNT * WINDOW_UNIT_SECONDS.ms;
+const MAX_INTERACTIVE_TIMELINE_ANNOTATIONS = 400;
+const TIMELINE_DENSITY_BINS_PER_TRACK = 256;
+
+const performanceDiagnostics = new PerformanceDiagnosticsCollector();
 
 const DEFAULT_CONTROLS: ControlBindings = {
   undo: "u",
@@ -729,6 +758,85 @@ const CONTROL_OPTIONS = "abcdefghijklmnopqrstuvwxyz".split("");
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function isAbortFailure(error: unknown) {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
+}
+
+function reusableEnvelopeBucketCount(
+  channelCount: number,
+  requiredBucketCount: number,
+  fullSession: boolean,
+) {
+  const maxBucketsByBudget = Math.max(
+    1,
+    // A complete min/max pyramid consumes less than twice the finest level.
+    Math.floor(ENVELOPE_CACHE_BUDGET_BYTES / Math.max(1, channelCount * 13 * 2)),
+  );
+  const refinement = fullSession
+    ? FULL_SESSION_ENVELOPE_REFINEMENT
+    : LOCAL_ENVELOPE_REFINEMENT;
+  return clamp(
+    Math.ceil(requiredBucketCount * refinement),
+    1,
+    Math.min(MAX_REUSABLE_ENVELOPE_BUCKETS, maxBucketsByBudget),
+  );
+}
+
+function envelopeWindowByteLength(window: EnvelopeWindowData) {
+  return window.data.reduce((sum, channel) => sum + channel.byteLength, 0)
+    + window.minima.reduce((sum, channel) => sum + channel.byteLength, 0)
+    + window.maxima.reduce((sum, channel) => sum + channel.byteLength, 0)
+    + window.gaps.reduce((sum, channel) => sum + channel.byteLength, 0);
+}
+
+function makeEnvelopeCacheEntry(
+  source: SignalSource,
+  channelKey: string,
+  base: EnvelopeWindowData,
+  workerLevels?: EnvelopeWindowData[],
+): EnvelopeWindowCache {
+  let levels = workerLevels;
+  if (!levels?.length) {
+    const startedAt = performance.now();
+    levels = buildEnvelopePyramid(base);
+    performanceDiagnostics.recordDecode(
+      envelopeWindowByteLength(base),
+      performance.now() - startedAt,
+    );
+  }
+  return {
+    source,
+    channelKey,
+    startSec: base.startSec,
+    endSec: base.startSec + base.durationSec,
+    levels,
+    byteLength: levels.reduce((sum, level) => sum + envelopeWindowByteLength(level), 0),
+  };
+}
+
+function confineTraceYValueToRow(y: number, rowTop: number, rowHeight: number) {
+  const rowBottom = rowTop + rowHeight;
+  if (Number.isFinite(y)) return Math.min(rowBottom, Math.max(rowTop, y));
+  if (y === Number.NEGATIVE_INFINITY) return rowTop;
+  if (y === Number.POSITIVE_INFINITY) return rowBottom;
+  return (rowTop + rowBottom) / 2;
+}
+
+function traceYOverflowsRow(y: number, rowTop: number, rowHeight: number) {
+  return !Number.isFinite(y) || y < rowTop || y > rowTop + rowHeight;
+}
+
+function expectedEDFRecordBytes(source: EDFSource, startSec: number, durationSec: number) {
+  const firstRecord = Math.floor(startSec / source.header.dataRecordDurationSec);
+  const lastRecord = Math.min(
+    source.header.dataRecordCount,
+    Math.ceil((startSec + durationSec) / source.header.dataRecordDurationSec),
+  );
+  return Math.max(0, lastRecord - firstRecord) * source.header.bytesPerDataRecord;
 }
 
 function formatWindowAmount(value: number) {
@@ -1065,6 +1173,51 @@ function formatByteCount(bytes: number | null | undefined) {
   return `${value.toFixed(digits)} ${units[unitIndex]}`;
 }
 
+function formatByteRate(bytesPerSecond: number | null | undefined) {
+  if (bytesPerSecond === null || bytesPerSecond === undefined || !(bytesPerSecond > 0)) return "—";
+  return `${formatByteCount(bytesPerSecond)}/s`;
+}
+
+function formatMetricDuration(durationMs: number | null | undefined) {
+  if (durationMs === null || durationMs === undefined || !Number.isFinite(durationMs)) return "Unavailable";
+  if (durationMs < 1) return `${durationMs.toFixed(2)} ms`;
+  if (durationMs < 1_000) return `${durationMs.toFixed(durationMs < 10 ? 1 : 0)} ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(2)} s`;
+  return `${(durationMs / 60_000).toFixed(1)} min`;
+}
+
+async function measureLocalFileDecode<T>(
+  file: File,
+  label: string,
+  operation: () => Promise<T>,
+) {
+  const read = performanceDiagnostics.beginSourceRead({
+    label: `${label} file load`,
+    totalBytes: file.size,
+    phase: "Reading local file into the parser",
+  });
+  const decode = performanceDiagnostics.beginDecode({
+    label,
+    totalBytes: file.size,
+    phase: "Parsing and decoding file structures",
+  });
+  try {
+    const result = await operation();
+    read.finish({
+      completedBytes: file.size,
+      totalBytes: file.size,
+      transientAllocatedBytes: file.size,
+    });
+    decode.finish({ completedBytes: file.size, totalBytes: file.size });
+    return result;
+  } catch (error) {
+    const finish = isAbortFailure(error) ? "cancel" : "fail";
+    read[finish]();
+    decode[finish]();
+    throw error;
+  }
+}
+
 function usagePercent(used: number | null, limit: number | null) {
   if (used === null || limit === null || !(limit > 0)) return 0;
   return clamp((used / limit) * 100, 0, 100);
@@ -1081,15 +1234,15 @@ function sourceReadProfile(format: RecordingMeta["format"], hasRecording: boolea
   if (format === "edf" || format === "edf+") {
     return {
       origin: "Local browser file",
-      access: "On-demand EDF record slices",
-      detail: "Only the visible window and bounded read-ahead regions are read from the selected file.",
+      access: "Worker-indexed EDF record slices",
+      detail: "The integrity pass also builds a reusable full-session extrema index; finer uncached views read only bounded record slices.",
     };
   }
   if (format === "raw-int16-le") {
     return {
       origin: "Local browser file",
-      access: "On-demand DAT frame slices",
-      detail: "Sample frames are read from the selected binary file as each visible window is requested.",
+      access: "Worker-indexed DAT frame slices",
+      detail: "The integrity pass also builds a reusable full-session extrema index; finer uncached views read only bounded frame slices.",
     };
   }
   if (format === "mat-v5") {
@@ -1123,6 +1276,7 @@ export default function Home() {
   const sourceVerificationAbortRef = useRef<AbortController | null>(null);
   const flushSessionRef = useRef<() => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveformWidthRef = useRef(1);
   const waveformScrollRef = useRef<HTMLDivElement>(null);
   const overviewRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -1145,6 +1299,7 @@ export default function Home() {
   const zoomWheelAnchorRef = useRef(0);
   const displayRequestIdRef = useRef(0);
   const displayAppliedRequestIdRef = useRef(0);
+  const displayPreviewReadyRef = useRef(false);
   const displayAbortRef = useRef<AbortController | null>(null);
   const displayRefreshPendingRef = useRef<(() => Promise<void>) | null>(null);
   const displayRefreshActiveRef = useRef(false);
@@ -1524,9 +1679,8 @@ export default function Home() {
     setSelectedChannels(new Set(snapshot.selectedChannels));
     setBadChannels(new Set(snapshot.badChannels));
     setFocusedChannel(snapshot.focusedChannel);
-    rawWindowCacheRef.current = [];
-    processedWindowCacheRef.current = [];
-    envelopeWindowCacheRef.current = [];
+    // Signal caches are global LRUs keyed by source. Retain them across tabs so
+    // reopening a session does not discard its expensive full-session index.
     setDisplay(EMPTY_DISPLAY);
     setAnnotations(snapshot.annotations);
     setSelectedAnnotationId(snapshot.selectedAnnotationId);
@@ -2089,13 +2243,20 @@ export default function Home() {
     setToast(`${movable.length} selected label${movable.length === 1 ? "" : "s"} moved ${direction < 0 ? "left" : "right"}`);
   }, [commitMutation, display, focusedChannel, meta, reopenCandidateReviews, selectedAnnotationId, selectedAnnotationIds, snapMode]);
 
+  const displayWarningKey = display.warnings.join("\0");
   const qcIssues = useMemo(() => {
     const issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }> = [];
     for (const warning of meta.warnings ?? []) issues.push({ level: "warning", text: `Source assumption: ${warning}` });
     for (const assumption of meta.assumptions ?? []) issues.push({ level: "info", text: `Source metadata: ${assumption}` });
-    for (const warning of display.warnings) issues.push({ level: "warning", text: `Display montage: ${warning}` });
+    for (const warning of displayWarningKey ? displayWarningKey.split("\0") : []) {
+      issues.push({ level: "warning", text: `Display montage: ${warning}` });
+    }
     if (recoveryStatus === "error") issues.push({ level: "warning", text: "Local recovery is unavailable; export before closing the session." });
     const candidateIds = new Set(candidates.map((item) => item.id));
+    const committedIctalCandidateIds = new Set<string>();
+    const ictal: Annotation[] = [];
+    const sleepStages: Annotation[] = [];
+    let draftCount = 0;
     for (const item of annotations) {
       const geometry = annotationGeometry(item);
       if (!Number.isFinite(item.start) || !Number.isFinite(item.end) || item.start < 0 || item.end > meta.durationSec || item.end < item.start) {
@@ -2119,30 +2280,46 @@ export default function Home() {
       if (item.labelId === "spikes" && (!item.channelScope || item.channelScope.primarySourceIndex < 0 || item.channelScope.primarySourceIndex >= meta.channelLabels.length || !item.channelScope.sourceIndices.length)) {
         issues.push({ level: "warning", text: "Epileptiform spike is missing valid source-channel provenance", annotationId: item.id });
       }
+      if (item.labelId === "ictal") {
+        ictal.push(item);
+        if (item.candidateId && item.status === "committed") committedIctalCandidateIds.add(item.candidateId);
+      }
+      if (LABEL_BY_ID.get(item.labelId)?.category === "Sleep stage") sleepStages.push(item);
+      if (item.status === "draft") draftCount += 1;
     }
     for (const candidate of candidates) {
-      if (candidate.status === "reviewed" && !annotations.some((item) => item.candidateId === candidate.id && item.labelId === "ictal" && item.status === "committed")) {
+      if (candidate.status === "reviewed" && !committedIctalCandidateIds.has(candidate.id)) {
         issues.push({ level: "warning", text: `Reviewed source event ${candidate.label} has no committed ictal interval` });
       }
     }
-    const ictal = annotations.filter((item) => item.labelId === "ictal");
     for (const item of ictal) {
       if (item.end - item.start < 3) issues.push({ level: "warning", text: `Ictal interval is ${(item.end - item.start).toFixed(1)} s (<3 s)`, annotationId: item.id });
     }
-    for (let i = 0; i < ictal.length; i += 1) for (let j = i + 1; j < ictal.length; j += 1) {
-      if (Math.abs(ictal[i].start - ictal[j].start) < 30) issues.push({ level: "warning", text: "Possible duplicate ictal onsets within 30 s", annotationId: ictal[j].id });
-    }
-    const sleepStages = annotations.filter((item) => LABEL_BY_ID.get(item.labelId)?.category === "Sleep stage");
-    for (let i = 0; i < sleepStages.length; i += 1) for (let j = i + 1; j < sleepStages.length; j += 1) {
-      if (sleepStages[i].labelId !== sleepStages[j].labelId && sleepStages[i].start < sleepStages[j].end && sleepStages[j].start < sleepStages[i].end) {
-        issues.push({ level: "warning", text: "Conflicting sleep stages share an epoch", annotationId: sleepStages[j].id });
+    const sortedIctal = [...ictal].sort((left, right) => left.start - right.start || left.end - right.end);
+    for (let index = 1; index < sortedIctal.length; index += 1) {
+      if (sortedIctal[index].start - sortedIctal[index - 1].start < 30) {
+        issues.push({ level: "warning", text: "Possible duplicate ictal onsets within 30 s", annotationId: sortedIctal[index].id });
       }
     }
-    const draftCount = annotations.filter((item) => item.status === "draft").length;
+    const latestSleepEndByLabel = new Map<string, number>();
+    const sortedSleepStages = [...sleepStages].sort((left, right) => left.start - right.start || left.end - right.end);
+    for (const item of sortedSleepStages) {
+      let hasConflict = false;
+      for (const [labelId, latestEnd] of latestSleepEndByLabel) {
+        if (labelId !== item.labelId && latestEnd > item.start) {
+          hasConflict = true;
+          break;
+        }
+      }
+      if (hasConflict) {
+        issues.push({ level: "warning", text: "Conflicting sleep stages share an epoch", annotationId: item.id });
+      }
+      latestSleepEndByLabel.set(item.labelId, Math.max(latestSleepEndByLabel.get(item.labelId) ?? Number.NEGATIVE_INFINITY, item.end));
+    }
     if (draftCount) issues.push({ level: "info", text: `${draftCount} draft label${draftCount === 1 ? "" : "s"} not yet committed` });
     if (badChannels.size) issues.push({ level: "info", text: `${badChannels.size} channel${badChannels.size === 1 ? "" : "s"} excluded from derived montages` });
     return issues;
-  }, [annotations, badChannels, candidates, display.warnings, meta.assumptions, meta.channelLabels.length, meta.durationSec, meta.warnings, recoveryStatus]);
+  }, [annotations, badChannels, candidates, displayWarningKey, meta.assumptions, meta.channelLabels.length, meta.durationSec, meta.warnings, recoveryStatus]);
 
   const advanceFromCandidate = useCallback((candidateId: string) => {
     const currentIndex = candidates.findIndex((item) => item.id === candidateId);
@@ -2332,23 +2509,14 @@ export default function Home() {
       if (!hasRecording || !indices.length) {
         displayAppliedRequestIdRef.current = requestId;
         setDisplay({ ...EMPTY_DISPLAY, viewStart });
+        if (hasRecording) displayPreviewReadyRef.current = true;
         setLoadingSignal(false);
         return;
       }
       setLoadingSignal(true);
       try {
-        const requiresClinicalPreparation = indices.some((index) => {
-          const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
-          return clinicalDecimationFactor(
-            sampleRate,
-            Math.max(0, Math.ceil(sampleRate * timebase)),
-            Math.max(1, waveformWidth),
-          ) === 2;
-        });
         const useEnvelopePath = !filters.enabled
           && montage === "referential"
-          && !spectrogramOpen
-          && !requiresClinicalPreparation
           && waveformWidth >= MIN_WAVEFORM_WIDTH_FOR_ENVELOPE
           && typeof source.getEnvelopeWindow === "function"
           && indices.some((index) =>
@@ -2369,9 +2537,48 @@ export default function Home() {
         const byteRate = indices.reduce((sum, index) => sum + Math.max(1, meta.sampleRates[index] ?? primarySampleRate(meta)) * Float32Array.BYTES_PER_ELEMENT, 0);
         const requiredDuration = Math.max(0, requiredEnd - requiredStart);
         const storageByteRate = (meta.byteLength ?? 0) / Math.max(1e-9, meta.durationSec);
+        const envelopeReadBudget = sourceVerificationRef.current
+          ? INITIAL_PREVIEW_READ_BUDGET_BYTES
+          : SOURCE_READ_AHEAD_BUDGET_BYTES;
+        const maximumEnvelopeReadDuration = envelopeReadBudget / Math.max(1, storageByteRate);
+        if (useEnvelopePath
+          && sourceVerificationRef.current
+          && requiredDuration > maximumEnvelopeReadDuration * 1.01) {
+          // The background verifier is already reading the complete source and
+          // building the reusable overview. Starting a second hours-wide scan
+          // here used to make both operations contend for disk and CPU. Keep
+          // the current preview on screen; the effect reruns when verification
+          // publishes the full-session pyramid.
+          return;
+        }
+        const decodedWindowBudget = source instanceof EDFSource || source instanceof RawDatSource
+          ? RAW_WINDOW_CACHE_BUDGET_BYTES
+          : INITIAL_PREVIEW_READ_BUDGET_BYTES;
+        if (!useEnvelopePath) {
+          const maximumRawDuration = Math.min(
+            decodedWindowBudget / Math.max(1, byteRate),
+            envelopeReadBudget / Math.max(1, storageByteRate),
+          );
+          if (requiredDuration > maximumRawDuration * 1.01) {
+            const safeTimebase = Math.max(
+              MIN_TIME_WINDOW_SECONDS,
+              maximumRawDuration - processingPadSec * 2,
+            );
+            if (safeTimebase < timebase - 1e-9) {
+              setTimebase(safeTimebase);
+              setWindowDraftValue(null);
+              setToast(`Window narrowed to ${formatWindowAmount(safeTimebase)} s so filtered or derived signal processing stays within its bounded memory and file-read budget`);
+              setLoadingSignal(false);
+              return;
+            }
+          }
+        }
         const budgetDuration = useEnvelopePath
-          ? SOURCE_READ_AHEAD_BUDGET_BYTES / Math.max(1, storageByteRate)
-          : RAW_WINDOW_CACHE_BUDGET_BYTES / Math.max(1, byteRate);
+          ? envelopeReadBudget / Math.max(1, storageByteRate)
+          : Math.min(
+            decodedWindowBudget / Math.max(1, byteRate),
+            envelopeReadBudget / Math.max(1, storageByteRate),
+          );
         const desiredDuration = Math.max(requiredDuration, Math.min(budgetDuration, requiredDuration + timebase * 2));
         const extraDuration = Math.max(0, desiredDuration - requiredDuration);
         let cacheStart = Math.max(0, requiredStart - extraDuration / 2);
@@ -2383,13 +2590,16 @@ export default function Home() {
 
         if (useEnvelopePath && source.getEnvelopeWindow) {
           const requiredBucketDuration = timebase / Math.max(1, waveformWidth);
-          let envelopeWindow = envelopeWindowCacheRef.current.find((entry) =>
+          const reusableEnvelopeEntries = envelopeWindowCacheRef.current.filter((entry) =>
             entry.source === source
-            && entry.channelKey === channelKey
             && entry.startSec <= viewStart + 1e-9
             && entry.endSec >= viewStart + timebase - 1e-9
-            && entry.bucketDurationSec <= requiredBucketDuration * 1.05);
-          let envelopeWindowIsCached = Boolean(envelopeWindow);
+            && entry.levels[0]?.bucketDurationSec <= requiredBucketDuration * 1.05);
+          let envelopeWindow = reusableEnvelopeEntries.find((entry) => entry.channelKey === channelKey)
+            ?? reusableEnvelopeEntries.find((entry) => {
+              const availableChannels = new Set(entry.levels[0]?.channelIndices ?? []);
+              return indices.every((index) => availableChannels.has(index));
+            });
           if (envelopeWindow) {
             envelopeWindowCacheRef.current = [
               ...envelopeWindowCacheRef.current.filter((entry) => entry !== envelopeWindow),
@@ -2397,84 +2607,166 @@ export default function Home() {
             ];
           } else {
             const cacheDuration = Math.max(1e-9, cacheEnd - cacheStart);
-            const maxBucketsByBudget = Math.max(
-              1,
-              Math.floor(ENVELOPE_CACHE_BUDGET_BYTES / Math.max(1, indices.length * 13)),
+            const minimumCacheBuckets = Math.ceil(
+              (cacheDuration / Math.max(1e-9, timebase)) * Math.max(1, waveformWidth),
             );
-            const bucketCount = clamp(
-              Math.ceil((cacheDuration / Math.max(1e-9, timebase)) * Math.max(1, waveformWidth)),
-              1,
-              Math.min(12_000, maxBucketsByBudget),
+            const coversFullSession = cacheStart <= 1e-9
+              && cacheEnd >= meta.durationSec - 1e-9;
+            const bucketCount = reusableEnvelopeBucketCount(
+              indices.length,
+              minimumCacheBuckets,
+              coversFullSession,
             );
-            const envelopeData = await source.getEnvelopeWindow(
-              cacheStart,
-              cacheDuration,
-              bucketCount,
-              indices,
-              { signal: abortController.signal },
-            );
+            const expectedBytes = source instanceof EDFSource
+              ? expectedEDFRecordBytes(source, cacheStart, cacheDuration)
+              : source instanceof RawDatSource
+                ? Math.min(meta.byteLength ?? 0, Math.ceil(storageByteRate * cacheDuration))
+                : 0;
+            const readOperation = expectedBytes > 0 ? performanceDiagnostics.beginSourceRead({
+              label: `${meta.format.toUpperCase()} overview`,
+              totalBytes: expectedBytes || null,
+              phase: "Reading source records",
+            }) : null;
+            const decodeOperation = performanceDiagnostics.beginDecode({
+              label: "Waveform overview",
+              totalBytes: expectedBytes || null,
+              phase: "Reducing samples to exact extrema",
+            });
+            let envelopeData: EnvelopeWindowData;
+            let envelopePyramid: EnvelopeWindowData[] | undefined;
+            let lastReportedReadBytes = 0;
+            try {
+              if (source instanceof EDFSource) {
+                const result = await buildEDFEnvelopeWindowOffThread({
+                  blob: source.sourceBlob,
+                  header: source.header,
+                  startSec: cacheStart,
+                  durationSec: cacheDuration,
+                  bucketCount,
+                  channelIndices: indices,
+                  pyramidMinimumBucketCount: 64,
+                }, {
+                  signal: abortController.signal,
+                  fallbackToMainThread: false,
+                  onProgress: (progress: EDFEnvelopeProgress) => {
+                    const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
+                    lastReportedReadBytes = progress.bytesRead;
+                    readOperation?.update({
+                      completedBytes: progress.bytesRead,
+                      totalBytes: progress.totalBytes,
+                      phase: progress.phase === "reading" ? "Reading source records" : "Source read complete",
+                      transientAllocatedBytes: transientBytes,
+                    });
+                    decodeOperation.update({
+                      completedBytes: progress.bytesRead,
+                      totalBytes: progress.totalBytes,
+                      phase: progress.phase === "complete"
+                        ? "Overview ready"
+                        : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
+                    });
+                  },
+                });
+                envelopeData = result.window;
+                envelopePyramid = result.pyramidLevels;
+                readOperation?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
+                decodeOperation.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
+              } else if (source instanceof RawDatSource) {
+                const result = await buildRawDatEnvelopeWindowOffThread({
+                  ...source.envelopeWorkerSource,
+                  startSec: cacheStart,
+                  durationSec: cacheDuration,
+                  bucketCount,
+                  channelIndices: indices,
+                  pyramidMinimumBucketCount: 64,
+                }, {
+                  signal: abortController.signal,
+                  fallbackToMainThread: false,
+                  onProgress: (progress) => {
+                    const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
+                    lastReportedReadBytes = progress.bytesRead;
+                    readOperation?.update({
+                      completedBytes: progress.bytesRead,
+                      totalBytes: progress.totalBytes,
+                      phase: progress.phase === "reading" ? "Reading DAT frames" : "Source read complete",
+                      transientAllocatedBytes: transientBytes,
+                    });
+                    decodeOperation.update({
+                      completedBytes: progress.bytesRead,
+                      totalBytes: progress.totalBytes,
+                      phase: progress.phase === "complete"
+                        ? "Overview ready"
+                        : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
+                    });
+                  },
+                });
+                envelopeData = result.window;
+                envelopePyramid = result.pyramidLevels;
+                readOperation?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
+                decodeOperation.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
+              } else {
+                envelopeData = await source.getEnvelopeWindow(
+                  cacheStart,
+                  cacheDuration,
+                  bucketCount,
+                  indices,
+                  { signal: abortController.signal },
+                );
+                readOperation?.finish({
+                  completedBytes: expectedBytes,
+                  transientAllocatedBytes: expectedBytes,
+                });
+                decodeOperation.finish({ completedBytes: expectedBytes });
+              }
+            } catch (error) {
+              const finish = isAbortFailure(error) ? "cancel" : "fail";
+              readOperation?.[finish]();
+              decodeOperation[finish]();
+              throw error;
+            }
             if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
-            const byteLength = envelopeData.data.reduce((sum, channel) => sum + channel.byteLength, 0)
-              + envelopeData.minima.reduce((sum, channel) => sum + channel.byteLength, 0)
-              + envelopeData.maxima.reduce((sum, channel) => sum + channel.byteLength, 0)
-              + envelopeData.gaps.reduce((sum, channel) => sum + channel.byteLength, 0);
-            envelopeWindow = {
-              source,
-              channelKey,
-              startSec: envelopeData.startSec,
-              endSec: envelopeData.startSec + envelopeData.durationSec,
-              data: envelopeData.data,
-              minima: envelopeData.minima,
-              maxima: envelopeData.maxima,
-              gaps: envelopeData.gaps,
-              bucketDurationSec: envelopeData.bucketDurationSec,
-              channelUnits: envelopeData.channelUnits,
-              byteLength,
-            };
-            if (byteLength <= ENVELOPE_CACHE_BUDGET_BYTES) {
+            envelopeWindow = makeEnvelopeCacheEntry(source, channelKey, envelopeData, envelopePyramid);
+            if (envelopeWindow.byteLength <= ENVELOPE_CACHE_BUDGET_BYTES) {
               envelopeWindowCacheRef.current.push(envelopeWindow);
-              envelopeWindowIsCached = true;
               let cachedBytes = envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
               while (cachedBytes > ENVELOPE_CACHE_BUDGET_BYTES && envelopeWindowCacheRef.current.length) {
                 const removed = envelopeWindowCacheRef.current.shift();
-                if (removed === envelopeWindow) envelopeWindowIsCached = false;
                 cachedBytes -= removed?.byteLength ?? 0;
               }
             }
           }
 
-          const firstBucket = clamp(
-            Math.floor((viewStart - envelopeWindow.startSec) / envelopeWindow.bucketDurationSec + 1e-9),
-            0,
-            envelopeWindow.data[0]?.length ?? 0,
+          if (!envelopeWindow) throw new Error("Waveform overview was not available after decoding.");
+          const envelopeLevel = selectEnvelopePyramidLevel(envelopeWindow.levels, requiredBucketDuration);
+          const requestedEnvelopeLevel = envelopeWindow.channelKey === channelKey
+            ? envelopeLevel
+            : projectEnvelopeChannels(envelopeLevel, indices);
+          const maximumAggregateBuckets = Math.max(
+            1,
+            Math.floor(timebase / requestedEnvelopeLevel.bucketDurationSec + 1e-9),
           );
-          const lastBucket = clamp(
-            Math.ceil((viewStart + timebase - envelopeWindow.startSec) / envelopeWindow.bucketDurationSec - 1e-9),
-            firstBucket + 1,
-            envelopeWindow.data[0]?.length ?? firstBucket + 1,
+          const displayBucketCount = Math.min(Math.max(1, waveformWidth), maximumAggregateBuckets);
+          const visibleEnvelope = aggregateEnvelopeWindow(
+            requestedEnvelopeLevel,
+            viewStart,
+            timebase,
+            displayBucketCount,
           );
-          const envelopeStartSec = envelopeWindow.startSec + firstBucket * envelopeWindow.bucketDurationSec;
-          const crop = <T extends Float32Array | Uint8Array>(channel: T): T => (
-            envelopeWindowIsCached
-              ? channel.subarray(firstBucket, lastBucket)
-              : channel.slice(firstBucket, lastBucket)
-          ) as T;
-          const data = envelopeWindow.data.map(crop);
+          const data = visibleEnvelope.data;
           const envelopes = data.map((_, position) => ({
-            minima: crop(envelopeWindow.minima[position]),
-            maxima: crop(envelopeWindow.maxima[position]),
-            gaps: crop(envelopeWindow.gaps[position]),
-            startSec: envelopeStartSec,
-            bucketDurationSec: envelopeWindow.bucketDurationSec,
+            minima: visibleEnvelope.minima[position],
+            maxima: visibleEnvelope.maxima[position],
+            gaps: visibleEnvelope.gaps[position],
+            startSec: visibleEnvelope.startSec,
+            bucketDurationSec: visibleEnvelope.bucketDurationSec,
           }));
           const flatlineRegions = detectEnvelopeSynchronizedFlatlines(
             envelopes.map((entry) => entry.minima),
             envelopes.map((entry) => entry.maxima),
             envelopes.map((entry) => entry.gaps),
-            envelopeWindow.bucketDurationSec,
-            { startSec: envelopeStartSec, thresholdFraction: .8, minimumDurationSec: .25 },
+            visibleEnvelope.bucketDurationSec,
+            { startSec: visibleEnvelope.startSec, thresholdFraction: .8, minimumDurationSec: .25 },
           ).map((region) => ({ startSec: region.startSec, endSec: region.endSec }));
-          const effectiveRate = 1 / envelopeWindow.bucketDurationSec;
+          const effectiveRate = 1 / visibleEnvelope.bucketDurationSec;
           displayAppliedRequestIdRef.current = requestId;
           const nextDisplay: DisplayWindow = {
             data,
@@ -2482,8 +2774,8 @@ export default function Home() {
             labels: indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`),
             sampleRates: indices.map(() => effectiveRate),
             sourceSampleRates: indices.map((index) => meta.sampleRates[index] ?? primarySampleRate(meta)),
-            startSecs: indices.map(() => envelopeStartSec),
-            units: envelopeWindow.channelUnits,
+            startSecs: indices.map(() => visibleEnvelope.startSec),
+            units: visibleEnvelope.channelUnits,
             sourceIndices: indices.map((index) => [index]),
             primarySourceIndices: indices,
             warnings: [],
@@ -2491,6 +2783,7 @@ export default function Home() {
             flatlineRegions,
           };
           setDisplay(nextDisplay);
+          displayPreviewReadyRef.current = true;
           setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
           setLoadingSignal(false);
           return;
@@ -2507,12 +2800,115 @@ export default function Home() {
             rawWindow,
           ];
         } else {
-          const windowData = await source.getWindow(
-            cacheStart,
-            Math.max(0, cacheEnd - cacheStart),
-            indices,
-            { signal: abortController.signal },
-          );
+          const rawDuration = Math.max(0, cacheEnd - cacheStart);
+          const expectedRawBytes = source instanceof EDFSource
+            ? expectedEDFRecordBytes(source, cacheStart, rawDuration)
+            : source instanceof RawDatSource
+              ? Math.min(meta.byteLength ?? 0, Math.ceil(storageByteRate * rawDuration))
+              : 0;
+          const readOperation = expectedRawBytes > 0 ? performanceDiagnostics.beginSourceRead({
+            label: `${meta.format.toUpperCase()} signal window`,
+            totalBytes: expectedRawBytes || null,
+            phase: "Reading source samples",
+          }) : null;
+          const decodeOperation = performanceDiagnostics.beginDecode({
+            label: "Raw signal window",
+            totalBytes: expectedRawBytes || null,
+            phase: "Calibrating source samples",
+          });
+          let windowData;
+          let lastReportedReadBytes = 0;
+          try {
+            if (source instanceof EDFSource) {
+              const result = await buildEDFFileWindowOffThread({
+                format: "edf",
+                blob: source.sourceBlob,
+                header: source.header,
+                startSec: cacheStart,
+                durationSec: rawDuration,
+                channelIndices: indices,
+              }, {
+                signal: abortController.signal,
+                fallbackToMainThread: false,
+                onProgress: (progress) => {
+                  const transientAllocatedBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
+                  lastReportedReadBytes = progress.bytesRead;
+                  readOperation?.update({
+                    completedBytes: progress.bytesRead,
+                    totalBytes: progress.totalBytes,
+                    transientAllocatedBytes,
+                    phase: progress.phase === "reading" ? "Reading EDF records in worker" : "Source records decoded",
+                  });
+                  decodeOperation.update({
+                    completedBytes: progress.bytesRead,
+                    totalBytes: progress.totalBytes,
+                    phase: `Decoded ${progress.samplesDecoded.toLocaleString()} samples in worker`,
+                  });
+                },
+              });
+              windowData = result.window;
+              readOperation?.finish({
+                completedBytes: result.metrics.bytesRead,
+                totalBytes: result.metrics.totalBytes,
+                durationMs: result.metrics.readMs,
+              });
+              decodeOperation.finish({
+                completedBytes: result.metrics.bytesRead,
+                totalBytes: result.metrics.totalBytes,
+                durationMs: result.metrics.decodeMs,
+              });
+            } else if (source instanceof RawDatSource) {
+              const result = await buildRawDatFileWindowOffThread({
+                format: "raw-dat",
+                ...source.envelopeWorkerSource,
+                startSec: cacheStart,
+                durationSec: rawDuration,
+                channelIndices: indices,
+              }, {
+                signal: abortController.signal,
+                fallbackToMainThread: false,
+                onProgress: (progress) => {
+                  const transientAllocatedBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
+                  lastReportedReadBytes = progress.bytesRead;
+                  readOperation?.update({
+                    completedBytes: progress.bytesRead,
+                    totalBytes: progress.totalBytes,
+                    transientAllocatedBytes,
+                    phase: progress.phase === "reading" ? "Reading DAT frames in worker" : "Source frames decoded",
+                  });
+                  decodeOperation.update({
+                    completedBytes: progress.bytesRead,
+                    totalBytes: progress.totalBytes,
+                    phase: `Decoded ${progress.samplesDecoded.toLocaleString()} samples in worker`,
+                  });
+                },
+              });
+              windowData = result.window;
+              readOperation?.finish({
+                completedBytes: result.metrics.bytesRead,
+                totalBytes: result.metrics.totalBytes,
+                durationMs: result.metrics.readMs,
+              });
+              decodeOperation.finish({
+                completedBytes: result.metrics.bytesRead,
+                totalBytes: result.metrics.totalBytes,
+                durationMs: result.metrics.decodeMs,
+              });
+            } else {
+              windowData = await source.getWindow(
+                cacheStart,
+                rawDuration,
+                indices,
+                { signal: abortController.signal },
+              );
+              decodeOperation.finish({ completedBytes: windowData.data.reduce((sum, channel) => sum + channel.byteLength, 0) });
+            }
+          } catch (error) {
+            const finish = isAbortFailure(error) ? "cancel" : "fail";
+            readOperation?.[finish]();
+            decodeOperation[finish]();
+            throw error;
+          }
           if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
           const byteLength = windowData.data.reduce((sum, channel) => sum + channel.byteLength, 0);
           const flatlineRegions = detectRawSynchronizedFlatlines(windowData.data, windowData.sampleRates, {
@@ -2580,6 +2976,7 @@ export default function Home() {
         const processingPixelCount = Math.max(1, waveformWidth * processingDuration / Math.max(1e-9, timebase));
         const expectedFactors = processingData.map((channel, index) =>
           clinicalDecimationFactor(rawWindow.sampleRates[index], channel.length, processingPixelCount));
+        const processingIsIdentity = !filters.enabled && expectedFactors.every((factor) => factor === 1);
         const sourceStartSampleIndices = processingRanges.map((range) => range.sourceStartSample);
         const settingsKey = JSON.stringify({
           filters: filters.enabled ? filters : { enabled: false },
@@ -2594,13 +2991,29 @@ export default function Home() {
             processed,
           ];
         } else {
-          const prepared = await processDisplaySignalsOffThread({
-            data: processingData,
-            sampleRates: rawWindow.sampleRates,
-            filters,
-            pixelCount: processingPixelCount,
-            sourceStartSampleIndices,
-          }, { signal: abortController.signal });
+          const processingBytes = processingData.reduce((sum, channel) => sum + channel.byteLength, 0);
+          const processingOperation = performanceDiagnostics.beginDecode({
+            label: filters.enabled ? "Signal filtering and display preparation" : "Clinical display preparation",
+            totalBytes: processingBytes,
+            phase: filters.enabled ? "Filtering signal window in worker" : "Preparing clinical display samples in worker",
+          });
+          let prepared;
+          try {
+            prepared = await processDisplaySignalsOffThread({
+              data: processingData,
+              sampleRates: rawWindow.sampleRates,
+              filters,
+              pixelCount: processingPixelCount,
+              sourceStartSampleIndices,
+            }, { signal: abortController.signal, fallbackToMainThread: false });
+            processingOperation.finish({
+              completedBytes: processingBytes,
+              transientAllocatedBytes: processingIsIdentity ? 0 : processingBytes,
+            });
+          } catch (error) {
+            processingOperation[isAbortFailure(error) ? "cancel" : "fail"]();
+            throw error;
+          }
           if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
           const processedData = prepared.data;
           const processedRates = prepared.sampleRates;
@@ -2617,7 +3030,7 @@ export default function Home() {
             factors,
             byteLength,
           };
-          const duplicatesRaw = !filters.enabled && factors.every((factor) => factor === 1);
+          const duplicatesRaw = processingIsIdentity;
           const rawOwnerIsCached = rawWindowCacheRef.current.includes(rawWindow);
           if (rawOwnerIsCached
             && !duplicatesRaw
@@ -2673,14 +3086,27 @@ export default function Home() {
           const omittedUnits = [...new Set(rawWindow.channelUnits.filter((unit) => referenceUnit && unit !== referenceUnit))];
           if (omittedUnits.length) montageWarnings.push(`${omittedUnits.join(", ")} channels were excluded from ${montage === "bipolar" ? "bipolar" : "average-reference"} arithmetic because units cannot be mixed.`);
         }
-        const montageResult = buildMontage(
-          cropped,
-          labels,
-          montage,
-          badDisplayPositions,
-          processed.sampleRates,
-          croppedStartSecs,
-        );
+        const montageBytes = cropped.reduce((sum, channel) => sum + channel.byteLength, 0);
+        const montageOperation = performanceDiagnostics.beginDecode({
+          label: "Montage derivation",
+          totalBytes: montageBytes,
+          phase: montage === "referential" ? "Mapping recorded references" : "Computing derived channel traces",
+        });
+        let montageResult;
+        try {
+          montageResult = buildMontage(
+            cropped,
+            labels,
+            montage,
+            badDisplayPositions,
+            processed.sampleRates,
+            croppedStartSecs,
+          );
+          montageOperation.finish({ completedBytes: montageBytes });
+        } catch (error) {
+          montageOperation.fail();
+          throw error;
+        }
         const sourceIndices = montageResult.sourceIndices.map((contributors) => contributors.map((position) => indices[position]).filter((index) => index !== undefined));
         const primarySourceIndices = montageResult.primarySourceIndices.map((position) => indices[position] ?? -1);
         const sampleRates = montageResult.primarySourceIndices.map((position) => processed.sampleRates[position] ?? primarySampleRate(meta));
@@ -2707,6 +3133,7 @@ export default function Home() {
           flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > viewStart && region.startSec < viewStart + timebase),
         };
         setDisplay(nextDisplay);
+        displayPreviewReadyRef.current = true;
         setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
         setLoadingSignal(false);
       } catch (error) {
@@ -2733,7 +3160,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, spectrogramOpen, timebase, viewStart, waveformWidth]);
+  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, timebase, verifyingSource, viewStart, waveformWidth]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -2751,6 +3178,17 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [hasRecording, meta.durationSec, playing, setViewStartSafe, timebase, viewStart]);
 
+  useEffect(() => {
+    if (!hasRecording || activeSessionContentView !== "recording") return;
+    let frame = 0;
+    const sampleFrame = (timestamp: number) => {
+      performanceDiagnostics.recordFrame(timestamp);
+      frame = window.requestAnimationFrame(sampleFrame);
+    };
+    frame = window.requestAnimationFrame(sampleFrame);
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSessionContentView, hasRecording]);
+
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -2763,6 +3201,12 @@ export default function Home() {
       if (canvas.height !== backingHeight) canvas.height = backingHeight;
       const context = canvas.getContext("2d");
       if (!context) return;
+      const renderSpan = performanceDiagnostics.beginRender();
+      performanceDiagnostics.recordCanvasSurface(
+        "waveform",
+        { width: backingWidth, height: backingHeight },
+        { gpuSurfaceCopies: 2 },
+      );
       context.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
       const width = rect.width;
       const height = rect.height;
@@ -2771,7 +3215,9 @@ export default function Home() {
       context.fillStyle = "#071216";
       context.fillRect(0, 0, width, height);
 
-      const secondsPerGrid = activeCandidateItem ? 1 : timebase <= 10 ? 1 : timebase <= 30 ? 2 : timebase <= 60 ? 5 : 10;
+      const secondsPerGrid = adaptiveTimeGridInterval(timebase, {
+        candidateRelative: Boolean(activeCandidateItem),
+      });
       context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
       context.textAlign = "center";
       context.textBaseline = "top";
@@ -2853,23 +3299,42 @@ export default function Home() {
         context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
       }
 
-      for (const item of annotations) {
-        if (item.end < displayStart || item.start > displayEnd) continue;
-        const label = LABEL_BY_ID.get(item.labelId);
-        if (!label) continue;
-        const x1 = ((Math.max(item.start, displayStart) - displayStart) / timebase) * width;
-        const geometry = annotationGeometry(item);
-        if (geometry === "session") continue;
-        const x2 = geometry === "point" ? x1 : ((Math.min(item.end, displayEnd) - displayStart) / timebase) * width;
-        context.globalAlpha = item.status === "suggestion" ? 0.07 : item.status === "draft" ? 0.11 : 0.075;
-        context.fillStyle = label.color;
-        context.fillRect(x1, 0, Math.max(geometry === "point" ? 2 : x2 - x1, 2), height);
-        context.globalAlpha = 1;
-        if (geometry === "point") {
-          context.strokeStyle = label.color;
-          context.setLineDash(item.status === "suggestion" ? [4, 4] : []);
-          context.beginPath(); context.moveTo(x1, 20); context.lineTo(x1, height); context.stroke();
-          context.setLineDash([]);
+      if (timebase > 5 * 60 && annotations.length > MAX_INTERACTIVE_TIMELINE_ANNOTATIONS) {
+        const densityBins = clusterTimelineDensity(
+          annotations.filter((item) => annotationGeometry(item) !== "session"),
+          { start: displayStart, end: displayEnd },
+          TIMELINE_DENSITY_BINS_PER_TRACK,
+        );
+        for (const bin of densityBins) {
+          const x1 = ((bin.start - displayStart) / timebase) * width;
+          const x2 = ((bin.end - displayStart) / timebase) * width;
+          const alpha = Math.min(.16, .035 + Math.log2(bin.count + 1) * .025);
+          context.fillStyle = bin.track === "context"
+            ? `rgba(102, 174, 245, ${alpha})`
+            : bin.track === "windowed"
+              ? `rgba(243, 187, 95, ${alpha})`
+              : `rgba(239, 127, 115, ${alpha})`;
+          context.fillRect(x1, 0, Math.max(2, x2 - x1), height);
+        }
+      } else {
+        for (const item of annotations) {
+          if (item.end < displayStart || item.start > displayEnd) continue;
+          const label = LABEL_BY_ID.get(item.labelId);
+          if (!label) continue;
+          const x1 = ((Math.max(item.start, displayStart) - displayStart) / timebase) * width;
+          const geometry = annotationGeometry(item);
+          if (geometry === "session") continue;
+          const x2 = geometry === "point" ? x1 : ((Math.min(item.end, displayEnd) - displayStart) / timebase) * width;
+          context.globalAlpha = item.status === "suggestion" ? 0.07 : item.status === "draft" ? 0.11 : 0.075;
+          context.fillStyle = label.color;
+          context.fillRect(x1, 0, Math.max(geometry === "point" ? 2 : x2 - x1, 2), height);
+          context.globalAlpha = 1;
+          if (geometry === "point") {
+            context.strokeStyle = label.color;
+            context.setLineDash(item.status === "suggestion" ? [4, 4] : []);
+            context.beginPath(); context.moveTo(x1, 20); context.lineTo(x1, height); context.stroke();
+            context.setLineDash([]);
+          }
         }
       }
 
@@ -2910,11 +3375,12 @@ export default function Home() {
             const bucketTime = envelope.startSec + (bucket + .5) * envelope.bucketDurationSec;
             const x = ((bucketTime - displayStart) / timebase) * width;
             if (x < -1 || x > width + 1) continue;
-            const confinedMaximum = confineTraceYToRow(center - (maximum - baseline) * scale, rowTop, rowHeight);
-            const confinedMinimum = confineTraceYToRow(center - (minimum - baseline) * scale, rowTop, rowHeight);
-            if (confinedMaximum.overflow || confinedMinimum.overflow) overflow = true;
-            context.moveTo(x, confinedMaximum.y);
-            context.lineTo(x, confinedMinimum.y);
+            const maximumY = center - (maximum - baseline) * scale;
+            const minimumY = center - (minimum - baseline) * scale;
+            if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
+              || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
+            context.moveTo(x, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
+            context.lineTo(x, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
           }
           context.stroke();
           context.restore();
@@ -2929,7 +3395,7 @@ export default function Home() {
             const bucketTime = envelope.startSec + (bucket + .5) * envelope.bucketDurationSec;
             const x = ((bucketTime - displayStart) / timebase) * width;
             if (x < -1 || x > width + 1) continue;
-            const { y } = confineTraceYToRow(center - (value - baseline) * scale, rowTop, rowHeight);
+            const y = confineTraceYValueToRow(center - (value - baseline) * scale, rowTop, rowHeight);
             if (connected) context.lineTo(x, y);
             else context.moveTo(x, y);
             connected = true;
@@ -2947,9 +3413,9 @@ export default function Home() {
             }
             const sampleTime = rowStartSec + sample / sampleRate;
             const x = ((sampleTime - displayStart) / timebase) * width;
-            const confined = confineTraceYToRow(center - (value - baseline) * scale, rowTop, rowHeight);
-            const y = confined.y;
-            if (confined.overflow) overflow = true;
+            const rawY = center - (value - baseline) * scale;
+            const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
+            if (traceYOverflowsRow(rawY, rowTop, rowHeight)) overflow = true;
             if (connected) context.lineTo(x, y);
             else context.moveTo(x, y);
             connected = true;
@@ -2997,11 +3463,12 @@ export default function Home() {
             // Preserve finite extrema in a partly missing pixel column, but
             // break the connecting centerline so a real gap is never bridged.
             if (!gaps[x]) midpoints[x] = (min + max) / 2;
-            const confinedMaximum = confineTraceYToRow(center - (max - baseline) * scale, rowTop, rowHeight);
-            const confinedMinimum = confineTraceYToRow(center - (min - baseline) * scale, rowTop, rowHeight);
-            if (confinedMaximum.overflow || confinedMinimum.overflow) overflow = true;
-            context.moveTo(x + .5, confinedMaximum.y);
-            context.lineTo(x + .5, confinedMinimum.y);
+            const maximumY = center - (max - baseline) * scale;
+            const minimumY = center - (min - baseline) * scale;
+            if (traceYOverflowsRow(maximumY, rowTop, rowHeight)
+              || traceYOverflowsRow(minimumY, rowTop, rowHeight)) overflow = true;
+            context.moveTo(x + .5, confineTraceYValueToRow(maximumY, rowTop, rowHeight));
+            context.lineTo(x + .5, confineTraceYValueToRow(minimumY, rowTop, rowHeight));
           }
           context.stroke();
           context.restore();
@@ -3013,7 +3480,7 @@ export default function Home() {
               connected = false;
               continue;
             }
-            const { y } = confineTraceYToRow(center - (value - baseline) * scale, rowTop, rowHeight);
+            const y = confineTraceYValueToRow(center - (value - baseline) * scale, rowTop, rowHeight);
             if (connected) context.lineTo(x + .5, y);
             else context.moveTo(x + .5, y);
             connected = true;
@@ -3071,9 +3538,11 @@ export default function Home() {
         context.beginPath(); context.moveTo(onsetX, 0); context.lineTo(onsetX, height); context.stroke();
         context.setLineDash([]);
       }
+      renderSpan.finish();
     };
     waveDrawRef.current = draw;
     draw();
+    return () => performanceDiagnostics.removeCanvasSurface("waveform");
   }, [activeCandidateItem, activeSessionContentView, annotations, channelRowLayout, channelScrollOffset, display, expandedChannels, focusedChannel, gain, inspectionDragging, inspectionRange, legacyRawCountDisplay, markOnset, timebase]);
 
   useLayoutEffect(() => {
@@ -3081,8 +3550,14 @@ export default function Home() {
     if (!canvas) return;
     const measure = () => {
       const nextWidth = Math.max(1, Math.round(canvas.getBoundingClientRect().width));
-      setWaveformWidth((current) => current === nextWidth ? current : nextWidth);
-      waveDrawRef.current();
+      if (waveformWidthRef.current === nextWidth) {
+        waveDrawRef.current();
+        return;
+      }
+      waveformWidthRef.current = nextWidth;
+      // The width state drives the data reduction and then the normal draw
+      // effect. Avoid drawing the old display at the new size first.
+      setWaveformWidth(nextWidth);
     };
     // The canvas is absent on blank sessions and in file-structure view, so
     // measure as soon as the recording view remounts it.
@@ -3825,6 +4300,7 @@ export default function Home() {
     // Install a read-only preview immediately. The exact content identity and
     // any matching recovery project attach only after the worker finishes.
     sourceVerificationRef.current = true;
+    displayPreviewReadyRef.current = false;
     setVerifyingSource(true);
     sourceRef.current = source;
     setHasRecording(true);
@@ -3835,9 +4311,8 @@ export default function Home() {
     setSourceInterpretation(interpretation ?? null);
     setSelectedChannels(new Set(recommendedChannels));
     setBadChannels(new Set());
-    rawWindowCacheRef.current = [];
-    processedWindowCacheRef.current = [];
-    envelopeWindowCacheRef.current = [];
+    // Do not clear cross-session LRUs here; entries are source-keyed and their
+    // global byte ceilings evict the least-recently used recording as needed.
     setDisplay(EMPTY_DISPLAY);
     setViewStart(0);
     setGain(1);
@@ -3868,20 +4343,196 @@ export default function Home() {
     setShowImport(false);
 
     let lastProgressBucket = -1;
-    setToast("Waveform preview ready — verifying full source integrity…");
+    setToast("Preparing the first waveform view…");
     let contentHash: string;
     try {
-      const verification = await verifySourceOffThread(file, {
-        edfHeader: source instanceof EDFSource ? source.header : undefined,
-        signal: verificationAbortController.signal,
-        onProgress: (bytesHashed, totalBytes) => {
-          const bucket = totalBytes ? Math.floor((bytesHashed / totalBytes) * 10) : 10;
-          if (bucket !== lastProgressBucket) {
-            lastProgressBucket = bucket;
-            setToast(`Waveform ready · verifying source integrity… ${Math.min(100, bucket * 10)}%`);
-          }
-        },
+      // Let React mount the recording view and give its small, high-priority
+      // window read a head start before the one-time full-file index scan.
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let frame = 0;
+        const finish = (callback: () => void) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          window.cancelAnimationFrame(frame);
+          verificationAbortController.signal.removeEventListener("abort", onAbort);
+          callback();
+        };
+        const onAbort = () => finish(() => reject(
+          verificationAbortController.signal.reason
+            ?? new DOMException("Source verification canceled", "AbortError"),
+        ));
+        const check = () => {
+          if (displayPreviewReadyRef.current) finish(resolve);
+          else frame = window.requestAnimationFrame(check);
+        };
+        const timeout = window.setTimeout(() => finish(resolve), 5_000);
+        verificationAbortController.signal.addEventListener("abort", onAbort, { once: true });
+        frame = window.requestAnimationFrame(check);
       });
+      setToast(displayPreviewReadyRef.current
+        ? "Waveform preview ready — indexing and verifying in the background…"
+        : "Indexing and verifying the recording in the background…");
+      const verificationRead = performanceDiagnostics.beginSourceRead({
+        label: source instanceof EDFSource
+          ? "EDF verification + overview"
+          : source instanceof RawDatSource
+            ? "DAT verification + overview"
+            : "Source verification",
+        totalBytes: file.size,
+        phase: "Reading local source",
+      });
+      let verificationDecode: DiagnosticsOperationHandle | null = source instanceof EDFSource || source instanceof RawDatSource
+        ? performanceDiagnostics.beginDecode({
+          label: "Full-session overview",
+          totalBytes: file.size,
+          phase: "Hashing and reducing source samples",
+        })
+        : null;
+      let lastVerifiedBytes = 0;
+      const reportVerificationProgress = (bytesRead: number, totalBytes: number, phase: string) => {
+        const transientBytes = Math.max(0, bytesRead - lastVerifiedBytes);
+        lastVerifiedBytes = bytesRead;
+        verificationRead.update({
+          completedBytes: bytesRead,
+          totalBytes,
+          phase,
+          transientAllocatedBytes: transientBytes,
+        });
+        verificationDecode?.update({ completedBytes: bytesRead, totalBytes, phase });
+        const bucket = totalBytes ? Math.floor((bytesRead / totalBytes) * 10) : 10;
+        if (bucket !== lastProgressBucket) {
+          lastProgressBucket = bucket;
+          setToast(`Waveform ready · indexing and verifying… ${Math.min(100, bucket * 10)}%`);
+        }
+      };
+      let verification: Awaited<ReturnType<typeof verifySourceOffThread>>;
+      try {
+        if (source instanceof EDFSource) {
+          const overviewChannelIndices = [...recommendedChannels].sort((left, right) => left - right);
+          const fullOverviewBuckets = reusableEnvelopeBucketCount(
+            Math.max(1, overviewChannelIndices.length),
+            2_048,
+            true,
+          );
+          const result = await buildEDFEnvelopeWindowOffThread({
+            blob: file,
+            header: source.header,
+            startSec: 0,
+            durationSec: nextMeta.durationSec,
+            bucketCount: fullOverviewBuckets,
+            channelIndices: overviewChannelIndices,
+            pyramidMinimumBucketCount: 64,
+            integrity: { sha256: true, edfAnnotations: true },
+          }, {
+            signal: verificationAbortController.signal,
+            fallbackToMainThread: false,
+            onProgress: (progress) => reportVerificationProgress(
+              progress.bytesRead,
+              progress.totalBytes,
+              progress.phase === "reading"
+                ? "Reading and hashing local source"
+                : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
+            ),
+          });
+          const hash = result.integrity?.hash;
+          if (!hash) throw new Error("EDF verification completed without a source hash.");
+          verification = {
+            hash,
+            edfAnnotations: result.integrity?.edfAnnotations,
+          };
+          const overview = result.window;
+          if (overview.data.length) {
+            const overviewKey = overview.channelIndices.join(",");
+            const overviewEntry = makeEnvelopeCacheEntry(source, overviewKey, overview, result.pyramidLevels);
+            if (overviewEntry.byteLength <= ENVELOPE_CACHE_BUDGET_BYTES) {
+              envelopeWindowCacheRef.current = envelopeWindowCacheRef.current.filter((entry) => !(
+                entry.source === source
+                && entry.channelKey === overviewKey
+                && entry.startSec <= 1e-9
+                && entry.endSec >= nextMeta.durationSec - 1e-9
+              ));
+              envelopeWindowCacheRef.current.push(overviewEntry);
+              let cachedBytes = envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
+              while (cachedBytes > ENVELOPE_CACHE_BUDGET_BYTES && envelopeWindowCacheRef.current.length) {
+                cachedBytes -= envelopeWindowCacheRef.current.shift()?.byteLength ?? 0;
+              }
+            }
+          }
+          verificationRead.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
+          verificationDecode?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
+          verificationDecode = null;
+        } else if (source instanceof RawDatSource) {
+          const overviewChannelIndices = nextMeta.channelLabels.length >= 100
+            ? orderAnatomicalChannelIndices(nextMeta.channelLabels, recommendedChannels)
+            : [...recommendedChannels].sort((left, right) => left - right);
+          const fullOverviewBuckets = reusableEnvelopeBucketCount(
+            Math.max(1, overviewChannelIndices.length),
+            2_048,
+            true,
+          );
+          const result = await buildRawDatEnvelopeWindowOffThread({
+            ...source.envelopeWorkerSource,
+            startSec: 0,
+            durationSec: nextMeta.durationSec,
+            bucketCount: fullOverviewBuckets,
+            channelIndices: overviewChannelIndices,
+            pyramidMinimumBucketCount: 64,
+            integrity: { sha256: true },
+          }, {
+            signal: verificationAbortController.signal,
+            fallbackToMainThread: false,
+            onProgress: (progress) => reportVerificationProgress(
+              progress.bytesRead,
+              progress.totalBytes,
+              progress.phase === "reading"
+                ? "Reading and hashing DAT frames"
+                : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
+            ),
+          });
+          const hash = result.integrity?.hash;
+          if (!hash) throw new Error("DAT verification completed without a source hash.");
+          verification = { hash };
+          const overview = result.window;
+          if (overview.data.length) {
+            const overviewKey = overview.channelIndices.join(",");
+            const overviewEntry = makeEnvelopeCacheEntry(source, overviewKey, overview, result.pyramidLevels);
+            if (overviewEntry.byteLength <= ENVELOPE_CACHE_BUDGET_BYTES) {
+              envelopeWindowCacheRef.current = envelopeWindowCacheRef.current.filter((entry) => !(
+                entry.source === source
+                && entry.channelKey === overviewKey
+                && entry.startSec <= 1e-9
+                && entry.endSec >= nextMeta.durationSec - 1e-9
+              ));
+              envelopeWindowCacheRef.current.push(overviewEntry);
+              let cachedBytes = envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
+              while (cachedBytes > ENVELOPE_CACHE_BUDGET_BYTES && envelopeWindowCacheRef.current.length) {
+                cachedBytes -= envelopeWindowCacheRef.current.shift()?.byteLength ?? 0;
+              }
+            }
+          }
+          verificationRead.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
+          verificationDecode?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
+          verificationDecode = null;
+        } else {
+          verification = await verifySourceOffThread(file, {
+            signal: verificationAbortController.signal,
+            fallbackToMainThread: false,
+            onProgress: (bytesHashed, totalBytes) => reportVerificationProgress(
+              bytesHashed,
+              totalBytes,
+              "Reading and hashing local source",
+            ),
+          });
+          verificationRead.finish({ completedBytes: file.size, totalBytes: file.size });
+        }
+      } catch (error) {
+        const finish = isAbortFailure(error) ? "cancel" : "fail";
+        verificationRead[finish]();
+        verificationDecode?.[finish]();
+        throw error;
+      }
       ensureVerificationActive();
       contentHash = verification.hash;
       if (source instanceof EDFSource && verification.edfAnnotations) {
@@ -4053,44 +4704,36 @@ export default function Home() {
         const opened = await loadSource(source, edf);
         if (!opened) return;
         const hasAnnotationChannels = source.header.signals.some((signal) => signal.isAnnotation);
-        if (hasAnnotationChannels) setToast("Waveform ready — indexing EDF+ annotations in the background");
-        window.setTimeout(() => {
-          void source.loadAnnotations().then(() => {
-            if (sourceRef.current !== source) return;
-            const importedCandidates = source.events
-              .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
-              .filter((event) => isLegacySeizureCandidate(event.label))
-              .map((event, index): Candidate => ({
-                id: `edf-cand-${index}-${Math.round(event.timeSec * 1000)}`,
-                time: event.timeSec,
-                label: event.label,
-                source: "bronze",
-                status: "queued",
-                confidence: 0,
-                ictalChannels: "",
-                legacyConfidence: "",
-                reviewerInitials: "",
-                badChannels: "",
-              }));
-            if (importedCandidates.length) {
-              const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
-              const resumeCandidate = queue.candidates[queue.activeIndex];
-              setCandidates(queue.candidates);
-              setActiveCandidate(queue.activeIndex);
-              setViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
-              setCursorTime(resumeCandidate.time);
-              setCursorLocked(true);
-              setToast(`${importedCandidates.length} EDF+ source event${importedCandidates.length === 1 ? "" : "s"} indexed`);
-            } else if (hasAnnotationChannels) {
-              setToast("EDF+ annotation index complete — no seizure-keyword events found");
-            }
-          }).catch((error: unknown) => {
-            if (sourceRef.current !== source) return;
-            const message = error instanceof Error ? error.message : "EDF+ annotations could not be indexed";
-            if (!source.meta.warnings.includes(message)) source.meta.warnings.push(message);
-            setToast(`Waveform remains available · ${message}`);
-          });
-        }, 0);
+        // loadSource extracted EDF+ TALs during the same exact pass used for
+        // hashing and the overview. Reuse that result instead of rereading the
+        // entire source solely for annotations.
+        const importedCandidates = source.events
+          .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
+          .filter((event) => isLegacySeizureCandidate(event.label))
+          .map((event, index): Candidate => ({
+            id: `edf-cand-${index}-${Math.round(event.timeSec * 1000)}`,
+            time: event.timeSec,
+            label: event.label,
+            source: "bronze",
+            status: "queued",
+            confidence: 0,
+            ictalChannels: "",
+            legacyConfidence: "",
+            reviewerInitials: "",
+            badChannels: "",
+          }));
+        if (importedCandidates.length) {
+          const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
+          const resumeCandidate = queue.candidates[queue.activeIndex];
+          setCandidates(queue.candidates);
+          setActiveCandidate(queue.activeIndex);
+          setViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
+          setCursorTime(resumeCandidate.time);
+          setCursorLocked(true);
+          setToast(`${importedCandidates.length} EDF+ source event${importedCandidates.length === 1 ? "" : "s"} indexed in the source pass`);
+        } else if (hasAnnotationChannels) {
+          setToast("EDF+ annotation index complete — no seizure-keyword events found");
+        }
       } else if (dat) {
         let legacyMetadata: LegacyMatMetadata | null = null;
         const companionPath = portablePathParts(mat?.webkitRelativePath || mat?.name || "");
@@ -4103,7 +4746,11 @@ export default function Home() {
         });
         if (mat) {
           try {
-            legacyMetadata = await parseLegacyMatMetadata(mat);
+            legacyMetadata = await measureLocalFileDecode(
+              mat,
+              "Companion MAT metadata",
+              () => parseLegacyMatMetadata(mat),
+            );
             setSelectedLegacyEventIndices(new Set(legacyMetadata.events.flatMap((event, index) =>
               isLegacySeizureCandidate(event.label) ? [index] : [])));
             setDatMapping({
@@ -4130,7 +4777,12 @@ export default function Home() {
         }
         else if (!mat) setToast("Raw DAT detected — confirm channel mapping");
       } else if (mat) {
-        await loadSource(await MatSource.create(mat), mat);
+        const source = await measureLocalFileDecode(
+          mat,
+          "MATLAB signal matrix",
+          () => MatSource.create(mat),
+        );
+        await loadSource(source, mat);
       } else {
         throw new Error("Choose an EDF, self-contained MAT, or paired MAT + DAT recording.");
       }
@@ -4154,9 +4806,38 @@ export default function Home() {
     importBusyRef.current = true;
     setImportBusy(true);
     try {
-      const companionMatHash = pendingLegacyMatFile
-        ? (await verifySourceOffThread(pendingLegacyMatFile)).hash
-        : null;
+      let companionMatHash: string | null = null;
+      if (pendingLegacyMatFile) {
+        const companionRead = performanceDiagnostics.beginSourceRead({
+          label: "Companion MAT verification",
+          totalBytes: pendingLegacyMatFile.size,
+          phase: "Hashing companion metadata in worker",
+        });
+        let companionReadProgress = 0;
+        try {
+          const companionVerification = await verifySourceOffThread(pendingLegacyMatFile, {
+            fallbackToMainThread: false,
+            onProgress: (bytesHashed, totalBytes) => {
+              const transientAllocatedBytes = Math.max(0, bytesHashed - companionReadProgress);
+              companionReadProgress = bytesHashed;
+              companionRead.update({
+                completedBytes: bytesHashed,
+                totalBytes,
+                phase: "Hashing companion metadata in worker",
+                transientAllocatedBytes,
+              });
+            },
+          });
+          companionMatHash = companionVerification.hash;
+          companionRead.finish({
+            completedBytes: pendingLegacyMatFile.size,
+            totalBytes: pendingLegacyMatFile.size,
+          });
+        } catch (error) {
+          companionRead[isAbortFailure(error) ? "cancel" : "fail"]();
+          throw error;
+        }
+      }
       const companionPath = portablePathParts(pendingLegacyMatFile?.webkitRelativePath || pendingLegacyMatFile?.name || "");
       const datPath = portablePathParts(pendingDat.webkitRelativePath || pendingDat.name);
       const verifiedPhysicalScale = datMapping.physicalScale === "" ? undefined : datMapping.physicalScale;
@@ -4693,9 +5374,24 @@ export default function Home() {
     () => visibleAnnotations.filter((item) => annotationGeometry(item) !== "session"),
     [visibleAnnotations],
   );
+  const timelineUsesDensity = bottomTracksOpen
+    && timebase > 5 * 60
+    && bottomAnnotations.length > MAX_INTERACTIVE_TIMELINE_ANNOTATIONS;
+  const timelineDensityBins = useMemo(
+    () => timelineUsesDensity
+      ? clusterTimelineDensity(
+        bottomAnnotations,
+        { start: viewStart, end: viewStart + timebase },
+        TIMELINE_DENSITY_BINS_PER_TRACK,
+      )
+      : [],
+    [bottomAnnotations, timebase, timelineUsesDensity, viewStart],
+  );
   const contextLaneLayout = useMemo(
-    () => assignAnnotationLanes(bottomAnnotations.filter((item) => item.track === "context")),
-    [bottomAnnotations],
+    () => timelineUsesDensity
+      ? { lanes: new Map<string, number>(), laneCount: 1 }
+      : assignAnnotationLanes(bottomAnnotations.filter((item) => item.track === "context")),
+    [bottomAnnotations, timelineUsesDensity],
   );
   const contextLaneHeight = 34;
   const contextLaneCapacity = Math.max(1, Math.floor((contextTrackHeight - 10) / contextLaneHeight));
@@ -4728,10 +5424,15 @@ export default function Home() {
       setToast("Labeling mode — drag across time to select a labeling window");
     }
   };
-  const activeDisplayBytes = display.data.reduce((sum, channel) => sum + channel.byteLength, 0)
-    + display.envelopes.reduce((sum, envelope) => sum + (envelope
-      ? envelope.minima.byteLength + envelope.maxima.byteLength + envelope.gaps.byteLength
-      : 0), 0);
+  const activeDisplayViews: ArrayBufferView[] = [
+    ...display.data,
+    ...display.envelopes.flatMap((envelope) => envelope
+      ? [envelope.minima, envelope.maxima, envelope.gaps]
+      : []),
+  ];
+  const activeDisplayVisibleBytes = activeDisplayViews.reduce((sum, view) => sum + view.byteLength, 0);
+  const activeBackingBuffers = new Set(activeDisplayViews.map((view) => view.buffer));
+  const activeDisplayBytes = [...activeBackingBuffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
 
   return (
     <main className="neuro-app" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
@@ -5056,7 +5757,7 @@ export default function Home() {
               </div>
             </div>
 
-            {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={display.startSecs[focusedChannel] ?? display.viewStart} cursor={cursorTime} label={display.labels[focusedChannel] || "Focused channel"} />}
+            {spectrogramOpen && <SpectrogramPanel data={display.data[focusedChannel]} sampleRate={display.sampleRates[focusedChannel] || primarySampleRate(meta)} start={display.startSecs[focusedChannel] ?? display.viewStart} cursor={cursorTime} label={display.labels[focusedChannel] || "Focused channel"} overview={Boolean(display.envelopes[focusedChannel])} />}
 
             {bottomTracksOpen && <div
               className={`timeline ${annotationSelectionBox ? "box-selecting" : ""}`}
@@ -5070,7 +5771,18 @@ export default function Home() {
                 <div className="track-label"><span className={`track-icon ${track.id}`} />{track.label}</div>
                 <div className="track-lane" data-track-id={track.id}>
                   <div className="window-grid">{Array.from({ length: gridDivisions }, (_, index) => <i key={index} />)}</div>
-                  {bottomAnnotations.filter((item) => item.track === track.id).map((item) => {
+                  {timelineUsesDensity ? timelineDensityBins
+                    .filter((bin) => bin.track === track.id)
+                    .map((bin, index) => {
+                      const left = ((bin.start - viewStart) / timebase) * 100;
+                      const width = Math.max(.18, ((bin.end - bin.start) / timebase) * 100);
+                      return <span
+                        key={`${track.id}-${index}`}
+                        className={`timeline-density-bin ${track.id}`}
+                        style={{ left: `${left}%`, width: `${width}%`, opacity: Math.min(.95, .3 + Math.log2(bin.count + 1) * .14) }}
+                        title={`${bin.count} annotation${bin.count === 1 ? "" : "s"} in this overview interval — zoom in to edit`}
+                      />;
+                    }) : bottomAnnotations.filter((item) => item.track === track.id).map((item) => {
                     const label = LABEL_BY_ID.get(item.labelId)!;
                     const geometry = annotationGeometry(item);
                     const point = geometry === "point";
@@ -5130,6 +5842,7 @@ export default function Home() {
             meta={meta}
             hasRecording={hasRecording}
             verifyingSource={verifyingSource}
+            loadingSignal={loadingSignal}
             sourceHash={sourceHash}
             recoveryStatus={recoveryStatus}
             viewStart={viewStart}
@@ -5138,6 +5851,7 @@ export default function Home() {
             selectedChannelCount={selectedChannels.size}
             openSessionCount={sessionTabs.length}
             activeDisplayBytes={activeDisplayBytes}
+            activeDisplayVisibleBytes={activeDisplayVisibleBytes}
             readCacheUsage={readResourceCacheUsage}
           /> : <>
           <div className="right-panel-mode-switch" role="tablist" aria-label="Right panel tools">
@@ -5456,105 +6170,132 @@ export default function Home() {
   );
 }
 
-function SpectrogramPanel({ data, sampleRate, start, cursor, label }: { data?: Float32Array; sampleRate: number; start: number; cursor: number; label: string }) {
+function SpectrogramPanel({ data, sampleRate, start, cursor, label, overview }: { data?: Float32Array; sampleRate: number; start: number; cursor: number; label: string; overview: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const [spectrumState, setSpectrumState] = useState<{
+    data?: Float32Array;
+    sampleRate: number;
+    result: SpectrogramComputeResult | null;
+    error: string;
+  }>({ data: undefined, sampleRate: 0, result: null, error: "" });
+  const spectrumStateMatches = spectrumState.data === data && spectrumState.sampleRate === sampleRate;
+  const spectrum = spectrumStateMatches ? spectrumState.result : null;
+  const computeError = spectrumStateMatches ? spectrumState.error : "";
+
+  useEffect(() => {
+    if (overview || !data?.length || sampleRate < 2) return;
+    const abortController = new AbortController();
+    const inputBytes = data.byteLength;
+    const operation = performanceDiagnostics.beginDecode({
+      label: "Spectrogram DFT",
+      totalBytes: inputBytes,
+      phase: "Computing spectrum in worker",
+    });
+    void computeSpectrogramOffThread({ data, sampleRate }, { signal: abortController.signal }).then(
+      (result) => {
+        operation.finish({
+          completedBytes: inputBytes,
+          durationMs: result.metrics.computeMs + (result.metrics.inputCopyMs ?? 0),
+          transientAllocatedBytes: inputBytes,
+        });
+        setSpectrumState({ data, sampleRate, result, error: "" });
+      },
+      (error: unknown) => {
+        const aborted = isAbortFailure(error);
+        operation[aborted ? "cancel" : "fail"]();
+        if (!aborted) setSpectrumState({
+          data,
+          sampleRate,
+          result: null,
+          error: error instanceof Error ? error.message : "Spectrum computation failed",
+        });
+      },
+    );
+    return () => {
+      abortController.abort(new DOMException("Spectrogram view changed", "AbortError"));
+      operation.cancel();
+    };
+  }, [data, overview, sampleRate]);
+
   useLayoutEffect(() => {
     const canvas = ref.current;
-    if (!canvas || !data?.length || !sampleRate) return;
+    if (!canvas) return;
     const draw = () => {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.floor(rect.width * dpr);
-      canvas.height = Math.floor(rect.height * dpr);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const width = rect.width;
-      const height = rect.height;
-      ctx.fillStyle = "#071216"; ctx.fillRect(0, 0, width, height);
-      if (sampleRate < 2) {
-        ctx.fillStyle = "rgba(235,245,243,.55)";
-        ctx.font = "10px ui-monospace, monospace";
-        ctx.fillText("Spectrum unavailable below 2 Hz", 8, 12);
-        return;
-      }
-      const nominalWindowSize = Math.min(256, 2 ** Math.floor(Math.log2(Math.max(32, sampleRate))));
-      const windowSize = Math.max(1, Math.min(data.length, nominalWindowSize));
-      const targetHop = Math.max(1, Math.floor(windowSize / 4));
-      const possibleFrames = Math.max(1, Math.floor((data.length - windowSize) / targetHop) + 1);
-      const frames = Math.min(90, possibleFrames);
-      const hop = frames > 1
-        ? Math.max(1, Math.floor((data.length - windowSize) / (frames - 1)))
-        : 1;
-      const maxHz = Math.min(150, sampleRate / 2);
-      const bins = 56;
-      const powers: number[][] = Array.from({ length: bins }, () => Array(frames).fill(Number.NaN));
-      for (let frame = 0; frame < frames; frame += 1) {
-        const offset = Math.min(Math.max(0, data.length - windowSize), frame * hop);
-        let finiteSamples = 0;
-        let mean = 0;
-        for (let sample = 0; sample < windowSize; sample += 1) {
-          const value = data[offset + sample];
-          if (!Number.isFinite(value)) continue;
-          mean += value;
-          finiteSamples += 1;
+      const renderSpan = performanceDiagnostics.beginRender();
+      try {
+        const rect = canvas.getBoundingClientRect();
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(rect.width * dpr);
+        canvas.height = Math.floor(rect.height * dpr);
+        performanceDiagnostics.recordCanvasSurface(
+          "spectrogram",
+          { width: canvas.width, height: canvas.height },
+          { gpuSurfaceCopies: 2 },
+        );
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const width = rect.width;
+        const height = rect.height;
+        ctx.fillStyle = "#071216";
+        ctx.fillRect(0, 0, width, height);
+        const status = overview
+          ? "Zoom in for spectrum — wide views stay on the fast exact-extrema overview"
+          : sampleRate < 2
+          ? "Spectrum unavailable below 2 Hz"
+          : computeError || (!spectrum ? "Computing spectrum…" : "");
+        if (status) {
+          ctx.fillStyle = "rgba(235,245,243,.55)";
+          ctx.font = "10px ui-monospace, monospace";
+          ctx.fillText(status, 8, 12);
+          return;
         }
-        if (finiteSamples / windowSize < .75) continue;
-        mean /= finiteSamples;
-        const coverageGain = windowSize / finiteSamples;
-        for (let bin = 0; bin < bins; bin += 1) {
-          const frequency = Math.exp(Math.log(1) + (bin / (bins - 1)) * Math.log(Math.max(1.01, maxHz)));
-          let re = 0; let im = 0;
-          for (let sample = 0; sample < windowSize; sample += 1) {
-            const sourceValue = data[offset + sample];
-            if (!Number.isFinite(sourceValue)) continue;
-            const value = sourceValue - mean;
-            const hann = 0.5 - 0.5 * Math.cos((2 * Math.PI * sample) / Math.max(1, windowSize - 1));
-            const angle = (2 * Math.PI * frequency * sample) / sampleRate;
-            re += value * hann * Math.cos(angle);
-            im -= value * hann * Math.sin(angle);
+        if (!spectrum) return;
+        const { powers, frames, bins, maxHz } = spectrum;
+        const flat = Array.from(powers).filter(Number.isFinite).sort((a, b) => a - b);
+        if (!flat.length) {
+          ctx.fillStyle = "rgba(235,245,243,.55)";
+          ctx.font = "10px ui-monospace, monospace";
+          ctx.fillText("No sufficiently complete signal frames", 8, 12);
+          return;
+        }
+        const low = flat[Math.floor(flat.length * 0.08)] ?? 0;
+        const high = flat[Math.floor(flat.length * 0.97)] ?? low + 1;
+        for (let bin = 0; bin < bins; bin += 1) for (let frame = 0; frame < frames; frame += 1) {
+          const x = (frame / frames) * width;
+          const y = height - ((bin + 1) / bins) * height;
+          const power = powers[bin * frames + frame];
+          if (!Number.isFinite(power)) {
+            ctx.fillStyle = "rgba(243,187,95,.06)";
+            ctx.fillRect(x, y, width / frames + 1, height / bins + 1);
+            continue;
           }
-          re *= coverageGain;
-          im *= coverageGain;
-          powers[bin][frame] = Math.log10(re * re + im * im + 1e-9);
-        }
-      }
-      const flat = powers.flat().filter(Number.isFinite).sort((a, b) => a - b);
-      if (!flat.length) {
-        ctx.fillStyle = "rgba(235,245,243,.55)";
-        ctx.font = "10px ui-monospace, monospace";
-        ctx.fillText("No sufficiently complete signal frames", 8, 12);
-        return;
-      }
-      const low = flat[Math.floor(flat.length * 0.08)] ?? 0;
-      const high = flat[Math.floor(flat.length * 0.97)] ?? low + 1;
-      for (let bin = 0; bin < bins; bin += 1) for (let frame = 0; frame < frames; frame += 1) {
-        const x = (frame / frames) * width;
-        const y = height - ((bin + 1) / bins) * height;
-        const power = powers[bin][frame];
-        if (!Number.isFinite(power)) {
-          ctx.fillStyle = "rgba(243,187,95,.06)";
+          const value = clamp((power - low) / Math.max(1e-6, high - low), 0, 1);
+          const hue = 220 - value * 170;
+          ctx.fillStyle = `hsl(${hue} 76% ${18 + value * 48}%)`;
           ctx.fillRect(x, y, width / frames + 1, height / bins + 1);
-          continue;
         }
-        const value = clamp((power - low) / Math.max(1e-6, high - low), 0, 1);
-        const hue = 220 - value * 170;
-        ctx.fillStyle = `hsl(${hue} 76% ${18 + value * 48}%)`;
-        ctx.fillRect(x, y, width / frames + 1, height / bins + 1);
+        ctx.strokeStyle = "rgba(255,255,255,.28)";
+        ctx.font = "10px ui-monospace, monospace";
+        ctx.fillStyle = "rgba(235,245,243,.72)";
+        ctx.textAlign = "left";
+        [1, 10, 30, 70, 150].filter((hz) => hz <= maxHz).forEach((hz) => {
+          const normalized = Math.log(hz) / Math.log(Math.max(1.01, maxHz));
+          const y = height - normalized * height;
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); ctx.fillText(`${hz} Hz`, 5, y - 2);
+        });
+      } finally {
+        renderSpan.finish();
       }
-      ctx.strokeStyle = "rgba(255,255,255,.28)";
-      ctx.font = "10px ui-monospace, monospace";
-      ctx.fillStyle = "rgba(235,245,243,.72)";
-      ctx.textAlign = "left";
-      [1, 10, 30, 70, 150].filter((hz) => hz <= maxHz).forEach((hz) => {
-        const normalized = Math.log(hz) / Math.log(Math.max(1.01, maxHz));
-        const y = height - normalized * height;
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); ctx.fillText(`${hz} Hz`, 5, y - 2);
-      });
     };
     draw();
-    const observer = new ResizeObserver(draw); observer.observe(canvas); return () => observer.disconnect();
-  }, [data, sampleRate]);
+    const observer = new ResizeObserver(draw);
+    observer.observe(canvas);
+    return () => {
+      observer.disconnect();
+      performanceDiagnostics.removeCanvasSurface("spectrogram");
+    };
+  }, [computeError, overview, sampleRate, spectrum]);
   const duration = data?.length && sampleRate ? data.length / sampleRate : 1;
   const cursorLeft = clamp(((cursor - start) / duration) * 100, 0, 100);
   return <div className="spectrogram-panel"><div className="spectrogram-label"><strong>{label}</strong><span>{sampleRate >= 2 ? `1–${Math.min(150, Math.floor(sampleRate / 2))} Hz · log power · display only` : "Sampling rate below 2 Hz"}</span></div><div className="spectrogram-canvas-shell"><canvas ref={ref} /><i className="spectrogram-cursor" style={{ left: `${cursorLeft}%` }} /></div></div>;
@@ -5797,6 +6538,7 @@ function ResourceUsagePanel({
   meta,
   hasRecording,
   verifyingSource,
+  loadingSignal,
   sourceHash,
   recoveryStatus,
   viewStart,
@@ -5805,11 +6547,13 @@ function ResourceUsagePanel({
   selectedChannelCount,
   openSessionCount,
   activeDisplayBytes,
+  activeDisplayVisibleBytes,
   readCacheUsage,
 }: {
   meta: RecordingMeta;
   hasRecording: boolean;
   verifyingSource: boolean;
+  loadingSignal: boolean;
   sourceHash: string;
   recoveryStatus: "saved" | "error";
   viewStart: number;
@@ -5818,6 +6562,7 @@ function ResourceUsagePanel({
   selectedChannelCount: number;
   openSessionCount: number;
   activeDisplayBytes: number;
+  activeDisplayVisibleBytes: number;
   readCacheUsage: () => ResourceCacheUsage;
 }) {
   const [browserUsage, setBrowserUsage] = useState<BrowserResourceUsage>({
@@ -5835,6 +6580,14 @@ function ResourceUsagePanel({
     envelopeBytes: 0,
     envelopeEntries: 0,
   });
+  const [performanceUsage, setPerformanceUsage] = useState<PerformanceDiagnosticsSnapshot>(
+    () => performanceDiagnostics.snapshot(),
+  );
+
+  useEffect(() => {
+    const unsubscribe = performanceDiagnostics.subscribe(setPerformanceUsage);
+    return () => { unsubscribe(); };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -5848,6 +6601,11 @@ function ResourceUsagePanel({
         // Storage estimates are optional browser diagnostics.
       }
       if (!active) return;
+      performanceDiagnostics.sampleHeapMemory(memory ? {
+        usedBytes: memory.usedJSHeapSize,
+        allocatedBytes: memory.totalJSHeapSize,
+        limitBytes: memory.jsHeapSizeLimit,
+      } : null);
       setBrowserUsage({
         heapUsedBytes: memory?.usedJSHeapSize ?? null,
         heapAllocatedBytes: memory?.totalJSHeapSize ?? null,
@@ -5875,12 +6633,37 @@ function ResourceUsagePanel({
       : sourceHash
         ? "Source verified"
         : "Preview available";
+  const activeOperation = performanceUsage.activeOperations[0] ?? null;
+  const mainThreadPercent = performanceUsage.mainThread.utilizationEstimate * 100;
+  const transientObservationBytes = Math.max(
+    performanceUsage.allocations.reportedTransientBytes,
+    performanceUsage.allocations.observedHeapGrowthBytes,
+  );
+  const processingStatus = activeOperation?.phase
+    ?? (verifyingSource ? "Source verification" : loadingSignal ? "Preparing signal window" : "Ready");
 
   return <section className="resource-panel" aria-label="Resource usage">
     <header className="resource-panel-heading">
-      <div><span>LIVE DIAGNOSTICS</span><h2>Resource usage</h2><p>Browser memory and active signal reads</p></div>
+      <div><span>LIVE DIAGNOSTICS</span><h2>Performance</h2><p>I/O, decoding, UI thread, rendering, and memory</p></div>
       <strong><i />LIVE</strong>
     </header>
+
+    <section className={`resource-operation-card${activeOperation ? " active" : ""}`}>
+      <header><span>{activeOperation?.kind === "decode" ? "ACTIVE DECODE" : activeOperation ? "ACTIVE SOURCE READ" : "DATA PIPELINE"}</span><strong>{activeOperation ? `${Math.round((activeOperation.progress ?? 0) * 100)}%` : "IDLE"}</strong></header>
+      <h3>{activeOperation?.label ?? "No read or decode operation running"}</h3>
+      <p>{activeOperation?.phase ?? "Cached interactions remain available without touching the source file."}</p>
+      <div className="resource-meter"><i style={{ width: `${activeOperation?.progress === null || activeOperation?.progress === undefined ? 0 : activeOperation.progress * 100}%` }} /></div>
+      <footer><span>{activeOperation ? `${formatByteCount(activeOperation.completedBytes)} / ${formatByteCount(activeOperation.totalBytes)}` : `${formatByteCount(performanceUsage.sourceReads.bytes)} read this session`}</span><span>{activeOperation ? formatByteRate(activeOperation.throughputBytesPerSecond) : formatByteRate(performanceUsage.sourceReads.throughputBytesPerSecond)}</span></footer>
+    </section>
+
+    <div className="resource-summary-grid performance-grid">
+      <div><span>Main-thread pressure</span><strong>{mainThreadPercent.toFixed(1)}%</strong><small>Rolling 10 s browser event-loop estimate</small></div>
+      <div><span>UI frame cadence</span><strong>{performanceUsage.rendering.rollingFrameSamples > 1 ? `${performanceUsage.rendering.rollingFps.toFixed(0)} fps` : "Sampling"}</strong><small>{performanceUsage.rendering.rollingDroppedFrames} recent · {performanceUsage.rendering.totalDroppedFrames} total drops</small></div>
+      <div><span>Last canvas draw</span><strong>{formatMetricDuration(performanceUsage.rendering.lastDurationMs)}</strong><small>{formatMetricDuration(performanceUsage.rendering.averageDurationMs)} average</small></div>
+      <div><span>File read throughput</span><strong>{formatByteRate(performanceUsage.sourceReads.throughputBytesPerSecond)}</strong><small>{formatByteCount(performanceUsage.sourceReads.bytes)} requested</small></div>
+      <div><span>Canvas backing</span><strong>{formatByteCount(performanceUsage.canvases.backingBytes)}</strong><small>{formatByteCount(performanceUsage.canvases.estimatedGpuBytes)} GPU/compositor estimate</small></div>
+      <div><span>Temporary churn lower bound</span><strong>{formatByteCount(transientObservationBytes)}</strong><small>{formatByteCount(performanceUsage.allocations.reportedTransientBytes)} reported · {formatByteCount(performanceUsage.allocations.observedHeapGrowthBytes)} heap growth</small></div>
+    </div>
 
     <section className="resource-heap-card">
       <span>Browser JS heap</span>
@@ -5891,10 +6674,49 @@ function ResourceUsagePanel({
 
     <div className="resource-summary-grid">
       <div><span>Signal cache</span><strong>{formatByteCount(signalCacheBytes)}</strong><small>{cacheEntries} cached window{cacheEntries === 1 ? "" : "s"}</small></div>
-      <div><span>Active view</span><strong>{formatByteCount(activeDisplayBytes)}</strong><small>{visibleChannelCount} rendered channel{visibleChannelCount === 1 ? "" : "s"}</small></div>
+      <div><span>Active retained view</span><strong>{formatByteCount(activeDisplayBytes)}</strong><small>{formatByteCount(activeDisplayVisibleBytes)} visible · backing may be shared with cache</small></div>
       <div><span>Allocated heap</span><strong>{formatByteCount(browserUsage.heapAllocatedBytes)}</strong><small>Browser-managed</small></div>
       <div><span>Site storage</span><strong>{formatByteCount(browserUsage.storageUsedBytes)}</strong><small>{browserUsage.storageQuotaBytes === null ? "Quota unavailable" : `${formatByteCount(browserUsage.storageQuotaBytes)} quota`}</small></div>
     </div>
+
+    <section className="resource-detail-section performance-detail-section">
+      <header><h3>File I/O and decoding</h3><span>{performanceUsage.sourceReads.activeOperations + performanceUsage.decoding.activeOperations ? "ACTIVE" : "SESSION TOTALS"}</span></header>
+      <dl>
+        <div><dt>Total source bytes read</dt><dd>{formatByteCount(performanceUsage.sourceReads.bytes)}</dd></div>
+        <div><dt>Source read time</dt><dd>{formatMetricDuration(performanceUsage.sourceReads.durationMs)}</dd></div>
+        <div><dt>Read throughput</dt><dd>{formatByteRate(performanceUsage.sourceReads.throughputBytesPerSecond)}</dd></div>
+        <div><dt>Read operations</dt><dd>{performanceUsage.sourceReads.operationsCompleted} done · {performanceUsage.sourceReads.operationsCancelled} canceled · {performanceUsage.sourceReads.operationsFailed} failed</dd></div>
+        <div><dt>Decode/reduction time</dt><dd>{formatMetricDuration(performanceUsage.decoding.durationMs)}</dd></div>
+        <div><dt>Decode throughput</dt><dd>{formatByteRate(performanceUsage.decoding.throughputBytesPerSecond)}</dd></div>
+      </dl>
+      <p>Source bytes are measured at the browser file boundary. Browsers do not reveal whether each byte came from physical disk or the operating-system cache.</p>
+    </section>
+
+    <section className="resource-detail-section performance-detail-section">
+      <header><h3>Main thread and frames</h3><span>{mainThreadPercent.toFixed(1)}% PRESSURE</span></header>
+      <dl>
+        <div><dt>Process CPU utilization</dt><dd>Not exposed by browsers</dd></div>
+        <div><dt>Main-thread estimate</dt><dd>{mainThreadPercent.toFixed(1)}%</dd></div>
+        <div><dt>Event-loop delay</dt><dd>{formatMetricDuration(performanceUsage.mainThread.eventLoopDelayMs)}</dd></div>
+        <div><dt>Long tasks</dt><dd>{performanceUsage.mainThread.longTaskCount} · {formatMetricDuration(performanceUsage.mainThread.longTaskDurationMs)} total</dd></div>
+        <div><dt>Longest UI block</dt><dd>{formatMetricDuration(performanceUsage.mainThread.longestLongTaskMs)}</dd></div>
+        <div><dt>Canvas renders</dt><dd>{performanceUsage.rendering.renders} · {formatMetricDuration(performanceUsage.rendering.longestDurationMs)} max</dd></div>
+        <div><dt>Dropped frames</dt><dd>{performanceUsage.rendering.rollingDroppedFrames} recent · {performanceUsage.rendering.totalDroppedFrames} total</dd></div>
+      </dl>
+    </section>
+
+    <section className="resource-detail-section performance-detail-section">
+      <header><h3>Temporary and native memory</h3><span>ESTIMATES WHERE REQUIRED</span></header>
+      <dl>
+        <div><dt>Transient buffers processed</dt><dd>{formatByteCount(performanceUsage.allocations.reportedTransientBytes)}</dd></div>
+        <div><dt>Observed heap growth</dt><dd>{formatByteCount(performanceUsage.allocations.observedHeapGrowthBytes)}</dd></div>
+        <div><dt>Observed heap release</dt><dd>{formatByteCount(performanceUsage.allocations.observedHeapReleaseBytes)}</dd></div>
+        <div><dt>Garbage collection</dt><dd>{performanceUsage.garbageCollection.supported ? `${performanceUsage.garbageCollection.count} · ${formatMetricDuration(performanceUsage.garbageCollection.durationMs)}` : "Timing not exposed"}</dd></div>
+        <div><dt>Canvas backing store</dt><dd>{formatByteCount(performanceUsage.canvases.backingBytes)}</dd></div>
+        <div><dt>GPU/compositor surfaces</dt><dd>≈ {formatByteCount(performanceUsage.canvases.estimatedGpuBytes)}</dd></div>
+      </dl>
+      <p>CPU percentage, exact GPU allocation, and complete garbage-collector accounting are restricted by browser privacy APIs; the panel shows measured event-loop pressure and conservative surface estimates.</p>
+    </section>
 
     <section className="resource-detail-section">
       <header><h3>Signal memory</h3><span>{usagePercent(signalCacheBytes, TOTAL_SIGNAL_CACHE_BUDGET_BYTES).toFixed(0)}% of cache ceiling</span></header>
@@ -5925,7 +6747,7 @@ function ResourceUsagePanel({
       <header><h3>Workspace</h3><span>{openSessionCount} open tab{openSessionCount === 1 ? "" : "s"}</span></header>
       <dl>
         <div><dt>Local recovery</dt><dd className={recoveryStatus === "saved" ? "healthy" : "warning"}>{recoveryStatus === "saved" ? "Saved" : "Unavailable"}</dd></div>
-        <div><dt>Processing</dt><dd>{verifyingSource ? "Source verification" : "Ready"}</dd></div>
+        <div><dt>Processing</dt><dd>{processingStatus}</dd></div>
       </dl>
     </section>
   </section>;

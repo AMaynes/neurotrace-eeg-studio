@@ -357,10 +357,11 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(load, /tab\.id\s*===\s*targetSessionId/);
   assert.match(load, /title:\s*shortFileName/);
   const previewIndex = load.indexOf("sourceRef.current = source");
-  const verificationIndex = load.indexOf("await verifySourceOffThread(file");
+  const verificationIndex = load.indexOf("await buildEDFEnvelopeWindowOffThread");
   assert.ok(previewIndex >= 0 && verificationIndex > previewIndex, "a read-only waveform preview opens before full source verification finishes");
   assert.match(load, /sourceVerificationRef\.current\s*=\s*true/);
-  assert.match(load, /edfHeader:\s*source\s+instanceof\s+EDFSource\s*\?\s*source\.header\s*:\s*undefined/);
+  assert.match(load, /buildEDFEnvelopeWindowOffThread[\s\S]*?integrity:\s*\{\s*sha256:\s*true,\s*edfAnnotations:\s*true\s*\}/);
+  assert.match(load, /buildRawDatEnvelopeWindowOffThread[\s\S]*?integrity:\s*\{\s*sha256:\s*true\s*\}/);
   assert.match(load, /signal:\s*verificationAbortController\.signal/);
   assert.ok(load.indexOf("setSourceHash(interpretationHash)") > verificationIndex, "verified source identity attaches only after the worker completes");
   assert.ok(load.indexOf("setSessionTabs((current)") > verificationIndex, "tab identity is not replaced until verification succeeds");
@@ -419,8 +420,8 @@ test("toggles each loaded tab between the recording and file structure analysis"
   assert.match(page, /activeSessionContentView === "structure" && hasRecording \? <FileStructurePanel/);
   assert.equal(
     page.match(/\[activeSessionContentView, hasRecording\]/g)?.length,
-    2,
-    "returning to the recording remounts canvas measurement and wheel controls",
+    3,
+    "returning to the recording remounts canvas measurement, frame diagnostics, and wheel controls",
   );
   assert.match(page, /\[activeCandidateItem, activeSessionContentView,[^\]]+\]/, "returning to the recording redraws the waveform canvas");
   assert.match(page, /\[activeSessionContentView, expandedChannels\]/, "returning to the recording restores channel viewport measurement");
@@ -634,6 +635,17 @@ test("toggles live resource usage from the control left of Help and Settings", a
   assert.match(resourcePanel, /performance as PerformanceWithMemory/);
   assert.match(resourcePanel, /navigator\.storage/);
   assert.match(resourcePanel, /Signal cache/);
+  assert.match(resourcePanel, /Total source bytes read/);
+  assert.match(resourcePanel, /browser file boundary/);
+  assert.match(resourcePanel, /Main-thread pressure/);
+  assert.match(resourcePanel, /Process CPU utilization/);
+  assert.match(resourcePanel, /Transient buffers processed/);
+  assert.match(resourcePanel, /Garbage collection/);
+  assert.match(resourcePanel, /Canvas backing store/);
+  assert.match(resourcePanel, /GPU\/compositor surfaces/);
+  assert.match(resourcePanel, /Dropped frames/);
+  assert.match(resourcePanel, /UI frame cadence/);
+  assert.match(resourcePanel, /Active retained view/);
   assert.match(resourcePanel, /Reading from/);
   assert.match(resourcePanel, /Recording data is not uploaded/);
   assert.match(resourcePanel, /Browsers expose the file name, not its full local path/);
@@ -881,7 +893,8 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /const rowTop\s*=\s*plotTop\s*\+\s*rowHeight\s*\*\s*channelRowLayout\.rowStartUnits\[channel\]\s*-\s*rowScrollOffset/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
   assert.match(draw, /context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)[\s\S]*?context\.clip\(\)/, "each channel is clipped to its exact row without a minimum-height bleed");
-  assert.ok((draw.match(/confineTraceYToRow\(/g) ?? []).length >= 4, "direct, envelope, and midpoint paths hard-limit trace coordinates to the row");
+  assert.ok((draw.match(/confineTraceYValueToRow\(/g) ?? []).length >= 4, "direct, envelope, and midpoint paths hard-limit trace coordinates to the row without allocating point objects");
+  assert.match(draw, /traceYOverflowsRow/, "overflow reporting remains separate from allocation-free coordinate confinement");
   assert.match(draw, /if\s*\(overflow\)[\s\S]*?context\.closePath\(\)/, "clipped excursions leave an overflow marker");
   assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
   assert.match(draw, /if\s*\(rowHeight\s*>=\s*2\)[\s\S]*?context\.strokeRect/, "focused-row borders are omitted when a compact row is too short to contain the stroke");
