@@ -123,7 +123,7 @@ type TrackId = "context" | "windowed" | "instance";
 type AnnotationStatus = "draft" | "committed" | "suggestion";
 type AnnotationOrigin = "manual" | "imported" | "detector" | "legacy";
 type PlacementIntent = "native" | "instance" | "windowed" | "context-instance" | "context-window";
-type WindowTimeUnit = "ms" | "s" | "hr";
+type WindowTimeUnit = "ms" | "s" | "m" | "hrs";
 type AnnotationDragPatch = Pick<Annotation, "start" | "end" | "track" | "geometry">;
 type AnnotationSelectionBox = { left: number; top: number; width: number; height: number };
 type InspectionBox = {
@@ -1041,10 +1041,10 @@ const MAX_REUSABLE_ENVELOPE_BUCKETS = 524_288;
 // pyramid for an ordinary 18-channel recording.
 const FULL_SESSION_ENVELOPE_REFINEMENT = 32;
 const LOCAL_ENVELOPE_REFINEMENT = 4;
-const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "hr"];
-const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, hr: 3_600 };
-const MIN_WINDOW_AMOUNT = .001;
-const MIN_TIME_WINDOW_SECONDS = MIN_WINDOW_AMOUNT * WINDOW_UNIT_SECONDS.ms;
+const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "m", "hrs"];
+const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, m: 60, hrs: 3_600 };
+const WINDOW_ZOOM_STEP_SECONDS = .1;
+const MIN_TIME_WINDOW_SECONDS = WINDOW_ZOOM_STEP_SECONDS;
 // Fewer samples cannot form a stable trace or survive the AR(2) whitening
 // prefix used by the spectrogram at deep zoom.
 const MIN_RENDERABLE_SAMPLE_COUNT = 8;
@@ -1261,6 +1261,10 @@ function expectedEDFRecordBytes(source: EDFSource, startSec: number, durationSec
 function formatWindowAmount(value: number) {
   if (!Number.isFinite(value)) return "";
   return Number(value.toPrecision(9)).toString();
+}
+
+function quantizeWindowZoom(value: number) {
+  return Number((Math.round(value / WINDOW_ZOOM_STEP_SECONDS) * WINDOW_ZOOM_STEP_SECONDS).toFixed(10));
 }
 
 function snapTime(value: number, mode: "1s" | "100ms" | "sample", sampleRate: number, bypass = false) {
@@ -2343,20 +2347,25 @@ export default function Home() {
     const rangeEnd = clamp(Math.max(start, end), rangeStart, meta.durationSec);
     const selectedDuration = rangeEnd - rangeStart;
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
-    const nextDuration = clamp(selectedDuration, Math.min(minimumRenderableWindow, maximumWindow), maximumWindow);
+    const nextDuration = clamp(
+      quantizeWindowZoom(selectedDuration),
+      Math.min(minimumRenderableWindow, maximumWindow),
+      maximumWindow,
+    );
     const center = (rangeStart + rangeEnd) / 2;
     commitViewStart(clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)));
     setTimebase(nextDuration);
   }, [commitViewStart, meta.durationSec, minimumRenderableWindow]);
 
   const zoomTimeWindow = useCallback((direction: "in" | "out", anchorTime?: number) => {
-    setTimeWindow(timebase * (direction === "in" ? 0.8 : 1.25), anchorTime);
+    setTimeWindow(timebase + (direction === "in" ? -WINDOW_ZOOM_STEP_SECONDS : WINDOW_ZOOM_STEP_SECONDS), anchorTime);
   }, [setTimeWindow, timebase]);
 
   const windowUnitSeconds = WINDOW_UNIT_SECONDS[windowDraftUnit];
   const windowDraftDisplayValue = windowDraftValue ?? formatWindowAmount(timebase / windowUnitSeconds);
   const windowDraftMaximum = Math.max(Number.EPSILON, meta.durationSec / windowUnitSeconds);
-  const windowDraftMinimum = Math.min(MIN_WINDOW_AMOUNT, windowDraftMaximum);
+  const windowDraftMinimum = Math.min(minimumRenderableWindow / windowUnitSeconds, windowDraftMaximum);
+  const windowDraftStep = WINDOW_ZOOM_STEP_SECONDS / windowUnitSeconds;
   const cycleWindowDraftUnit = () => {
     setWindowDraftValue((current) => current ?? formatWindowAmount(timebase / windowUnitSeconds));
     const currentIndex = WINDOW_TIME_UNITS.indexOf(windowDraftUnit);
@@ -2368,11 +2377,7 @@ export default function Home() {
     const currentValue = Number.isFinite(numericValue) && numericValue > 0
       ? numericValue
       : windowDraftMinimum;
-    const decimalPlaces = windowDraftDisplayValue.includes(".")
-      ? windowDraftDisplayValue.split(".")[1].length
-      : 0;
-    const step = 10 ** -decimalPlaces;
-    setWindowDraftValue(formatWindowAmount(clamp(currentValue + direction * step, windowDraftMinimum, windowDraftMaximum)));
+    setWindowDraftValue(formatWindowAmount(clamp(currentValue + direction, windowDraftMinimum, windowDraftMaximum)));
   };
   const syncWindowDraft = () => {
     if (!hasRecording) return;
@@ -2382,7 +2387,7 @@ export default function Home() {
       return;
     }
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
-    const minimumWindow = Math.min(MIN_WINDOW_AMOUNT * windowUnitSeconds, maximumWindow);
+    const minimumWindow = Math.min(minimumRenderableWindow, maximumWindow);
     const nextWindow = clamp(numericValue * windowUnitSeconds, minimumWindow, maximumWindow);
     setTimeWindow(nextWindow);
     setWindowDraftValue(null);
@@ -4722,8 +4727,8 @@ export default function Home() {
           const boundedDelta = clamp(zoomWheelDeltaRef.current, -120, 120);
           zoomWheelDeltaRef.current = 0;
           zoomWheelFrameRef.current = null;
-          const factor = Math.exp(boundedDelta * Math.log(1.25) / 120);
-          setTimeWindow(timebase * factor, zoomWheelAnchorRef.current);
+          const direction = boundedDelta < 0 ? -1 : 1;
+          setTimeWindow(timebase + direction * WINDOW_ZOOM_STEP_SECONDS, zoomWheelAnchorRef.current);
         });
       }
       return;
@@ -6653,7 +6658,7 @@ export default function Home() {
                 type="number"
                 min={windowDraftMinimum}
                 max={windowDraftMaximum}
-                step="any"
+                step={windowDraftStep}
                 value={windowDraftDisplayValue}
                 onChange={(event) => setWindowDraftValue(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") syncWindowDraft(); }}

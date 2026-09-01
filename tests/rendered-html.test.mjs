@@ -201,9 +201,10 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /type WindowTimeUnit = "ms" \| "s" \| "hr"/);
-  assert.match(page, /const MIN_WINDOW_AMOUNT = \.001/);
-  assert.match(page, /const MIN_TIME_WINDOW_SECONDS = MIN_WINDOW_AMOUNT \* WINDOW_UNIT_SECONDS\.ms/);
+  assert.match(page, /type WindowTimeUnit = "ms" \| "s" \| "m" \| "hrs"/);
+  assert.match(page, /const WINDOW_TIME_UNITS: WindowTimeUnit\[\] = \["ms", "s", "m", "hrs"\]/);
+  assert.match(page, /const WINDOW_ZOOM_STEP_SECONDS = \.1/);
+  assert.match(page, /const MIN_TIME_WINDOW_SECONDS = WINDOW_ZOOM_STEP_SECONDS/);
   assert.match(page, /const \[windowDraftValue, setWindowDraftValue\] = useState<string \| null>\(null\)/);
 
   const controlsStart = page.indexOf('<div className={`time-window-control');
@@ -216,6 +217,7 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.equal((unitPicker.match(/<button/g) ?? []).length, 1, "the unit has one change button beneath it");
   assert.match(controls, /min=\{windowDraftMinimum\}/);
   assert.match(controls, /max=\{windowDraftMaximum\}/);
+  assert.match(controls, /step=\{windowDraftStep\}/);
   assert.match(controls, /onChange=\{\(event\) => setWindowDraftValue\(event\.target\.value\)\}/);
   assert.doesNotMatch(controls, /onChange=\{[^}]*setTimeWindow/, "editing the staged amount does not reload the waveform");
   assert.match(controls, /aria-label="Decrease window amount"[\s\S]*?adjustWindowDraft\(-1\)/);
@@ -236,7 +238,8 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
   assert.doesNotMatch(windowLogic, /Math\.min\(300/, "the full recording duration is accepted");
   assert.match(windowLogic, /numericValue \* windowUnitSeconds/);
-  assert.match(windowLogic, /currentValue \+ direction \* step/);
+  assert.match(windowLogic, /currentValue \+ direction/);
+  assert.match(windowLogic, /timebase \+ \(direction === "in" \? -WINDOW_ZOOM_STEP_SECONDS : WINDOW_ZOOM_STEP_SECONDS\)/);
   assert.match(windowLogic, /setTimeWindow\(nextWindow\)/);
   assert.match(windowLogic, /setWindowDraftValue\(null\)/);
   assert.match(css, /\.window-unit-picker\s*\{/);
