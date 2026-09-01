@@ -1688,10 +1688,10 @@ export default function Home() {
   const windowDraftDisplayValue = windowDraftValue ?? formatWindowAmount(timebase / windowUnitSeconds);
   const windowDraftMaximum = Math.max(Number.EPSILON, meta.durationSec / windowUnitSeconds);
   const windowDraftMinimum = Math.min(MIN_WINDOW_AMOUNT, windowDraftMaximum);
-  const cycleWindowDraftUnit = (direction: -1 | 1) => {
+  const cycleWindowDraftUnit = () => {
     setWindowDraftValue((current) => current ?? formatWindowAmount(timebase / windowUnitSeconds));
     const currentIndex = WINDOW_TIME_UNITS.indexOf(windowDraftUnit);
-    setWindowDraftUnit(WINDOW_TIME_UNITS[(currentIndex + direction + WINDOW_TIME_UNITS.length) % WINDOW_TIME_UNITS.length]);
+    setWindowDraftUnit(WINDOW_TIME_UNITS[(currentIndex + 1) % WINDOW_TIME_UNITS.length]);
   };
   const adjustWindowDraft = (direction: -1 | 1) => {
     if (!hasRecording) return;
@@ -4926,16 +4926,8 @@ export default function Home() {
             <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} aria-label="Spectrum" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrum</b></button>
             <label className="toolbar-select"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">Anatomical bipolar</option></select></label>
             <button className={`compact-toggle ${showFilters ? "active" : ""}`} aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
-            <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} aria-label="Window">
-              <div className="window-unit-picker">
-                <span>Window</span>
-                <div>
-                  <button disabled={!hasRecording} aria-label="Previous window time unit" title="Previous unit" onClick={() => cycleWindowDraftUnit(-1)}>‹</button>
-                  <b>{windowDraftUnit}</b>
-                  <button disabled={!hasRecording} aria-label="Next window time unit" title="Next unit" onClick={() => cycleWindowDraftUnit(1)}>›</button>
-                </div>
-              </div>
-              <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">↻</span></button>
+            <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} role="group" aria-label="Window">
+              <span className="window-control-label">Window</span>
               <label className="window-amount-field"><input
                 disabled={!hasRecording}
                 aria-label={`Window amount in ${windowDraftUnit}`}
@@ -4947,12 +4939,17 @@ export default function Home() {
                 onChange={(event) => setWindowDraftValue(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") syncWindowDraft(); }}
               /></label>
-              <div className="window-step-buttons">
-                <button disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease staged window amount" onClick={() => adjustWindowDraft(-1)}>−</button>
-                <button disabled={!hasRecording} aria-label="Increase window amount" title="Increase staged window amount" onClick={() => adjustWindowDraft(1)}>+</button>
+              <div className="window-unit-picker">
+                <b>{windowDraftUnit}</b>
+                <button disabled={!hasRecording} aria-label="Cycle window time unit" title="Cycle time unit" onClick={cycleWindowDraftUnit}><span aria-hidden="true">…</span></button>
               </div>
+              <div className="window-step-buttons">
+                <button disabled={!hasRecording} aria-label="Increase window amount" title="Increase staged window amount" onClick={() => adjustWindowDraft(1)}>+</button>
+                <button disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease staged window amount" onClick={() => adjustWindowDraft(-1)}>−</button>
+              </div>
+              <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
             </div>
-            <div className="gain-control" aria-label="Gain"><span>Gain</span><button disabled={!hasRecording} onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button><b>{gain.toFixed(1)}×</b><button disabled={!hasRecording} onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button></div>
+            <div className="gain-control" role="group" aria-label="Gain"><span>Gain</span><b>{gain.toFixed(1)}×</b><div className="gain-step-buttons"><button disabled={!hasRecording} aria-label="Increase gain" title="Increase gain" onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button><button disabled={!hasRecording} aria-label="Decrease gain" title="Decrease gain" onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button></div></div>
             <div className="toolbar-spacer" />
             <div className="transport-group">
               <button disabled={!hasRecording} aria-label="Previous page" onClick={() => setViewStartSafe((value) => value - timebase)}>‹</button>
@@ -5305,7 +5302,7 @@ export default function Home() {
               ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Sleep stages, rhythmic/periodic patterns, seizure state, quality, and spikes are grouped here."],
               ["Inspector and deletion", "Select any annotation to edit timing, notes, reviewer, and confidence, commit a revision, or use the trash can. Delete/Backspace also removes the selection."],
               ["QC and session map", "QC checks source assumptions and label integrity. Session map gives a hoverable, clickable whole-recording view."],
-              ["Navigation", "Trackpad or mouse-wheel movement pans through time. The Window unit arrows and number stage a new view; Sync applies it. Pinch or Ctrl/⌘ +/- zooms immediately. Escape clears the current interaction."],
+              ["Navigation", "Trackpad or mouse-wheel movement pans through time. The Window number and unit button stage a new view; the check button applies it. Pinch or Ctrl/⌘ +/- zooms immediately. Escape clears the current interaction."],
             ].map(([title, copy], index) => <section key={title}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{title}</strong><p>{copy}</p></div></section>)}
           </div>
           <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Clinical deployment requires institutional validation and privacy review.</p></div>

@@ -202,8 +202,10 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   const controlsEnd = page.indexOf('<div className="gain-control"', controlsStart);
   const controls = page.slice(controlsStart, controlsEnd);
   assert.match(controls, /className="window-unit-picker"/);
-  assert.match(controls, /cycleWindowDraftUnit\(-1\)/);
-  assert.match(controls, /cycleWindowDraftUnit\(1\)/);
+  assert.match(controls, /aria-label="Cycle window time unit"[\s\S]*?onClick=\{cycleWindowDraftUnit\}/);
+  assert.doesNotMatch(controls, /Previous window time unit|Next window time unit/);
+  const unitPicker = controls.slice(controls.indexOf('className="window-unit-picker"'), controls.indexOf("</div>", controls.indexOf('className="window-unit-picker"')));
+  assert.equal((unitPicker.match(/<button/g) ?? []).length, 1, "the unit has one change button beneath it");
   assert.match(controls, /min=\{windowDraftMinimum\}/);
   assert.match(controls, /max=\{windowDraftMaximum\}/);
   assert.match(controls, /onChange=\{\(event\) => setWindowDraftValue\(event\.target\.value\)\}/);
@@ -213,9 +215,14 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.doesNotMatch(controls, /zoomTimeWindow\(/, "the amount buttons stage numeric changes instead of immediately zooming");
   assert.match(controls, /className="window-sync-button"/);
   assert.match(controls, /onClick=\{syncWindowDraft\}/);
-  assert.match(controls, /className="window-sync-button"[\s\S]*?<span aria-hidden="true">↻<\/span><\/button>/);
+  assert.match(controls, /className="window-sync-button"[\s\S]*?<span aria-hidden="true">✓<\/span><\/button>/);
   assert.doesNotMatch(controls, />Sync</, "the icon-only Sync button does not repeat its accessible name visually");
-  assert.match(controls, /className="window-sync-button"[\s\S]*?className="window-amount-field"[\s\S]*?className="window-step-buttons"[\s\S]*?aria-label="Decrease window amount"[\s\S]*?aria-label="Increase window amount"/, "Sync sits left of the amount while both steppers stay together on its right");
+  assert.match(controls, /className="window-amount-field"[\s\S]*?className="window-unit-picker"[\s\S]*?className="window-step-buttons"[\s\S]*?aria-label="Increase window amount"[\s\S]*?aria-label="Decrease window amount"[\s\S]*?className="window-sync-button"/, "the amount, unit, vertical plus/minus controls, and Sync action appear in that order");
+
+  const gainStart = page.indexOf('<div className="gain-control"', controlsEnd);
+  const gainEnd = page.indexOf('<div className="toolbar-spacer"', gainStart);
+  const gainControls = page.slice(gainStart, gainEnd);
+  assert.match(gainControls, /<b>\{gain\.toFixed\(1\)\}×<\/b>[\s\S]*?className="gain-step-buttons"[\s\S]*?aria-label="Increase gain"[\s\S]*?aria-label="Decrease gain"/, "gain plus/minus controls are stacked to the right of its value");
 
   const windowLogic = page.slice(page.indexOf("const setTimeWindow"), page.indexOf("const commitMutation"));
   assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
@@ -225,9 +232,11 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(windowLogic, /setTimeWindow\(nextWindow\)/);
   assert.match(windowLogic, /setWindowDraftValue\(null\)/);
   assert.match(css, /\.window-unit-picker\s*\{/);
+  assert.match(css, /\.window-unit-picker\s*\{[^}]*flex-direction:\s*column/);
   assert.match(css, /\.time-window-control\.pending\s*\{/);
   assert.match(css, /\.window-sync-button\s*\{[^}]*width:\s*18px[^}]*height:\s*21px/s);
-  assert.match(css, /\.window-step-buttons\s*\{[^}]*display:\s*flex/);
+  assert.match(css, /\.window-step-buttons\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/);
+  assert.match(css, /\.gain-step-buttons\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/);
 });
 
 test("visually subdues controls that are temporarily unavailable", async () => {

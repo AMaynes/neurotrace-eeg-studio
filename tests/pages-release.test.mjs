@@ -61,7 +61,9 @@ test("macOS launcher hosts the static viewer on a chosen loopback port", async (
   ]);
   const packageJson = JSON.parse(packageSource);
 
-  assert.notEqual(launcherStats.mode & 0o111, 0, "the Finder launcher is executable");
+  if (process.platform !== "win32") {
+    assert.notEqual(launcherStats.mode & 0o111, 0, "the Finder launcher is executable");
+  }
   assert.match(launcher, /^#!\/bin\/zsh/);
   assert.match(launcher, /display dialog[\s\S]*default answer defaultPort[\s\S]*buttons \{"Cancel", "Start"\}/);
   assert.match(launcher, /numeric_port < 1024 \|\| numeric_port > 65535/);

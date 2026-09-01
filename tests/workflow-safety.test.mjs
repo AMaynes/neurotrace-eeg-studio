@@ -5,7 +5,7 @@ import test from "node:test";
 const pageUrl = new URL("../app/page.tsx", import.meta.url);
 
 async function pageSource() {
-  return readFile(pageUrl, "utf8");
+  return (await readFile(pageUrl, "utf8")).replaceAll("\r\n", "\n");
 }
 
 function section(source, startText, endText) {
