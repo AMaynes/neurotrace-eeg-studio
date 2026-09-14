@@ -546,8 +546,8 @@ export function clippingSeverityColor(intensity: number) {
 }
 
 /**
- * Prevents a prior overview from driving clipping indicators while an async
- * zoom request is replacing it with extrema for the new viewport.
+ * Requires viewport coverage, allowing the one-neighbor crop plus a partial
+ * boundary bucket at each edge of a recording-aligned envelope.
  */
 export function envelopeWindowMatchesViewport(
   envelopeStartSec: number,
@@ -570,6 +570,9 @@ export function envelopeWindowMatchesViewport(
     Math.abs(viewportStartSec) * Number.EPSILON * 32,
     viewportDurationSec * 1e-7,
   );
-  return Math.abs(envelopeStartSec - viewportStartSec) <= tolerance
-    && Math.abs(envelopeDurationSec - viewportDurationSec) <= tolerance;
+  const leftPad = viewportStartSec - envelopeStartSec;
+  const rightPad = envelopeStartSec + envelopeDurationSec - viewportStartSec - viewportDurationSec;
+  return leftPad >= -tolerance && rightPad >= -tolerance
+    && leftPad <= 2 * bucketDurationSec + tolerance
+    && rightPad <= 2 * bucketDurationSec + tolerance;
 }

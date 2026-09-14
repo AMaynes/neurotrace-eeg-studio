@@ -79,7 +79,7 @@ BrainVision, EEGLAB, BDF, NWB, and MEF3 files are catalogued when present but ar
 
 ## Review and Export
 
-The workspace provides stacked Nyquist-resampled traces, recorded/average/bipolar montages, display-only filters, a Nyquist-bounded spectrogram, exact-time labels, group selection and movement, interval handles, provenance, confidence, local draft recovery, undo/redo, an instance queue, and a layered session map. Depth contacts follow the legacy MATLAB reviewer’s left/right/other order and anatomical group spacing. Clamped mode keeps each continuous trace inside its row and uses a voltage-severity line for overflow; Overlap mode permits conventional cross-row excursions.
+The workspace provides stacked peak-preserving traces, recorded/average/bipolar montages, display-only filters, a Nyquist-bounded spectrogram, exact-time labels, group selection and movement, interval handles, provenance, confidence, local draft recovery, undo/redo, an instance queue, and a layered session map. Depth contacts follow the legacy MATLAB reviewer’s left/right/other order and anatomical group spacing. Clamped mode keeps each continuous trace inside its row and uses a voltage-severity line for overflow; Overlap mode permits conventional cross-row excursions.
 
 Seizure source events open in a 20-second event-relative viewport centered on time zero. The review bar supports onset/offset marking, reviewer initials, optional confidence 1–3 (`NA` when unrated), per-event ictal-channel notes, Accept-and-advance, and auditable Skip decisions. Legacy MAT + DAT imports apply the MATLAB seizure-event keywords, let the reviewer choose candidate events before opening the recording, and enforce its 100-channel session threshold. Because browsers do not reveal absolute local file paths, the import confirmation includes editable patient/path fields for MATLAB-compatible resume and export keys.
 
@@ -105,7 +105,7 @@ For uniform 16-bit EDF/DAT recordings, approximate source size is:
 bytes ≈ 2 × channel_count × sample_rate_hz × duration_seconds
 ```
 
-After import, EDF/DAT navigation is windowed: total recording length has little effect on an individual seek. Wide unfiltered referential views use bounded multiresolution envelopes, but only their Nyquist-filtered representative centerline is drawn; exact minima and maxima remain metadata for clipping and dropout indicators. Higher-rate clinical preparation, filters, and derived montages run in a cancellable worker. Adjacent windows are cached under fixed memory budgets, superseded reads are canceled, wheel zoom is frame-coalesced, and expanded channel mode draws only visible rows. MAT v5 import time and memory scale with the complete decoded matrix.
+After import, EDF/DAT navigation is windowed: total recording length has little effect on an individual seek. Wide unfiltered referential views use bounded multiresolution envelopes and draw their exact minimum/maximum ranges on the cached grid. Signal preparation and filters run in a cancellable worker; zoom does not add signal filtering. Adjacent windows are cached under fixed memory budgets, superseded reads are canceled, wheel zoom is frame-coalesced, and expanded channel mode draws only visible rows. MAT v5 import time and memory scale with the complete decoded matrix.
 
 Measured large-file budgets are tracked in [TODO.md](TODO.md); do not present implementation-level complexity estimates as benchmark results.
 
@@ -151,7 +151,7 @@ NeuroTrace runs locally in the browser. It does not upload the recording, and di
 - Panning moves the current waveform and spectrogram every animation frame. After the movement pauses for 180 ms, the app loads and processes the newly visible data.
 - Every completed signal window is tied to the viewport that requested it. Superseded work is canceled, and stale geometry is not stretched into a new zoom while replacement samples are prepared.
 - Each source/montage/filter row receives a robust baseline that is reused across adjacent windows, so panning and zooming do not recenter the trace around each new slice.
-- Wide views draw one low-pass, Nyquist-safe representative centerline per row. Exact minima and maxima remain available for clipping and dropout indicators rather than appearing as extra waveform strokes.
+- Horizontal zoom does not apply pixel-rate signal filtering. Exact windows retain original samples (plus any explicitly enabled display filters); drawing keeps each pixel's first/last samples and both extrema in time order. Wide views draw cached minimum/maximum ranges on their original time grid, rather than re-smoothing a representative centerline for every viewport. Peak amplitudes are preserved; within-bucket timing in an overview remains limited by its resolution.
 
 **Main files:**
 
@@ -187,7 +187,7 @@ Channels with incompatible units, sample rates, or timing are not combined. Gaps
 
 ### Clinical 0–200 Hz display preparation
 
-The near-view clinical path follows the department’s fixed method:
+The retained clinical-preparation utility implements the department’s fixed method below. The live viewer now bypasses this automatic, zoom-dependent reduction to preserve source peak amplitudes; explicitly enabled display filters still apply.
 
 1. The clinical reduction factor is `min(2, floor(samples / horizontal pixels))`. A factor of two is allowed only when `sample_rate / 4 >= 250 Hz`; otherwise the signal remains at its source rate.
 2. Before 2× reduction, each channel receives one causal pass of a 96th-order, 97-tap linear-phase FIR with a Kaiser window (`beta = 5.65`). Its passband edge is 200 Hz, its stopband edge is `min(245 Hz, sample_rate / 4 - 5 Hz)`, and the design cutoff is the midpoint. At 1,000 Hz, the cutoff is 222.5 Hz.
@@ -198,9 +198,9 @@ If the factor is one, this FIR/2× step is skipped. This preserves the intended 
 
 ### Wide-window resampling and trace rendering
 
-- A window containing more samples than horizontal pixels needs a lower screen-only rate. After the clinical step, a separate zero-phase anti-alias stage low-passes below the new display Nyquist limit before globally aligned samples are removed. Zooming back in returns to the exact or clinical 0–200 Hz path.
-- File-backed overviews apply the same Nyquist rule to their representative signal through multiresolution levels. Exact extrema are retained only for clipping severity and missing-data metadata.
-- The canvas draws one continuous centerline. Only a real gap or non-finite sample breaks the path; a finite value outside its row stays connected at the boundary rather than becoming dots or detached diagonal segments.
+- The live viewer bypasses automatic clinical/screen decimation. Only explicitly enabled display filters change the source signal. Peak-preserving geometry reduction limits drawing work without changing peak values as zoom changes.
+- File-backed overviews retain cached minimum/maximum ranges and bucket centers across viewport crops. Their representative signals remain available as metadata but are not used as the plotted peak amplitudes.
+- The canvas draws one peak-preserving path. Only a real gap or non-finite sample breaks the path; a finite value outside its row stays connected at the boundary rather than becoming dots or detached diagonal segments.
 - Clamped mode contains traces within their rows and shows a dark-green-to-orange severity line for excursions beyond ±100 µV from the row baseline. Overlap mode uses the full waveform area and omits that row-boundary indicator.
 
-**Files:** `app/eeg-core.ts` (`clinicalDecimationFactor`, `designClinicalDecimationFir`, `displayDecimationFactor`, `prepareClinicalDisplaySignals`, and the envelope-pyramid functions) contains the clinical and screen-resampling algorithms; `app/display-processing-worker.ts` runs exact-window preparation in the background; `app/waveform-geometry.ts` owns stable baselines and clipping metadata; `app/page.tsx` selects the correct level and draws the continuous centerline.
+**Files:** `app/eeg-core.ts` retains the tested clinical/screen-resampling utilities and envelope-pyramid functions; `app/display-processing-worker.ts` runs exact-window preparation in the background; `app/waveform-peak-path.ts` retains original peak samples for drawing; `app/waveform-geometry.ts` owns stable baselines and clipping metadata; `app/page.tsx` selects the cached level and draws the waveform.

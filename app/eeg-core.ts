@@ -76,8 +76,8 @@ export interface SignalReadOptions {
 
 /**
  * Screen-resolution signal for a contiguous time window. `data` is the
- * Nyquist-filtered representative trace; extrema remain available for source
- * clipping and dropout metadata without thickening the displayed centerline.
+ * Nyquist-filtered representative trace; minima/maxima preserve the source
+ * amplitude range for peak-preserving waveform rendering and clipping metadata.
  */
 export interface EnvelopeWindowData extends WindowData {
   minima: Float32Array[];
@@ -2881,6 +2881,35 @@ export function selectEnvelopePyramidLevel(
     if (level.bucketDurationSec <= requiredBucketDurationSec * 1.05) return level;
   }
   return levels[0];
+}
+
+/**
+ * Crops on the cached recording-time grid, retaining one neighboring bucket
+ * on each side for continuous drawing. Unlike aggregation, this never moves
+ * sample centers or re-filters values when the viewport changes.
+ */
+export function sliceEnvelopeWindow(source: EnvelopeWindowData, startSec: number, durationSec: number): EnvelopeWindowData {
+  const step = source.bucketDurationSec;
+  if (!(step > 0) || !Number.isFinite(step) || !Number.isFinite(startSec)
+    || !(durationSec > 0) || !Number.isFinite(durationSec)) {
+    throw new SignalFileError("INVALID_WINDOW", "Envelope crop requires finite times and positive durations.");
+  }
+  const count = source.data[0]?.length ?? 0;
+  const first = Math.max(0, Math.floor((startSec - source.startSec) / step + 1e-9) - 1);
+  const end = Math.min(count, Math.ceil((startSec + durationSec - source.startSec) / step - 1e-9) + 1);
+  if (end <= first) throw new SignalFileError("INVALID_WINDOW", "Envelope crop is outside cached coverage.");
+  const alignedStart = source.startSec + first * step;
+  return {
+    ...source,
+    startSec: alignedStart,
+    durationSec: (end - first) * step,
+    channelStartSecs: source.channelStartSecs.map(() => alignedStart),
+    data: source.data.map((values) => values.slice(first, end)),
+    minima: source.minima.map((values) => values.slice(first, end)),
+    maxima: source.maxima.map((values) => values.slice(first, end)),
+    gaps: source.gaps.map((values) => values.slice(first, end)),
+    variation: source.variation?.map((values) => values.slice(first, end)),
+  };
 }
 
 /** Applies clinical preparation and Nyquist-safe screen resampling per channel. */

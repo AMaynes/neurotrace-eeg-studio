@@ -217,7 +217,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /SOURCE_READ_AHEAD_BUDGET_BYTES/);
   assert.match(refresh, /ENVELOPE_CACHE_BUDGET_BYTES/);
   assert.match(refresh, /reusableEnvelopeBucketCount/);
-  assert.match(refresh, /aggregateEnvelopeWindow/);
+  assert.match(refresh, /sliceEnvelopeWindow/, "zoom crops the existing grid without re-filtering it");
   assert.match(refresh, /buildEDFEnvelopeWindowOffThread/);
   assert.match(refresh, /buildRawDatEnvelopeWindowOffThread/);
   assert.match(refresh, /buildEDFFileWindowOffThread/);

@@ -1136,10 +1136,9 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   const envelopeBranch = page.slice(envelopeBranchStart, envelopeBranchEnd);
   assert.match(envelopeBranch, /drawContinuousTrace\(/);
   assert.match(envelopeBranch, /envelopeWindowMatchesViewport\([\s\S]*?envelope\.startSec[\s\S]*?envelope\.bucketDurationSec[\s\S]*?values\.length[\s\S]*?displayStart[\s\S]*?timebase/);
-  assert.doesNotMatch(envelopeBranch, /drawOverviewEnvelope\(/, "source extrema do not thicken the resampled overview trace");
+  assert.match(envelopeBranch, /envelope\.gaps,\s*envelope,/, "the single waveform path receives both extrema rather than a resmoothed mean");
   assert.match(envelopeBranch, /drawSampleClippingRibbon\([\s\S]*?envelope\.minima[\s\S]*?envelope\.maxima/, "extrema remain available for clipping indicators");
   assert.match(envelopeBranch, /confineTracesToRows[\s\S]*?showMicrovoltClipping/, "heat ribbons are limited to clamped mode");
-  assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
   assert.match(page, /drawSampleClippingRibbon\([\s\S]*?values,[\s\S]*?values,/, "close raw-sample views retain the clipping ribbon");
   assert.doesNotMatch(page, /function drawOverviewEnvelope|function drawGroupedExtrema/, "extrema cannot be rendered as additional waveforms");
 });

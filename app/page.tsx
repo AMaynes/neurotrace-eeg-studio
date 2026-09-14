@@ -35,7 +35,6 @@ import {
   EDFSource,
   MatSource,
   RawDatSource,
-  aggregateEnvelopeWindow,
   buildEnvelopePyramid,
   anatomicalChannelGroup,
   buildMontage,
@@ -51,6 +50,7 @@ import {
   parseLegacyMatMetadata,
   projectEnvelopeChannels,
   selectEnvelopePyramidLevel,
+  sliceEnvelopeWindow,
   type DisplayFilterSettings,
   type EnvelopeWindowData,
   type LegacyMatMetadata,
@@ -90,6 +90,7 @@ import {
 import { sha256Blob } from "./source-integrity";
 import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
+import { visitWaveformPeakSamples } from "./waveform-peak-path";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -1171,19 +1172,19 @@ function drawContinuousTrace(
   plotTop: number,
   plotHeight: number,
   gaps?: ArrayLike<number>,
+  extrema?: { minima: ArrayLike<number>; maxima: ArrayLike<number> },
 ) {
   let overflow = false;
   let connected = false;
   context.beginPath();
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
+  const emit = (index: number, value: number, beginsRun: boolean) => {
+    if (beginsRun) connected = false;
     if (!Number.isFinite(value) || gaps?.[index]) {
       connected = false;
-      continue;
+      return;
     }
     const sampleTime = startSec + (index + sampleTimeOffset) * sampleDurationSec;
     const x = ((sampleTime - displayStart) / timebase) * width;
-    if (x < -1 || x > width + 1) continue;
     const rawY = center - (value - baseline) * scale;
     const y = confineToRow
       ? confineTraceYValueToRow(rawY, rowTop, rowHeight)
@@ -1194,6 +1195,20 @@ function drawContinuousTrace(
     if (connected) context.lineTo(x, y);
     else context.moveTo(x, y);
     connected = true;
+  };
+  const first = Math.max(0, Math.floor((displayStart - startSec) / sampleDurationSec - sampleTimeOffset) - 1);
+  const end = Math.min(values.length, Math.ceil((displayStart + timebase - startSec) / sampleDurationSec - sampleTimeOffset) + 2);
+  if (extrema) {
+    // Overview buckets encode ranges, not exact within-bucket peak times.
+    // Draw both original extrema at the fixed bucket center, never its mean.
+    for (let index = first; index < end; index += 1) {
+      emit(index, extrema.minima[index], false);
+      emit(index, extrema.maxima[index], false);
+    }
+  } else {
+    visitWaveformPeakSamples(values, first, end,
+      (index) => ((startSec + (index + sampleTimeOffset) * sampleDurationSec - displayStart) / timebase) * width,
+      emit);
   }
   context.stroke();
   return overflow;
@@ -2989,13 +3004,8 @@ export default function Home() {
         const filterPadSec = filters.enabled
           ? Math.min(12, Math.max(2, filters.highPassHz > 0 ? 3 / filters.highPassHz : 2))
           : 0;
-        // The fixed 48-sample FIR delay exists only for channels eligible for
-        // Sean's 2x display decimator. Applying it to a 0.1 Hz auxiliary row,
-        // for example, would unnecessarily load hundreds of extra seconds.
-        const groupDelayPadSec = useEnvelopePath ? 0 : Math.max(0, ...indices.map((index) => {
-          const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
-          return sampleRate >= 1000 ? 48 / sampleRate : 0;
-        }));
+        // Source-resolution rendering has no automatic decimator group delay.
+        const groupDelayPadSec = 0;
         const processingPadSec = filterPadSec + groupDelayPadSec;
         const requiredStart = Math.max(0, signalViewStart - processingPadSec);
         const requiredEnd = Math.min(meta.durationSec, signalViewStart + timebase + processingPadSec);
@@ -3217,19 +3227,10 @@ export default function Home() {
           const requestedEnvelopeLevel = envelopeWindow.channelKey === channelKey
             ? envelopeLevel
             : projectEnvelopeChannels(envelopeLevel, indices);
-          const maximumAggregateBuckets = Math.max(
-            1,
-            Math.floor(timebase / requestedEnvelopeLevel.bucketDurationSec + 1e-9),
-          );
-          const displayBucketCount = Math.min(
-            overviewColumnCount,
-            maximumAggregateBuckets,
-          );
-          const visibleEnvelope = aggregateEnvelopeWindow(
+          const visibleEnvelope = sliceEnvelopeWindow(
             requestedEnvelopeLevel,
             signalViewStart,
             timebase,
-            displayBucketCount,
           );
           const data = visibleEnvelope.data;
           const envelopes = data.map((_, position) => ({
@@ -3462,8 +3463,10 @@ export default function Home() {
           const range = processingRanges[position];
           return channel.subarray(range.firstSample, range.lastSample);
         });
-        const processingDuration = Math.max(1e-9, requiredEnd - requiredStart);
-        const processingPixelCount = Math.max(1, waveformWidth * processingDuration / Math.max(1e-9, timebase));
+        // Horizontal zoom must not change signal bandwidth or peak amplitudes.
+        // Keep processing at source resolution; the canvas reduces geometry by
+        // retaining original extrema, not by filtering the signal to pixel rate.
+        const processingPixelCount = Math.max(1, ...processingData.map((channel) => channel.length));
         const expectedFactors = processingData.map((channel, index) =>
           displayDecimationFactor(rawWindow.sampleRates[index], channel.length, processingPixelCount));
         const processingIsIdentity = !filters.enabled && expectedFactors.every((factor) => factor === 1);
@@ -3985,6 +3988,7 @@ export default function Home() {
             plotTop,
             plotHeight,
             envelope.gaps,
+            envelope,
           );
           if (confineTracesToRows
             && showMicrovoltClipping
