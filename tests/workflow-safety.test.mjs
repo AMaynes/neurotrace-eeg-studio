@@ -285,6 +285,11 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
 test("finite clipped waveform samples remain connected when zoom rebuilds the trace", async () => {
   const page = await pageSource();
   const rowConfinement = section(page, "const TRACE_ROW_EDGE_INSET_PX", "function traceYOverflowsRow");
+  const confine = new Function(`${rowConfinement.replace(/: number/g, "")} return confineTraceYValueToRow;`)();
+  assert.equal(confine(-100, 10, 60), 14, "clamped peaks leave four pixels below the previous channel boundary");
+  assert.equal(confine(100, 10, 60), 66, "clamped troughs leave four pixels above the next channel boundary");
+  assert.equal(confine(40, 10, 60), 40, "in-range samples keep their original vertical position");
+  assert.equal(confine(-100, 10, 2), 11, "tiny rows collapse safely to their center");
   const continuousTrace = section(page, "function drawContinuousTrace", "function drawSampleClippingRibbon");
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
 
