@@ -1835,6 +1835,7 @@ export default function Home() {
   const [paletteSearch, setPaletteSearch] = useState("");
   const [enabledEphysLabelIds, setEnabledEphysLabelIds] = useState<Set<string>>(() => new Set(["ictal"]));
   const [showEphysLabelPicker, setShowEphysLabelPicker] = useState(false);
+  const [labelsVisible, setLabelsVisible] = useState(true);
   const [channelSearch, setChannelSearch] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [activeCandidate, setActiveCandidate] = useState(0);
@@ -3882,9 +3883,10 @@ export default function Home() {
         context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
       }
 
-      if (timebase > 5 * 60 && annotations.length > MAX_INTERACTIVE_TIMELINE_ANNOTATIONS) {
+      const waveformAnnotations = labelsVisible ? annotations : [];
+      if (timebase > 5 * 60 && waveformAnnotations.length > MAX_INTERACTIVE_TIMELINE_ANNOTATIONS) {
         const densityBins = clusterTimelineDensity(
-          annotations.filter((item) => annotationGeometry(item) !== "session"),
+          waveformAnnotations.filter((item) => annotationGeometry(item) !== "session"),
           { start: displayStart, end: displayEnd },
           TIMELINE_DENSITY_BINS_PER_TRACK,
         );
@@ -3900,7 +3902,7 @@ export default function Home() {
           context.fillRect(x1, 0, Math.max(2, x2 - x1), height);
         }
       } else {
-        for (const item of annotations) {
+        for (const item of waveformAnnotations) {
           if (item.end < displayStart || item.start > displayEnd) continue;
           const label = LABEL_BY_ID.get(item.labelId);
           if (!label) continue;
@@ -4088,7 +4090,7 @@ export default function Home() {
     waveDrawRef.current = draw;
     draw();
     return () => performanceDiagnostics.removeCanvasSurface("waveform");
-  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, labelsVisible, legacyRawCountDisplay, markOnset, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -4605,6 +4607,7 @@ export default function Home() {
   };
 
   const onTimelinePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!labelsVisible) return;
     const target = event.target as HTMLElement;
     if (event.button !== 0 || target.closest("[data-annotation-id], button")) return;
     event.preventDefault();
@@ -6306,11 +6309,12 @@ export default function Home() {
       disabled: !primaryFile,
     },
   ];
-  const renderAnnotations = useMemo(() => annotationDragPreview
+  // Visibility affects rendering only; saved annotations and exports stay intact.
+  const renderAnnotations = useMemo(() => !labelsVisible ? [] : annotationDragPreview
     ? annotations.map((item) => annotationDragPreview.patches[item.id]
       ? normalizeAnnotationGeometry({ ...item, ...annotationDragPreview.patches[item.id] }, meta.durationSec)
       : item)
-    : annotations, [annotationDragPreview, annotations, meta.durationSec]);
+    : annotations, [annotationDragPreview, annotations, labelsVisible, meta.durationSec]);
   const visibleAnnotations = useMemo(
     () => renderAnnotations.filter((item) => annotationOverlapsWindow(item, viewStart, viewStart + timebase)),
     [renderAnnotations, timebase, viewStart],
@@ -6562,7 +6566,7 @@ export default function Home() {
               </div>
             </div>
             <div className="session-label-list">
-              {sessionContextAnnotations.length ? sessionContextAnnotations.map((item) => {
+              {!labelsVisible ? <div className="empty-session-labels"><strong>Labels hidden</strong><span>Show labels from the right panel to restore them.</span></div> : sessionContextAnnotations.length ? sessionContextAnnotations.map((item) => {
                 const label = LABEL_BY_ID.get(item.labelId);
                 return <button key={item.id} className={selectedAnnotationId === item.id ? "active" : ""} onClick={() => {
                   setSelectedAnnotationId(item.id);
@@ -6744,7 +6748,7 @@ export default function Home() {
               jumpTo(((event.clientX - rect.left) / rect.width) * meta.durationSec);
             }}>
               <div className="overview-wave" aria-hidden="true">{Array.from({ length: 110 }, (_, index) => <i key={index} style={{ height: `${18 + ((index * 37) % 33) + (index > 13 && index < 19 ? 30 : 0)}%` }} />)}</div>
-              {annotations.filter((item) => item.labelId === "ictal").map((item) => <span key={item.id} className="overview-event" style={{ left: `${(item.start / meta.durationSec) * 100}%`, width: `${Math.max(0.2, ((item.end - item.start) / meta.durationSec) * 100)}%` }} />)}
+              {labelsVisible && annotations.filter((item) => item.labelId === "ictal").map((item) => <span key={item.id} className="overview-event" style={{ left: `${(item.start / meta.durationSec) * 100}%`, width: `${Math.max(0.2, ((item.end - item.start) / meta.durationSec) * 100)}%` }} />)}
               <div className="overview-viewport" style={{ left: `${overviewLeft}%`, width: `${Math.max(overviewWidth, 0.55)}%` }}><i /><i /></div>
             </div>
             <div className="overview-time"><span>00:00</span><span>{formatClock(meta.durationSec / 2)}</span><span>{formatClock(meta.durationSec)}</span></div>
@@ -6920,6 +6924,19 @@ export default function Home() {
         </section>
 
         <aside className="right-sidebar">
+          <button
+            type="button"
+            className="label-visibility-toggle"
+            aria-label={labelsVisible ? "Hide all labels" : "Show all labels"}
+            aria-pressed={!labelsVisible}
+            title="Toggle all session, context, ePhys window, and ePhys instance labels. Saved labels are not changed."
+            onClick={() => {
+              setLabelsVisible((visible) => !visible);
+              setSelectedAnnotationId(null);
+              setSelectedAnnotationIds(new Set());
+              setAnnotationSelectionBox(null);
+            }}
+          >{labelsVisible ? "Hide all labels" : "Show all labels"}</button>
           {rightPanelView === "resources" ? <ResourceUsagePanel
             meta={meta}
             hasRecording={hasRecording}

@@ -666,6 +666,25 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
   assert.match(css, /\.ephys-label-picker label span\s*\{[^}]*overflow-wrap:\s*anywhere/, "long label names remain readable");
 });
 
+test("toggles all label types without deleting annotations or changing palette preferences", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const buttonStart = page.indexOf('className="label-visibility-toggle"');
+  const button = page.slice(buttonStart, page.indexOf('</button>', buttonStart));
+  assert.ok(buttonStart > page.indexOf('<aside className="right-sidebar">'));
+  assert.match(button, /Hide all labels/);
+  assert.match(button, /Show all labels/);
+  assert.match(button, /setLabelsVisible\(\(visible\) => !visible\)/);
+  assert.match(button, /setSelectedAnnotationIds\(new Set\(\)\)/, "hidden labels cannot remain selected for accidental deletion");
+  assert.doesNotMatch(button, /setAnnotations|setEnabledEphysLabelIds|setBottomTracksOpen/, "visibility preserves saved data and independent display preferences");
+  assert.match(page, /const waveformAnnotations = labelsVisible \? annotations : \[\]/);
+  assert.match(page, /waveformAnnotations\.length > MAX_INTERACTIVE_TIMELINE_ANNOTATIONS/);
+  assert.match(page, /for \(const item of waveformAnnotations\)/);
+  assert.match(page, /const renderAnnotations = useMemo\(\(\) => !labelsVisible \? \[\]/, "all timeline tracks share the visibility switch");
+  assert.match(page, /labelsVisible && annotations\.filter\(\(item\) => item\.labelId === "ictal"\)/, "overview labels follow visibility");
+  assert.match(page, /!labelsVisible \? <div className="empty-session-labels"/, "entire-session labels follow visibility too");
+  assert.match(page, /const onTimelinePointerDown[^]*?if \(!labelsVisible\) return;/, "hidden timeline labels cannot be box-selected");
+});
+
 test("keeps box zoom in the toolbar while General Info follows the current waveform selection", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -945,7 +964,7 @@ test("opens queue-item details with complete notes and context", async () => {
 test("does not tint the waveform for whole-session labels", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const canvasDrawStart = page.indexOf("const displayStart = viewStart");
-  const drawStart = page.indexOf("for (const item of annotations)", canvasDrawStart);
+  const drawStart = page.indexOf("for (const item of waveformAnnotations)", canvasDrawStart);
   const drawEnd = page.indexOf("const traceOrder", drawStart);
   const shading = page.slice(drawStart, drawEnd);
 

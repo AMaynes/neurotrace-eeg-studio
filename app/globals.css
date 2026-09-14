@@ -2169,6 +2169,9 @@ textarea:focus-visible {
   font-size: 10px;
 }
 .right-sidebar { overflow-y: auto; }
+.label-visibility-toggle { flex: 0 0 auto; margin: 8px 10px; min-height: 30px; padding: 6px 10px; border: 1px solid #355058; border-radius: 5px; background: #102027; color: #b9cece; cursor: pointer; font-size: 10px; }
+.label-visibility-toggle:hover,
+.label-visibility-toggle[aria-pressed="true"] { border-color: var(--mint); color: var(--mint); }
 .right-panel-mode-switch {
   position: sticky;
   z-index: 12;
