@@ -1,13 +1,15 @@
 /** Short-lived module worker for the viewer's spectrogram signal math. */
 
-import { computeSpectrogram, spectrogramTransferList } from "./spectrogram-compute.ts";
-import type { SpectrogramComputeRequest, SpectrogramComputeResult } from "./spectrogram-compute";
+import { computeAverageSpectrogram, computeSpectrogram, spectrogramTransferList } from "./spectrogram-compute.ts";
+import type {
+  SpectrogramAverageComputeRequest,
+  SpectrogramComputeRequest,
+  SpectrogramComputeResult,
+} from "./spectrogram-compute";
 
-export type SpectrogramWorkerRequest = {
-  type: "compute";
-  requestId: number;
-  request: SpectrogramComputeRequest;
-};
+export type SpectrogramWorkerRequest =
+  | { type: "compute"; requestId: number; request: SpectrogramComputeRequest }
+  | { type: "compute-average"; requestId: number; request: SpectrogramAverageComputeRequest };
 
 export type SpectrogramWorkerResponse =
   | { type: "complete"; requestId: number; result: SpectrogramComputeResult }
@@ -19,9 +21,11 @@ const workerScope = self as unknown as {
 };
 
 workerScope.onmessage = (event) => {
-  const { requestId, request } = event.data;
+  const { requestId } = event.data;
   try {
-    const result = computeSpectrogram(request);
+    const result = event.data.type === "compute-average"
+      ? computeAverageSpectrogram(event.data.request)
+      : computeSpectrogram(event.data.request);
     workerScope.postMessage(
       { type: "complete", requestId, result },
       spectrogramTransferList(result),

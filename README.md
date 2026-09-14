@@ -66,7 +66,7 @@ See [STRUCTURE.md](STRUCTURE.md) for the authoritative repository map and [TODO.
 
 ## Recording Ingestion
 
-- **Directory and additive companion discovery:** A directory picker catalogs every selected file and opens the first supported EDF, MAT, or DAT recording in path order. Matching BIDS JSON/TSV files are resolved by subject/session/task/run entities and inheritance specificity. Recording sidecars, participant/session/scan rows, channel names and `bad` flags, and events are applied best-effort; unrelated and unsupported files remain visible in the uploaded-file inventory. Additional companion files can be dropped anywhere onto an active workspace without replacing its waveform.
+- **Directory and additive companion discovery:** A directory picker catalogs every selected file and opens the first supported EDF, MAT, or DAT recording in path order. Matching BIDS JSON/TSV files are resolved by subject/session/task/run entities and inheritance specificity. Recording sidecars, participant/session/scan rows, channel names, and events are applied best-effort; unrelated and unsupported files remain visible in the uploaded-file inventory. Additional companion files can be dropped anywhere onto an active workspace without replacing its waveform.
 - **Custom definitions:** Dictionaries, word lists, equations, filtering methods, label definitions, and channel groupings can be dropped alongside recording files. They remain inert local data; NeuroTrace does not execute imported text or code.
 - **EDF and EDF+:** Header metadata is parsed first, so a read-only waveform preview can open without waiting for the full file scan. Signal data is read from the local `File` in bounded time windows. A background pass verifies the exact SHA-256 identity and extracts EDF+ annotation records together; seizure-keyword events are then imported into the source-event review queue. Review edits and export remain locked until verification finishes.
 - **MATLAB v5:** The largest viable numeric signal matrix is decoded in memory. Compressed elements are supported.
@@ -77,11 +77,11 @@ BrainVision, EEGLAB, BDF, NWB, and MEF3 files are catalogued when present but ar
 
 ## Review and Export
 
-The workspace provides stacked Nyquist-resampled traces, recorded/average/bipolar montages, display-only filters, channel quality flags, a Nyquist-bounded spectrogram, exact-time labels, group selection and movement, interval handles, provenance, confidence, local draft recovery, undo/redo, an instance queue, QC checks, and a layered session map. Depth contacts follow the legacy MATLAB reviewer’s left/right/other order and anatomical group spacing. Each waveform is rendered as one continuous centerline and clipped to its own row by default; finite excursions remain connected at the boundary while a voltage-severity line reports overflow.
+The workspace provides stacked Nyquist-resampled traces, recorded/average/bipolar montages, display-only filters, a Nyquist-bounded spectrogram, exact-time labels, group selection and movement, interval handles, provenance, confidence, local draft recovery, undo/redo, an instance queue, and a layered session map. Depth contacts follow the legacy MATLAB reviewer’s left/right/other order and anatomical group spacing. Clamped mode keeps each continuous trace inside its row and uses a voltage-severity line for overflow; Overlap mode permits conventional cross-row excursions.
 
-Seizure source events open in a 20-second event-relative viewport centered on time zero. The review bar supports onset/offset marking, reviewer initials, optional confidence 1–3 (`NA` when unrated), per-event bad/ictal-channel notes, Accept-and-advance, and auditable Skip decisions. Legacy MAT + DAT imports apply the MATLAB seizure-event keywords, let the reviewer choose candidate events before opening the recording, and enforce its 100-channel session threshold. Because browsers do not reveal absolute local file paths, the import confirmation includes editable patient/path fields for MATLAB-compatible resume and export keys.
+Seizure source events open in a 20-second event-relative viewport centered on time zero. The review bar supports onset/offset marking, reviewer initials, optional confidence 1–3 (`NA` when unrated), per-event ictal-channel notes, Accept-and-advance, and auditable Skip decisions. Legacy MAT + DAT imports apply the MATLAB seizure-event keywords, let the reviewer choose candidate events before opening the recording, and enforce its 100-channel session threshold. Because browsers do not reveal absolute local file paths, the import confirmation includes editable patient/path fields for MATLAB-compatible resume and export keys.
 
-Exports are ZIP bundles containing BIDS-style events/channels tables, recording metadata, full annotation provenance, deterministic forecasting windows, an ontology, QC report, dataset manifest, and a decision-only `matlab_compatibility.csv` using the newer MATLAB tool’s 20-column schema. Raw EEG bytes are never included in the export.
+Exports are ZIP bundles containing BIDS-style events/channels tables, recording metadata, full annotation provenance, deterministic forecasting windows, an ontology, a dataset manifest, and a decision-only `matlab_compatibility.csv`. Raw EEG bytes are never included in the export.
 
 The top-bar Save control creates one versioned `.neurotrace` project file. Its checklist can include review state, workspace settings, label definitions, custom definitions, uploaded companions, and—only when explicitly selected—a copy of the original recording. The format is ZIP-compatible and contains a self-describing `manifest.json`; the system save dialog starts in Downloads and can target another folder.
 
@@ -89,7 +89,7 @@ The top-bar Save control creates one versioned `.neurotrace` project file. Its c
 
 Recording bytes are processed in the browser and are not uploaded by the application. The active `File` reference and decoded signal windows remain on the user’s device.
 
-Annotation drafts, event candidates, reviewer initials, and channel-quality state are persisted in browser-local storage under a source-derived identifier. Recording type is detected from BIDS metadata, channel types, and channel labels rather than saved as reviewer input. These records may contain sensitive notes even though they do not contain raw EEG. Clearing the site’s browser storage removes that recovery state; exported bundles are ordinary local files managed by the user.
+Annotation drafts, event candidates, and reviewer initials are persisted in browser-local storage under a source-derived identifier. Recording type is detected from BIDS metadata, channel types, and channel labels rather than saved as reviewer input. These records may contain sensitive notes even though they do not contain raw EEG. Clearing the site’s browser storage removes that recovery state; exported bundles are ordinary local files managed by the user.
 
 GitHub Pages receives normal requests for the application’s static HTML, JavaScript, CSS, and image assets. Hospital use still requires the institution’s security, privacy, governance, deployment, and validation process.
 
@@ -144,9 +144,10 @@ NeuroTrace runs locally in the browser. It does not upload the recording, and di
 - EDF, DAT, and MATLAB v7.3 stay file-backed. Only the current time window, selected channels, and a small read-ahead area are decoded into RAM. MATLAB v5 is the exception: its full signal matrix is kept in RAM.
 - File reads and signal processing run in background workers, so they do not block the interface. If the view changes, old work is canceled.
 - Nearby data is reused from three bounded caches: 64 MiB raw windows, 64 MiB processed windows, and 256 MiB zoomed-out envelopes. Older entries are removed when a cache is full.
-- The spectrogram loads one focused channel, with a 32 MiB input limit. Its old result remains visible and correctly time-aligned while the new view is calculated.
+- The spectrogram shows the actively selected channel. Escape clears that focus and switches to a power-average spectrogram of all enabled channels. Exact spectrogram input is capped at 32 MiB, and the old result remains correctly time-aligned while a replacement is calculated.
 - Panning moves the current waveform and spectrogram every animation frame. After the movement pauses for 180 ms, the app loads and processes the newly visible data.
 - Every completed signal window is tied to the viewport that requested it. Superseded work is canceled, and stale geometry is not stretched into a new zoom while replacement samples are prepared.
+- Each source/montage/filter row receives a robust baseline that is reused across adjacent windows, so panning and zooming do not recenter the trace around each new slice.
 - Wide views draw one low-pass, Nyquist-safe representative centerline per row. Exact minima and maxima remain available for clipping and dropout indicators rather than appearing as extra waveform strokes.
 
 **Main files:**
@@ -156,7 +157,7 @@ NeuroTrace runs locally in the browser. It does not upload the recording, and di
 - `app/file-window.ts` — exact EDF/DAT window reads.
 - `app/edf-envelope.ts` and `app/raw-dat-envelope.ts` — zoomed-out min/max summaries.
 - `app/mat73-worker.ts` — file-backed MATLAB v7.3 reads.
-- `app/waveform-geometry.ts` — bounds clipping, dropout, and waveform drawing work.
+- `app/waveform-geometry.ts` — maintains stable row baselines and bounds clipping/dropout geometry.
 
 ### Filters
 
@@ -197,6 +198,6 @@ If the factor is one, this FIR/2× step is skipped. This preserves the intended 
 - A window containing more samples than horizontal pixels needs a lower screen-only rate. After the clinical step, a separate zero-phase anti-alias stage low-passes below the new display Nyquist limit before globally aligned samples are removed. Zooming back in returns to the exact or clinical 0–200 Hz path.
 - File-backed overviews apply the same Nyquist rule to their representative signal through multiresolution levels. Exact extrema are retained only for clipping severity and missing-data metadata.
 - The canvas draws one continuous centerline. Only a real gap or non-finite sample breaks the path; a finite value outside its row stays connected at the boundary rather than becoming dots or detached diagonal segments.
-- By default, traces remain inside their rows and a dark-green-to-orange severity line marks excursions beyond ±100 µV from the row baseline.
+- Clamped mode contains traces within their rows and shows a dark-green-to-orange severity line for excursions beyond ±100 µV from the row baseline. Overlap mode uses the full waveform area and omits that row-boundary indicator.
 
-**Files:** `app/eeg-core.ts` (`clinicalDecimationFactor`, `designClinicalDecimationFir`, `displayDecimationFactor`, `prepareClinicalDisplaySignals`, and the envelope-pyramid functions) contains the clinical and screen-resampling algorithms; `app/display-processing-worker.ts` runs exact-window preparation in the background; `app/waveform-geometry.ts` owns clipping metadata and drawing budgets; `app/page.tsx` selects the correct level and draws the continuous centerline.
+**Files:** `app/eeg-core.ts` (`clinicalDecimationFactor`, `designClinicalDecimationFir`, `displayDecimationFactor`, `prepareClinicalDisplaySignals`, and the envelope-pyramid functions) contains the clinical and screen-resampling algorithms; `app/display-processing-worker.ts` runs exact-window preparation in the background; `app/waveform-geometry.ts` owns stable baselines and clipping metadata; `app/page.tsx` selects the correct level and draws the continuous centerline.

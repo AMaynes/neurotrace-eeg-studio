@@ -2948,7 +2948,7 @@ export interface FlatlineDisplayRegion {
   endSec: number;
 }
 
-/** Combines nearby detections for a cleaner QC overlay without changing detection itself. */
+/** Combines nearby detections for a cleaner overlay without changing detection itself. */
 export function mergeNearbyFlatlineRegions(
   regions: readonly FlatlineDisplayRegion[],
   maximumGapSec: number,

@@ -1,6 +1,11 @@
 /** Cancellable browser client for off-main-thread spectrogram computation. */
 
-import type { SpectrogramComputeRequest, SpectrogramComputeResult } from "./spectrogram-compute";
+import type {
+  SpectrogramAverageComputeRequest,
+  SpectrogramAverageSignalRequest,
+  SpectrogramComputeRequest,
+  SpectrogramComputeResult,
+} from "./spectrogram-compute";
 import type { SpectrogramWorkerRequest, SpectrogramWorkerResponse } from "./spectrogram-worker";
 
 export interface SpectrogramWorkerOptions {
@@ -35,7 +40,24 @@ export function computeSpectrogramOffThread(
   request: SpectrogramComputeRequest,
   options: SpectrogramWorkerOptions = {},
 ): Promise<SpectrogramComputeResult> {
+  return runSpectrogramWorker("compute", [{ ...request, dataStart: 0 }], options);
+}
+
+/** Calculates each channel independently, then averages power in the worker. */
+export function computeAverageSpectrogramOffThread(
+  request: SpectrogramAverageComputeRequest,
+  options: SpectrogramWorkerOptions = {},
+): Promise<SpectrogramComputeResult> {
+  return runSpectrogramWorker("compute-average", request.signals, options);
+}
+
+function runSpectrogramWorker(
+  type: SpectrogramWorkerRequest["type"],
+  requests: SpectrogramAverageSignalRequest[],
+  options: SpectrogramWorkerOptions,
+): Promise<SpectrogramComputeResult> {
   if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+  if (!requests.length) return Promise.reject(new RangeError("Spectrogram input must contain at least one signal."));
   if (typeof Worker === "undefined") {
     return Promise.reject(new Error("This browser does not provide module workers for spectrogram computation."));
   }
@@ -48,9 +70,13 @@ export function computeSpectrogramOffThread(
   }
 
   const copyStartedAt = nowMs();
-  let inputCopy: Float32Array;
+  let inputCopies: SpectrogramAverageSignalRequest[];
   try {
-    inputCopy = request.data.slice();
+    inputCopies = requests.map((request) => ({
+      data: request.data.slice(),
+      dataStart: request.dataStart,
+      sampleRate: request.sampleRate,
+    }));
   } catch (error) {
     worker.terminate();
     return Promise.reject(error);
@@ -94,13 +120,15 @@ export function computeSpectrogramOffThread(
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
-    const message: SpectrogramWorkerRequest = {
-      type: "compute",
-      requestId,
-      request: { data: inputCopy, sampleRate: request.sampleRate },
-    };
+    const message: SpectrogramWorkerRequest = type === "compute-average"
+      ? { type, requestId, request: { signals: inputCopies } }
+      : {
+        type,
+        requestId,
+        request: { data: inputCopies[0].data, sampleRate: inputCopies[0].sampleRate },
+      };
     try {
-      worker.postMessage(message, [inputCopy.buffer]);
+      worker.postMessage(message, inputCopies.map((request) => request.data.buffer));
     } catch (error) {
       finish(() => reject(error));
     }

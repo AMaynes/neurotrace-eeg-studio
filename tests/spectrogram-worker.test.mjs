@@ -5,12 +5,16 @@ import {
   BUZCODE_DEFAULT_SMOOTHING_SECONDS,
   BUZCODE_FFT_SIZE,
   BUZCODE_TAPER_COUNT,
+  computeAverageSpectrogram,
   computeSpectrogram,
   displaySpectrogramPowers,
   spectrogramTransferList,
   thetaRatioOverlay,
 } from "../app/spectrogram-compute.ts";
-import { computeSpectrogramOffThread } from "../app/spectrogram-worker-client.ts";
+import {
+  computeAverageSpectrogramOffThread,
+  computeSpectrogramOffThread,
+} from "../app/spectrogram-worker-client.ts";
 
 test("uses TheStateEditor's one-second five-taper 3072-point spectral layout", () => {
   const sampleRate = 128;
@@ -72,6 +76,26 @@ test("returns unique transferable result buffers and validates unsupported input
   assert.throws(() => computeSpectrogram({ data: Float32Array.of(1), sampleRate: 1 }), /at least 2 Hz/i);
 });
 
+test("averages channel power after transforming each signal independently", () => {
+  const sampleRate = 64;
+  const first = Float32Array.from({ length: sampleRate * 2 }, (_, index) => (
+    Math.sin((2 * Math.PI * 8 * index) / sampleRate)
+  ));
+  const oppositePhase = Float32Array.from(first, (value) => -value);
+  const single = computeSpectrogram({ data: first, sampleRate });
+  const averaged = computeAverageSpectrogram({
+    signals: [
+      { data: first, dataStart: 0, sampleRate },
+      { data: oppositePhase, dataStart: 0, sampleRate },
+    ],
+  });
+  assert.equal(averaged.frames, single.frames);
+  assert.equal(averaged.bins, single.bins);
+  assert.deepEqual([...averaged.powers], [...single.powers]);
+  assert.equal(averaged.metrics.inputSamples, first.length + oppositePhase.length);
+  assert.throws(() => computeAverageSpectrogram({ signals: [] }), /at least one signal/i);
+});
+
 test("client transfers an input copy without detaching the caller's signal", async () => {
   const originalWorker = globalThis.Worker;
   let posted;
@@ -131,6 +155,37 @@ test("client abort terminates the worker and has no main-thread computation fall
       computeSpectrogramOffThread({ data: Float32Array.of(1, 2), sampleRate: 2 }),
       /does not provide module workers/i,
     );
+  } finally {
+    globalThis.Worker = originalWorker;
+  }
+});
+
+test("client transfers all channel copies for averaged power", async () => {
+  const originalWorker = globalThis.Worker;
+  let posted;
+  class FakeWorker {
+    onmessage = null;
+    onerror = null;
+    postMessage(message, transfers) {
+      posted = { message, transfers };
+      const result = computeAverageSpectrogram(message.request);
+      queueMicrotask(() => this.onmessage?.({
+        data: { type: "complete", requestId: message.requestId, result },
+      }));
+    }
+    terminate() {}
+  }
+  globalThis.Worker = FakeWorker;
+  try {
+    const signals = [
+      { data: Float32Array.from([1, 2, 3, 4]), dataStart: 0, sampleRate: 4 },
+      { data: Float32Array.from([4, 3, 2, 1]), dataStart: 0, sampleRate: 4 },
+    ];
+    await computeAverageSpectrogramOffThread({ signals });
+    assert.equal(posted.message.type, "compute-average");
+    assert.equal(posted.message.request.signals.length, 2);
+    assert.deepEqual(posted.transfers, posted.message.request.signals.map((signal) => signal.data.buffer));
+    assert.notEqual(posted.message.request.signals[0].data, signals[0].data);
   } finally {
     globalThis.Worker = originalWorker;
   }

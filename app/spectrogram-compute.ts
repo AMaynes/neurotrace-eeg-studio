@@ -14,6 +14,14 @@ export interface SpectrogramComputeRequest {
   sampleRate: number;
 }
 
+export interface SpectrogramAverageSignalRequest extends SpectrogramComputeRequest {
+  dataStart: number;
+}
+
+export interface SpectrogramAverageComputeRequest {
+  signals: SpectrogramAverageSignalRequest[];
+}
+
 export interface SpectrogramComputeMetrics {
   /** Time spent on the worker's signal math, excluding worker startup and drawing. */
   computeMs: number;
@@ -36,6 +44,7 @@ export interface SpectrogramComputeResult {
   frames: number;
   bins: number;
   maxHz: number;
+  sampleRate: number;
   windowSize: number;
   hop: number;
   fftSize: number;
@@ -339,6 +348,7 @@ export function computeSpectrogram(request: SpectrogramComputeRequest): Spectrog
     frames,
     bins,
     maxHz: frequencies.at(-1) ?? 0,
+    sampleRate,
     windowSize,
     hop,
     fftSize: BUZCODE_FFT_SIZE,
@@ -348,6 +358,77 @@ export function computeSpectrogram(request: SpectrogramComputeRequest): Spectrog
       inputSamples: data.length,
       finiteFrames,
       dftTerms,
+    },
+  };
+}
+
+function nearestSortedIndex(values: Float64Array, target: number) {
+  if (!values.length) return -1;
+  let low = 0;
+  let high = values.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (values[middle] < target) low = middle + 1;
+    else high = middle;
+  }
+  if (low > 0 && Math.abs(values[low - 1] - target) <= Math.abs(values[low] - target)) return low - 1;
+  return low;
+}
+
+/**
+ * Produces one channel-balanced view by averaging spectral power, never raw
+ * voltages. Each channel is transformed independently so opposing phases do
+ * not cancel before the spectrum is calculated.
+ */
+export function computeAverageSpectrogram(request: SpectrogramAverageComputeRequest): SpectrogramComputeResult {
+  if (!Array.isArray(request.signals) || !request.signals.length) {
+    throw new RangeError("An averaged spectrogram needs at least one signal.");
+  }
+  const computed = request.signals.map((signal) => ({
+    dataStart: signal.dataStart,
+    result: computeSpectrogram(signal),
+  }));
+  if (computed.length === 1) return computed[0].result;
+
+  const reference = computed.reduce((best, entry) => entry.result.maxHz > best.result.maxHz ? entry : best);
+  const referenceResult = reference.result;
+  const powers = new Float64Array(referenceResult.powers.length);
+  powers.fill(Number.NaN);
+  const sums = new Float64Array(referenceResult.powers.length);
+  const counts = new Uint32Array(referenceResult.powers.length);
+
+  for (const { dataStart, result } of computed) {
+    const frameTolerance = Math.max(
+      referenceResult.windowSize / referenceResult.sampleRate,
+      result.windowSize / result.sampleRate,
+    ) / 2 + 1e-6;
+    for (let targetBin = 0; targetBin < referenceResult.bins; targetBin += 1) {
+      const sourceBin = nearestSortedIndex(result.frequencies, referenceResult.frequencies[targetBin]);
+      if (sourceBin < 0 || referenceResult.frequencies[targetBin] > result.maxHz + BUZCODE_FREQUENCY_RESOLUTION_HZ) continue;
+      for (let targetFrame = 0; targetFrame < referenceResult.frames; targetFrame += 1) {
+        const targetTime = reference.dataStart + referenceResult.times[targetFrame];
+        const sourceFrame = nearestSortedIndex(result.times, targetTime - dataStart);
+        if (sourceFrame < 0 || Math.abs(dataStart + result.times[sourceFrame] - targetTime) > frameTolerance) continue;
+        const value = result.powers[sourceBin * result.frames + sourceFrame];
+        if (!Number.isFinite(value)) continue;
+        const targetIndex = targetBin * referenceResult.frames + targetFrame;
+        sums[targetIndex] += value;
+        counts[targetIndex] += 1;
+      }
+    }
+  }
+  for (let index = 0; index < powers.length; index += 1) {
+    if (counts[index]) powers[index] = sums[index] / counts[index];
+  }
+
+  return {
+    ...referenceResult,
+    powers,
+    metrics: {
+      computeMs: computed.reduce((sum, entry) => sum + entry.result.metrics.computeMs, 0),
+      inputSamples: computed.reduce((sum, entry) => sum + entry.result.metrics.inputSamples, 0),
+      finiteFrames: computed.reduce((sum, entry) => sum + entry.result.metrics.finiteFrames, 0),
+      dftTerms: computed.reduce((sum, entry) => sum + entry.result.metrics.dftTerms, 0),
     },
   };
 }

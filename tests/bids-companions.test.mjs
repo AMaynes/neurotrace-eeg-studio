@@ -54,7 +54,7 @@ test("discovers and applies matching BIDS metadata, channels, participant fields
   assert.equal(bundle.sessionId, "ses-02");
   assert.equal(bundle.recordingType, "Scalp EEG");
   assert.deepEqual(bundle.channels.map((channel) => channel.name), ["F3", "F4"]);
-  assert.deepEqual(bundle.badChannelIndices, [1]);
+  assert.ok(!("badChannelIndices" in bundle));
   assert.equal(bundle.events.length, 2);
   assert.deepEqual(bundle.events[0].channels, ["F3", "F4"]);
   assert.match(bundle.warnings.join("\n"), /no finite onset/i);

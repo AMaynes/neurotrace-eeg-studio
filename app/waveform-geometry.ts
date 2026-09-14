@@ -42,6 +42,69 @@ export interface WaveformGeometryBudget {
   maxStrokeLengthPx: number;
 }
 
+const DEFAULT_TRACE_BASELINE_CACHE_ENTRIES = 4_096;
+
+/** Returns a finite, outlier-resistant center for one trace window. */
+export function robustTraceBaseline(values: ArrayLike<number>, maximumSamples = 257) {
+  if (!values.length) return 0;
+  const sampled: number[] = [];
+  let finiteCount = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!Number.isFinite(value)) continue;
+    finiteCount += 1;
+    if (sampled.length < maximumSamples) {
+      sampled.push(value);
+      continue;
+    }
+    // Deterministic reservoir sampling represents the whole window while
+    // ensuring that short finite islands are not skipped by a fixed stride.
+    const candidate = ((Math.imul(finiteCount, 0x9e3779b1) >>> 0) % finiteCount);
+    if (candidate < maximumSamples) sampled[candidate] = value;
+  }
+  if (!sampled.length) return 0;
+  sampled.sort((left, right) => left - right);
+  const middle = Math.floor(sampled.length / 2);
+  return sampled.length % 2
+    ? sampled[middle]
+    : (sampled[middle - 1] + sampled[middle]) / 2;
+}
+
+/**
+ * Keeps a channel's display center stable when adjacent time windows replace
+ * one another. Empty windows are not cached so later finite data can establish
+ * the channel's baseline.
+ */
+export function resolveStableTraceBaseline(
+  cache: Map<string, number>,
+  key: string,
+  values: ArrayLike<number>,
+  maximumEntries = DEFAULT_TRACE_BASELINE_CACHE_ENTRIES,
+) {
+  const cached = cache.get(key);
+  if (cached !== undefined) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached;
+  }
+  const baseline = robustTraceBaseline(values);
+  let hasFiniteValue = false;
+  for (let index = 0; index < values.length; index += 1) {
+    if (Number.isFinite(values[index])) {
+      hasFiniteValue = true;
+      break;
+    }
+  }
+  if (!hasFiniteValue) return baseline;
+  while (cache.size >= maximumEntries) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+  cache.set(key, baseline);
+  return baseline;
+}
+
 export type EnvelopeTraceRenderMode = "detailed" | "midpoint" | "grouped-extrema";
 
 const CLIPPING_SEVERITY_COLOR_STOPS = [
@@ -73,6 +136,27 @@ function validateProjection(projection: TraceGeometryProjection) {
   if (!(projection.pixelsPerUnit > 0) || !Number.isFinite(projection.pixelsPerUnit)) {
     throw new Error("Waveform geometry scale must be positive and finite.");
   }
+}
+
+/**
+ * Converts screen geometry to a stable reference row height. Waveform panels
+ * may be resized vertically, but that layout change must not switch rendering
+ * modes or alter which signal extrema are shown.
+ */
+export function layoutIndependentTraceProjection(
+  projection: TraceGeometryProjection,
+  referenceRowHeightPx = 60,
+): TraceGeometryProjection {
+  validateProjection(projection);
+  if (!(referenceRowHeightPx > 0) || !Number.isFinite(referenceRowHeightPx)) {
+    throw new Error("Waveform geometry reference row height must be positive and finite.");
+  }
+  return {
+    widthPx: projection.widthPx,
+    rowHeightPx: referenceRowHeightPx,
+    baseline: projection.baseline,
+    pixelsPerUnit: projection.pixelsPerUnit * referenceRowHeightPx / projection.rowHeightPx,
+  };
 }
 
 function confinedY(value: number, projection: TraceGeometryProjection) {

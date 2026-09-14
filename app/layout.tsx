@@ -25,7 +25,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const origin = `${protocol}://${host}`;
   const image = new URL("/og.png", origin).toString();
   const title = "NeuroTrace — Clinical EEG Studio";
-  const description = "A local-first EDF and MAT EEG review, annotation, QC, and model-ready export workspace.";
+  const description = "A local-first EDF and MAT EEG review, annotation, and model-ready export workspace.";
   return {
     title,
     description,

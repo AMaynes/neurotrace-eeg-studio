@@ -22,14 +22,63 @@ import {
   envelopeTraceRenderMode,
   estimateEnvelopeActivityRate,
   gaussianClippingHaloIntensity,
+  layoutIndependentTraceProjection,
   maximumExtremaGroupsForBudget,
   measureEnvelopeTraceGeometry,
   measureRawTraceGeometry,
+  resolveStableTraceBaseline,
+  robustTraceBaseline,
   waveformGeometryGroupingStride,
   waveformGeometryFitsBudget,
   waveformOverviewColumnBudget,
   visitGroupedWaveformExtrema,
 } from "../app/waveform-geometry.ts";
+
+test("keeps a trace baseline stable while adjacent time windows replace each other", () => {
+  const cache = new Map();
+  const firstWindow = Float32Array.of(8, 10, 12);
+  const adjacentWindow = Float32Array.of(108, 110, 112);
+
+  assert.equal(robustTraceBaseline(firstWindow), 10);
+  assert.equal(resolveStableTraceBaseline(cache, "Fp1", firstWindow), 10);
+  assert.equal(
+    resolveStableTraceBaseline(cache, "Fp1", adjacentWindow),
+    10,
+    "panning must translate the existing voltage trace without re-centering it",
+  );
+  assert.equal(resolveStableTraceBaseline(cache, "Fp2", adjacentWindow), 110);
+
+  const emptyCache = new Map();
+  assert.equal(resolveStableTraceBaseline(emptyCache, "gap", Float32Array.of(Number.NaN)), 0);
+  assert.equal(emptyCache.size, 0, "a missing-only window cannot permanently choose the baseline");
+  assert.equal(resolveStableTraceBaseline(emptyCache, "gap", Float32Array.of(4, 6, 8)), 6);
+});
+
+test("shared samples keep their clipping severity when a pan changes the window median", () => {
+  const cache = new Map();
+  const firstWindow = Float32Array.of(200, 200, 200, -200, -250);
+  const pannedWindow = Float32Array.of(-200, -250, -100, -100, -100);
+  assert.notEqual(robustTraceBaseline(firstWindow), robustTraceBaseline(pannedWindow));
+
+  const severity = (value, baseline) => clippingExcessIntensity(
+    value, value, baseline - 100, baseline + 100, 200,
+  );
+  const initialBaseline = resolveStableTraceBaseline(cache, "recorded:Fp1:µV", firstWindow);
+  const pannedBaseline = resolveStableTraceBaseline(cache, "recorded:Fp1:µV", pannedWindow);
+  for (let index = 0; index < 2; index += 1) {
+    assert.equal(pannedWindow[index], firstWindow[index + 3]);
+    assert.equal(
+      severity(pannedWindow[index], pannedBaseline),
+      severity(firstWindow[index + 3], initialBaseline),
+      "the same recording sample must keep its clipping severity after panning",
+    );
+  }
+  assert.notEqual(
+    severity(pannedWindow[0], robustTraceBaseline(pannedWindow)),
+    severity(firstWindow[3], initialBaseline),
+    "re-centering every window reproduces the clipping jump",
+  );
+});
 
 test("estimates sustained activity without calling a lone spike high frequency", () => {
   assert.equal(estimateEnvelopeActivityRate(400, -10, 10, 10), 1);
@@ -136,6 +185,55 @@ test("handles missing raw samples as bounded disconnected path runs", () => {
   assert.equal(geometry.lineCommands, 1);
   assert.equal(geometry.verticalTravelPx, projection.rowHeightPx);
   assert.ok(Number.isFinite(geometry.strokeLengthPx));
+});
+
+test("keeps waveform rendering policy stable when only row height changes", () => {
+  const compact = layoutIndependentTraceProjection({
+    widthPx: 2_048,
+    rowHeightPx: 40,
+    baseline: 3,
+    pixelsPerUnit: .144,
+  });
+  const expanded = layoutIndependentTraceProjection({
+    widthPx: 2_048,
+    rowHeightPx: 120,
+    baseline: 3,
+    pixelsPerUnit: .432,
+  });
+  assert.equal(compact.widthPx, expanded.widthPx);
+  assert.equal(compact.rowHeightPx, expanded.rowHeightPx);
+  assert.equal(compact.baseline, expanded.baseline);
+  assert.ok(Math.abs(compact.pixelsPerUnit - expanded.pixelsPerUnit) < 1e-12);
+  const samples = Float32Array.of(-20, 0, 20);
+  const compactGeometry = measureRawTraceGeometry(samples, compact);
+  const expandedGeometry = measureRawTraceGeometry(samples, expanded);
+  assert.ok(Math.abs(compactGeometry.strokeLengthPx - expandedGeometry.strokeLengthPx) < 1e-12);
+  const budget = { maxCommands: 10, maxStrokeLengthPx: 2_100 };
+  assert.equal(
+    waveformGeometryFitsBudget(compactGeometry, budget),
+    waveformGeometryFitsBudget(expandedGeometry, budget),
+  );
+  const minima = Float32Array.from({ length: 256 }, (_, index) => Math.sin(index / 8) - 2);
+  const maxima = Float32Array.from(minima, (value) => value + 4);
+  const midpoints = Float32Array.from(minima, (value) => value + 2);
+  const gaps = new Uint8Array(minima.length);
+  const compactEnvelope = measureEnvelopeTraceGeometry(minima, maxima, midpoints, gaps, compact);
+  const expandedEnvelope = measureEnvelopeTraceGeometry(minima, maxima, midpoints, gaps, expanded);
+  const compactMidpoint = measureRawTraceGeometry(midpoints, compact);
+  const expandedMidpoint = measureRawTraceGeometry(midpoints, expanded);
+  for (const renderBudget of [
+    { maxCommands: 2_000, maxStrokeLengthPx: 20_000 },
+    { maxCommands: 300, maxStrokeLengthPx: 2_500 },
+  ]) {
+    assert.equal(
+      envelopeTraceRenderMode(compactEnvelope, compactMidpoint, renderBudget),
+      envelopeTraceRenderMode(expandedEnvelope, expandedMidpoint, renderBudget),
+    );
+  }
+  assert.throws(
+    () => layoutIndependentTraceProjection(projection, 0),
+    /reference row height/i,
+  );
 });
 
 test("measures exact-extrema vertical ink separately from midpoint geometry", () => {

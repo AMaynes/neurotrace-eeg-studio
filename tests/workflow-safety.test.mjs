@@ -130,7 +130,7 @@ test("recovery validates saved structures, preserves unreadable data, and falls 
   assert.match(validation, /annotations\.length\s*!==\s*parsed\.length/);
   assert.match(validation, /project\.version\s*!==\s*2/);
   assert.match(validation, /candidates\.length\s*!==\s*rawCandidates\.length/);
-  assert.match(validation, /badChannels\.length\s*!==\s*rawBadChannels\.length/);
+  assert.doesNotMatch(validation, /badChannels|rawBadChannels/);
 
   const load = section(page, "const loadSource", "const importFiles");
   assert.match(load, /preserveUnreadableRecovery/);
@@ -187,7 +187,7 @@ test("mixed-rate interaction keeps channel provenance and sample timing", async 
   assert.match(add, /display\.sourceIndices\[targetRow\]/);
   assert.match(add, /display\.primarySourceIndices\[targetRow\]/);
 
-  const movement = section(page, "const moveSelectedAnnotations", "const qcIssues");
+  const movement = section(page, "const moveSelectedAnnotations", "const advanceFromCandidate");
   assert.match(movement, /anchor\.channelScope/);
   assert.match(movement, /meta\.sampleRates\[anchor\.channelScope\.primarySourceIndex\]/);
 
@@ -230,11 +230,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(page, /MAX_INTERACTIVE_TIMELINE_ANNOTATIONS\s*=\s*400/);
   assert.match(page, /clusterTimelineDensity\(/);
   assert.match(page, /timelineUsesDensity\s*\?/);
-  const qc = section(page, "const qcIssues", "const advanceFromCandidate");
-  assert.doesNotMatch(qc, /annotations\.some\(/);
-  assert.match(qc, /committedIctalCandidateIds/);
-  assert.match(qc, /latestSleepEndByLabel/);
-  assert.match(qc, /displayWarningKey/);
+  assert.doesNotMatch(page, /function QcPanel|qcIssues|badChannels/);
   assert.match(refresh, /maximumRawDuration/);
   assert.match(refresh, /detectEnvelopeSynchronizedFlatlines/);
   assert.match(refresh, /const overviewColumnCount\s*=\s*waveformOverviewColumnBudget\(timebase, waveformWidth\)/);
@@ -250,7 +246,8 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /const processingData\s*=\s*rawWindow\.data\.map[\s\S]*?channel\.subarray/);
   assert.match(refresh, /processDisplaySignalsOffThread\(\{\s*data:\s*processingData/);
 
-  const baseline = section(page, "function robustTraceBaseline", "function boundedCanvasScale");
+  const waveformGeometry = await readFile(new URL("../app/waveform-geometry.ts", import.meta.url), "utf8");
+  const baseline = section(waveformGeometry, "export function robustTraceBaseline", "export function resolveStableTraceBaseline");
   assert.match(baseline, /for\s*\(let index\s*=\s*0;\s*index\s*<\s*values\.length/);
   assert.match(baseline, /Number\.isFinite\(value\)/);
   assert.match(baseline, /reservoir sampling/i);
@@ -294,7 +291,7 @@ test("finite clipped waveform samples remain connected when zoom rebuilds the tr
   assert.match(rowConfinement, /const edgeInset\s*=\s*Math\.min\(TRACE_ROW_EDGE_INSET_PX,\s*rowHeight\s*\/\s*2\)/);
   assert.match(rowConfinement, /Math\.min\(visibleBottom,\s*Math\.max\(visibleTop,\s*y\)\)/, "clipped montage strokes stay visibly inside the row clip");
   assert.match(continuousTrace, /if\s*\(!Number\.isFinite\(value\)\s*\|\|\s*gaps\?\.\[index\]\)\s*\{\s*connected\s*=\s*false/);
-  assert.match(continuousTrace, /if\s*\(traceYOverflowsRow\(rawY,\s*rowTop,\s*rowHeight\)\)\s*\{\s*overflow\s*=\s*true;\s*\}\s*if\s*\(connected\)\s*context\.lineTo\(x,\s*y\)/);
+  assert.match(continuousTrace, /if\s*\(confineToRow\s*&&\s*traceYOverflowsRow\(rawY,\s*rowTop,\s*rowHeight\)\)\s*\{\s*overflow\s*=\s*true;\s*\}\s*if\s*\(connected\)\s*context\.lineTo\(x,\s*y\)/);
   assert.doesNotMatch(continuousTrace, /traceYOverflowsRow[\s\S]*?connected\s*=\s*false/, "finite clipped samples remain connected at row boundaries");
   assert.match(drawing, /\} else \{[\s\S]*?overflow\s*=\s*drawContinuousTrace\(/, "every exact zoom level reuses the continuous clipping path");
   assert.doesNotMatch(drawing, /drawGroupedExtrema|drawOverviewEnvelope/, "clipped extrema never become extra traces");

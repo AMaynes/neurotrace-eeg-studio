@@ -262,7 +262,7 @@ test("file-backed overview envelopes retain both polarities with pixel-bounded o
   );
 });
 
-test("overview extrema preserve synchronized flatline QC conservatively", () => {
+test("overview extrema preserve synchronized flatline detection conservatively", () => {
   const minima = [
     new Float32Array([1, 2, 2, 4]),
     new Float32Array([5, 6, 6, 8]),

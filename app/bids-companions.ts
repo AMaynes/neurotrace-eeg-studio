@@ -40,7 +40,6 @@ export interface BidsChannelRecord {
   name: string;
   type: string;
   units: string;
-  status: string;
   description: string;
   samplingFrequency: number | null;
   reference: string;
@@ -65,7 +64,6 @@ export interface BidsCompanionBundle {
   tables: BidsTableSummary[];
   channels: BidsChannelRecord[];
   events: BidsEventRecord[];
-  badChannelIndices: number[];
   subjectId: string | null;
   sessionId: string | null;
   recordingType: DetectedRecordingType | null;
@@ -124,7 +122,6 @@ export function emptyBidsCompanionBundle(): BidsCompanionBundle {
     tables: [],
     channels: [],
     events: [],
-    badChannelIndices: [],
     subjectId: null,
     sessionId: null,
     recordingType: null,
@@ -451,20 +448,16 @@ export async function analyzeBidsCompanions(
       name: row.name?.trim() ?? "",
       type: row.type?.trim() ?? "",
       units: row.units?.trim() ?? "",
-      status: row.status?.trim() ?? "",
       description: row.description?.trim() ?? "",
       samplingFrequency: finiteTsvNumber(row.sampling_frequency),
       reference: row.reference?.trim() ?? "",
     }));
     if (options.channelCount !== undefined && bundle.channels.length !== options.channelCount) {
-      bundle.warnings.push(`${channelTable.path}: ${bundle.channels.length} channel rows do not match the recording's ${options.channelCount} channels; channel labels and quality flags were not applied.`);
+      bundle.warnings.push(`${channelTable.path}: ${bundle.channels.length} channel rows do not match the recording's ${options.channelCount} channels; channel labels were not applied.`);
       bundle.channels = [];
     } else if (bundle.channels.some((channel) => !channel.name)) {
-      bundle.warnings.push(`${channelTable.path}: one or more channel names are blank; channel labels and quality flags were not applied.`);
+      bundle.warnings.push(`${channelTable.path}: one or more channel names are blank; channel labels were not applied.`);
       bundle.channels = [];
-    } else {
-      bundle.badChannelIndices = bundle.channels.flatMap((channel, index) =>
-        channel.status.toLowerCase() === "bad" ? [index] : []);
     }
   }
 

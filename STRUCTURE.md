@@ -96,7 +96,7 @@ Provides validated sign-in/sign-out paths and optional identity extraction from 
 
 ### `app/bids-companions.ts`
 
-Catalogs every file selected through individual upload, directory selection, or later drag-and-drop. It parses bounded JSON/TSV companions, applies BIDS entity compatibility and inheritance specificity, extracts matching participant/session/scan rows, channels, channel-quality flags, and events, and retains unassociated files in the visible provenance inventory.
+Catalogs every file selected through individual upload, directory selection, or later drag-and-drop. It parses bounded JSON/TSV companions, applies BIDS entity compatibility and inheritance specificity, extracts matching participant/session/scan rows, channels, and events, and retains unassociated files in the visible provenance inventory.
 
 ### `app/eeg-core.ts`
 
@@ -120,7 +120,7 @@ Mounts the shared `Home` component and global stylesheet into the static HTML sh
 
 ### `app/page.tsx`
 
-Owns the current workstation orchestration: recording import, session state, local recovery, waveform rendering, timeline labeling, queue navigation, QC, dialogs, and export assembly. Its breadth is an acknowledged refactoring target, but behavioral extraction should follow browser interaction coverage.
+Owns the current workstation orchestration: recording import, session state, local recovery, waveform rendering, timeline labeling, queue navigation, dialogs, and export assembly. Its breadth is an acknowledged refactoring target, but behavioral extraction should follow browser interaction coverage.
 
 ### `app/source-integrity.ts`
 

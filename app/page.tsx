@@ -3,7 +3,7 @@
 /**
  * Overview & Purpose
  * Owns the interactive NeuroTrace workstation and coordinates recording review,
- * annotation, local recovery, QC, session navigation, and export.
+ * annotation, local recovery, session navigation, and export.
  *
  * Architectural Relationships
  * Called by: The root application route through app/layout.tsx.
@@ -67,7 +67,10 @@ import {
 import { buildEDFEnvelopeWindowOffThread } from "./edf-envelope-worker-client";
 import type { EDFEnvelopeProgress } from "./edf-envelope";
 import { buildRawDatEnvelopeWindowOffThread } from "./raw-dat-envelope-worker-client";
-import { computeSpectrogramOffThread } from "./spectrogram-worker-client";
+import {
+  computeAverageSpectrogramOffThread,
+  computeSpectrogramOffThread,
+} from "./spectrogram-worker-client";
 import {
   BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ,
   BUZCODE_DEFAULT_SMOOTHING_SECONDS,
@@ -90,6 +93,8 @@ import {
   clippingSeverityColor,
   envelopeWindowMatchesViewport,
   gaussianClippingHaloIntensity,
+  resolveStableTraceBaseline,
+  robustTraceBaseline,
   waveformOverviewColumnBudget,
 } from "./waveform-geometry";
 import {
@@ -166,6 +171,8 @@ type ChannelScope = {
   sourceLabels: string[];
 };
 
+type TraceDisplayMode = "clamped" | "overlap";
+
 type Annotation = {
   id: string;
   labelId: string;
@@ -205,8 +212,8 @@ type Annotation = {
       filters: DisplayFilterSettings;
       gain: number;
       snapMode: "1s" | "100ms" | "sample";
+      traceDisplayMode: TraceDisplayMode;
       selectedSourceChannels: number[];
-      badSourceChannels: number[];
     };
     sourceSnapshot: {
       format: RecordingMeta["format"];
@@ -235,7 +242,6 @@ type Candidate = {
   legacyConfidence?: "" | "1" | "2" | "3";
   reviewedAt?: string;
   reviewerInitials?: string;
-  badChannels?: string;
 };
 
 type AnnotationHistorySnapshot = {
@@ -292,7 +298,6 @@ type SourceImportContext = {
   uploadedFileInputs: File[];
   companionBundle: BidsCompanionBundle;
   importedAnnotations: Annotation[];
-  badChannelIndices: number[];
 };
 
 type ControlBindings = {
@@ -303,7 +308,6 @@ type ControlBindings = {
   previousCandidate: string;
   ictalOnset: string;
   ictalOffset: string;
-  toggleBadChannel: string;
 };
 
 type SessionTab = {
@@ -341,6 +345,8 @@ type PerformanceWithMemory = Performance & {
 
 type DisplayWindow = {
   data: Float32Array[];
+  /** Stable per-row centers that do not change as the time viewport moves. */
+  traceBaselines: number[];
   /** Exact source extrema retained for clipping and dropout metadata. */
   envelopes: Array<{
     minima: Float32Array;
@@ -408,10 +414,10 @@ type SessionWorkspaceSnapshot = {
   viewStart: number;
   timebase: number;
   gain: number;
+  traceDisplayMode: TraceDisplayMode;
   montage: MontageMode;
   filters: DisplayFilterSettings;
   selectedChannels: number[];
-  badChannels: number[];
   focusedChannel: number;
   annotations: Annotation[];
   selectedAnnotationId: string | null;
@@ -674,7 +680,6 @@ async function prepareSourceImportContext(
     uploadedFileInputs,
     companionBundle: bundle,
     importedAnnotations: bidsEventAnnotations(bundle, source.meta.durationSec, source.meta.channelLabels),
-    badChannelIndices: bundle.badChannelIndices,
   };
 }
 
@@ -857,7 +862,6 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
         : "",
       reviewedAt: typeof candidate.reviewedAt === "string" ? candidate.reviewedAt : undefined,
       reviewerInitials: typeof candidate.reviewerInitials === "string" ? candidate.reviewerInitials : "",
-      badChannels: typeof candidate.badChannels === "string" ? normalizeChannelList(candidate.badChannels) : "",
       confidence: Math.round(clamp(
         Number.isFinite(candidate.confidence)
           ? candidate.confidence
@@ -885,7 +889,6 @@ function reconcileCandidateQueue(imported: Candidate[], restored: Candidate[], r
       legacyConfidence: prior.legacyConfidence ?? "",
       reviewedAt: prior.reviewedAt,
       reviewerInitials: prior.reviewerInitials ?? "",
-      badChannels: prior.badChannels ?? "",
     } : candidate;
   }), ...restoredTerminalDecisions]
     .sort((left, right) => left.time - right.time || left.id.localeCompare(right.id));
@@ -912,7 +915,6 @@ type RecoveredProject = {
   annotations: Annotation[];
   candidates: Candidate[];
   activeCandidate: number;
-  badChannels: number[];
   reviewer: string | null;
   matlabExportIdentity: MatlabExportIdentity | null;
 };
@@ -955,11 +957,6 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
   const candidates = migrateCandidateList(rawCandidates, durationSec);
   if (candidates.length !== rawCandidates.length) throw new Error("Project events failed validation");
 
-  if (project.badChannels !== undefined && !Array.isArray(project.badChannels)) throw new Error("Project channel exclusions are invalid");
-  const rawBadChannels: unknown[] = Array.isArray(project.badChannels) ? project.badChannels : [];
-  const badChannels = rawBadChannels.filter((index): index is number => typeof index === "number" && Number.isInteger(index) && index >= 0 && index < channelCount);
-  if (badChannels.length !== rawBadChannels.length) throw new Error("Project channel exclusions failed validation");
-
   const activeCandidate = project.activeCandidate === undefined ? 0 : Number(project.activeCandidate);
   if (!Number.isInteger(activeCandidate) || activeCandidate < 0
     || (candidates.length > 0 && activeCandidate >= candidates.length)
@@ -982,7 +979,6 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
     annotations,
     candidates,
     activeCandidate: candidates.length ? activeCandidate : 0,
-    badChannels,
     reviewer: typeof project.reviewer === "string" ? project.reviewer : null,
     matlabExportIdentity: rawMatlabExportIdentity ? {
       patientId: typeof rawMatlabExportIdentity.patientId === "string" ? rawMatlabExportIdentity.patientId : "",
@@ -1002,6 +998,7 @@ const DEFAULT_FILTERS: DisplayFilterSettings = {
 
 const EMPTY_DISPLAY: DisplayWindow = {
   data: [],
+  traceBaselines: [],
   envelopes: [],
   labels: [],
   sampleRates: [],
@@ -1064,7 +1061,6 @@ const DEFAULT_CONTROLS: ControlBindings = {
   previousCandidate: "p",
   ictalOnset: "i",
   ictalOffset: "o",
-  toggleBadChannel: "b",
 };
 
 const CONTROL_OPTIONS = "abcdefghijklmnopqrstuvwxyz".split("");
@@ -1167,6 +1163,9 @@ function drawContinuousTrace(
   rowHeight: number,
   baseline: number,
   scale: number,
+  confineToRow: boolean,
+  plotTop: number,
+  plotHeight: number,
   gaps?: ArrayLike<number>,
 ) {
   let overflow = false;
@@ -1182,8 +1181,10 @@ function drawContinuousTrace(
     const x = ((sampleTime - displayStart) / timebase) * width;
     if (x < -1 || x > width + 1) continue;
     const rawY = center - (value - baseline) * scale;
-    const y = confineTraceYValueToRow(rawY, rowTop, rowHeight);
-    if (traceYOverflowsRow(rawY, rowTop, rowHeight)) {
+    const y = confineToRow
+      ? confineTraceYValueToRow(rawY, rowTop, rowHeight)
+      : confineTraceYValueToRow(rawY, plotTop, plotHeight);
+    if (confineToRow && traceYOverflowsRow(rawY, rowTop, rowHeight)) {
       overflow = true;
     }
     if (connected) context.lineTo(x, y);
@@ -1393,34 +1394,6 @@ function channelRowFromFraction(layout: ChannelRowLayout, fraction: number) {
   return row >= 0 ? row : null;
 }
 
-function robustTraceBaseline(values: Float32Array, maximumSamples = 257) {
-  if (!values.length) return 0;
-  const sampled: number[] = [];
-  let finiteCount = 0;
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
-    if (!Number.isFinite(value)) continue;
-    finiteCount += 1;
-    if (sampled.length < maximumSamples) {
-      sampled.push(value);
-      continue;
-    }
-    // Deterministic reservoir sampling keeps the median representative while
-    // guaranteeing that a short finite island in otherwise missing data is
-    // never skipped by a fixed-position stride.
-    const candidate = ((Math.imul(finiteCount, 0x9e3779b1) >>> 0) % finiteCount);
-    if (candidate < maximumSamples) sampled[candidate] = value;
-  }
-  return medianSampledValues(sampled);
-}
-
-function medianSampledValues(sampled: number[]) {
-  if (!sampled.length) return 0;
-  sampled.sort((left, right) => left - right);
-  const middle = Math.floor(sampled.length / 2);
-  return sampled.length % 2 ? sampled[middle] : (sampled[middle - 1] + sampled[middle]) / 2;
-}
-
 function boundedCanvasScale(width: number, height: number, requestedScale: number) {
   const safeArea = Math.max(1, width * height);
   return Math.min(
@@ -1547,10 +1520,10 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     viewStart: 0,
     timebase: 20,
     gain: 1,
+    traceDisplayMode: "clamped",
     montage: "referential",
     filters: { ...DEFAULT_FILTERS },
     selectedChannels: [],
-    badChannels: [],
     focusedChannel: 0,
     annotations: [],
     selectedAnnotationId: null,
@@ -1717,7 +1690,7 @@ export default function Home() {
   const waveformWidthRef = useRef(1);
   const waveformScrollRef = useRef<HTMLDivElement>(null);
   const channelScrollOffsetRef = useRef(0);
-  const traceBaselineCacheRef = useRef<WeakMap<Float32Array, number>>(new WeakMap());
+  const traceBaselineCacheRef = useRef<WeakMap<SignalSource, Map<string, number>>>(new WeakMap());
   const overviewRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -1813,20 +1786,23 @@ export default function Home() {
   const [windowDraftUnit, setWindowDraftUnit] = useState<WindowTimeUnit>("s");
   const [windowDraftValue, setWindowDraftValue] = useState<string | null>(null);
   const [gain, setGain] = useState(1);
+  const [traceDisplayMode, setTraceDisplayMode] = useState<TraceDisplayMode>("clamped");
   const [montage, setMontage] = useState<MontageMode>("referential");
   const [filters, setFilters] = useState<DisplayFilterSettings>(DEFAULT_FILTERS);
   const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set());
-  const [badChannels, setBadChannels] = useState<Set<number>>(() => new Set());
   const [focusedChannel, setFocusedChannel] = useState(0);
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
   const [display, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
   const [exactSpectrogramSignal, setExactSpectrogramSignal] = useState<{
-    sourceIndex: number;
     viewStart: number;
-    dataStart: number;
     duration: number;
-    data: Float32Array;
-    sampleRate: number;
+    channels: Array<{
+      displayIndex: number;
+      sourceIndex: number;
+      dataStart: number;
+      data: Float32Array;
+      sampleRate: number;
+    }>;
   } | null>(null);
   const [waveformWidth, setWaveformWidth] = useState(1);
   const [channelViewportHeight, setChannelViewportHeight] = useState(245);
@@ -2077,10 +2053,10 @@ export default function Home() {
       viewStart,
       timebase,
       gain,
+      traceDisplayMode,
       montage,
       filters: { ...filters },
       selectedChannels: [...selectedChannels],
-      badChannels: [...badChannels],
       focusedChannel,
       annotations,
       selectedAnnotationId,
@@ -2108,7 +2084,6 @@ export default function Home() {
           annotations: snapshot.annotations,
           candidates: snapshot.candidates,
           activeCandidate: snapshot.activeCandidate,
-          badChannels: snapshot.badChannels,
           reviewer: snapshot.reviewer,
           matlabExportIdentity: matlabExportIdentityFromInterpretation(snapshot.sourceInterpretation),
           savedAt: new Date().toISOString(),
@@ -2122,7 +2097,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, uploadedFileInputs, viewStart]);
+  }, [activeCandidate, activeSessionId, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, traceDisplayMode, uploadedFileInputs, viewStart]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2170,10 +2145,10 @@ export default function Home() {
     setWindowDraftUnit("s");
     setWindowDraftValue(null);
     setGain(snapshot.gain);
+    setTraceDisplayMode(snapshot.traceDisplayMode ?? "clamped");
     setMontage(snapshot.montage);
     setFilters({ ...snapshot.filters });
     setSelectedChannels(new Set(snapshot.selectedChannels));
-    setBadChannels(new Set(snapshot.badChannels));
     setFocusedChannel(snapshot.focusedChannel);
     setChannelSelectionActive(false);
     setExactSpectrogramSignal(null);
@@ -2772,84 +2747,6 @@ export default function Home() {
     setToast(`${movable.length} selected label${movable.length === 1 ? "" : "s"} moved ${direction < 0 ? "left" : "right"}`);
   }, [commitMutation, display, focusedChannel, meta, reopenCandidateReviews, selectedAnnotationId, selectedAnnotationIds, snapMode]);
 
-  const displayWarningKey = display.warnings.join("\0");
-  const qcIssues = useMemo(() => {
-    const issues: Array<{ level: "warning" | "info"; text: string; annotationId?: string }> = [];
-    for (const warning of meta.warnings ?? []) issues.push({ level: "warning", text: `Source assumption: ${warning}` });
-    for (const assumption of meta.assumptions ?? []) issues.push({ level: "info", text: `Source metadata: ${assumption}` });
-    for (const warning of displayWarningKey ? displayWarningKey.split("\0") : []) {
-      issues.push({ level: "warning", text: `Display montage: ${warning}` });
-    }
-    if (recoveryStatus === "error") issues.push({ level: "warning", text: "Local recovery is unavailable; export before closing the session." });
-    const candidateIds = new Set(candidates.map((item) => item.id));
-    const committedIctalCandidateIds = new Set<string>();
-    const ictal: Annotation[] = [];
-    const sleepStages: Annotation[] = [];
-    let draftCount = 0;
-    for (const item of annotations) {
-      const geometry = annotationGeometry(item);
-      if (!Number.isFinite(item.start) || !Number.isFinite(item.end) || item.start < 0 || item.end > meta.durationSec || item.end < item.start) {
-        issues.push({ level: "warning", text: "Annotation bounds fall outside the recording", annotationId: item.id });
-      } else if (geometry === "point" && item.start !== item.end) {
-        issues.push({ level: "warning", text: "Instance label must be a single moment", annotationId: item.id });
-      } else if (geometry === "session" && (item.start !== 0 || item.end !== meta.durationSec)) {
-        issues.push({ level: "warning", text: "Entire-session context must span the recording", annotationId: item.id });
-      } else if (geometry === "window" && (Math.abs(item.start / 30 - Math.round(item.start / 30)) > 1e-6 || item.end - item.start > 30.000001)) {
-        issues.push({ level: "warning", text: "Sleep-stage window is not aligned to a 30-second epoch", annotationId: item.id });
-      }
-      if (item.status === "committed" && !item.reviewer.trim()) {
-        issues.push({ level: "warning", text: "Committed annotation is missing reviewer identity", annotationId: item.id });
-      }
-      if (item.status === "committed" && item.origin === "manual" && !item.revisions?.length) {
-        issues.push({ level: "warning", text: "Manual commit is missing an immutable revision snapshot", annotationId: item.id });
-      }
-      if (item.candidateId && !candidateIds.has(item.candidateId)) {
-        issues.push({ level: "warning", text: "Annotation references a missing source file event", annotationId: item.id });
-      }
-      if (item.labelId === "spikes" && (!item.channelScope || item.channelScope.primarySourceIndex < 0 || item.channelScope.primarySourceIndex >= meta.channelLabels.length || !item.channelScope.sourceIndices.length)) {
-        issues.push({ level: "warning", text: "Epileptiform spike is missing valid source-channel provenance", annotationId: item.id });
-      }
-      if (item.labelId === "ictal") {
-        ictal.push(item);
-        if (item.candidateId && item.status === "committed") committedIctalCandidateIds.add(item.candidateId);
-      }
-      if (LABEL_BY_ID.get(item.labelId)?.category === "Sleep stage") sleepStages.push(item);
-      if (item.status === "draft") draftCount += 1;
-    }
-    for (const candidate of candidates) {
-      if (candidate.status === "reviewed" && !committedIctalCandidateIds.has(candidate.id)) {
-        issues.push({ level: "warning", text: `Reviewed source event ${candidate.label} has no committed ictal interval` });
-      }
-    }
-    for (const item of ictal) {
-      if (item.end - item.start < 3) issues.push({ level: "warning", text: `Ictal interval is ${(item.end - item.start).toFixed(1)} s (<3 s)`, annotationId: item.id });
-    }
-    const sortedIctal = [...ictal].sort((left, right) => left.start - right.start || left.end - right.end);
-    for (let index = 1; index < sortedIctal.length; index += 1) {
-      if (sortedIctal[index].start - sortedIctal[index - 1].start < 30) {
-        issues.push({ level: "warning", text: "Possible duplicate ictal onsets within 30 s", annotationId: sortedIctal[index].id });
-      }
-    }
-    const latestSleepEndByLabel = new Map<string, number>();
-    const sortedSleepStages = [...sleepStages].sort((left, right) => left.start - right.start || left.end - right.end);
-    for (const item of sortedSleepStages) {
-      let hasConflict = false;
-      for (const [labelId, latestEnd] of latestSleepEndByLabel) {
-        if (labelId !== item.labelId && latestEnd > item.start) {
-          hasConflict = true;
-          break;
-        }
-      }
-      if (hasConflict) {
-        issues.push({ level: "warning", text: "Conflicting sleep stages share an epoch", annotationId: item.id });
-      }
-      latestSleepEndByLabel.set(item.labelId, Math.max(latestSleepEndByLabel.get(item.labelId) ?? Number.NEGATIVE_INFINITY, item.end));
-    }
-    if (draftCount) issues.push({ level: "info", text: `${draftCount} draft label${draftCount === 1 ? "" : "s"} not yet committed` });
-    if (badChannels.size) issues.push({ level: "info", text: `${badChannels.size} channel${badChannels.size === 1 ? "" : "s"} excluded from derived montages` });
-    return issues;
-  }, [annotations, badChannels, candidates, displayWarningKey, meta.assumptions, meta.channelLabels.length, meta.durationSec, meta.warnings, recoveryStatus]);
-
   const advanceFromCandidate = useCallback((candidateId: string) => {
     const currentIndex = candidates.findIndex((item) => item.id === candidateId);
     const unresolved = (item: Candidate) => item.id !== candidateId && !["reviewed", "skipped", "conflict"].includes(item.status);
@@ -2953,8 +2850,8 @@ export default function Home() {
           filters: { ...filters },
           gain,
           snapMode,
+          traceDisplayMode,
           selectedSourceChannels: [...selectedChannels].sort((a, b) => a - b),
-          badSourceChannels: [...badChannels].sort((a, b) => a - b),
         },
         sourceSnapshot: {
           format: meta.format,
@@ -2969,17 +2866,12 @@ export default function Home() {
     setConfirmCommit([]);
     setCommitAdvanceAfter(false);
     if (targetAnnotation.candidateId) {
-      const qualityBadChannels = normalizeChannelList([...badChannels]
-        .sort((left, right) => left - right)
-        .map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`)
-        .join(","));
       setCandidates((items) => items.map((item) => item.id === targetAnnotation.candidateId
         ? {
           ...item,
           status: "reviewed",
           reviewedAt: committedAt,
           reviewerInitials: commitReviewer,
-          badChannels: normalizeChannelList(item.badChannels || qualityBadChannels),
           ictalChannels: normalizeChannelList(item.ictalChannels ?? ""),
         }
         : item));
@@ -2991,7 +2883,7 @@ export default function Home() {
       ? `Saved by ${commitReviewer} · next event: ${next.label}`
       : `Revision committed by ${commitReviewer}`);
     return true;
-  }, [advanceFromCandidate, annotations, badChannels, filters, gain, meta, montage, rawSourceHash, reviewer, selectedChannels, snapMode, sourceHash, sourceInterpretation, updateAnnotation]);
+  }, [advanceFromCandidate, annotations, filters, gain, meta, montage, rawSourceHash, reviewer, selectedChannels, snapMode, sourceHash, sourceInterpretation, traceDisplayMode, updateAnnotation]);
 
   const commitSelected = useCallback((force = false, advanceAfter = false) =>
     commitAnnotation(selectedAnnotation, force, advanceAfter), [commitAnnotation, selectedAnnotation]);
@@ -3006,7 +2898,6 @@ export default function Home() {
           annotations,
           candidates,
           activeCandidate,
-          badChannels: [...badChannels],
           reviewer,
           matlabExportIdentity: matlabExportIdentityFromInterpretation(sourceInterpretation),
           savedAt: new Date().toISOString(),
@@ -3020,7 +2911,7 @@ export default function Home() {
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [activeCandidate, activeSessionId, annotations, badChannels, candidates, hasRecording, reviewer, sessionKey, sourceInterpretation, verifyingSource]);
+  }, [activeCandidate, activeSessionId, annotations, candidates, hasRecording, reviewer, sessionKey, sourceInterpretation, verifyingSource]);
 
   useEffect(() => {
     displayAbortRef.current?.abort();
@@ -3043,6 +2934,32 @@ export default function Home() {
       }
       setLoadingSignal(true);
       try {
+        let sourceTraceBaselines = traceBaselineCacheRef.current.get(source);
+        if (!sourceTraceBaselines) {
+          sourceTraceBaselines = new Map();
+          traceBaselineCacheRef.current.set(source, sourceTraceBaselines);
+        }
+        const baselineSettingsKey = JSON.stringify({
+          montage,
+          filters: filters.enabled
+            ? [filters.highPassHz, filters.lowPassHz, filters.notchHz]
+            : null,
+        });
+        const stableTraceBaselines = (
+          data: Float32Array[],
+          labels: string[],
+          sourceIndices: number[][],
+          units: string[],
+        ) => data.map((values, position) => resolveStableTraceBaseline(
+          sourceTraceBaselines,
+          JSON.stringify([
+            baselineSettingsKey,
+            labels[position] ?? "",
+            sourceIndices[position] ?? [],
+            units[position] ?? "",
+          ]),
+          values,
+        ));
         const useEnvelopePath = !filters.enabled
           && montage === "referential"
           && waveformWidth >= MIN_WAVEFORM_WIDTH_FOR_ENVELOPE
@@ -3314,16 +3231,19 @@ export default function Home() {
             FLATLINE_DISPLAY_MERGE_GAP_SECONDS,
           );
           const effectiveRate = 1 / visibleEnvelope.bucketDurationSec;
+          const labels = indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`);
+          const sourceIndices = indices.map((index) => [index]);
           displayAppliedRequestIdRef.current = requestId;
           const nextDisplay: DisplayWindow = {
             data,
+            traceBaselines: stableTraceBaselines(data, labels, sourceIndices, visibleEnvelope.channelUnits),
             envelopes,
-            labels: indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`),
+            labels,
             sampleRates: indices.map(() => effectiveRate),
             sourceSampleRates: indices.map((index) => meta.sampleRates[index] ?? primarySampleRate(meta)),
             startSecs: indices.map(() => visibleEnvelope.startSec),
             units: visibleEnvelope.channelUnits,
-            sourceIndices: indices.map((index) => [index]),
+            sourceIndices,
             primarySourceIndices: indices,
             warnings: [],
             viewStart: signalViewStart,
@@ -3622,16 +3542,16 @@ export default function Home() {
           return output;
         });
         const labels = indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`);
-        const badDisplayPositions = new Set(indices.flatMap((sourceIndex, position) => badChannels.has(sourceIndex) ? [position] : []));
+        const excludedDisplayPositions = new Set<number>();
         const montageWarnings: string[] = [];
         if (montage !== "referential") {
           const unitCounts = new Map<string, number>();
-          rawWindow.channelUnits.forEach((unit, position) => {
-            if (!badDisplayPositions.has(position)) unitCounts.set(unit, (unitCounts.get(unit) ?? 0) + 1);
+          rawWindow.channelUnits.forEach((unit) => {
+            unitCounts.set(unit, (unitCounts.get(unit) ?? 0) + 1);
           });
           const referenceUnit = [...unitCounts].sort((left, right) => right[1] - left[1] || Number(right[0] === "µV") - Number(left[0] === "µV"))[0]?.[0];
           rawWindow.channelUnits.forEach((unit, position) => {
-            if (referenceUnit && unit !== referenceUnit) badDisplayPositions.add(position);
+            if (referenceUnit && unit !== referenceUnit) excludedDisplayPositions.add(position);
           });
           const omittedUnits = [...new Set(rawWindow.channelUnits.filter((unit) => referenceUnit && unit !== referenceUnit))];
           if (omittedUnits.length) montageWarnings.push(`${omittedUnits.join(", ")} channels were excluded from ${montage === "bipolar" ? "bipolar" : "average-reference"} arithmetic because units cannot be mixed.`);
@@ -3648,7 +3568,7 @@ export default function Home() {
             cropped,
             labels,
             montage,
-            badDisplayPositions,
+            excludedDisplayPositions,
             processed.sampleRates,
             croppedStartSecs,
           );
@@ -3670,6 +3590,7 @@ export default function Home() {
         displayAppliedRequestIdRef.current = requestId;
         const nextDisplay: DisplayWindow = {
           data: montageResult.data,
+          traceBaselines: stableTraceBaselines(montageResult.data, montageResult.labels, sourceIndices, units),
           envelopes: montageResult.data.map(() => null),
           labels: montageResult.labels,
           sampleRates,
@@ -3710,21 +3631,30 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [badChannels, filters, hasRecording, meta, montage, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
+  }, [filters, hasRecording, matlabAnatomicalLayout, meta, montage, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
-  // The waveform overview must not switch rendering modes when Spectrum opens.
-  // Load only its focused source channel exactly and leave `display` untouched.
+  // The waveform overview must not switch rendering modes when the spectrogram opens.
+  // Load exact inputs for the focused channel, or every enabled row once Escape
+  // clears focus, while leaving `display` untouched.
   useEffect(() => {
     const source = sourceRef.current;
-    const envelope = display.envelopes[focusedChannel];
-    const sourceIndex = display.primarySourceIndices[focusedChannel];
-    const sampleRate = meta.sampleRates[sourceIndex] ?? primarySampleRate(meta);
-    const expectedBytes = Math.ceil(sampleRate * timebase) * Float32Array.BYTES_PER_ELEMENT;
+    const targetDisplayIndices = channelSelectionActive
+      ? [clamp(focusedChannel, 0, Math.max(0, display.data.length - 1))]
+      : display.data.map((_, index) => index);
+    const requestedChannels = targetDisplayIndices.flatMap((displayIndex) => {
+      const sourceIndex = display.primarySourceIndices[displayIndex];
+      return sourceIndex === undefined ? [] : [{ displayIndex, sourceIndex }];
+    });
+    const needsExactInput = targetDisplayIndices.some((index) => Boolean(display.envelopes[index]));
+    const expectedBytes = requestedChannels.reduce((sum, { sourceIndex }) => (
+      sum + Math.ceil((meta.sampleRates[sourceIndex] ?? primarySampleRate(meta)) * timebase) * Float32Array.BYTES_PER_ELEMENT
+    ), 0);
     if (!spectrogramOpen
       || !hasRecording
       || !source
-      || !envelope
-      || sourceIndex === undefined
+      || !needsExactInput
+      || !requestedChannels.length
+      || requestedChannels.length !== targetDisplayIndices.length
       || expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES) {
       setExactSpectrogramSignal(null);
       return;
@@ -3732,18 +3662,25 @@ export default function Home() {
 
     const abortController = new AbortController();
     setExactSpectrogramSignal(null);
-    void source.getWindow(signalViewStart, timebase, [sourceIndex], { signal: abortController.signal })
+    void source.getWindow(
+      signalViewStart,
+      timebase,
+      requestedChannels.map(({ sourceIndex }) => sourceIndex),
+      { signal: abortController.signal },
+    )
       .then((windowData) => {
         if (abortController.signal.aborted || sourceRef.current !== source) return;
-        const data = windowData.data[0];
-        if (!data?.length) return;
+        if (windowData.data.some((data) => !data?.length)) return;
         setExactSpectrogramSignal({
-          sourceIndex,
           viewStart: signalViewStart,
-          dataStart: windowData.channelStartSecs[0] ?? windowData.startSec,
           duration: timebase,
-          data,
-          sampleRate: windowData.sampleRates[0] ?? sampleRate,
+          channels: requestedChannels.map(({ displayIndex, sourceIndex }, index) => ({
+            displayIndex,
+            sourceIndex,
+            dataStart: windowData.channelStartSecs[index] ?? windowData.startSec,
+            data: windowData.data[index],
+            sampleRate: windowData.sampleRates[index] ?? meta.sampleRates[sourceIndex] ?? primarySampleRate(meta),
+          })),
         });
       })
       .catch((error) => {
@@ -3752,7 +3689,7 @@ export default function Home() {
         }
       });
     return () => abortController.abort();
-  }, [display.envelopes, display.primarySourceIndices, focusedChannel, hasRecording, meta, signalViewStart, spectrogramOpen, timebase]);
+  }, [channelSelectionActive, display.data, display.envelopes, display.primarySourceIndices, focusedChannel, hasRecording, meta, signalViewStart, spectrogramOpen, timebase]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -3954,13 +3891,7 @@ export default function Home() {
         if (channelSelectionActive && right === focusedChannel) return -1;
         return left - right;
       });
-      const cachedBaseline = (values: Float32Array) => {
-        const cached = traceBaselineCacheRef.current.get(values);
-        if (cached !== undefined) return cached;
-        const baseline = robustTraceBaseline(values);
-        traceBaselineCacheRef.current.set(values, baseline);
-        return baseline;
-      };
+      const confineTracesToRows = traceDisplayMode === "clamped";
       for (const channel of traceOrder) {
         const values = display.data[channel];
         const sampleRate = display.sampleRates[channel] ?? 1;
@@ -3978,13 +3909,14 @@ export default function Home() {
         let overflow = false;
         context.save();
         context.beginPath();
-        context.rect(0, rowTop, width, rowHeight);
+        if (confineTracesToRows) context.rect(0, rowTop, width, rowHeight);
+        else context.rect(0, plotTop, width, plotHeight);
         context.clip();
         context.strokeStyle = selected ? "rgba(242, 255, 251, 1)" : "rgba(218, 235, 232, .72)";
         context.lineWidth = selected ? 1.25 : 0.85;
         const envelope = display.envelopes[channel];
         if (envelope) {
-          const baseline = cachedBaseline(values);
+          const baseline = display.traceBaselines[channel] ?? robustTraceBaseline(values);
           overflow = drawContinuousTrace(
             context,
             values,
@@ -3999,9 +3931,13 @@ export default function Home() {
             rowHeight,
             baseline,
             scale,
+            confineTracesToRows,
+            plotTop,
+            plotHeight,
             envelope.gaps,
           );
-          if (showMicrovoltClipping
+          if (confineTracesToRows
+            && showMicrovoltClipping
             && envelopeWindowMatchesViewport(
                 envelope.startSec,
                 envelope.bucketDurationSec,
@@ -4025,7 +3961,7 @@ export default function Home() {
             );
           }
         } else {
-          const baseline = cachedBaseline(values);
+          const baseline = display.traceBaselines[channel] ?? robustTraceBaseline(values);
           overflow = drawContinuousTrace(
             context,
             values,
@@ -4040,8 +3976,11 @@ export default function Home() {
             rowHeight,
             baseline,
             scale,
+            confineTracesToRows,
+            plotTop,
+            plotHeight,
           );
-          if (showMicrovoltClipping) {
+          if (confineTracesToRows && showMicrovoltClipping) {
             drawSampleClippingRibbon(
               context,
               values,
@@ -4059,7 +3998,7 @@ export default function Home() {
           }
         }
         context.restore();
-        if (overflow) {
+        if (confineTracesToRows && overflow) {
           const markerHalfHeight = Math.min(4, rowHeight * .4);
           context.fillStyle = "rgba(255, 135, 120, .92)";
           context.beginPath();
@@ -4114,7 +4053,7 @@ export default function Home() {
     waveDrawRef.current = draw;
     draw();
     return () => performanceDiagnostics.removeCanvasSurface("waveform");
-  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, montage, timebase, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, legacyRawCountDisplay, markOnset, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -4814,7 +4753,7 @@ export default function Home() {
     jumpTo(candidates[index].time);
   }, [candidates, jumpTo]);
 
-  const updateActiveCandidateReview = useCallback((patch: Partial<Pick<Candidate, "badChannels" | "ictalChannels" | "legacyConfidence" | "confidence">>) => {
+  const updateActiveCandidateReview = useCallback((patch: Partial<Pick<Candidate, "ictalChannels" | "legacyConfidence" | "confidence">>) => {
     if (!activeCandidateItem || ["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)) return;
     setCandidates((items) => items.map((item) => item.id === activeCandidateItem.id ? { ...item, ...patch } : item));
   }, [activeCandidateItem]);
@@ -4878,7 +4817,6 @@ export default function Home() {
         status: "skipped",
         reviewedAt,
         reviewerInitials: reviewer.trim().toUpperCase(),
-        badChannels: "",
       } : item));
     setMarkOnset(null);
     setActiveTool("cursor");
@@ -4976,7 +4914,6 @@ export default function Home() {
     setSourceHash("");
     setSourceInterpretation(interpretation ?? null);
     setSelectedChannels(new Set(recommendedChannels));
-    setBadChannels(new Set());
     setChannelSelectionActive(false);
     setExactSpectrogramSignal(null);
     // Do not clear cross-session LRUs here; entries are source-keyed and their
@@ -5255,10 +5192,6 @@ export default function Home() {
           ...duplicateSnapshot.annotations,
           ...imported.filter((annotation) => !existingIds.has(annotation.id)),
         ];
-        duplicateSnapshot.badChannels = [...new Set([
-          ...duplicateSnapshot.badChannels,
-          ...mergedBundle.badChannelIndices,
-        ])];
       }
       if (sourceVerificationAbortRef.current === verificationAbortController) {
         sourceVerificationAbortRef.current = null;
@@ -5273,7 +5206,6 @@ export default function Home() {
     let restored: Annotation[] = [];
     let restoredCandidates: Candidate[] = [];
     let restoredActiveCandidate = 0;
-    let restoredBadChannels: number[] = [];
     let restoredReviewer: string | null = null;
     let restoredMatlabExportIdentity: MatlabExportIdentity | null = null;
     let recoveryWarning: string | null = null;
@@ -5318,7 +5250,6 @@ export default function Home() {
         restored = project.annotations;
         restoredCandidates = project.candidates;
         restoredActiveCandidate = project.activeCandidate;
-        restoredBadChannels = project.badChannels;
         restoredReviewer = project.reviewer;
         restoredMatlabExportIdentity = project.matlabExportIdentity;
       } catch {
@@ -5352,7 +5283,6 @@ export default function Home() {
         ...restored,
         ...importContext.importedAnnotations.filter((annotation) => !restoredIds.has(annotation.id)),
       ];
-      restoredBadChannels = [...new Set([...restoredBadChannels, ...importContext.badChannelIndices])];
     }
     if (activeSessionIdRef.current !== targetSessionId) {
       throw new Error("The active session changed while the recording was opening. Load it again in the intended tab.");
@@ -5369,7 +5299,6 @@ export default function Home() {
     setRawSourceHash(contentHash);
     setSourceHash(interpretationHash);
     setSourceInterpretation(applyMatlabExportIdentity(interpretation, restoredMatlabExportIdentity) ?? null);
-    setBadChannels(new Set(restoredBadChannels));
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
     setReviewer(restoredReviewer ?? "");
@@ -5420,7 +5349,6 @@ export default function Home() {
             warnings: [...sourceRef.current.meta.warnings],
             details: { ...(sourceRef.current.meta.details ?? {}) },
           });
-          setBadChannels((current) => new Set([...current, ...bundle.badChannelIndices]));
           const imported = bidsEventAnnotations(bundle, sourceRef.current.meta.durationSec, sourceRef.current.meta.channelLabels);
           setAnnotations((current) => {
             const existingIds = new Set(current.map((annotation) => annotation.id));
@@ -5469,7 +5397,6 @@ export default function Home() {
             ictalChannels: "",
             legacyConfidence: "",
             reviewerInitials: "",
-            badChannels: "",
           }));
         if (importedCandidates.length) {
           const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
@@ -5709,7 +5636,6 @@ export default function Home() {
             ictalChannels: "",
             legacyConfidence: "",
             reviewerInitials: "",
-            badChannels: "",
           }));
         const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
         if (queue.candidates.length) {
@@ -5798,8 +5724,8 @@ export default function Home() {
       const modality = detectRecordingChannelModality(name);
       return modality === "intracranial" ? "SEEG" : modality === "scalp" ? "EEG" : "MISC";
     };
-    const channelsTsv = ["name\ttype\tunits\tsampling_frequency\tstatus\tstatus_description", ...meta.channelLabels.map((name, index) => [name, exportedChannelType(name, index), meta.channelUnits[index] ?? "uV", meta.sampleRates[index] ?? sampleRate, badChannels.has(index) ? "bad" : "good", badChannels.has(index) ? "Reviewer-excluded channel" : ""].map(tsvCell).join("\t"))].join("\n");
-    const windowRows = ["patient_id,session_id,start_sec,end_sec,start_sample,end_sample,sample_basis,entire_session_context,timed_context,windowed_labels,instance_labels,next_seizure_sec,windowed_confidence,instance_confidence,windowed_origins,instance_origins,bad_channel_mask,split"];
+    const channelsTsv = ["name\ttype\tunits\tsampling_frequency", ...meta.channelLabels.map((name, index) => [name, exportedChannelType(name, index), meta.channelUnits[index] ?? "uV", meta.sampleRates[index] ?? sampleRate].map(tsvCell).join("\t"))].join("\n");
+    const windowRows = ["patient_id,session_id,start_sec,end_sec,start_sample,end_sample,sample_basis,entire_session_context,timed_context,windowed_labels,instance_labels,next_seizure_sec,windowed_confidence,instance_confidence,windowed_origins,instance_origins,split"];
     const seizureStarts = committed.filter((item) => item.labelId === "ictal").map((item) => item.start).sort((a, b) => a - b);
     const entireSessionContext = committed
       .filter((item) => item.track === "context" && annotationGeometry(item) === "session")
@@ -5830,11 +5756,10 @@ export default function Home() {
         instanceConfidence,
         [...new Set(windowedLabels.map((item) => item.origin))].join("|"),
         [...new Set(instanceLabels.map((item) => item.origin))].join("|"),
-        [...badChannels].join("|"),
         "unassigned",
       ].map(csvCell).join(","));
     }
-    const candidateEventsTsv = [["candidate_id", "source_event_time", "source_event_label", "status", "source", "confidence", "matlab_confidence_score", "bad_channels", "ictal_channels", "reviewer_initials", "reviewed_at", "linked_annotation_ids", "linked_annotation_statuses", "relative_onsets", "relative_offsets"].join("\t"), ...candidates.map((candidate) => {
+    const candidateEventsTsv = [["candidate_id", "source_event_time", "source_event_label", "status", "source", "confidence", "matlab_confidence_score", "ictal_channels", "reviewer_initials", "reviewed_at", "linked_annotation_ids", "linked_annotation_statuses", "relative_onsets", "relative_offsets"].join("\t"), ...candidates.map((candidate) => {
       const linked = annotations.filter((item) => item.candidateId === candidate.id);
       return [
         candidate.id,
@@ -5844,7 +5769,6 @@ export default function Home() {
         candidate.source,
         candidate.confidence,
         candidate.legacyConfidence ?? "",
-        candidate.badChannels ?? "",
         candidate.ictalChannels ?? "",
         candidate.reviewerInitials ?? "",
         candidate.reviewedAt ?? "",
@@ -5869,7 +5793,6 @@ export default function Home() {
       "seizure_duration_sec",
       "sampling_rate",
       "n_channels",
-      "bad_channels",
       "ictal_channels",
       "confidence_score",
       "review_status",
@@ -5910,7 +5833,6 @@ export default function Home() {
         accepted && linked ? Math.max(0, linked.end - linked.start).toFixed(6) : "NaN",
         sampleRate,
         meta.channelLabels.length,
-        accepted ? normalizeChannelList(candidate.badChannels ?? "") || "NA" : "",
         accepted ? normalizeChannelList(candidate.ictalChannels ?? "") || "NA" : "",
         accepted ? candidate.legacyConfidence || "NA" : "",
         reviewStatus,
@@ -5933,7 +5855,7 @@ export default function Home() {
       source_hash: sourceHash,
       source_hash_method: "full-file SHA-256; session identity additionally includes raw interpretation when applicable",
       source_interpretation: sourceInterpretation,
-      display_snapshot: { montage, filters, gain, snapMode },
+      display_snapshot: { montage, filters, gain, snapMode, traceDisplayMode },
       local_processing: true,
       generated_at: new Date().toISOString(),
     }, null, 2);
@@ -5955,9 +5877,8 @@ export default function Home() {
         source_hash: sourceHash,
       });
     }).join("\n");
-    const qcReport = JSON.stringify({ generated_at: new Date().toISOString(), issues: qcIssues, bad_channels: [...badChannels].map((index) => meta.channelLabels[index]), drafts_excluded_from_events_tsv: annotations.filter((item) => item.status === "draft").length }, null, 2);
-    const manifest = JSON.stringify({ schema: "neurotrace-forecasting-manifest/1.1", patient: patientId, recording_type: recordingType, session: recordingId, files: ["events.tsv", "candidate_events.tsv", "matlab_compatibility.csv", "channels.tsv", "recording.json", "annotations.jsonl", "windows.csv", "ontology.json", "qc_report.json"], leakage_guard: "Assign train/validation/test split by patient; current split is unassigned." }, null, 2);
-    const readme = "NeuroTrace model-ready annotation bundle\n\nRaw EEG is not included. Seconds are authoritative. Sample positions are only emitted when a universal or annotation-specific channel rate exists. Only committed labels appear in events.tsv; drafts and suggestions remain in annotations.jsonl for audit. candidate_events.tsv preserves source-event lineage and relative timing. matlab_compatibility.csv provides one row per completed source-event decision using the 20-column seizure_annotation_tool.m schema, including accepted/skipped status, event-relative marks, channel notes, and 1–3 confidence. Review recording.json and qc_report.json before training. Group dataset splits by patient to prevent leakage.\n";
+    const manifest = JSON.stringify({ schema: "neurotrace-forecasting-manifest/1.1", patient: patientId, recording_type: recordingType, session: recordingId, files: ["events.tsv", "candidate_events.tsv", "matlab_compatibility.csv", "channels.tsv", "recording.json", "annotations.jsonl", "windows.csv", "ontology.json"], leakage_guard: "Assign train/validation/test split by patient; current split is unassigned." }, null, 2);
+    const readme = "NeuroTrace model-ready annotation bundle\n\nRaw EEG is not included. Seconds are authoritative. Sample positions are only emitted when a universal or annotation-specific channel rate exists. Only committed labels appear in events.tsv; drafts and suggestions remain in annotations.jsonl for audit. candidate_events.tsv preserves source-event lineage and relative timing. matlab_compatibility.csv provides one row per completed source-event decision, including accepted/skipped status, event-relative marks, ictal-channel notes, and 1–3 confidence. Review recording.json before training. Group dataset splits by patient to prevent leakage.\n";
     const zip = createStoredZip([
       { name: `${base}/events.tsv`, content: eventsTsv },
       { name: `${base}/candidate_events.tsv`, content: candidateEventsTsv },
@@ -5967,7 +5888,6 @@ export default function Home() {
       { name: `${base}/annotations.jsonl`, content: annotationsJsonl },
       { name: `${base}/windows.csv`, content: windowRows.join("\n") },
       { name: `${base}/ontology.json`, content: ontology },
-      { name: `${base}/qc_report.json`, content: qcReport },
       { name: `${base}/manifest.json`, content: manifest },
       { name: `${base}/README.txt`, content: readme },
     ]);
@@ -6033,7 +5953,6 @@ export default function Home() {
           annotations,
           candidates,
           activeCandidate,
-          badChannels: [...badChannels],
           reviewer,
           recordingType,
           sourceInterpretation,
@@ -6048,10 +5967,10 @@ export default function Home() {
           viewStart,
           timebase,
           gain,
+          traceDisplayMode,
           montage,
           filters,
           selectedChannels: [...selectedChannels],
-          badChannels: [...badChannels],
           focusedChannel,
           cursor: { time: cursorTime, amplitude: cursorAmplitude, locked: cursorLocked },
           snapMode,
@@ -6260,19 +6179,6 @@ export default function Home() {
         selectInstanceQueueEntry(Math.min(instanceQueueEntries.length - 1, activeQueueIndex + 1));
       } else if (lower === controlBindings.previousCandidate && instanceQueueEntries.length) {
         selectInstanceQueueEntry(Math.max(0, activeQueueIndex - 1));
-      } else if (lower === controlBindings.toggleBadChannel && channelSelectionActive && selectedChannels.size) {
-        const originalIndex = display.primarySourceIndices[focusedChannel];
-        if (originalIndex === undefined || originalIndex < 0) {
-          setToast("Choose a displayed source-derived channel before changing channel quality");
-          return;
-        }
-        setBadChannels((current) => {
-          const next = new Set(current);
-          if (next.has(originalIndex)) next.delete(originalIndex);
-          else next.add(originalIndex);
-          return next;
-        });
-        setToast(`${meta.channelLabels[originalIndex] ?? "Focused source channel"} quality updated`);
       } else if (event.key === "?") {
         setShowHelp(true);
       } else if (/^[1-9]$/.test(event.key)) {
@@ -6282,7 +6188,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, channelSelectionActive, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, display.primarySourceIndices, focusedChannel, hasRecording, importBusy, instanceQueueEntries, markOnset, meta.channelLabels, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, selectedChannels, setViewStartSafe, showAnnotationEditor, showChannels, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, hasRecording, importBusy, instanceQueueEntries, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setViewStartSafe, showAnnotationEditor, showChannels, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -6322,7 +6228,6 @@ export default function Home() {
     { key: "previousCandidate", label: "Previous queued event" },
     { key: "ictalOnset", label: "Set ictal onset" },
     { key: "ictalOffset", label: "Set ictal offset" },
-    { key: "toggleBadChannel", label: "Toggle focused channel quality" },
   ];
   const projectSaveOptions: Array<{
     key: keyof ProjectSaveSelection;
@@ -6334,7 +6239,7 @@ export default function Home() {
     {
       key: "review",
       title: "Annotations & review decisions",
-      detail: "Labels, candidates, reviewer data, quality flags, and undo history",
+      detail: "Labels, candidates, reviewer data, and undo history",
       amount: `${annotations.length} label${annotations.length === 1 ? "" : "s"}`,
     },
     {
@@ -6438,21 +6343,38 @@ export default function Home() {
   const activeDisplayVisibleBytes = activeDisplayViews.reduce((sum, view) => sum + view.byteLength, 0);
   const activeBackingBuffers = new Set(activeDisplayViews.map((view) => view.buffer));
   const activeDisplayBytes = [...activeBackingBuffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
-  const focusedSourceIndex = display.primarySourceIndices[focusedChannel];
+  const spectrogramChannelIndices = useMemo(() => channelSelectionActive
+    ? [clamp(focusedChannel, 0, Math.max(0, display.data.length - 1))]
+    : display.data.map((_, index) => index), [channelSelectionActive, display.data, focusedChannel]);
   const matchingExactSpectrogramSignal = exactSpectrogramSignal
-    && exactSpectrogramSignal.sourceIndex === focusedSourceIndex
     && Math.abs(exactSpectrogramSignal.viewStart - signalViewStart) < 1e-9
     && Math.abs(exactSpectrogramSignal.duration - timebase) < 1e-9
+    && exactSpectrogramSignal.channels.length === spectrogramChannelIndices.length
+    && exactSpectrogramSignal.channels.every((channel, index) => (
+      channel.displayIndex === spectrogramChannelIndices[index]
+      && channel.sourceIndex === display.primarySourceIndices[spectrogramChannelIndices[index]]
+    ))
       ? exactSpectrogramSignal
       : null;
-  const spectrogramData = matchingExactSpectrogramSignal?.data ?? display.data[focusedChannel];
-  const spectrogramSampleRate = matchingExactSpectrogramSignal?.sampleRate
-    ?? display.sampleRates[focusedChannel]
-    ?? primarySampleRate(meta);
-  const spectrogramDataStart = matchingExactSpectrogramSignal?.dataStart
-    ?? display.startSecs[focusedChannel]
-    ?? display.viewStart;
-  const spectrogramSignalKey = `${montage}:${focusedSourceIndex ?? -1}:${display.labels[focusedChannel] ?? ""}`;
+  const spectrogramSignals = useMemo<SpectrogramSignalInput[]>(() => {
+    const exactByDisplayIndex = new Map(
+      matchingExactSpectrogramSignal?.channels.map((channel) => [channel.displayIndex, channel]),
+    );
+    return spectrogramChannelIndices.map((displayIndex) => {
+      const sourceIndex = display.primarySourceIndices[displayIndex];
+      const exact = exactByDisplayIndex.get(displayIndex);
+      return {
+        data: exact?.data ?? display.data[displayIndex],
+        dataStart: exact?.dataStart ?? display.startSecs[displayIndex] ?? display.viewStart,
+        signalKey: `${montage}:${sourceIndex ?? -1}:${display.labels[displayIndex] ?? ""}`,
+        sampleRate: exact?.sampleRate ?? display.sampleRates[displayIndex] ?? primarySampleRate(meta),
+        overview: !exact && Boolean(display.envelopes[displayIndex]),
+      };
+    });
+  }, [display, matchingExactSpectrogramSignal, meta, montage, spectrogramChannelIndices]);
+  const spectrogramLabel = channelSelectionActive
+    ? formatDisplayChannelLabel(display.labels[focusedChannel] || "Focused channel")
+    : `All enabled channels (${spectrogramSignals.length})`;
 
   return (
     <main
@@ -6672,7 +6594,6 @@ export default function Home() {
             meta={meta}
             companionBundle={companionBundle}
             selectedChannels={selectedChannels}
-            badChannels={badChannels}
             recordingType={recordingType}
             verifyingSource={verifyingSource}
             sourceHash={sourceHash}
@@ -6684,7 +6605,7 @@ export default function Home() {
               <button className={`panel-bottom-button ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} title={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} onClick={() => setBottomTracksOpen((value) => !value)}><span className="bottom-panel-glyph" aria-hidden="true"><i /><i /><i /></span></button>
             </div>
             <span className="toolbar-kicker">Signal tools</span>
-            <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} aria-label="Spectrum" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrum</b></button>
+            <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} aria-label="Spectrogram" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
             <label className="toolbar-select"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">Anatomical bipolar</option></select></label>
             <button className={`compact-toggle ${showFilters ? "active" : ""}`} aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
             <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} role="group" aria-label="Window">
@@ -6711,6 +6632,18 @@ export default function Home() {
               <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
             </div>
             <div className="gain-control" role="group" aria-label="Gain"><span>Gain</span><b>{gain.toFixed(1)}×</b><div className="gain-step-buttons"><button disabled={!hasRecording} aria-label="Increase gain" title="Increase gain" onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button><button disabled={!hasRecording} aria-label="Decrease gain" title="Decrease gain" onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button></div></div>
+            <button
+              className={`trace-display-toggle ${traceDisplayMode === "overlap" ? "active" : ""}`}
+              disabled={!hasRecording}
+              aria-label="Allow channel traces to overlap"
+              aria-pressed={traceDisplayMode === "overlap"}
+              title={traceDisplayMode === "clamped" ? "Switch to overlapping channel traces" : "Switch to clamped traces with voltage heat lines"}
+              onClick={() => {
+                const nextMode = traceDisplayMode === "clamped" ? "overlap" : "clamped";
+                setTraceDisplayMode(nextMode);
+                setToast(nextMode === "overlap" ? "Channel traces may now overlap" : "Channel traces clamped with voltage heat lines");
+              }}
+            ><span aria-hidden="true">≋</span><b>{traceDisplayMode === "clamped" ? "Clamped" : "Overlap"}</b></button>
             <div className="toolbar-spacer" />
             <button
               className={`tool-button box-zoom-button ${boxZoomActive ? "active" : ""}`}
@@ -6761,7 +6694,6 @@ export default function Home() {
               const value = event.target.value as Candidate["legacyConfidence"];
               updateActiveCandidateReview({ legacyConfidence: value, confidence: value ? Number(value) * 33 + (value === "3" ? 1 : 0) : 0 });
             }}><option value="">NA · Not rated</option><option value="1">1 · Low</option><option value="2">2 · Medium</option><option value="3">3 · High</option></select></label>
-            <label className="candidate-review-field bad-channel-field"><span>Bad channels (this event)</span><input disabled={candidateDecisionLocked} value={activeCandidateItem.badChannels ?? ""} placeholder="e.g. LA8,RA3" onChange={(event) => updateActiveCandidateReview({ badChannels: event.target.value })} /></label>
             <label className="candidate-review-field ictal-channel-field"><span>Ictal channels (optional)</span><input disabled={candidateDecisionLocked} value={activeCandidateItem.ictalChannels ?? ""} placeholder="e.g. LA1-LA4" onChange={(event) => updateActiveCandidateReview({ ictalChannels: event.target.value })} /></label>
             <div className="candidate-review-actions">
               <button className={`button secondary ${activeTool === "seizure" ? "active" : ""}`} onClick={beginActiveCandidateMarking}>{activeTool === "seizure" ? markOnset === null ? "Click onset" : "Click offset" : activeCandidateAnnotation?.status === "committed" ? "Revise marks" : activeCandidateAnnotation ? "Redo marks" : "Mark onset / offset"}</button>
@@ -6846,7 +6778,9 @@ export default function Home() {
                     height: `${Math.max(0, inspectionRange.bottom - inspectionRange.top) * 100}%`,
                   }} />}
                   {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
-                  {loadingSignal && <div className="signal-loading"><span /> Preparing signal window…</div>}
+                  {loadingSignal && <div className="signal-loading" role="status"><span /> {verifyingSource
+                    ? "Preparing signal window… The file is also still being validated, so this may take longer than usual."
+                    : "Preparing signal window…"}</div>}
                   {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
                   {!display.data.length && !loadingSignal && <div className="no-channels" role="status">
                     <strong>{display.warnings.length ? `${montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average-reference" : "Signal"} view unavailable` : "No visible channels"}</strong>
@@ -6857,19 +6791,16 @@ export default function Home() {
             </div>
 
             {spectrogramOpen && <SpectrogramPanel
-              data={spectrogramData}
-              dataStart={spectrogramDataStart}
-              signalKey={spectrogramSignalKey}
-              sampleRate={spectrogramSampleRate}
+              signals={spectrogramSignals}
               viewStart={viewStart}
               viewDuration={timebase}
               sessionDuration={meta.durationSec}
               cursor={cursorTime}
-              label={formatDisplayChannelLabel(display.labels[focusedChannel] || "Focused channel")}
-              overview={!matchingExactSpectrogramSignal && Boolean(display.envelopes[focusedChannel])}
+              label={spectrogramLabel}
               onPreviewStart={previewViewStartSafe}
               onCommitStart={(start) => commitViewStart(clamp(start, 0, Math.max(0, meta.durationSec - timebase)))}
               onCenter={jumpTo}
+              onZoom={zoomToTimeRange}
             />}
 
             {bottomTracksOpen && <div
@@ -6937,7 +6868,7 @@ export default function Home() {
             <span className="empty-intro">
               <span className="empty-intro-kicker">NEUROTRACE CLINICAL EEG STUDIO</span>
               <strong className="empty-intro-title">Welcome to NeuroTrace</strong>
-              <span className="empty-intro-copy">Review, annotate, and quality-check clinical EEG recordings in one focused, browser-based workspace.</span>
+              <span className="empty-intro-copy">Review and annotate clinical EEG recordings in one focused, browser-based workspace.</span>
               <span className="empty-intro-support">Your recording stays on this device. Select <b>?</b> in the top-right for guidance, or use Settings to tailor the workspace. For help or to report bugs, email <a href="mailto:alex.maynes2001@gmail.com">alex.maynes2001@gmail.com</a>.</span>
             </span>
             <button type="button" className="empty-load-prompt" onClick={() => setShowImport(true)}>
@@ -7157,7 +7088,7 @@ export default function Home() {
         </div>
       </div>}
 
-      {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Commit advisory" tabIndex={-1}><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but the QC engine found an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => { setConfirmCommit([]); setCommitAdvanceAfter(false); }}>Return to label</button><button className="button primary" onClick={() => {
+      {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Commit advisory" tabIndex={-1}><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but there is an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => { setConfirmCommit([]); setCommitAdvanceAfter(false); }}>Return to label</button><button className="button primary" onClick={() => {
         if (commitSelected(true, commitAdvanceAfter)) setShowAnnotationEditor(false);
       }}>Commit with advisory</button></div></div></div>}
 
@@ -7166,14 +7097,14 @@ export default function Home() {
           <button className="modal-close" onClick={() => setShowChannels(false)} aria-label="Close channel controls">×</button>
           <span className="modal-eyebrow">CHANNEL DISPLAY</span>
           <h2>Choose what appears in the recording.</h2>
-          <div className="detected-channels"><strong>Detected channels:</strong><span>{meta.channelLabels.length} total · {selectedChannels.size} source channels selected · {badChannels.size} quality-excluded · {display.labels.length} displayed rows</span></div>
+          <div className="detected-channels"><strong>Detected channels:</strong><span>{meta.channelLabels.length} total · {selectedChannels.size} source channels selected · {display.labels.length} displayed rows</span></div>
           <div className="channel-modal-tools">
             <input aria-label="Search detected channels" placeholder="Find a channel…" value={channelSearch} onChange={(event) => setChannelSearch(event.target.value)} />
             <button onClick={() => setSelectedChannels(new Set(meta.channelLabels.map((_, index) => index)))}>Enable all</button>
             <button onClick={() => setSelectedChannels(new Set())}>Disable all</button>
           </div>
           <div className="channel-toggle-list">
-            {filteredChannelOptions.map(({ name, index }) => <div className={`channel-toggle-row ${badChannels.has(index) ? "bad" : ""}`} key={`${name}-${index}`}>
+            {filteredChannelOptions.map(({ name, index }) => <div className="channel-toggle-row" key={`${name}-${index}`}>
               <label>
                 <input type="checkbox" checked={selectedChannels.has(index)} onChange={() => setSelectedChannels((current) => {
                   const next = new Set(current);
@@ -7184,12 +7115,6 @@ export default function Home() {
                 <span className="channel-switch" aria-hidden="true" />
                 <span className="channel-toggle-copy"><strong>{formatDisplayChannelLabel(name)}</strong><small>{meta.channelUnits[index] ?? "µV"} · source channel {index + 1}</small></span>
               </label>
-              <button className={badChannels.has(index) ? "bad" : ""} onClick={() => setBadChannels((current) => {
-                const next = new Set(current);
-                if (next.has(index)) next.delete(index);
-                else next.add(index);
-                return next;
-              })}>{badChannels.has(index) ? "Bad" : "Good"}</button>
             </div>)}
           </div>
           <p className="channel-modal-note">Montage labels may combine source channels. NeuroTrace keeps the original channel provenance with every channel-specific annotation.</p>
@@ -7208,13 +7133,13 @@ export default function Home() {
               ["Recording info", "Shows the source file and recording type. Open Patient Info for identifiers, reviewer, source integrity, replacement, and export controls."],
               ["Instance queue", "File events, instance labels, and non-session context events appear in time order. Select one or use the arrows to jump straight to it."],
               ["Source-event review", "Seizure-keyword file events open around relative time zero. Enter reviewer initials, optionally rate confidence 1–3, mark onset then offset, and Accept or Skip to advance."],
-              ["Signal tools", "Spectrum opens the focused-channel spectral view. Montage, filters, window, and gain only change the display; raw samples stay immutable."],
-              ["Waveform display", "Each row draws one continuous, time-aligned centerline. Finite excursions stay connected at the row edge while the voltage-severity line reports their size."],
-              ["CH+ channel manager", "Opens detected source channels. Toggle visibility and mark channel quality without losing source-channel provenance."],
+              ["Signal tools", "Spectrogram opens the focused-channel time-frequency view. Montage, filters, window, gain, and Clamped/Overlap only change the display; raw samples stay immutable."],
+              ["Waveform display", "Each row draws one continuous, time-aligned centerline. Clamped contains excursions and adds a voltage-severity line; Overlap permits traces to cross rows."],
+              ["CH+ channel manager", "Opens detected source channels. Toggle visibility without losing source-channel provenance."],
               ["Waveform labeling", "Click once to pin a time, then click any ePhys label to create an instance there. Drag across time, then click a label to apply it to that exact window."],
               ["Annotation tracks", "Context may stack, windowed labels occupy spans, and instance labels mark single moments. Drag annotations to move them or between the two ePhys tracks to convert geometry."],
               ["Context Labels", "Clinical Observation, Medication, and Other are the three timed context tools. Whole-session labels are added only with + in the left Session Labels panel."],
-              ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Use … to choose which sleep, rhythmic/periodic, seizure, quality, and spike label types stay visible."],
+              ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Use … to choose which sleep, rhythmic/periodic, seizure, artifact, and spike label types stay visible."],
               ["Inspector and deletion", "Select any annotation to edit timing, notes, reviewer, and confidence, commit a revision, or use the trash can. Delete/Backspace also removes the selection."],
               ["Session map", "Session map gives a hoverable, clickable whole-recording view."],
               ["Navigation", "Trackpad or mouse-wheel movement pans through time. The Window number and unit button stage a new view; the check button applies it. Pinch or Ctrl/⌘ +/- zooms immediately and rebuilds a Nyquist-safe, time-aligned trace. Escape clears the current interaction."],
@@ -7259,7 +7184,6 @@ export default function Home() {
             <div><span>Recording start</span><strong>{formatSessionStart(meta.startedAt)}</strong></div>
             <div><span>Source integrity</span><strong className="hash-text" title={verifyingSource ? "Full source SHA-256 verification is in progress" : sourceHash}>{sourceHashDisplay}</strong></div>
             <div><span>Source channels</span><strong>{meta.channelLabels.length}</strong></div>
-            <div><span>Quality excluded</span><strong>{badChannels.size}</strong></div>
             <label><span>Reviewer initials</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
             {activeMatlabExportIdentity && <>
               <div className="matlab-identity-note"><span>MATLAB export identity</span><strong>Editable without changing the recording recovery key</strong></div>
@@ -7385,23 +7309,41 @@ function availableSpectrogramHeight(panel: HTMLDivElement | null) {
   );
 }
 
-type SpectrogramAction = "browse" | "frequency";
+type SpectrogramTool = "browse" | "box-zoom";
 
-type SpectrogramPanelProps = {
+type SpectrogramZoomBox = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type SpectrogramSignalInput = {
   data?: Float32Array;
   dataStart: number;
   signalKey: string;
   sampleRate: number;
+  overview: boolean;
+};
+
+type SpectrogramPanelProps = {
+  signals: SpectrogramSignalInput[];
   viewStart: number;
   viewDuration: number;
   sessionDuration: number;
   cursor: number;
   label: string;
-  overview: boolean;
   onPreviewStart(start: number): void;
   onCommitStart(start: number): void;
   onCenter(time: number): void;
+  onZoom(start: number, end: number): void;
 };
+
+const SPECTROGRAM_PLOT_LEFT = 42;
+const SPECTROGRAM_PLOT_RIGHT = 9;
+const SPECTROGRAM_PLOT_TOP = 34;
+const SPECTROGRAM_PLOT_BOTTOM = 22;
+const SPECTROGRAM_MINIMUM_DRAG_PX = 4;
 
 function matlabJet(value: number) {
   const scaled = 4 * clamp(value, 0, 1);
@@ -7412,51 +7354,52 @@ function matlabJet(value: number) {
 }
 
 function SpectrogramPanel({
-  data,
-  dataStart,
-  signalKey,
-  sampleRate,
+  signals,
   viewStart,
   viewDuration,
   sessionDuration,
   cursor,
   label,
-  overview,
   onPreviewStart,
   onCommitStart,
   onCenter,
+  onZoom,
 }: SpectrogramPanelProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ pointerId: number; startY: number; startHeight: number; maximumHeight: number } | null>(null);
   const [spectrogramHeight, setSpectrogramHeight] = useState(DEFAULT_SPECTROGRAM_HEIGHT);
   const [spectrumState, setSpectrumState] = useState<{
-    data?: Float32Array;
+    signals: SpectrogramSignalInput[] | null;
     dataStart: number;
     signalKey: string;
-    sampleRate: number;
     result: SpectrogramComputeResult | null;
     error: string;
-  }>({ data: undefined, dataStart: 0, signalKey: "", sampleRate: 0, result: null, error: "" });
-  const spectrumInputMatches = spectrumState.data === data
-    && spectrumState.dataStart === dataStart
-    && spectrumState.signalKey === signalKey
-    && spectrumState.sampleRate === sampleRate;
-  const retainedSpectrumMatchesSignal = spectrumState.signalKey === signalKey
-    && spectrumState.sampleRate === sampleRate;
+  }>({ signals: null, dataStart: 0, signalKey: "", result: null, error: "" });
+  const signalKey = signals.map((signal) => signal.signalKey).join("|");
+  const dataStart = signals[0]?.dataStart ?? viewStart;
+  const overview = signals.some((signal) => signal.overview);
+  const sampleRate = signals.find((signal) => signal.sampleRate >= 2)?.sampleRate ?? signals[0]?.sampleRate ?? 0;
+  const spectrumInputMatches = spectrumState.signals === signals;
+  const retainedSpectrumMatchesSignal = spectrumState.signalKey === signalKey;
   const spectrum = retainedSpectrumMatchesSignal ? spectrumState.result : null;
   const spectrumDataStart = retainedSpectrumMatchesSignal ? spectrumState.dataStart : dataStart;
-  const spectrumSampleRate = retainedSpectrumMatchesSignal ? spectrumState.sampleRate : sampleRate;
+  const spectrumSampleRate = spectrum?.sampleRate ?? sampleRate;
   const computeError = spectrumInputMatches ? spectrumState.error : "";
   const previousHeightRef = useRef(DEFAULT_SPECTROGRAM_HEIGHT);
   const interactionRef = useRef<{
     pointerId: number;
     startX: number;
+    startY: number;
     currentX: number;
+    currentY: number;
     originalViewStart: number;
+    tool: SpectrogramTool;
   } | null>(null);
-  const [action, setAction] = useState<SpectrogramAction>("browse");
+  const [tool, setTool] = useState<SpectrogramTool>("browse");
+  const [zoomBox, setZoomBox] = useState<SpectrogramZoomBox | null>(null);
   const [smoothingSeconds, setSmoothingSeconds] = useState(BUZCODE_DEFAULT_SMOOTHING_SECONDS);
+  const [displayMinHz, setDisplayMinHz] = useState(0);
   const [displayMaxHz, setDisplayMaxHz] = useState(BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ);
   const [colorLimitShift, setColorLimitShift] = useState(0);
   const [overlay, setOverlay] = useState<"none" | "theta">("none");
@@ -7472,6 +7415,8 @@ function SpectrogramPanel({
   const maximumDisplayHz = Math.max(1, Math.floor((spectrum?.maxHz ?? displayMaxHz) / 10) * 10 || spectrum?.maxHz || displayMaxHz);
   const minimumDisplayHz = Math.min(10, maximumDisplayHz);
   const effectiveDisplayMaxHz = clamp(displayMaxHz, minimumDisplayHz, maximumDisplayHz);
+  const effectiveDisplayMinHz = clamp(displayMinHz, 0, Math.max(0, effectiveDisplayMaxHz - Math.min(1, effectiveDisplayMaxHz)));
+  const displayFrequencySpanHz = Math.max(Number.EPSILON, effectiveDisplayMaxHz - effectiveDisplayMinHz);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -7497,33 +7442,52 @@ function SpectrogramPanel({
   }, []);
 
   useEffect(() => {
-    if (overview || !data?.length || sampleRate < 2) return;
+    const computableSignals = signals.filter((signal) => signal.data?.length && signal.sampleRate >= 2);
+    if (overview || !computableSignals.length) return;
     const abortController = new AbortController();
-    const inputBytes = data.byteLength;
+    const inputBytes = computableSignals.reduce((sum, signal) => sum + (signal.data?.byteLength ?? 0), 0);
     const operation = performanceDiagnostics.beginDecode({
-      label: "Buzcode multitaper spectrogram",
+      label: computableSignals.length > 1
+        ? `Buzcode multitaper spectrogram · ${computableSignals.length}-channel power average`
+        : "Buzcode multitaper spectrogram",
       totalBytes: inputBytes,
       phase: "Whitening and computing DPSS spectrum",
     });
-    void computeSpectrogramOffThread({ data, sampleRate }, { signal: abortController.signal }).then(
+    const requests = computableSignals.map((signal) => ({
+      data: signal.data as Float32Array,
+      dataStart: signal.dataStart,
+      sampleRate: signal.sampleRate,
+    }));
+    const pending = requests.length === 1
+      ? computeSpectrogramOffThread(
+        { data: requests[0].data, sampleRate: requests[0].sampleRate },
+        { signal: abortController.signal },
+      )
+      : computeAverageSpectrogramOffThread({ signals: requests }, { signal: abortController.signal });
+    void pending.then(
       (result) => {
         operation.finish({
           completedBytes: inputBytes,
           durationMs: result.metrics.computeMs + (result.metrics.inputCopyMs ?? 0),
           transientAllocatedBytes: inputBytes,
         });
-        setSpectrumState({ data, dataStart, signalKey, sampleRate, result, error: "" });
+        setSpectrumState({
+          signals,
+          dataStart: computableSignals.find((signal) => signal.sampleRate === result.sampleRate)?.dataStart ?? dataStart,
+          signalKey,
+          result,
+          error: "",
+        });
       },
       (error: unknown) => {
         const aborted = isAbortFailure(error);
         operation[aborted ? "cancel" : "fail"]();
         if (!aborted) setSpectrumState({
-          data,
+          signals,
           dataStart,
           signalKey,
-          sampleRate,
           result: null,
-          error: error instanceof Error ? error.message : "Spectrum computation failed",
+          error: error instanceof Error ? error.message : "Spectrogram computation failed",
         });
       },
     );
@@ -7531,7 +7495,7 @@ function SpectrogramPanel({
       abortController.abort(new DOMException("Spectrogram view changed", "AbortError"));
       operation.cancel();
     };
-  }, [data, dataStart, overview, sampleRate, signalKey]);
+  }, [dataStart, overview, signalKey, signals]);
 
   useLayoutEffect(() => {
     const canvas = ref.current;
@@ -7553,10 +7517,10 @@ function SpectrogramPanel({
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         const width = rect.width;
         const height = rect.height;
-        const plotLeft = 42;
-        const plotRight = 9;
-        const plotTop = 34;
-        const plotBottom = 22;
+        const plotLeft = SPECTROGRAM_PLOT_LEFT;
+        const plotRight = SPECTROGRAM_PLOT_RIGHT;
+        const plotTop = SPECTROGRAM_PLOT_TOP;
+        const plotBottom = SPECTROGRAM_PLOT_BOTTOM;
         const plotWidth = Math.max(1, width - plotLeft - plotRight);
         const plotHeight = Math.max(1, height - plotTop - plotBottom);
         ctx.fillStyle = "#071216";
@@ -7566,7 +7530,7 @@ function SpectrogramPanel({
         const status = overview
           ? "Wide view: green glow marks peaks beyond the visible µV range · dark green → lime → yellow → orange marks distance beyond ±100 µV · zoom in for exact one-second multitaper bins"
           : sampleRate < 2
-          ? "Spectrum unavailable below 2 Hz"
+          ? "Spectrogram unavailable below 2 Hz"
           : computeError || (!spectrum ? "AR whitening · computing five DPSS tapers…" : "");
         if (status) {
           ctx.fillStyle = "rgba(235,245,243,.6)";
@@ -7584,7 +7548,7 @@ function SpectrogramPanel({
           return;
         }
         const visibleBins = [...spectrum.frequencies].flatMap((frequency, index) => (
-          frequency <= effectiveDisplayMaxHz ? [index] : []
+          frequency >= effectiveDisplayMinHz && frequency <= effectiveDisplayMaxHz ? [index] : []
         ));
         const flat = visibleBins.flatMap((bin) => (
           Array.from(powers.slice(bin * spectrum.frames, (bin + 1) * spectrum.frames)).filter(Number.isFinite)
@@ -7624,8 +7588,8 @@ function SpectrogramPanel({
           const upperFrequency = bin < spectrum.bins - 1
             ? (centerFrequency + spectrum.frequencies[bin + 1]) / 2
             : effectiveDisplayMaxHz;
-          const yTop = plotTop + plotHeight * (1 - clamp(upperFrequency / effectiveDisplayMaxHz, 0, 1));
-          const yBottom = plotTop + plotHeight * (1 - clamp(lowerFrequency / effectiveDisplayMaxHz, 0, 1));
+          const yTop = plotTop + plotHeight * (1 - clamp((upperFrequency - effectiveDisplayMinHz) / displayFrequencySpanHz, 0, 1));
+          const yBottom = plotTop + plotHeight * (1 - clamp((lowerFrequency - effectiveDisplayMinHz) / displayFrequencySpanHz, 0, 1));
           for (let frame = 0; frame < spectrum.frames; frame += 1) {
             const geometry = frameGeometry[frame];
             if (!geometry) continue;
@@ -7648,8 +7612,9 @@ function SpectrogramPanel({
         ctx.lineWidth = 1;
         ctx.textAlign = "right";
         const frequencyStep = effectiveDisplayMaxHz <= 40 ? 10 : effectiveDisplayMaxHz <= 100 ? 20 : 50;
-        for (let frequency = 0; frequency <= effectiveDisplayMaxHz; frequency += frequencyStep) {
-          const y = plotTop + plotHeight * (1 - frequency / effectiveDisplayMaxHz);
+        const firstFrequencyLine = Math.ceil(effectiveDisplayMinHz / frequencyStep) * frequencyStep;
+        for (let frequency = firstFrequencyLine; frequency <= effectiveDisplayMaxHz; frequency += frequencyStep) {
+          const y = plotTop + plotHeight * (1 - (frequency - effectiveDisplayMinHz) / displayFrequencySpanHz);
           ctx.strokeStyle = "rgba(255,255,255,.18)";
           ctx.beginPath(); ctx.moveTo(plotLeft, y); ctx.lineTo(plotLeft + plotWidth, y); ctx.stroke();
           ctx.fillStyle = "rgba(235,245,243,.72)";
@@ -7660,7 +7625,7 @@ function SpectrogramPanel({
         ctx.rotate(-Math.PI / 2);
         ctx.textAlign = "center";
         ctx.fillStyle = "rgba(235,245,243,.55)";
-        ctx.fillText("Freq. (Hz)", 0, 0);
+        ctx.fillText("Frequency (Hz)", 0, 0);
         ctx.restore();
 
         ctx.textAlign = "center";
@@ -7685,8 +7650,8 @@ function SpectrogramPanel({
               drawing = false;
               continue;
             }
-            const overlayFrequency = effectiveDisplayMaxHz / 2 + ratio * (effectiveDisplayMaxHz / 2);
-            const y = plotTop + plotHeight * (1 - overlayFrequency / effectiveDisplayMaxHz);
+            const overlayFrequency = effectiveDisplayMinHz + displayFrequencySpanHz / 2 + ratio * (displayFrequencySpanHz / 2);
+            const y = plotTop + plotHeight * (1 - (overlayFrequency - effectiveDisplayMinHz) / displayFrequencySpanHz);
             if (drawing) ctx.lineTo(geometry.centerX, y);
             else { ctx.moveTo(geometry.centerX, y); drawing = true; }
           }
@@ -7713,20 +7678,73 @@ function SpectrogramPanel({
       observer.disconnect();
       performanceDiagnostics.removeCanvasSurface("spectrogram");
     };
-  }, [colorLimitShift, computeError, cursor, displayedPowers, effectiveDisplayMaxHz, overview, sampleRate, spectrum, spectrumDataStart, spectrumSampleRate, thetaRatio, viewDuration, viewStart]);
+  }, [colorLimitShift, computeError, cursor, displayedPowers, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, overview, sampleRate, spectrum, spectrumDataStart, spectrumSampleRate, thetaRatio, viewDuration, viewStart]);
 
   const plotRatio = (clientX: number, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
-    return clamp((clientX - rect.left - 42) / Math.max(1, rect.width - 51), 0, 1);
+    return clamp(
+      (clientX - rect.left - SPECTROGRAM_PLOT_LEFT)
+        / Math.max(1, rect.width - SPECTROGRAM_PLOT_LEFT - SPECTROGRAM_PLOT_RIGHT),
+      0,
+      1,
+    );
+  };
+  const frequencyFromPointer = (clientY: number, canvas: HTMLCanvasElement) => {
+    const rect = canvas.getBoundingClientRect();
+    const plotHeight = Math.max(1, rect.height - SPECTROGRAM_PLOT_TOP - SPECTROGRAM_PLOT_BOTTOM);
+    const ratioFromTop = clamp((clientY - rect.top - SPECTROGRAM_PLOT_TOP) / plotHeight, 0, 1);
+    return effectiveDisplayMinHz + (1 - ratioFromTop) * displayFrequencySpanHz;
+  };
+  const zoomBoxFromInteraction = (
+    interaction: NonNullable<typeof interactionRef.current>,
+    canvas: HTMLCanvasElement,
+  ): SpectrogramZoomBox => {
+    const rect = canvas.getBoundingClientRect();
+    const minimumX = SPECTROGRAM_PLOT_LEFT;
+    const maximumX = Math.max(minimumX, rect.width - SPECTROGRAM_PLOT_RIGHT);
+    const minimumY = SPECTROGRAM_PLOT_TOP;
+    const maximumY = Math.max(minimumY, rect.height - SPECTROGRAM_PLOT_BOTTOM);
+    const startX = clamp(interaction.startX - rect.left, minimumX, maximumX);
+    const currentX = clamp(interaction.currentX - rect.left, minimumX, maximumX);
+    const startY = clamp(interaction.startY - rect.top, minimumY, maximumY);
+    const currentY = clamp(interaction.currentY - rect.top, minimumY, maximumY);
+    return {
+      left: Math.min(startX, currentX),
+      top: Math.min(startY, currentY),
+      width: Math.abs(currentX - startX),
+      height: Math.abs(currentY - startY),
+    };
   };
   const boundedStart = (requested: number) => clamp(requested, 0, Math.max(0, sessionDuration - viewDuration));
   const completeInteraction = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const interaction = interactionRef.current;
     if (!interaction || interaction.pointerId !== event.pointerId) return;
+    interaction.currentX = event.clientX;
+    interaction.currentY = event.clientY;
     interactionRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (interaction.tool === "box-zoom") {
+      const box = zoomBoxFromInteraction(interaction, event.currentTarget);
+      setZoomBox(null);
+      if (box.width >= SPECTROGRAM_MINIMUM_DRAG_PX) {
+        const startTime = viewStart + plotRatio(interaction.startX, event.currentTarget) * viewDuration;
+        const endTime = viewStart + plotRatio(interaction.currentX, event.currentTarget) * viewDuration;
+        onZoom(Math.min(startTime, endTime), Math.max(startTime, endTime));
+      }
+      if (box.height >= SPECTROGRAM_MINIMUM_DRAG_PX) {
+        const startFrequency = frequencyFromPointer(interaction.startY, event.currentTarget);
+        const endFrequency = frequencyFromPointer(interaction.currentY, event.currentTarget);
+        const nextMinimumHz = Math.max(0, Math.floor(Math.min(startFrequency, endFrequency)));
+        const nextMaximumHz = Math.min(maximumDisplayHz, Math.ceil(Math.max(startFrequency, endFrequency)));
+        if (nextMaximumHz - nextMinimumHz >= 1) {
+          setDisplayMinHz(nextMinimumHz);
+          setDisplayMaxHz(nextMaximumHz);
+        }
+      }
+      return;
+    }
     const distance = interaction.currentX - interaction.startX;
-    const moved = Math.abs(distance) >= 4;
+    const moved = Math.abs(distance) >= SPECTROGRAM_MINIMUM_DRAG_PX;
     if (moved) {
       onCommitStart(boundedStart(
         interaction.originalViewStart
@@ -7739,7 +7757,7 @@ function SpectrogramPanel({
     }
   };
 
-  return <div ref={panelRef} className={`spectrogram-panel action-${action}`} style={{ height: spectrogramHeight }}>
+  return <div ref={panelRef} className={`spectrogram-panel tool-${tool}`} style={{ height: spectrogramHeight }}>
     <button
       className="spectrogram-resize-handle"
       type="button"
@@ -7781,15 +7799,42 @@ function SpectrogramPanel({
     />
     <div className="spectrogram-label">
       <strong title={label}>{label}</strong>
+      {signals.length > 1 && <span>POWER AVG · {signals.length} CH</span>}
       <span>{sampleRate >= 2 ? "AR(2) white" : "Unavailable"}</span>
       <span>{sampleRate >= 2 ? "NW 3 · K 5" : "Sampling < 2 Hz"}</span>
       <span>{sampleRate >= 2 ? "FFT 3072" : ""}</span>
     </div>
     <div className="spectrogram-canvas-shell">
-      <div className="spectrogram-toolbar" aria-label="Buzcode spectrogram controls">
-        <span className="spectrogram-action-readout">{action === "browse" ? "BROWSE" : "FREQ"}</span>
-        <button type="button" className={action === "browse" ? "active" : ""} onClick={() => setAction("browse")} title="Browse: click to center, hold and drag to pan">B</button>
-        <button type="button" className={action === "frequency" ? "active" : ""} onClick={() => setAction((current) => current === "frequency" ? "browse" : "frequency")} title="Frequency resize mode (F)">F</button>
+      <div className="spectrogram-toolbar" aria-label="Spectrogram controls">
+        <button type="button" className={tool === "browse" ? "active" : ""} aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); }} title="Browse: click to center, hold and drag to pan (B)">B</button>
+        <button type="button" className={tool === "box-zoom" ? "active" : ""} aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => setTool("box-zoom")} title="Box zoom: drag a time-frequency area to fit it to the view (Z)">Z</button>
+        <div className="spectrogram-frequency-control" role="group" aria-label="Displayed frequency range">
+          <span>Frequency range</span>
+          <button
+            type="button"
+            aria-label="Lower maximum displayed frequency"
+            disabled={effectiveDisplayMaxHz - effectiveDisplayMinHz <= minimumDisplayHz}
+            onClick={() => setDisplayMaxHz(Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10))}
+            title="Show a narrower, lower-frequency range"
+          >−</button>
+          <output aria-live="polite">{Math.round(effectiveDisplayMinHz)}–{Math.round(effectiveDisplayMaxHz)} Hz</output>
+          <button
+            type="button"
+            aria-label="Raise maximum displayed frequency"
+            disabled={effectiveDisplayMaxHz >= maximumDisplayHz}
+            onClick={() => setDisplayMaxHz(Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10))}
+            title="Show a wider frequency range"
+          >+</button>
+          <button
+            type="button"
+            aria-label="Reset displayed frequency range"
+            onClick={() => {
+              setDisplayMinHz(0);
+              setDisplayMaxHz(Math.min(maximumDisplayHz, BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ));
+            }}
+            title="Reset to the default frequency range"
+          >↺</button>
+        </div>
         <label>Smooth
           <select value={smoothingSeconds} onChange={(event) => setSmoothingSeconds(Number(event.target.value))}>
             {BUZCODE_SMOOTHING_OPTIONS.map((seconds) => <option value={seconds} key={seconds}>{seconds}s</option>)}
@@ -7801,7 +7846,6 @@ function SpectrogramPanel({
             <option value="theta">θ ratio</option>
           </select>
         </label>
-        <span className="spectrogram-frequency-readout">0–{Math.round(effectiveDisplayMaxHz)} Hz</span>
         <button type="button" onClick={() => setColorLimitShift((value) => value + 0.1)} title="Raise color limits (Down arrow)">C−</button>
         <button type="button" onClick={() => setColorLimitShift((value) => value - 0.1)} title="Lower color limits (Up arrow)">C+</button>
         <button type="button" onClick={() => setShowSpectrogramHelp((value) => !value)} aria-expanded={showSpectrogramHelp} title="Spectrogram controls">?</button>
@@ -7810,7 +7854,7 @@ function SpectrogramPanel({
         ref={ref}
         tabIndex={0}
         role="img"
-        aria-label={`${label} Buzcode-compatible multitaper spectrogram`}
+        aria-label={`${label} multitaper spectrogram. ${tool === "box-zoom" ? "Box zoom selected; drag a time-frequency area to zoom." : "Browse selected; click to center or drag to pan."}`}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           event.preventDefault();
@@ -7819,18 +7863,27 @@ function SpectrogramPanel({
           interactionRef.current = {
             pointerId: event.pointerId,
             startX: event.clientX,
+            startY: event.clientY,
             currentX: event.clientX,
+            currentY: event.clientY,
             originalViewStart: viewStart,
+            tool,
           };
+          setZoomBox(null);
         }}
         onPointerMove={(event) => {
           const interaction = interactionRef.current;
           if (!interaction || interaction.pointerId !== event.pointerId) return;
           interaction.currentX = event.clientX;
+          interaction.currentY = event.clientY;
+          if (interaction.tool === "box-zoom") {
+            setZoomBox(zoomBoxFromInteraction(interaction, event.currentTarget));
+            return;
+          }
           const rect = event.currentTarget.getBoundingClientRect();
-          if (Math.abs(interaction.currentX - interaction.startX) < 4) return;
+          if (Math.abs(interaction.currentX - interaction.startX) < SPECTROGRAM_MINIMUM_DRAG_PX) return;
           const next = interaction.originalViewStart
-            - ((interaction.currentX - interaction.startX) / Math.max(1, rect.width - 51))
+            - ((interaction.currentX - interaction.startX) / Math.max(1, rect.width - SPECTROGRAM_PLOT_LEFT - SPECTROGRAM_PLOT_RIGHT))
               * viewDuration
               * SPECTROGRAM_DRAG_PAN_SCALE;
           onPreviewStart(boundedStart(next));
@@ -7840,31 +7893,34 @@ function SpectrogramPanel({
           const interaction = interactionRef.current;
           if (!interaction || interaction.pointerId !== event.pointerId) return;
           interactionRef.current = null;
-          onCommitStart(interaction.originalViewStart);
+          setZoomBox(null);
+          if (interaction.tool === "browse") onCommitStart(interaction.originalViewStart);
         }}
         onKeyDown={(event) => {
           const key = event.key.toLowerCase();
-          if (!["arrowleft", "arrowright", "arrowup", "arrowdown", "f", "escape"].includes(key)) return;
+          if (!["arrowleft", "arrowright", "arrowup", "arrowdown", "b", "z", "escape"].includes(key)) return;
+          if (key === "escape") {
+            setTool("browse");
+            setZoomBox(null);
+            return;
+          }
           event.preventDefault();
           event.stopPropagation();
           if (key === "arrowleft") onCommitStart(boundedStart(viewStart - viewDuration * 0.15));
           else if (key === "arrowright") onCommitStart(boundedStart(viewStart + viewDuration * 0.15));
-          else if (key === "arrowup") {
-            if (action === "frequency") {
-              setDisplayMaxHz((value) => Math.min(maximumDisplayHz, value + 10));
-            } else setColorLimitShift((value) => value - 0.1);
-          } else if (key === "arrowdown") {
-            if (action === "frequency") setDisplayMaxHz((value) => Math.max(minimumDisplayHz, value - 10));
-            else setColorLimitShift((value) => value + 0.1);
-          } else if (key === "f") setAction((current) => current === "frequency" ? "browse" : "frequency");
-          else if (key === "escape") setAction("browse");
+          else if (key === "arrowup") setColorLimitShift((value) => value - 0.1);
+          else if (key === "arrowdown") setColorLimitShift((value) => value + 0.1);
+          else if (key === "b") { setTool("browse"); setZoomBox(null); }
+          else if (key === "z") setTool("box-zoom");
         }}
       />
+      {zoomBox && <div className="spectrogram-zoom-box" aria-hidden="true" style={zoomBox} />}
       {showSpectrogramHelp && <div className="spectrogram-help" role="status">
-        <strong>TheStateEditor controls</strong>
-        <span>Click center · hold/drag pan · wheel/trackpad pan</span>
+        <strong>Spectrogram controls</strong>
+        <span>B browse · click center · hold/drag pan · wheel/trackpad pan</span>
+        <span>Z box zoom · drag a time-frequency area</span>
         <span>←/→ shift 15% · ↑/↓ color</span>
-        <span>F then ↑/↓ frequency · waveform controls own zoom</span>
+        <span>Frequency range shows the visible band · ↺ resets it · waveform controls also set time zoom</span>
       </div>}
     </div>
   </div>;
@@ -7954,7 +8010,6 @@ function FileStructurePanel({
   meta,
   companionBundle,
   selectedChannels,
-  badChannels,
   recordingType,
   verifyingSource,
   sourceHash,
@@ -7962,7 +8017,6 @@ function FileStructurePanel({
   meta: RecordingMeta;
   companionBundle: BidsCompanionBundle;
   selectedChannels: Set<number>;
-  badChannels: Set<number>;
   recordingType: string;
   verifyingSource: boolean;
   sourceHash: string;
@@ -8027,12 +8081,12 @@ function FileStructurePanel({
 
     <section className="file-analysis-card channel-analysis-card">
       <header><div><span>CHANNEL DIRECTORY</span><h2>Channel information</h2></div><label><span>Filter</span><input value={channelQuery} onChange={(event) => setChannelQuery(event.target.value)} placeholder="Label, rate, or unit…" aria-label="Filter file channels" /></label></header>
-      <div className="channel-table-summary"><span>{channelRows.length} of {meta.channelCount} channels</span><span>{badChannels.size} quality-excluded · {recommendedChannels.size} initially recommended</span></div>
+      <div className="channel-table-summary"><span>{channelRows.length} of {meta.channelCount} channels</span><span>{recommendedChannels.size} initially recommended</span></div>
       <div className="file-channel-table" role="region" aria-label="Parsed channel information" tabIndex={0}>
         <table>
           <thead><tr><th>#</th><th>Source label</th><th>Sample rate</th><th>Approx. samples</th><th>Unit</th><th>Viewer status</th></tr></thead>
-          <tbody>{channelRows.map((channel) => <tr key={`${channel.index}-${channel.label}`} className={badChannels.has(channel.index) ? "bad" : ""}>
-            <td>{channel.index + 1}</td><td><strong>{channel.label}</strong></td><td>{channel.sampleRate.toLocaleString()} Hz</td><td>{Math.floor(meta.durationSec * channel.sampleRate).toLocaleString()}</td><td>{channel.unit}</td><td><span className={badChannels.has(channel.index) ? "bad" : selectedChannels.has(channel.index) ? "shown" : recommendedChannels.has(channel.index) ? "recommended" : "available"}>{badChannels.has(channel.index) ? "Excluded" : selectedChannels.has(channel.index) ? "Shown" : recommendedChannels.has(channel.index) ? "Recommended" : "Available"}</span></td>
+          <tbody>{channelRows.map((channel) => <tr key={`${channel.index}-${channel.label}`}>
+            <td>{channel.index + 1}</td><td><strong>{channel.label}</strong></td><td>{channel.sampleRate.toLocaleString()} Hz</td><td>{Math.floor(meta.durationSec * channel.sampleRate).toLocaleString()}</td><td>{channel.unit}</td><td><span className={selectedChannels.has(channel.index) ? "shown" : recommendedChannels.has(channel.index) ? "recommended" : "available"}>{selectedChannels.has(channel.index) ? "Shown" : recommendedChannels.has(channel.index) ? "Recommended" : "Available"}</span></td>
           </tr>)}</tbody>
         </table>
       </div>

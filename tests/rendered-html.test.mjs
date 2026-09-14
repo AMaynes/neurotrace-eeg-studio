@@ -165,7 +165,7 @@ test("keeps requested signal tools in the primary toolbar without legacy clutter
   assert.ok(toolbarStart >= 0 && toolbarEnd > toolbarStart, "primary viewer toolbar is present");
 
   const toolbar = page.slice(toolbarStart, toolbarEnd);
-  for (const control of ["Spectrum", "Montage", "Filters", "Window", "Gain"]) {
+  for (const control of ["Spectrogram", "Montage", "Filters", "Window", "Gain"]) {
     assert.match(toolbar, new RegExp(control, "i"), `${control} remains accessible from the primary toolbar`);
   }
   assert.doesNotMatch(toolbar, />\s*(?:Cursor|Select)\s*</i);
@@ -187,7 +187,7 @@ test("keeps requested signal tools in the primary toolbar without legacy clutter
   assert.ok(commandStart >= 0 && commandEnd > commandStart, "status strip is present");
   const commandStrip = page.slice(commandStart, commandEnd);
   assert.doesNotMatch(commandStrip, /className="strip-actions"/);
-  assert.doesNotMatch(commandStrip, />\s*(?:Spectrum|Controls|Settings|Help)\s*</i);
+  assert.doesNotMatch(commandStrip, />\s*(?:Spectrogram|Controls|Settings|Help)\s*</i);
 });
 
 test("stages a unit-aware window amount until Sync applies it", async () => {
@@ -228,6 +228,10 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   const gainEnd = page.indexOf('<div className="toolbar-spacer"', gainStart);
   const gainControls = page.slice(gainStart, gainEnd);
   assert.match(gainControls, /<b>\{gain\.toFixed\(1\)\}×<\/b>[\s\S]*?className="gain-step-buttons"[\s\S]*?aria-label="Increase gain"[\s\S]*?aria-label="Decrease gain"/, "gain plus/minus controls are stacked to the right of its value");
+  const traceTogglePosition = gainControls.indexOf("trace-display-toggle");
+  assert.ok(traceTogglePosition > gainControls.indexOf("gain-control"), "the trace display toggle sits immediately after gain");
+  assert.match(gainControls, /aria-label="Allow channel traces to overlap"[\s\S]*?aria-pressed=\{traceDisplayMode === "overlap"\}/);
+  assert.match(gainControls, /Clamped[\s\S]*?Overlap/);
 
   const windowLogic = page.slice(page.indexOf("const setTimeWindow"), page.indexOf("const commitMutation"));
   assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
@@ -244,6 +248,7 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   assert.match(css, /\.window-sync-button\s*\{[^}]*width:\s*18px[^}]*height:\s*21px/s);
   assert.match(css, /\.window-step-buttons\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/);
   assert.match(css, /\.gain-step-buttons\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/);
+  assert.match(css, /\.trace-display-toggle\s*\{[^}]*height:\s*40px/);
 });
 
 test("visually subdues controls that are temporarily unavailable", async () => {
@@ -321,7 +326,7 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   const storeEnd = page.indexOf("const applySessionSnapshot", storeStart);
   const store = page.slice(storeStart, storeEnd);
   assert.match(store, /sessionSnapshotsRef\.current\.set\(activeSessionId/);
-  for (const state of ["hasRecording", "source", "annotations", "candidates", "selectedChannels", "badChannels", "viewStart", "timebase", "undo", "redo"]) {
+  for (const state of ["hasRecording", "source", "annotations", "candidates", "selectedChannels", "traceDisplayMode", "viewStart", "timebase", "undo", "redo"]) {
     assert.match(store, new RegExp(`\\b${state}\\b`), `${state} is retained per session`);
   }
 
@@ -340,6 +345,7 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(blankSnapshot, /annotations:\s*\[\]/);
   assert.match(blankSnapshot, /candidates:\s*\[\]/);
   assert.match(blankSnapshot, /selectedChannels:\s*\[\]/);
+  assert.match(blankSnapshot, /traceDisplayMode:\s*"clamped"/);
   assert.match(blankSnapshot, /cursorLocked:\s*false/);
 
   const blankStart = page.indexOf("const createBlankSession");
@@ -367,6 +373,12 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.ok(load.indexOf("setSessionTabs((current)") > verificationIndex, "tab identity is not replaced until verification succeeds");
   assert.match(load, /activeSessionIdRef\.current\s*!==\s*targetSessionId/);
   assert.match(load, /duplicateEntry[\s\S]*?applySessionSnapshot\(duplicateSnapshot\)[\s\S]*?return false/);
+
+  const windowLoaderStart = page.indexOf("{loadingSignal && <div className=\"signal-loading\"");
+  const windowLoaderEnd = page.indexOf("</div>}", windowLoaderStart);
+  const windowLoader = page.slice(windowLoaderStart, windowLoaderEnd);
+  assert.match(windowLoader, /role="status"/);
+  assert.match(windowLoader, /verifyingSource[\s\S]*?file is also still being validated[\s\S]*?longer than usual/i);
 
   const closeStart = page.indexOf("const closeSession");
   const closeEnd = page.indexOf("const updateControlBinding", closeStart);
@@ -500,7 +512,7 @@ test("wires channel, Help, and Settings dialogs to operable controls", async () 
   assert.match(channels, />Disable all<\/button>/);
   assert.match(channels, /checked=\{selectedChannels\.has\(index\)\}/);
   assert.match(channels, /if\s*\(next\.has\(index\)\)\s*next\.delete\(index\)/);
-  assert.match(channels, /setBadChannels/);
+  assert.doesNotMatch(channels, /setBadChannels|Bad channels|>Good<|>Bad</);
   assert.match(channels, /source channel \{index \+ 1\}/);
   assert.match(channels, /original channel provenance/i);
 
@@ -1049,21 +1061,25 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /const rowTopForChannel\s*=\s*\(channel: number\)\s*=>\s*plotTop[\s\S]*?channelRowLayout\.rowStartUnits\[channel\]\s*-\s*verticalUnitStart/);
   assert.match(draw, /const rowTop\s*=\s*rowTopForChannel\(channel\)/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
-  assert.match(draw, /context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)[\s\S]*?context\.clip\(\)/, "each channel is clipped to its exact row without a minimum-height bleed");
+  assert.match(draw, /if\s*\(confineTracesToRows\)\s*context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)/, "clamped mode clips each channel to its exact row");
+  assert.match(draw, /else\s*context\.rect\(0,\s*plotTop,\s*width,\s*plotHeight\)/, "overlap mode clips only to the complete waveform area");
   const continuousStart = page.indexOf("function drawContinuousTrace");
   const clippingRibbonStart = page.indexOf("function drawSampleClippingRibbon", continuousStart);
   const continuousTrace = page.slice(continuousStart, clippingRibbonStart);
   assert.match(continuousTrace, /confineTraceYValueToRow/, "direct traces are confined by the allocation-free row helper");
   assert.match(continuousTrace, /traceYOverflowsRow/, "direct-trace overflow reporting remains separate from coordinate confinement");
-  assert.match(draw, /if\s*\(overflow\)[\s\S]*?context\.closePath\(\)/, "clipped excursions leave an overflow marker");
+  assert.match(draw, /if\s*\(confineTracesToRows\s*&&\s*overflow\)[\s\S]*?context\.closePath\(\)/, "only clamped excursions leave an overflow marker");
   assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
   assert.match(draw, /if\s*\(rowHeight\s*>=\s*2\)[\s\S]*?context\.strokeRect/, "focused-row borders are omitted when a compact row is too short to contain the stroke");
   assert.match(page, /const ANATOMICAL_GROUP_GAP_ROWS\s*=\s*4/);
   assert.match(page, /const matlabAnatomicalLayout\s*=\s*meta\.format\s*===\s*"raw-int16-le"[\s\S]*?recordingType\s*===\s*"SEEG \/ iEEG"/);
   assert.match(page, /matlabAnatomicalLayout[\s\S]*?orderAnatomicalChannelIndices\(meta\.channelLabels, selectedIndices\)/, "intracranial recordings use MATLAB anatomical channel ordering");
   assert.match(page, /channelRowFromFraction\(\s*channelRowLayout/);
-  assert.match(draw, /cachedBaseline[\s\S]*?robustTraceBaseline\(values\)/, "each trace receives a robust display-window baseline");
+  assert.match(page, /traceBaselineCacheRef\s*=\s*useRef<WeakMap<SignalSource, Map<string, number>>>/, "baseline state is scoped to the loaded signal source");
+  assert.match(page, /stableTraceBaselines[\s\S]*?resolveStableTraceBaseline/, "new windows reuse each channel's established baseline");
+  assert.match(draw, /display\.traceBaselines\[channel\]\s*\?\?\s*robustTraceBaseline\(values\)/, "drawing uses the stable per-channel baseline");
   assert.match(continuousTrace, /value\s*-\s*baseline/, "direct traces are centered on that baseline");
+  assert.match(continuousTrace, /confineToRow[\s\S]*?confineTraceYValueToRow\(rawY,\s*rowTop,\s*rowHeight\)[\s\S]*?confineTraceYValueToRow\(rawY,\s*plotTop,\s*plotHeight\)/, "overlap mode uses the whole plot instead of the source row as its vertical boundary");
   assert.match(continuousTrace, /if \(!Number\.isFinite\(value\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");
   assert.match(draw, /const traceOrder[\s\S]*?focusedChannel/, "the focused trace is drawn last for readability");
   assert.match(draw, /legacyRawCountDisplay[\s\S]*?LEGACY_RAW_COUNTS_PER_ROW/, "uncalibrated legacy DAT uses MATLAB's raw-count row spacing");
@@ -1096,6 +1112,7 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   assert.match(envelopeBranch, /envelopeWindowMatchesViewport\([\s\S]*?envelope\.startSec[\s\S]*?envelope\.bucketDurationSec[\s\S]*?values\.length[\s\S]*?displayStart[\s\S]*?timebase/);
   assert.doesNotMatch(envelopeBranch, /drawOverviewEnvelope\(/, "source extrema do not thicken the resampled overview trace");
   assert.match(envelopeBranch, /drawSampleClippingRibbon\([\s\S]*?envelope\.minima[\s\S]*?envelope\.maxima/, "extrema remain available for clipping indicators");
+  assert.match(envelopeBranch, /confineTracesToRows[\s\S]*?showMicrovoltClipping/, "heat ribbons are limited to clamped mode");
   assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
   assert.match(page, /dark green → lime → yellow → orange marks distance beyond ±100 µV/);
   assert.match(page, /drawSampleClippingRibbon\([\s\S]*?values,[\s\S]*?values,/, "close raw-sample views retain the clipping ribbon");
