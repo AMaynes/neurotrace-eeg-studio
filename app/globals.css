@@ -2168,6 +2168,11 @@ textarea:focus-visible {
   margin: 0;
   font-size: 10px;
 }
+.dat-channel-names { display: flex; flex-direction: column; gap: 5px; margin: 12px 0; font-size: 10px; }
+.dat-channel-names textarea { width: 100%; resize: vertical; min-height: 70px; padding: 8px; border: 1px solid #355058; border-radius: 4px; background: #071216; color: #c2d4d4; font: 10px ui-monospace, monospace; }
+.dat-channel-names small { color: #83999e; overflow-wrap: anywhere; }
+.dat-layout-preview { display: flex; flex-direction: column; gap: 5px; margin: 10px 0; padding: 10px; border: 1px solid #355058; border-radius: 4px; color: #a6bfbc; font-size: 10px; }
+.dat-mapping-warning { color: #f3c67f !important; font-size: 10px; }
 .right-sidebar { overflow-y: auto; }
 .label-visibility-toggle { flex: 0 0 auto; margin: 8px 10px; min-height: 30px; padding: 6px 10px; border: 1px solid #355058; border-radius: 5px; background: #102027; color: #b9cece; cursor: pointer; font-size: 10px; }
 .label-visibility-toggle:hover,

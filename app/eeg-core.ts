@@ -1097,6 +1097,9 @@ export class RawDatSource implements SignalSource {
     if (!Number.isInteger(options.channelCount) || options.channelCount <= 0) {
       throw new Error("Raw DAT channel count must be a positive integer.");
     }
+    if (options.channelLabels && options.channelLabels.length !== options.channelCount) {
+      throw new Error(`Raw DAT channel labels must contain exactly ${options.channelCount} names in file order.`);
+    }
     if (options.physicalScale !== undefined) {
       const scales = typeof options.physicalScale === "number" ? [options.physicalScale] : options.physicalScale;
       if (scales.some((scale) => !Number.isFinite(scale) || !(scale > 0))) {
@@ -1757,35 +1760,39 @@ export async function parseLegacyMatMetadata(file: File): Promise<LegacyMatMetad
   );
 
   const rateDescriptor = numericBySuffix("sessioninfo.sfile.header.samplerate");
-  const rawRate = rateDescriptor?.elementCount ? readNumericAt(rateDescriptor, 0) : undefined;
+  const rawRate = rateDescriptor?.elementCount === 1 && !rateDescriptor.complex ? readNumericAt(rateDescriptor, 0) : undefined;
   const sampleRate = rawRate !== undefined && Number.isFinite(rawRate) && rawRate > 0
     ? rawRate
     : undefined;
   if (rawRate !== undefined && sampleRate === undefined) {
     warnings.push(`Legacy MAT sample_rate value ${String(rawRate)} is invalid.`);
   } else if (sampleRate === undefined) {
-    warnings.push("Legacy MAT metadata does not contain sessionInfo.sFile.header.sample_rate.");
+    warnings.push(rateDescriptor
+      ? "Legacy MAT sessionInfo.sFile.header.sample_rate must be a positive real scalar."
+      : "Legacy MAT metadata does not contain sessionInfo.sFile.header.sample_rate.");
   }
 
   const countDescriptor = numericBySuffix("sessioninfo.sfile.header.numchannels");
-  const rawCount = countDescriptor?.elementCount ? readNumericAt(countDescriptor, 0) : undefined;
+  const rawCount = countDescriptor?.elementCount === 1 && !countDescriptor.complex ? readNumericAt(countDescriptor, 0) : undefined;
   let channelCount: number | undefined;
-  if (rawCount !== undefined && Number.isFinite(rawCount) && rawCount > 0) {
-    channelCount = Math.trunc(rawCount);
-    if (channelCount !== rawCount) warnings.push(`Legacy MAT num_channels ${rawCount} was rounded down to ${channelCount}.`);
+  if (rawCount !== undefined && Number.isSafeInteger(rawCount) && rawCount > 0) {
+    channelCount = rawCount;
   } else if (rawCount !== undefined) {
     warnings.push(`Legacy MAT num_channels value ${String(rawCount)} is invalid.`);
   } else {
-    warnings.push("Legacy MAT metadata does not contain sessionInfo.sFile.header.num_channels.");
+    warnings.push(countDescriptor
+      ? "Legacy MAT sessionInfo.sFile.header.num_channels must be a positive whole-number real scalar."
+      : "Legacy MAT metadata does not contain sessionInfo.sFile.header.num_channels.");
   }
 
   const channelLabels = context.strings
     .filter((descriptor) =>
       canonicalMatPath(descriptor.name).endsWith("sessioninfo.channelmat.channel.name"),
     )
-    .flatMap((descriptor) => descriptor.values)
-    .map((value) => value.trim())
-    .filter(Boolean);
+    .flatMap((descriptor) => descriptor.values.length ? descriptor.values : [""])
+    .map((value) => value.trim());
+  // Empty names still occupy a binary channel; dropping them shifts all later labels.
+  if (channelLabels.some((label) => !label)) warnings.push("Blank channel names retain their original positions and will use numbered placeholders.");
   if (channelLabels.length === 0) {
     warnings.push("No sessionInfo.ChannelMat.Channel.Name values were found; channel labels must be mapped manually.");
   } else if (channelCount !== undefined && channelLabels.length !== channelCount) {

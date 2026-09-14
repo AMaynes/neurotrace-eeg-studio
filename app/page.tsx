@@ -60,6 +60,7 @@ import {
   type SignalSource,
 } from "./eeg-core";
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
+import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping";
 import {
   buildEDFFileWindowOffThread,
   buildRawDatFileWindowOffThread,
@@ -1872,6 +1873,7 @@ export default function Home() {
   const [pendingImportFiles, setPendingImportFiles] = useState<File[]>([]);
   const [selectedLegacyEventIndices, setSelectedLegacyEventIndices] = useState<Set<number>>(new Set());
   const [datMapping, setDatMapping] = useState<RawDatMapping>({ sampleRate: 0, channelCount: 0, physicalScale: "" });
+  const [datChannelNamesText, setDatChannelNamesText] = useState("");
   const [legacyExportHints, setLegacyExportHints] = useState({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
   const [confirmCommit, setConfirmCommit] = useState<string[]>([]);
   const [commitAdvanceAfter, setCommitAdvanceAfter] = useState(false);
@@ -1919,6 +1921,16 @@ export default function Home() {
     && sourceInterpretation?.display_amplitude_mode === "legacy-raw-counts";
   const datPhysicalScaleValid = datMapping.physicalScale === ""
     || (Number.isFinite(datMapping.physicalScale) && datMapping.physicalScale > 0);
+  const datChannelNames = useMemo(() => {
+    try {
+      const labels = parseRawDatChannelNames(datChannelNamesText);
+      return { labels, error: labels.length && labels.length !== datMapping.channelCount
+        ? `Enter exactly ${datMapping.channelCount} names in binary channel order; ${labels.length} supplied.` : "" };
+    } catch (error) {
+      return { labels: [], error: error instanceof Error ? error.message : "Invalid channel names." };
+    }
+  }, [datChannelNamesText, datMapping.channelCount]);
+  const datLayout = pendingDat ? describeRawDatLayout(pendingDat.size, datMapping.channelCount, datMapping.sampleRate) : null;
   const channelRowLayout = useMemo(
     () => buildChannelRowLayout(display.labels, matlabAnatomicalLayout),
     [display.labels, matlabAnatomicalLayout],
@@ -2196,6 +2208,7 @@ export default function Home() {
     setPendingImportFiles([]);
     setSelectedLegacyEventIndices(new Set());
     setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: "" });
+    setDatChannelNamesText("");
     setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
     setShowImport(false);
     setShowProjectSave(false);
@@ -5492,6 +5505,7 @@ export default function Home() {
         setPendingDat(dat);
         setPendingLegacyMatFile(mat ?? null);
         setPendingLegacyMeta(legacyMetadata);
+        setDatChannelNamesText(legacyMetadata?.channelLabels.map((label, index) => label || `CH${String(index + 1).padStart(3, "0")}`).join("\n") ?? "");
         setPendingImportFiles(allFiles);
         setShowImport(true);
         if (legacyMetadata) {
@@ -5551,6 +5565,10 @@ export default function Home() {
 
   const confirmDatImport = async () => {
     if (!pendingDat || importBusyRef.current) return;
+    if (datChannelNames.error) {
+      setUploadError({ title: "DAT channel names need correction", message: datChannelNames.error, files: [pendingDat.name] });
+      return;
+    }
     if (!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0)
       || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0)
       || !datPhysicalScaleValid) {
@@ -5617,7 +5635,7 @@ export default function Home() {
         sampleRate: datMapping.sampleRate,
         channelCount: datMapping.channelCount,
         physicalScale: verifiedPhysicalScale,
-        channelLabels: pendingLegacyMeta?.channelLabels.length === datMapping.channelCount ? pendingLegacyMeta.channelLabels : undefined,
+        channelLabels: datChannelNames.labels.length ? datChannelNames.labels : undefined,
         channelUnits: verifiedPhysicalScale === undefined ? "ADC count" : "µV",
         warnings: [
           ...(pendingLegacyMeta?.warnings ?? []),
@@ -5644,6 +5662,9 @@ export default function Home() {
         patient_id_hint: legacyExportHints.patientId.trim() || datPath.topDirectory || companionPath.topDirectory || null,
         sample_rate_hz: datMapping.sampleRate,
         channel_count: datMapping.channelCount,
+        // Preserve existing recovery keys unless names were manually supplied or changed.
+        ...((datChannelNames.labels.length || pendingLegacyMeta?.channelLabels.length) && JSON.stringify(source.meta.channelLabels) !== JSON.stringify(pendingLegacyMeta?.channelLabels)
+          ? { channel_labels: [...source.meta.channelLabels] } : {}),
         physical_scale_uv_per_count: verifiedPhysicalScale ?? null,
         display_amplitude_mode: verifiedPhysicalScale === undefined ? "legacy-raw-counts" : "calibrated-microvolts",
         layout: "sample-major channel-interleaved signed int16 little-endian",
@@ -7084,6 +7105,11 @@ export default function Home() {
             <div><span className="file-type">DAT</span><div><strong>{pendingDat.name}</strong><small>Signed int16 · little-endian</small></div></div>
             <p>{pendingLegacyMeta ? `Companion MAT metadata found ${pendingLegacyMeta.channelLabels.length || pendingLegacyMeta.channelCount || 0} channels and ${pendingLegacyMeta.events.filter((event) => isLegacySeizureCandidate(event.label)).length} seizure-keyword events (${pendingLegacyMeta.events.length} total). ${datMapping.channelCount < 100 ? "As in the MATLAB reviewer, source-event review will be disabled below 100 channels. " : ""}Every timing and scale value remains unverified until you confirm it here.` : "Enter and confirm the raw binary layout. Zero means the timing/channel mapping is still unknown; the recording cannot open until those fields are verified."}</p>
             <div className="mapper-fields"><label><span>Sample rate</span><input type="number" value={datMapping.sampleRate} onChange={(event) => setDatMapping((current) => ({ ...current, sampleRate: Number(event.target.value) }))} /><small>Hz</small></label><label><span>Channels</span><input type="number" value={datMapping.channelCount} onChange={(event) => setDatMapping((current) => ({ ...current, channelCount: Number(event.target.value) }))} /></label><label><span>Scale (optional)</span><input type="number" step="0.001" min="0.000001" placeholder="Raw counts" value={datMapping.physicalScale} onChange={(event) => setDatMapping((current) => ({ ...current, physicalScale: event.target.value === "" ? "" : Number(event.target.value) }))} /><small>µV/count</small></label></div>
+            <p className="dat-scale-note">Use sessionInfo.sFile.header.sample_rate and num_channels. DAT bytes do not contain these values; do not use LoadBinary&apos;s defaults unless independently confirmed. Layout: channel 1, channel 2, … for each sample; int16, little-endian, no header.</p>
+            <label className="dat-channel-names"><span>Channel names (optional, in file order)</span><textarea aria-label="DAT channel names" rows={4} value={datChannelNamesText} placeholder={"LA1\nLA2\nRA1"} onChange={(event) => setDatChannelNamesText(event.target.value)} /><small>Paste one name per line from {'{sessionInfo.ChannelMat.Channel.Name}\u0027'}. Leave blank to use numbered channels.</small></label>
+            {datChannelNames.error && <p className="dat-mapping-warning" role="alert">{datChannelNames.error}</p>}
+            {pendingLegacyMeta?.warnings.map((warning) => <p className="dat-mapping-warning" key={warning}>{warning}</p>)}
+            {datLayout && <div className="dat-layout-preview" role="status"><strong>{datLayout.frames.toLocaleString()} complete sample frames · {formatClock(datLayout.durationSec, true)}</strong><span>{datLayout.trailingBytes ? `${datLayout.trailingBytes} trailing byte(s) will be ignored. Check the channel count or whether the file is incomplete.` : "File size fits complete frames. Confirm the rate and channel count against the session metadata."}</span></div>}
             <p className="dat-scale-note">Leave scale blank to match MATLAB&apos;s raw-count display with 15,000 counts between channel baselines. Enter a value only when the DAT calibration is known.</p>
             {pendingLegacyMeta && <div className="legacy-export-hints">
               <div><strong>MATLAB export identity</strong><small>Browsers hide absolute local paths. Confirm or paste these values if round-trip resume keys must match MATLAB exactly.</small></div>
@@ -7105,7 +7131,7 @@ export default function Home() {
               </label>)}</div>
               <small>{pendingLegacyCandidateEvents.filter(({ sourceIndex }) => selectedLegacyEventIndices.has(sourceIndex)).length} of {pendingLegacyCandidateEvents.length} selected</small>
             </fieldset>}
-            <button className="button primary wide" disabled={!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0) || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0) || !datPhysicalScaleValid} onClick={confirmDatImport}>Confirm mapping &amp; open DAT</button>
+            <button className="button primary wide" disabled={!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0) || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0) || !datPhysicalScaleValid || Boolean(datChannelNames.error) || !datLayout?.frames} onClick={confirmDatImport}>Confirm mapping &amp; open DAT</button>
           </div>}
           <div className="format-cards"><div><strong>EDF / EDF+</strong><span>Calibrated signals, channel metadata, full recording timeline</span></div><div><strong>MAT v5</strong><span>Automatic largest-matrix detection with sampling-rate discovery</span></div><div><strong>MAT + DAT</strong><span>Manual binary confirmation for legacy Buzcode sessions</span></div></div>
           <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Hospital deployment still requires institutional privacy, security, and validation review.</p></div>
