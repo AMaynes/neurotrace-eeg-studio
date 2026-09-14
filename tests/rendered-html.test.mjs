@@ -1114,7 +1114,6 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   assert.match(envelopeBranch, /drawSampleClippingRibbon\([\s\S]*?envelope\.minima[\s\S]*?envelope\.maxima/, "extrema remain available for clipping indicators");
   assert.match(envelopeBranch, /confineTracesToRows[\s\S]*?showMicrovoltClipping/, "heat ribbons are limited to clamped mode");
   assert.doesNotMatch(envelopeBranch, /context\.moveTo\(x,[\s\S]*?context\.lineTo\(x,/, "overview buckets are not rendered as a repetitive vertical comb");
-  assert.match(page, /dark green → lime → yellow → orange marks distance beyond ±100 µV/);
   assert.match(page, /drawSampleClippingRibbon\([\s\S]*?values,[\s\S]*?values,/, "close raw-sample views retain the clipping ribbon");
   assert.doesNotMatch(page, /function drawOverviewEnvelope|function drawGroupedExtrema/, "extrema cannot be rendered as additional waveforms");
 });

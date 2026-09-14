@@ -9,6 +9,8 @@ import {
   computeSpectrogram,
   displaySpectrogramPowers,
   spectrogramTransferList,
+  spectrogramReadBounds,
+  stableSpectrogramColorLimits,
   thetaRatioOverlay,
 } from "../app/spectrogram-compute.ts";
 import {
@@ -70,8 +72,8 @@ test("adapts the analysis window for a valid sub-second deep zoom", () => {
 test("returns unique transferable result buffers and validates unsupported input", () => {
   const result = computeSpectrogram({ data: Float32Array.of(1, 2, 3, 4), sampleRate: 4 });
   const transfers = spectrogramTransferList(result);
-  assert.deepEqual(transfers, [result.powers.buffer, result.frequencies.buffer, result.times.buffer]);
-  assert.equal(new Set(transfers).size, 3);
+  assert.deepEqual(transfers, [result.powers.buffer, result.frequencies.buffer, result.times.buffer, result.durations.buffer]);
+  assert.equal(new Set(transfers).size, 4);
   assert.throws(() => computeSpectrogram({ data: new Float32Array(), sampleRate: 128 }), /at least one sample/i);
   assert.throws(() => computeSpectrogram({ data: Float32Array.of(1), sampleRate: 1 }), /at least 2 Hz/i);
 });
@@ -115,7 +117,8 @@ test("client transfers an input copy without detaching the caller's signal", asy
   globalThis.Worker = FakeWorker;
   try {
     const callerData = Float32Array.from([1, 2, 3, 4, 5, 6, 7, 8]);
-    const result = await computeSpectrogramOffThread({ data: callerData, sampleRate: 8 });
+    const result = await computeSpectrogramOffThread({ data: callerData, sampleRate: 8, dataStart: 54 });
+    assert.equal(result.dataStart, 54, "the worker preserves recording time");
     assert.notEqual(posted.message.request.data, callerData);
     assert.deepEqual([...posted.message.request.data], [...callerData]);
     assert.deepEqual(posted.transfers, [posted.message.request.data.buffer]);
@@ -126,6 +129,71 @@ test("client transfers an input copy without detaching the caller's signal", asy
     assert.equal(terminated, true);
   } finally {
     globalThis.Worker = originalWorker;
+  }
+});
+
+test("covers a partial final second without stretching its time geometry", () => {
+  const sampleRate = 128;
+  const data = Float32Array.from({ length: 5 * sampleRate + 51 }, (_, i) => Math.sin(i * 0.7));
+  const result = computeSpectrogram({ data, sampleRate, dataStart: 54 });
+  assert.equal(result.frames, 6);
+  assert.equal(result.durations[5], 51 / sampleRate);
+  assert.equal(result.times[5] + result.durations[5] / 2, data.length / sampleRate);
+  assert.ok([...result.powers].filter((_, i) => i % result.frames === 5).every(Number.isFinite));
+});
+
+test("panning preserves shared frame powers, smoothing, and color limits", () => {
+  const sampleRate = 64;
+  let seed = 17;
+  const recording = Float32Array.from({ length: sampleRate * 100 }, (_, i) => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return Math.sin(i * 0.2) * (i < sampleRate * 4 ? 100 : 1) + seed / 0xffffffff;
+  });
+  const calculate = (viewStart) => {
+    const bounds = spectrogramReadBounds(viewStart, 5.4, 100);
+    assert.equal(bounds.start, Math.floor(bounds.start));
+    assert.equal(bounds.start + bounds.duration, Math.ceil(bounds.start + bounds.duration));
+    return computeSpectrogram({
+      data: recording.slice(bounds.start * sampleRate, (bounds.start + bounds.duration) * sampleRate),
+      sampleRate,
+      dataStart: bounds.start,
+    });
+  };
+  const before = calculate(34.658);
+  const after = calculate(35.719);
+  assert.notEqual(before.dataStart, after.dataStart);
+  for (const smoothing of [0, 10, 60]) {
+    const left = displaySpectrogramPowers(before, smoothing);
+    const right = displaySpectrogramPowers(after, smoothing);
+    const leftTheta = thetaRatioOverlay(before, smoothing);
+    const rightTheta = thetaRatioOverlay(after, smoothing);
+    for (let second = 36; second < 40; second += 1) {
+      assert.equal(leftTheta[second - before.dataStart], rightTheta[second - after.dataStart]);
+      for (let bin = 0; bin < before.bins; bin += 1) {
+        assert.equal(
+          left[bin * before.frames + second - before.dataStart],
+          right[bin * after.frames + second - after.dataStart],
+          `same power at ${second}s, bin ${bin}, smoothing ${smoothing}s`,
+        );
+      }
+    }
+  }
+  const cache = new Map();
+  const limits = stableSpectrogramColorLimits(cache, "recording:channel", displaySpectrogramPowers(before, 0));
+  assert.equal(stableSpectrogramColorLimits(cache, "recording:channel", Float64Array.of(-100, 100)), limits);
+  assert.notDeepEqual(stableSpectrogramColorLimits(cache, "other-channel", Float64Array.of(-100, 100)), limits);
+  assert.equal(stableSpectrogramColorLimits(cache, "gap", Float64Array.of(NaN)), null);
+  assert.equal(cache.has("gap"), false);
+});
+
+test("deep zoom loads whole recording seconds and smoothing does not fill gaps", () => {
+  assert.deepEqual(spectrogramReadBounds(54.658, 0.1, 60.2), { start: 23, duration: 37.2 });
+  const data = Float32Array.from({ length: 64 * 4 }, (_, i) => Math.sin(i));
+  data.fill(NaN, 64, 128);
+  const result = computeSpectrogram({ data, sampleRate: 64 });
+  const smoothed = displaySpectrogramPowers(result, 10);
+  for (let bin = 0; bin < result.bins; bin += 1) {
+    assert.ok(Number.isNaN(smoothed[bin * result.frames + 1]));
   }
 });
 

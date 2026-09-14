@@ -76,6 +76,8 @@ import {
   BUZCODE_DEFAULT_SMOOTHING_SECONDS,
   BUZCODE_SMOOTHING_OPTIONS,
   displaySpectrogramPowers,
+  spectrogramReadBounds,
+  stableSpectrogramColorLimits,
   thetaRatioOverlay,
   type SpectrogramComputeResult,
 } from "./spectrogram-compute";
@@ -1794,6 +1796,8 @@ export default function Home() {
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
   const [display, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
   const [exactSpectrogramSignal, setExactSpectrogramSignal] = useState<{
+    sessionKey: string;
+    montage: MontageMode;
     viewStart: number;
     duration: number;
     channels: Array<{
@@ -1804,6 +1808,7 @@ export default function Home() {
       sampleRate: number;
     }>;
   } | null>(null);
+  const [spectrogramInputError, setSpectrogramInputError] = useState<{ requestKey: string; message: string } | null>(null);
   const [waveformWidth, setWaveformWidth] = useState(1);
   const [channelViewportHeight, setChannelViewportHeight] = useState(245);
   const [loadingSignal, setLoadingSignal] = useState(false);
@@ -3633,11 +3638,7 @@ export default function Home() {
     return () => abortController.abort();
   }, [filters, hasRecording, matlabAnatomicalLayout, meta, montage, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
-  // The waveform overview must not switch rendering modes when the spectrogram opens.
-  // Load exact inputs for the focused channel, or every enabled row once Escape
-  // clears focus, while leaving `display` untouched.
-  useEffect(() => {
-    const source = sourceRef.current;
+  const spectrogramInputPlan = useMemo(() => {
     const targetDisplayIndices = channelSelectionActive
       ? [clamp(focusedChannel, 0, Math.max(0, display.data.length - 1))]
       : display.data.map((_, index) => index);
@@ -3645,16 +3646,30 @@ export default function Home() {
       const sourceIndex = display.primarySourceIndices[displayIndex];
       return sourceIndex === undefined ? [] : [{ displayIndex, sourceIndex }];
     });
-    const needsExactInput = targetDisplayIndices.some((index) => Boolean(display.envelopes[index]));
-    const expectedBytes = requestedChannels.reduce((sum, { sourceIndex }) => (
-      sum + Math.ceil((meta.sampleRates[sourceIndex] ?? primarySampleRate(meta)) * timebase) * Float32Array.BYTES_PER_ELEMENT
+    const sourceIndices = [...new Set(targetDisplayIndices.flatMap((index) => display.sourceIndices[index] ?? []))];
+    const bounds = spectrogramReadBounds(signalViewStart, timebase, meta.durationSec);
+    const expectedBytes = sourceIndices.reduce((sum, sourceIndex) => (
+      sum + Math.ceil((meta.sampleRates[sourceIndex] ?? primarySampleRate(meta)) * bounds.duration) * Float32Array.BYTES_PER_ELEMENT
     ), 0);
+    return {
+      requestedChannels,
+      sourceIndices,
+      bounds,
+      expectedBytes,
+      requestKey: JSON.stringify([sessionKey, montage, signalViewStart, timebase, requestedChannels, display.labels, display.sourceIndices]),
+    };
+  }, [channelSelectionActive, display.data, display.labels, display.sourceIndices, display.primarySourceIndices, focusedChannel, meta, montage, sessionKey, signalViewStart, timebase]);
+
+  // Spectral input is independent of screen resampling and waveform filters.
+  // Complete recording seconds and smoothing neighbors keep shared frames
+  // identical across pans. Superseded reads cannot publish into a new view.
+  useEffect(() => {
+    const source = sourceRef.current;
+    const { requestedChannels, sourceIndices, bounds, expectedBytes, requestKey } = spectrogramInputPlan;
     if (!spectrogramOpen
       || !hasRecording
       || !source
-      || !needsExactInput
       || !requestedChannels.length
-      || requestedChannels.length !== targetDisplayIndices.length
       || expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES) {
       setExactSpectrogramSignal(null);
       return;
@@ -3663,33 +3678,52 @@ export default function Home() {
     const abortController = new AbortController();
     setExactSpectrogramSignal(null);
     void source.getWindow(
-      signalViewStart,
-      timebase,
-      requestedChannels.map(({ sourceIndex }) => sourceIndex),
+      bounds.start,
+      bounds.duration,
+      sourceIndices,
       { signal: abortController.signal },
     )
       .then((windowData) => {
         if (abortController.signal.aborted || sourceRef.current !== source) return;
-        if (windowData.data.some((data) => !data?.length)) return;
-        setExactSpectrogramSignal({
-          viewStart: signalViewStart,
-          duration: timebase,
-          channels: requestedChannels.map(({ displayIndex, sourceIndex }, index) => ({
+        setSpectrogramInputError(null);
+        const derived = buildMontage(
+          windowData.data,
+          sourceIndices.map((index) => meta.channelLabels[index]),
+          montage,
+          new Set(),
+          windowData.sampleRates,
+          windowData.channelStartSecs,
+        );
+        const channels = requestedChannels.map(({ displayIndex, sourceIndex }) => {
+          const position = derived.primarySourceIndices.findIndex((primary, index) => (
+            sourceIndices[primary] === sourceIndex && derived.labels[index] === display.labels[displayIndex]
+          ));
+          if (position < 0) throw new Error("Exact spectrogram input could not match the displayed montage.");
+          const primary = derived.primarySourceIndices[position];
+          return {
             displayIndex,
             sourceIndex,
-            dataStart: windowData.channelStartSecs[index] ?? windowData.startSec,
-            data: windowData.data[index],
-            sampleRate: windowData.sampleRates[index] ?? meta.sampleRates[sourceIndex] ?? primarySampleRate(meta),
-          })),
+            dataStart: derived.sampleStartSecs?.[position] ?? windowData.channelStartSecs[primary] ?? windowData.startSec,
+            data: derived.data[position],
+            sampleRate: derived.sampleRates?.[position] ?? windowData.sampleRates[primary],
+          };
+        });
+        setExactSpectrogramSignal({
+          sessionKey,
+          montage,
+          viewStart: signalViewStart,
+          duration: timebase,
+          channels,
         });
       })
       .catch((error) => {
         if (!abortController.signal.aborted && !isAbortFailure(error)) {
           setExactSpectrogramSignal(null);
+          setSpectrogramInputError({ requestKey, message: error instanceof Error ? error.message : "Could not load spectrogram data." });
         }
       });
     return () => abortController.abort();
-  }, [channelSelectionActive, display.data, display.envelopes, display.primarySourceIndices, focusedChannel, hasRecording, meta, signalViewStart, spectrogramOpen, timebase]);
+  }, [display.labels, hasRecording, meta, montage, sessionKey, signalViewStart, spectrogramInputPlan, spectrogramOpen, timebase]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -6347,6 +6381,8 @@ export default function Home() {
     ? [clamp(focusedChannel, 0, Math.max(0, display.data.length - 1))]
     : display.data.map((_, index) => index), [channelSelectionActive, display.data, focusedChannel]);
   const matchingExactSpectrogramSignal = exactSpectrogramSignal
+    && exactSpectrogramSignal.sessionKey === sessionKey
+    && exactSpectrogramSignal.montage === montage
     && Math.abs(exactSpectrogramSignal.viewStart - signalViewStart) < 1e-9
     && Math.abs(exactSpectrogramSignal.duration - timebase) < 1e-9
     && exactSpectrogramSignal.channels.length === spectrogramChannelIndices.length
@@ -6364,14 +6400,14 @@ export default function Home() {
       const sourceIndex = display.primarySourceIndices[displayIndex];
       const exact = exactByDisplayIndex.get(displayIndex);
       return {
-        data: exact?.data ?? display.data[displayIndex],
+        data: exact?.data,
         dataStart: exact?.dataStart ?? display.startSecs[displayIndex] ?? display.viewStart,
-        signalKey: `${montage}:${sourceIndex ?? -1}:${display.labels[displayIndex] ?? ""}`,
-        sampleRate: exact?.sampleRate ?? display.sampleRates[displayIndex] ?? primarySampleRate(meta),
-        overview: !exact && Boolean(display.envelopes[displayIndex]),
+        signalKey: `${sessionKey}:${montage}:${display.sourceIndices[displayIndex]?.join(",")}:${sourceIndex ?? -1}:${display.labels[displayIndex] ?? ""}`,
+        sampleRate: exact?.sampleRate ?? meta.sampleRates[sourceIndex] ?? primarySampleRate(meta),
+        overview: !exact,
       };
     });
-  }, [display, matchingExactSpectrogramSignal, meta, montage, spectrogramChannelIndices]);
+  }, [display, matchingExactSpectrogramSignal, meta, montage, sessionKey, spectrogramChannelIndices]);
   const spectrogramLabel = channelSelectionActive
     ? formatDisplayChannelLabel(display.labels[focusedChannel] || "Focused channel")
     : `All enabled channels (${spectrogramSignals.length})`;
@@ -6792,6 +6828,9 @@ export default function Home() {
 
             {spectrogramOpen && <SpectrogramPanel
               signals={spectrogramSignals}
+              inputError={spectrogramInputPlan.expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES
+                ? "Zoom in or enable fewer channels to load full-resolution spectrogram data."
+                : spectrogramInputError?.requestKey === spectrogramInputPlan.requestKey ? spectrogramInputError.message : ""}
               viewStart={viewStart}
               viewDuration={timebase}
               sessionDuration={meta.durationSec}
@@ -7328,6 +7367,7 @@ type SpectrogramSignalInput = {
 
 type SpectrogramPanelProps = {
   signals: SpectrogramSignalInput[];
+  inputError: string;
   viewStart: number;
   viewDuration: number;
   sessionDuration: number;
@@ -7355,6 +7395,7 @@ function matlabJet(value: number) {
 
 function SpectrogramPanel({
   signals,
+  inputError,
   viewStart,
   viewDuration,
   sessionDuration,
@@ -7367,6 +7408,7 @@ function SpectrogramPanel({
 }: SpectrogramPanelProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const colorLimitsRef = useRef(new Map<string, { low: number; high: number }>());
   const resizeRef = useRef<{ pointerId: number; startY: number; startHeight: number; maximumHeight: number } | null>(null);
   const [spectrogramHeight, setSpectrogramHeight] = useState(DEFAULT_SPECTROGRAM_HEIGHT);
   const [spectrumState, setSpectrumState] = useState<{
@@ -7384,7 +7426,6 @@ function SpectrogramPanel({
   const retainedSpectrumMatchesSignal = spectrumState.signalKey === signalKey;
   const spectrum = retainedSpectrumMatchesSignal ? spectrumState.result : null;
   const spectrumDataStart = retainedSpectrumMatchesSignal ? spectrumState.dataStart : dataStart;
-  const spectrumSampleRate = spectrum?.sampleRate ?? sampleRate;
   const computeError = spectrumInputMatches ? spectrumState.error : "";
   const previousHeightRef = useRef(DEFAULT_SPECTROGRAM_HEIGHT);
   const interactionRef = useRef<{
@@ -7460,12 +7501,13 @@ function SpectrogramPanel({
     }));
     const pending = requests.length === 1
       ? computeSpectrogramOffThread(
-        { data: requests[0].data, sampleRate: requests[0].sampleRate },
+        requests[0],
         { signal: abortController.signal },
       )
       : computeAverageSpectrogramOffThread({ signals: requests }, { signal: abortController.signal });
     void pending.then(
       (result) => {
+        if (abortController.signal.aborted) return;
         operation.finish({
           completedBytes: inputBytes,
           durationMs: result.metrics.computeMs + (result.metrics.inputCopyMs ?? 0),
@@ -7473,7 +7515,7 @@ function SpectrogramPanel({
         });
         setSpectrumState({
           signals,
-          dataStart: computableSignals.find((signal) => signal.sampleRate === result.sampleRate)?.dataStart ?? dataStart,
+          dataStart: result.dataStart,
           signalKey,
           result,
           error: "",
@@ -7527,11 +7569,11 @@ function SpectrogramPanel({
         ctx.fillRect(0, 0, width, height);
         ctx.fillStyle = "#02080a";
         ctx.fillRect(plotLeft, plotTop, plotWidth, plotHeight);
-        const status = overview
-          ? "Wide view: green glow marks peaks beyond the visible µV range · dark green → lime → yellow → orange marks distance beyond ±100 µV · zoom in for exact one-second multitaper bins"
+        const status = inputError || (overview && !spectrum
+          ? "Loading full-resolution spectrogram samples…"
           : sampleRate < 2
           ? "Spectrogram unavailable below 2 Hz"
-          : computeError || (!spectrum ? "AR whitening · computing five DPSS tapers…" : "");
+          : computeError || (!spectrum ? "AR whitening · computing five DPSS tapers…" : ""));
         if (status) {
           ctx.fillStyle = "rgba(235,245,243,.6)";
           ctx.font = "10px ui-monospace, monospace";
@@ -7550,22 +7592,18 @@ function SpectrogramPanel({
         const visibleBins = [...spectrum.frequencies].flatMap((frequency, index) => (
           frequency >= effectiveDisplayMinHz && frequency <= effectiveDisplayMaxHz ? [index] : []
         ));
-        const flat = visibleBins.flatMap((bin) => (
-          Array.from(powers.slice(bin * spectrum.frames, (bin + 1) * spectrum.frames)).filter(Number.isFinite)
-        )).sort((left, right) => left - right);
-        if (!flat.length) {
+        const limits = stableSpectrogramColorLimits(colorLimitsRef.current, signalKey, powers);
+        if (!limits) {
           ctx.fillStyle = "rgba(235,245,243,.6)";
           ctx.font = "10px ui-monospace, monospace";
           ctx.fillText("No sufficiently complete signal frames", plotLeft + 8, plotTop + 16);
           return;
         }
-        const automaticLow = flat[0] ?? 0;
-        const automaticHigh = flat.at(-1) ?? automaticLow + 1;
-        const low = automaticLow + colorLimitShift;
-        const high = automaticHigh + colorLimitShift;
+        const low = limits.low + colorLimitShift;
+        const high = limits.high + colorLimitShift;
         const plotEnd = plotLeft + plotWidth;
-        const frameDuration = spectrum.windowSize / spectrumSampleRate;
         const frameGeometry = Array.from({ length: spectrum.frames }, (_, frame) => {
+          const frameDuration = spectrum.durations[frame];
           const centerTime = spectrumDataStart + spectrum.times[frame];
           const frameStart = centerTime - frameDuration / 2;
           const frameEnd = centerTime + frameDuration / 2;
@@ -7678,7 +7716,7 @@ function SpectrogramPanel({
       observer.disconnect();
       performanceDiagnostics.removeCanvasSurface("spectrogram");
     };
-  }, [colorLimitShift, computeError, cursor, displayedPowers, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, overview, sampleRate, spectrum, spectrumDataStart, spectrumSampleRate, thetaRatio, viewDuration, viewStart]);
+  }, [colorLimitShift, computeError, cursor, displayedPowers, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, inputError, overview, sampleRate, signalKey, spectrum, spectrumDataStart, thetaRatio, viewDuration, viewStart]);
 
   const plotRatio = (clientX: number, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
@@ -7800,7 +7838,8 @@ function SpectrogramPanel({
     <div className="spectrogram-label">
       <strong title={label}>{label}</strong>
       {signals.length > 1 && <span>POWER AVG · {signals.length} CH</span>}
-      <span>{sampleRate >= 2 ? "AR(2) white" : "Unavailable"}</span>
+      <span>{sampleRate >= 2 ? "Whitened power" : "Unavailable"}</span>
+      <span>Unfiltered input</span>
       <span>{sampleRate >= 2 ? "NW 3 · K 5" : "Sampling < 2 Hz"}</span>
       <span>{sampleRate >= 2 ? "FFT 3072" : ""}</span>
     </div>
@@ -7917,6 +7956,8 @@ function SpectrogramPanel({
       {zoomBox && <div className="spectrogram-zoom-box" aria-hidden="true" style={zoomBox} />}
       {showSpectrogramHelp && <div className="spectrogram-help" role="status">
         <strong>Spectrogram controls</strong>
+        <span>Relative whitened power · color scale stays fixed while panning</span>
+        <span>Uses full-resolution montage samples; waveform display filters do not apply</span>
         <span>B browse · click center · hold/drag pan · wheel/trackpad pan</span>
         <span>Z box zoom · drag a time-frequency area</span>
         <span>←/→ shift 15% · ↑/↓ color</span>

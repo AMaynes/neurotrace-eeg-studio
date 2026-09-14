@@ -50,9 +50,10 @@ test("lets the spectrogram replace the waveform pane without changing the wavefo
   assert.match(page, /SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES/);
   assert.doesNotMatch(page, /spectrogramCanUseExactSamples/);
   assert.match(page, /setExactSpectrogramSignal/);
-  assert.match(page, /requestedChannels\.map\(\(\{ sourceIndex \}\) => sourceIndex\)/);
+  assert.match(page, /spectrogramReadBounds\(signalViewStart, timebase, meta.durationSec\)/);
   assert.match(page, /channelSelectionActive[\s\S]*?display\.data\.map\(\(_, index\) => index\)/);
-  assert.match(page, /exact\?\.data \?\? display\.data\[displayIndex\]/);
+  assert.match(page, /data: exact\?\.data,/);
+  assert.doesNotMatch(page, /data: exact\?\.data \?\? display\.data/);
   assert.match(page, /`All enabled channels \(\$\{spectrogramSignals\.length\}\)`/);
   assert.match(panelResizeSection(page), /computeAverageSpectrogramOffThread/);
   assert.match(page, /viewer\.clientHeight - fixedSiblingHeight/);

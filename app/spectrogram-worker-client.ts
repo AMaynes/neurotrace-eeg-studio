@@ -40,7 +40,7 @@ export function computeSpectrogramOffThread(
   request: SpectrogramComputeRequest,
   options: SpectrogramWorkerOptions = {},
 ): Promise<SpectrogramComputeResult> {
-  return runSpectrogramWorker("compute", [{ ...request, dataStart: 0 }], options);
+  return runSpectrogramWorker("compute", [{ ...request, dataStart: request.dataStart ?? 0 }], options);
 }
 
 /** Calculates each channel independently, then averages power in the worker. */
@@ -125,7 +125,7 @@ function runSpectrogramWorker(
       : {
         type,
         requestId,
-        request: { data: inputCopies[0].data, sampleRate: inputCopies[0].sampleRate },
+        request: inputCopies[0],
       };
     try {
       worker.postMessage(message, inputCopies.map((request) => request.data.buffer));

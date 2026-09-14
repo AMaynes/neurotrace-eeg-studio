@@ -1,4 +1,4 @@
-/** Buzcode TheStateEditor-compatible spectrogram math shared by the worker and tests. */
+/** Buzcode-style multitaper math with recording-aligned, pan-invariant frames. */
 
 export const BUZCODE_FFT_SIZE = 3072;
 export const BUZCODE_TIME_BANDWIDTH = 3;
@@ -12,6 +12,8 @@ export const BUZCODE_SMOOTHING_OPTIONS = [0, 5, 10, 15, 20, 30, 45, 60] as const
 export interface SpectrogramComputeRequest {
   data: Float32Array;
   sampleRate: number;
+  /** Absolute recording time of sample zero. */
+  dataStart?: number;
 }
 
 export interface SpectrogramAverageSignalRequest extends SpectrogramComputeRequest {
@@ -41,6 +43,9 @@ export interface SpectrogramComputeResult {
   frequencies: Float64Array;
   /** Frame-center offsets in seconds from the input window start. */
   times: Float64Array;
+  /** Actual frame widths; the recording's final partial second is shorter. */
+  durations: Float64Array;
+  dataStart: number;
   frames: number;
   bins: number;
   maxHz: number;
@@ -65,6 +70,12 @@ function validateRequest(request: SpectrogramComputeRequest) {
   }
   if (!Number.isFinite(request.sampleRate) || request.sampleRate < 2) {
     throw new RangeError("Spectrogram sampling rate must be at least 2 Hz.");
+  }
+  if (!Number.isFinite(request.dataStart ?? 0) || (request.dataStart ?? 0) < 0) {
+    throw new RangeError("Spectrogram input start must be a nonnegative recording time.");
+  }
+  if (request.sampleRate > BUZCODE_FFT_SIZE) {
+    throw new RangeError("Spectrogram sampling rate exceeds the supported 3072 Hz FFT input rate.");
   }
 }
 
@@ -97,7 +108,7 @@ function estimateAr2(signal: Float32Array) {
   ] as const;
 }
 
-/** Matches TheStateEditor's AR(2) whitening policy, using one model for the input. */
+/** Fits AR(2) to one recording-aligned frame, independent of the viewport. */
 function whitenAr2(signal: Float32Array) {
   const [a1, a2] = estimateAr2(signal);
   const whitened = new Float64Array(signal.length);
@@ -278,20 +289,19 @@ function buzcodeFrequencyGroups(sampleRate: number, rawBins: readonly number[]) 
 }
 
 /**
- * Recreates TheStateEditor's signal path: AR(2) whitening, one-second
- * non-overlapping windows, NW=3/five-taper DPSS power, a 3072-point FFT,
- * 0-200 Hz computation, and approximately 0.5 Hz display grouping.
+ * Uses recording-aligned one-second frames and per-frame AR(2) whitening,
+ * NW=3/five-taper DPSS power, and a 3072-point FFT. Callers load complete
+ * seconds around the viewport; only a true recording edge needs a short frame.
  */
 export function computeSpectrogram(request: SpectrogramComputeRequest): SpectrogramComputeResult {
   validateRequest(request);
   const startedAt = nowMs();
-  const { data, sampleRate } = request;
-  // Keep Buzcode's one-second window whenever possible, but shorten the
-  // analysis window for an intentionally sub-second viewer range. This keeps
-  // deep zooms informative instead of returning an all-NaN spectrogram.
+  const { data, sampleRate, dataStart = 0 } = request;
   const windowSize = Math.max(1, Math.min(data.length, Math.round(sampleRate)));
   const hop = windowSize;
-  const frames = data.length < windowSize ? 1 : Math.floor((data.length - windowSize) / hop) + 1;
+  const firstSecond = Math.floor(dataStart + 1e-9);
+  const dataEnd = dataStart + data.length / sampleRate;
+  const frames = Math.max(1, Math.ceil(dataEnd - 1e-9) - firstSecond);
   const rawBins = rawFrequencyBins(sampleRate);
   const groups = buzcodeFrequencyGroups(sampleRate, rawBins);
   const frequencies = Float64Array.from(groups.map((group) => (
@@ -300,28 +310,33 @@ export function computeSpectrogram(request: SpectrogramComputeRequest): Spectrog
   const bins = frequencies.length;
   const powers = new Float64Array(bins * frames);
   powers.fill(Number.NaN);
-  const times = Float64Array.from({ length: frames }, (_, frame) => (frame * hop + windowSize / 2) / sampleRate);
-  const whitened = whitenAr2(data);
-  const tapers = dpssTapers(windowSize);
+  const times = new Float64Array(frames);
+  const durations = new Float64Array(frames);
   const maximumRawBin = rawBins.at(-1) ?? 0;
   let finiteFrames = 0;
   let dftTerms = 0;
 
   for (let frame = 0; frame < frames; frame += 1) {
-    const frameOffset = frame * hop;
-    const effectiveLength = Math.min(windowSize, BUZCODE_FFT_SIZE, Math.max(0, data.length - frameOffset));
+    const frameOffset = Math.max(0, Math.round((firstSecond + frame - dataStart) * sampleRate));
+    const frameEnd = Math.min(data.length, Math.round((firstSecond + frame + 1 - dataStart) * sampleRate));
+    const effectiveLength = Math.max(0, frameEnd - frameOffset);
+    times[frame] = (frameOffset + effectiveLength / 2) / sampleRate;
+    durations[frame] = effectiveLength / sampleRate;
+    if (!effectiveLength) continue;
+    const whitened = whitenAr2(data.subarray(frameOffset, frameEnd));
+    const tapers = dpssTapers(effectiveLength);
     let finiteSamples = 0;
     for (let sample = 0; sample < effectiveLength; sample += 1) {
-      if (Number.isFinite(whitened[frameOffset + sample])) finiteSamples += 1;
+      if (Number.isFinite(whitened[sample])) finiteSamples += 1;
     }
-    if (effectiveLength < 1 || finiteSamples / windowSize < 0.75) continue;
+    if (finiteSamples / effectiveLength < 0.75) continue;
     finiteFrames += 1;
     const rawPower = new Float64Array(maximumRawBin + 1);
     const coverageGain = effectiveLength / finiteSamples;
     for (const taper of tapers) {
       const tapered = new Float64Array(BUZCODE_FFT_SIZE);
       for (let sample = 0; sample < effectiveLength; sample += 1) {
-        const sourceValue = whitened[frameOffset + sample];
+        const sourceValue = whitened[sample];
         if (!Number.isFinite(sourceValue)) continue;
         tapered[sample] = sourceValue * taper[sample] * coverageGain;
         dftTerms += 1;
@@ -345,6 +360,8 @@ export function computeSpectrogram(request: SpectrogramComputeRequest): Spectrog
     powers,
     frequencies,
     times,
+    durations,
+    dataStart,
     frames,
     bins,
     maxHz: frequencies.at(-1) ?? 0,
@@ -352,7 +369,7 @@ export function computeSpectrogram(request: SpectrogramComputeRequest): Spectrog
     windowSize,
     hop,
     fftSize: BUZCODE_FFT_SIZE,
-    tapers: tapers.length,
+    tapers: Math.min(BUZCODE_TAPER_COUNT, windowSize),
     metrics: {
       computeMs: Math.max(0, nowMs() - startedAt),
       inputSamples: data.length,
@@ -443,9 +460,9 @@ function hanning(length: number) {
 function convolveTrimmed(values: Float64Array, window: Float64Array, normalize: boolean) {
   const result = new Float64Array(values.length);
   const frontTrim = Math.floor(window.length / 2);
-  const divisor = normalize ? window.reduce((sum, value) => sum + value, 0) : 1;
   for (let output = 0; output < values.length; output += 1) {
     let sum = 0;
+    let divisor = normalize ? 0 : 1;
     let hasFinite = false;
     for (let windowIndex = 0; windowIndex < window.length; windowIndex += 1) {
       const sourceIndex = output + frontTrim - windowIndex;
@@ -453,6 +470,7 @@ function convolveTrimmed(values: Float64Array, window: Float64Array, normalize: 
       const value = values[sourceIndex];
       if (!Number.isFinite(value)) continue;
       sum += value * window[windowIndex];
+      if (normalize) divisor += window[windowIndex];
       hasFinite = true;
     }
     result[output] = hasFinite && divisor > 0 ? sum / divisor : Number.NaN;
@@ -469,7 +487,7 @@ export function displaySpectrogramPowers(result: SpectrogramComputeResult, smoot
     const smoothed = window ? convolveTrimmed(source, window, true) : source;
     for (let frame = 0; frame < result.frames; frame += 1) {
       const value = smoothed[frame];
-      displayed[bin * result.frames + frame] = Number.isFinite(value)
+      displayed[bin * result.frames + frame] = Number.isFinite(source[frame]) && Number.isFinite(value)
         ? Math.log10(Math.max(Number.EPSILON, value))
         : Number.NaN;
     }
@@ -477,17 +495,7 @@ export function displaySpectrogramPowers(result: SpectrogramComputeResult, smoot
   return displayed;
 }
 
-function percentile(values: readonly number[], percentage: number) {
-  const sorted = values.filter(Number.isFinite).sort((left, right) => left - right);
-  if (!sorted.length) return Number.NaN;
-  const position = Math.max(0, Math.min(sorted.length - 1, (percentage / 100) * (sorted.length - 1)));
-  const lower = Math.floor(position);
-  const upper = Math.ceil(position);
-  const ratio = position - lower;
-  return sorted[lower] * (1 - ratio) + sorted[upper] * ratio;
-}
-
-/** Returns TheStateEditor's normalized 5-10 Hz / 0.5-4 Hz overlay. */
+/** Maps the 5-10 Hz / 0.5-4 Hz ratio to r/(1+r), independent of viewport extrema. */
 export function thetaRatioOverlay(result: SpectrogramComputeResult, smoothingSeconds: number) {
   const ratio = new Float64Array(result.frames);
   ratio.fill(Number.NaN);
@@ -509,20 +517,50 @@ export function thetaRatioOverlay(result: SpectrogramComputeResult, smoothingSec
     if (thetaCount && deltaCount && delta > 0) ratio[frame] = (theta / thetaCount) / (delta / deltaCount);
   }
   const smoothed = smoothingSeconds > 0
-    ? convolveTrimmed(ratio, hanning(Math.max(1, Math.round(smoothingSeconds))), false)
+    ? convolveTrimmed(ratio, hanning(Math.max(1, Math.round(smoothingSeconds))), true)
     : ratio;
-  const finite = [...smoothed].filter(Number.isFinite);
-  const low = percentile(finite, 1);
-  const high = percentile(finite, 99);
   const normalized = new Float64Array(smoothed.length);
   normalized.fill(Number.NaN);
-  if (!Number.isFinite(low) || !Number.isFinite(high) || high === 0) return normalized;
   for (let index = 0; index < smoothed.length; index += 1) {
-    if (Number.isFinite(smoothed[index])) normalized[index] = (smoothed[index] - low) / high;
+    if (Number.isFinite(ratio[index]) && Number.isFinite(smoothed[index])) {
+      normalized[index] = smoothed[index] / (1 + smoothed[index]);
+    }
   }
   return normalized;
 }
 
 export function spectrogramTransferList(result: SpectrogramComputeResult): Transferable[] {
-  return [result.powers.buffer, result.frequencies.buffer, result.times.buffer];
+  return [result.powers.buffer, result.frequencies.buffer, result.times.buffer, result.durations.buffer];
+}
+
+/** Full seconds plus enough neighbors for every supported smoothing setting. */
+export function spectrogramReadBounds(viewStart: number, duration: number, recordingDuration: number) {
+  const padding = Math.ceil(Math.max(...BUZCODE_SMOOTHING_OPTIONS) / 2) + 1;
+  const start = Math.max(0, Math.floor(viewStart) - padding);
+  const end = Math.min(recordingDuration, Math.ceil(viewStart + duration) + padding);
+  return { start, duration: Math.max(0, end - start) };
+}
+
+/** Establishes one relative log-power scale per signal; panning cannot reset it. */
+export function stableSpectrogramColorLimits(
+  cache: Map<string, { low: number; high: number }>,
+  key: string,
+  powers: Float64Array,
+) {
+  const cached = cache.get(key);
+  if (cached) return cached;
+  let low = Infinity;
+  let high = -Infinity;
+  for (const value of powers) {
+    if (!Number.isFinite(value)) continue;
+    low = Math.min(low, value);
+    high = Math.max(high, value);
+  }
+  if (!Number.isFinite(low)) return null;
+  const limits = { low, high: Math.max(low + 1, high) };
+  // A flat or absent opening signal must not permanently lock the scale to zero.
+  if (high <= Math.log10(Number.EPSILON)) return limits;
+  if (cache.size >= 256) cache.delete(cache.keys().next().value!);
+  cache.set(key, limits);
+  return limits;
 }

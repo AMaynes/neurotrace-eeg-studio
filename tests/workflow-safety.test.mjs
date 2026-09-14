@@ -255,8 +255,8 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   const spectrum = section(page, "function SpectrogramPanel", "function FileStructurePanel");
   assert.match(spectrum, /computeSpectrogramOffThread/);
   assert.match(spectrum, /if\s*\(overview\s*\|\|/);
-  assert.match(spectrum, /dark green → lime → yellow → orange marks distance beyond ±100 µV/);
-  assert.match(spectrogramCore, /finiteSamples\s*\/\s*windowSize\s*<\s*0\.75/);
+  assert.match(spectrum, /Loading full-resolution spectrogram samples/);
+  assert.match(spectrogramCore, /finiteSamples\s*\/\s*effectiveLength\s*<\s*0\.75/);
   assert.match(spectrogramCore, /if\s*\(!Number\.isFinite\(sourceValue\)\)\s*continue/);
   assert.match(spectrum, /Array\.from\(powers\)\.filter\(Number\.isFinite\)/);
   assert.match(spectrum, /No sufficiently complete signal frames/);
