@@ -656,7 +656,14 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
   assert.match(page, /setEnabledEphysLabelIds\(new Set\(selectableEphysLabels\.map/, "all types can be enabled at once");
   assert.match(page, /setEnabledEphysLabelIds\(new Set\(\)\)/, "all types can be disabled at once");
   assert.match(page, /enabledEphysLabelIds\.has\(item\.id\)/, "disabled types are filtered from the palette");
-  assert.match(css, /\.ephys-label-picker\s*\{[^}]*position:\s*absolute/, "the picker opens as a compact overlay");
+  assert.match(page, /className="modal ephys-label-picker" role="dialog" aria-modal="true"/, "the picker opens outside the sidebar as a modal");
+  assert.ok(page.indexOf('id="ephys-label-picker"') > page.indexOf('</aside>'), "the picker is not clipped by the right panel");
+  assert.match(page, /const modalOpen = showEphysLabelPicker \|\|/, "the picker participates in focus trapping and background inertness");
+  assert.match(page, /else if \(showEphysLabelPicker\) setShowEphysLabelPicker\(false\)/, "Escape closes the picker without clearing the waveform selection");
+  assert.match(page, /aria-label="Close ePhys label picker"/);
+  assert.match(css, /\.ephys-label-picker\s*\{[^}]*width:\s*min\(520px, calc\(100vw - 32px\)\)/, "the popup fits narrow viewports independently of the sidebar");
+  assert.match(css, /\.ephys-label-picker-groups\s*\{[^}]*overflow-y:\s*auto/, "long lists scroll while the heading and actions remain visible");
+  assert.match(css, /\.ephys-label-picker label span\s*\{[^}]*overflow-wrap:\s*anywhere/, "long label names remain readable");
 });
 
 test("keeps box zoom in the toolbar while General Info follows the current waveform selection", async () => {

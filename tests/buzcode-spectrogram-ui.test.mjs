@@ -89,3 +89,31 @@ function panelResizeSection(page) {
   const end = page.indexOf("type FileStructureNode", start);
   return page.slice(start, end);
 }
+
+test("matches the waveform plotting bounds after resizing and channel scrollbar changes", async () => {
+  const page = await readFile(projectFile("app/page.tsx"), "utf8");
+  const panel = panelResizeSection(page);
+  assert.match(page, /waveformCanvasRef=\{canvasRef\}/);
+  assert.match(page, /const SPECTROGRAM_PLOT_LEFT = 0;/);
+  assert.match(page, /const SPECTROGRAM_PLOT_RIGHT = 0;/);
+  assert.match(panel, /observer\.observe\(waveform\)/);
+  assert.match(panel, /observer\.observe\(panel\)/);
+  assert.match(panel, /className="spectrogram-frequency-axis"/, "frequency labels occupy the rail, not the time plot");
+  assert.doesNotMatch(panel, /\.width - 51/, "pan release uses the same bounds as dragging");
+
+  // Exercise the actual sizing callback with fractional pixels and scrollbar gutters.
+  const callback = panel.match(/const alignTimePlot = \(\) => \{([\s\S]*?)\n    \};/);
+  assert.ok(callback);
+  const align = new Function("waveform", "panel", callback[1]);
+  for (const [left, width, gutter] of [[0, 900, 0], [235.5, 720.25, 8], [51.25, 1440.5, 15], [0, 320, 0]]) {
+    const waveformRect = { left: left + 70, width: width - 70 - gutter };
+    const spectrogram = { getBoundingClientRect: () => ({ left, width }), style: {} };
+    align({ getBoundingClientRect: () => waveformRect }, spectrogram);
+    const [rail, plot] = spectrogram.style.gridTemplateColumns.split(" ").map(parseFloat);
+    assert.equal(rail, 70);
+    assert.equal(plot, waveformRect.width);
+    for (const ratio of [0, 0.15, 0.5, 0.85, 1]) {
+      assert.equal(left + rail + ratio * plot, waveformRect.left + ratio * waveformRect.width);
+    }
+  }
+});

@@ -6049,7 +6049,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const modalOpen = showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+    const modalOpen = showEphysLabelPicker || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -6089,7 +6089,7 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
+  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -6099,7 +6099,7 @@ export default function Home() {
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
-      const modalOpen = showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+      const modalOpen = showEphysLabelPicker || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
       if (modalOpen && zoomModifier && (zoomInKey || zoomOutKey)) {
         event.preventDefault();
         event.stopPropagation();
@@ -6111,6 +6111,7 @@ export default function Home() {
           setConfirmCommit([]);
           setCommitAdvanceAfter(false);
         }
+        else if (showEphysLabelPicker) setShowEphysLabelPicker(false);
         else if (showHelp) setShowHelp(false);
         else if (showSettings) setShowSettings(false);
         else if (showChannels) setShowChannels(false);
@@ -6125,10 +6126,6 @@ export default function Home() {
       if (modalOpen) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        if (showEphysLabelPicker) {
-          setShowEphysLabelPicker(false);
-          return;
-        }
         if (dragAnnotationRef.current) {
           dragAnnotationRef.current = null;
           pendingAnnotationDragRef.current = null;
@@ -6827,6 +6824,7 @@ export default function Home() {
             </div>
 
             {spectrogramOpen && <SpectrogramPanel
+              waveformCanvasRef={canvasRef}
               signals={spectrogramSignals}
               inputError={spectrogramInputPlan.expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES
                 ? "Zoom in or enable fewer channels to load full-resolution spectrogram data."
@@ -6976,9 +6974,7 @@ export default function Home() {
           <section className="compact-ephys-palette">
             <div className="ephys-palette-heading">
               <h2>ePhys Labels</h2>
-              <div className="ephys-label-menu" onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) setShowEphysLabelPicker(false);
-              }}>
+              <div className="ephys-label-menu">
                 <button
                   type="button"
                   className="ephys-label-menu-toggle"
@@ -6989,28 +6985,6 @@ export default function Home() {
                   title="Choose visible ePhys label types"
                   onClick={() => setShowEphysLabelPicker((value) => !value)}
                 >…</button>
-                {showEphysLabelPicker && <div id="ephys-label-picker" className="ephys-label-picker" role="dialog" aria-label="Visible ePhys label types">
-                  <header><strong>Visible label types</strong><span>{enabledEphysLabelIds.size} of {selectableEphysLabels.length}</span></header>
-                  <div className="ephys-label-picker-actions">
-                    <button type="button" onClick={() => setEnabledEphysLabelIds(new Set(selectableEphysLabels.map((label) => label.id)))}>Enable all</button>
-                    <button type="button" onClick={() => setEnabledEphysLabelIds(new Set())}>Disable all</button>
-                  </div>
-                  <div className="ephys-label-picker-groups">
-                    {activeLabelGroups.map(({ label: groupLabel, ids }) => <fieldset key={groupLabel}>
-                      <legend>{groupLabel}</legend>
-                      {ids.map((id) => LABEL_BY_ID.get(id)).filter((label): label is LabelDefinition => label !== undefined && !label.hidden).map((label) => <label key={label.id}>
-                        <input type="checkbox" checked={enabledEphysLabelIds.has(label.id)} onChange={(event) => setEnabledEphysLabelIds((current) => {
-                          const next = new Set(current);
-                          if (event.target.checked) next.add(label.id);
-                          else next.delete(label.id);
-                          return next;
-                        })} />
-                        <i style={{ "--label-color": label.color } as React.CSSProperties} />
-                        <span>{PALETTE_BUTTON_NAMES[label.id] ?? label.name}</span>
-                      </label>)}
-                    </fieldset>)}
-                  </div>
-                </div>}
               </div>
             </div>
             <p><span className="palette-kind">Label palette</span> · click = instance · selected span = window</p>
@@ -7028,6 +7002,34 @@ export default function Home() {
           </>}
         </aside>
       </div>
+
+      {showEphysLabelPicker && <div className="modal-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setShowEphysLabelPicker(false);
+      }}>
+        <div id="ephys-label-picker" className="modal ephys-label-picker" role="dialog" aria-modal="true" aria-label="Visible ePhys label types" tabIndex={-1}>
+          <button className="modal-close" type="button" onClick={() => setShowEphysLabelPicker(false)} aria-label="Close ePhys label picker">×</button>
+          <header><strong>Visible ePhys label types</strong><span>{enabledEphysLabelIds.size} of {selectableEphysLabels.length}</span></header>
+          <div className="ephys-label-picker-actions">
+            <button type="button" onClick={() => setEnabledEphysLabelIds(new Set(selectableEphysLabels.map((label) => label.id)))}>Enable all</button>
+            <button type="button" onClick={() => setEnabledEphysLabelIds(new Set())}>Disable all</button>
+          </div>
+          <div className="ephys-label-picker-groups">
+            {activeLabelGroups.map(({ label: groupLabel, ids }) => <fieldset key={groupLabel}>
+              <legend>{groupLabel}</legend>
+              {ids.map((id) => LABEL_BY_ID.get(id)).filter((label): label is LabelDefinition => label !== undefined && !label.hidden).map((label) => <label key={label.id}>
+                <input type="checkbox" checked={enabledEphysLabelIds.has(label.id)} onChange={(event) => setEnabledEphysLabelIds((current) => {
+                  const next = new Set(current);
+                  if (event.target.checked) next.add(label.id);
+                  else next.delete(label.id);
+                  return next;
+                })} />
+                <i style={{ "--label-color": label.color } as React.CSSProperties} />
+                <span>{PALETTE_BUTTON_NAMES[label.id] ?? label.name}</span>
+              </label>)}
+            </fieldset>)}
+          </div>
+        </div>
+      </div>}
 
       {showImport && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !importBusy) setShowImport(false); }}>
         <div id="recording-import-dialog" className="modal import-modal" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
@@ -7366,6 +7368,7 @@ type SpectrogramSignalInput = {
 };
 
 type SpectrogramPanelProps = {
+  waveformCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   signals: SpectrogramSignalInput[];
   inputError: string;
   viewStart: number;
@@ -7379,8 +7382,9 @@ type SpectrogramPanelProps = {
   onZoom(start: number, end: number): void;
 };
 
-const SPECTROGRAM_PLOT_LEFT = 42;
-const SPECTROGRAM_PLOT_RIGHT = 9;
+// Frequency labels live in the channel rail, never inside the shared time plot.
+const SPECTROGRAM_PLOT_LEFT = 0;
+const SPECTROGRAM_PLOT_RIGHT = 0;
 const SPECTROGRAM_PLOT_TOP = 34;
 const SPECTROGRAM_PLOT_BOTTOM = 22;
 const SPECTROGRAM_MINIMUM_DRAG_PX = 4;
@@ -7394,6 +7398,7 @@ function matlabJet(value: number) {
 }
 
 function SpectrogramPanel({
+  waveformCanvasRef,
   signals,
   inputError,
   viewStart,
@@ -7408,6 +7413,22 @@ function SpectrogramPanel({
 }: SpectrogramPanelProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const waveform = waveformCanvasRef.current;
+    if (!panel || !waveform) return;
+    const alignTimePlot = () => {
+      const waveformRect = waveform.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      // Measure the canvas, including any width lost to the channel scrollbar.
+      panel.style.gridTemplateColumns = `${Math.max(0, waveformRect.left - panelRect.left)}px ${waveformRect.width}px minmax(0, 1fr)`;
+    };
+    alignTimePlot();
+    const observer = new ResizeObserver(alignTimePlot);
+    observer.observe(waveform);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [waveformCanvasRef]);
   const colorLimitsRef = useRef(new Map<string, { low: number; high: number }>());
   const resizeRef = useRef<{ pointerId: number; startY: number; startHeight: number; maximumHeight: number } | null>(null);
   const [spectrogramHeight, setSpectrogramHeight] = useState(DEFAULT_SPECTROGRAM_HEIGHT);
@@ -7655,21 +7676,13 @@ function SpectrogramPanel({
           const y = plotTop + plotHeight * (1 - (frequency - effectiveDisplayMinHz) / displayFrequencySpanHz);
           ctx.strokeStyle = "rgba(255,255,255,.18)";
           ctx.beginPath(); ctx.moveTo(plotLeft, y); ctx.lineTo(plotLeft + plotWidth, y); ctx.stroke();
-          ctx.fillStyle = "rgba(235,245,243,.72)";
-          ctx.fillText(`${frequency}`, plotLeft - 5, y + 3);
         }
-        ctx.save();
-        ctx.translate(9, plotTop + plotHeight / 2);
-        ctx.rotate(-Math.PI / 2);
-        ctx.textAlign = "center";
-        ctx.fillStyle = "rgba(235,245,243,.55)";
-        ctx.fillText("Frequency (Hz)", 0, 0);
-        ctx.restore();
 
         ctx.textAlign = "center";
         ctx.fillStyle = "rgba(235,245,243,.62)";
         [0, 0.5, 1].forEach((ratio) => {
           const x = plotLeft + ratio * plotWidth;
+          ctx.textAlign = ratio === 0 ? "left" : ratio === 1 ? "right" : "center";
           ctx.fillText(formatClock(viewStart + ratio * viewDuration, true), x, height - 6);
         });
 
@@ -7786,7 +7799,7 @@ function SpectrogramPanel({
     if (moved) {
       onCommitStart(boundedStart(
         interaction.originalViewStart
-        - (distance / Math.max(1, event.currentTarget.getBoundingClientRect().width - 51))
+        - (distance / Math.max(1, event.currentTarget.getBoundingClientRect().width - SPECTROGRAM_PLOT_LEFT - SPECTROGRAM_PLOT_RIGHT))
           * viewDuration
           * SPECTROGRAM_DRAG_PAN_SCALE,
       ));
@@ -7835,13 +7848,19 @@ function SpectrogramPanel({
         ));
       }}
     />
-    <div className="spectrogram-label">
-      <strong title={label}>{label}</strong>
-      {signals.length > 1 && <span>POWER AVG · {signals.length} CH</span>}
-      <span>{sampleRate >= 2 ? "Whitened power" : "Unavailable"}</span>
-      <span>Unfiltered input</span>
-      <span>{sampleRate >= 2 ? "NW 3 · K 5" : "Sampling < 2 Hz"}</span>
-      <span>{sampleRate >= 2 ? "FFT 3072" : ""}</span>
+    <div className="spectrogram-label" title={`${label} · ${signals.length > 1 ? `POWER AVG · ${signals.length} CH · ` : ""}${sampleRate >= 2 ? "Whitened power · Unfiltered input · NW 3 · K 5 · FFT 3072" : "Unavailable · Sampling < 2 Hz"}`}>
+      <strong>{label}</strong>
+      <div className="spectrogram-frequency-axis" aria-label="Frequency (Hz)" style={{ top: SPECTROGRAM_PLOT_TOP, bottom: SPECTROGRAM_PLOT_BOTTOM }}>
+        <span className="spectrogram-frequency-title">Frequency (Hz)</span>
+        {(() => {
+          const step = effectiveDisplayMaxHz <= 40 ? 10 : effectiveDisplayMaxHz <= 100 ? 20 : 50;
+          const first = Math.ceil(effectiveDisplayMinHz / step) * step;
+          return Array.from({ length: Math.max(0, Math.floor((effectiveDisplayMaxHz - first) / step) + 1) }, (_, index) => {
+            const frequency = first + index * step;
+            return <span className="spectrogram-frequency-tick" key={frequency} style={{ top: `${100 * (1 - (frequency - effectiveDisplayMinHz) / displayFrequencySpanHz)}%` }}>{frequency}</span>;
+          });
+        })()}
+      </div>
     </div>
     <div className="spectrogram-canvas-shell">
       <div className="spectrogram-toolbar" aria-label="Spectrogram controls">

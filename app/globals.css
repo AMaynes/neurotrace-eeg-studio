@@ -586,15 +586,17 @@ textarea:focus-visible {
 .spectrogram-resize-handle::before { content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 1px; background: #2a4750; opacity: .8; }
 .spectrogram-resize-handle:hover::before,
 .spectrogram-resize-handle:focus-visible::before { height: 2px; background: var(--mint); box-shadow: 0 0 8px rgba(87, 223, 183, .25); }
-.spectrogram-label { min-width: 0; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 4px; padding: 0 7px; border-right: 1px solid #20353c; background: #0a171b; text-align: right; }
-.spectrogram-label strong { max-width: 100%; overflow: hidden; color: #a6bdc1; font: 8px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.spectrogram-label span { color: #506a70; font: 6px ui-monospace, monospace; line-height: 1.2; }
+.spectrogram-label { position: relative; min-width: 0; padding: 9px 7px 0; border-right: 1px solid #20353c; background: #0a171b; text-align: right; }
+.spectrogram-label strong { display: block; max-width: 100%; overflow: hidden; color: #a6bdc1; font: 8px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.spectrogram-frequency-axis { position: absolute; left: 0; right: 0; color: #a6bdc1; font: 9px ui-monospace, monospace; }
+.spectrogram-frequency-title { position: absolute; left: 12px; top: 50%; transform: translate(-50%, -50%) rotate(-90deg); white-space: nowrap; color: #80989d; }
+.spectrogram-frequency-tick { position: absolute; right: 5px; transform: translateY(-50%); }
 .spectrogram-canvas-shell { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 .spectrogram-panel canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; cursor: grab; }
 .spectrogram-panel canvas:active { cursor: grabbing; }
 .spectrogram-panel.tool-box-zoom canvas,
 .spectrogram-panel.tool-box-zoom canvas:active { cursor: crosshair; }
-.spectrogram-toolbar { position: absolute; z-index: 6; top: 4px; left: 47px; right: 6px; height: 25px; display: flex; align-items: center; gap: 3px; pointer-events: none; }
+.spectrogram-toolbar { position: absolute; z-index: 6; top: 4px; left: 5px; right: 6px; height: 25px; display: flex; align-items: center; gap: 3px; pointer-events: none; }
 .spectrogram-toolbar > * { pointer-events: auto; }
 .spectrogram-toolbar button,
 .spectrogram-toolbar select { height: 20px; border: 1px solid #315058; border-radius: 3px; background: rgba(9, 24, 29, .94); color: #9fb7bb; font: 7px ui-monospace, monospace; }
@@ -2399,24 +2401,22 @@ textarea:focus-visible {
 .ephys-label-menu-toggle:hover,
 .ephys-label-menu-toggle[aria-expanded="true"] { border-color: #4d8276; color: var(--mint); }
 .ephys-label-picker {
-  position: absolute;
-  z-index: 60;
-  top: 26px;
-  right: -58px;
-  width: 264px;
-  max-height: min(430px, calc(100dvh - 300px));
-  padding: 10px;
-  overflow-y: auto;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  overflow: hidden;
   border: 1px solid #315058;
   border-radius: 7px;
   background: #102027;
   box-shadow: var(--shadow);
   text-align: left;
 }
-.ephys-label-picker > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ephys-label-picker > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding-right: 28px; flex: 0 0 auto; }
 .ephys-label-picker > header strong { color: #d5e3e2; font-size: 10px; }
 .ephys-label-picker > header span { color: #70888d; font: 8px ui-monospace, monospace; }
-.ephys-label-picker-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 8px 0 9px; }
+.ephys-label-picker-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 12px 0; flex: 0 0 auto; }
 .ephys-label-picker-actions button {
   height: 26px;
   border: 1px solid #2d4850;
@@ -2427,14 +2427,14 @@ textarea:focus-visible {
   font-size: 8px;
 }
 .ephys-label-picker-actions button:hover { border-color: #477268; color: var(--mint); }
-.ephys-label-picker-groups { display: flex; flex-direction: column; gap: 9px; }
-.ephys-label-picker fieldset { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin: 0; padding: 0; border: 0; }
+.ephys-label-picker-groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; }
+.ephys-label-picker fieldset { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 3px; margin: 0; padding: 0; border: 0; min-width: 0; }
 .ephys-label-picker legend { width: 100%; margin-bottom: 4px; color: #6f878c; font-size: 8px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
-.ephys-label-picker label { min-width: 0; height: 25px; display: grid; grid-template-columns: 13px 5px minmax(0, 1fr); align-items: center; gap: 5px; padding: 0 5px; border-radius: 3px; color: #aebfc1; cursor: pointer; font-size: 8px; }
+.ephys-label-picker label { min-width: 0; min-height: 30px; display: grid; grid-template-columns: 13px 5px minmax(0, 1fr); align-items: center; gap: 5px; padding: 5px; border-radius: 3px; color: #aebfc1; cursor: pointer; font-size: 10px; }
 .ephys-label-picker label:hover { background: #14262c; color: #deebea; }
 .ephys-label-picker input { width: 12px; height: 12px; margin: 0; accent-color: var(--mint); }
 .ephys-label-picker label i { width: 4px; height: 14px; border-radius: 2px; background: var(--label-color); }
-.ephys-label-picker label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ephys-label-picker label span { overflow-wrap: anywhere; }
 .compact-context-palette > .palette-kind {
   margin: -7px 0 12px;
   color: #657b81;
