@@ -169,7 +169,7 @@ test("raw DAT requires valid dimensions while preserving an explicit raw-count m
 
 test("legacy MAT review defaults seizure events into a selectable pre-review queue", async () => {
   const page = await pageSource();
-  assert.match(page, /setSelectedLegacyEventIndices\(new Set\(legacyMetadata\.events\.flatMap/);
+  assert.match(page, /setSelectedLegacyEventIndices\(new Set\(legacyMetadata\?\.events\.flatMap/);
   assert.match(page, /className="legacy-event-picker"/);
   assert.match(page, /Source events to review/);
   assert.match(page, /selectedLegacyEventIndices\.has\(sourceIndex\)/);

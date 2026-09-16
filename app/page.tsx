@@ -33,7 +33,6 @@ import {
 import {
   DemoSource,
   EDFSource,
-  MatSource,
   RawDatSource,
   buildEnvelopePyramid,
   anatomicalChannelGroup,
@@ -47,7 +46,7 @@ import {
   makeId,
   mergeNearbyFlatlineRegions,
   orderAnatomicalChannelIndices,
-  parseLegacyMatMetadata,
+  inspectMatRecording,
   projectEnvelopeChannels,
   selectEnvelopePyramidLevel,
   sliceEnvelopeWindow,
@@ -61,6 +60,7 @@ import {
 } from "./eeg-core";
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
 import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping";
+import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
 import {
   buildEDFFileWindowOffThread,
   buildRawDatFileWindowOffThread,
@@ -688,6 +688,9 @@ async function prepareSourceImportContext(
 }
 
 function uploadErrorFrom(error: unknown, files: readonly File[]): UploadErrorMessage {
+  if (error instanceof MatDatImportError) {
+    return { title: error.title, message: error.message, files: files.map((file) => file.name) };
+  }
   const detail = error instanceof Error ? error.message : "The selected recording could not be opened.";
   const possibleCode = error && typeof error === "object" && "code" in error
     ? (error as { code?: unknown }).code
@@ -5421,20 +5424,22 @@ export default function Home() {
         return;
       }
 
-      const allFiles = hasRecording
-        ? mergeSelectedFiles([], files)
-        : mergeSelectedFiles(uploadedFileInputs, files);
+      // Keep a pending MAT/DAT available when its companion is added in a later
+      // selection, without borrowing files from another already-open recording.
+      const continuingFiles = pendingFilesForSelection(pendingImportFiles, [incomingPrimary]);
+      const stagedFiles = hasRecording ? continuingFiles : mergeSelectedFiles(uploadedFileInputs, continuingFiles);
+      const allFiles = mergeSelectedFiles(stagedFiles, files);
       const extension = recordingExtension(incomingPrimary);
-      const dat = extension === "dat" ? incomingPrimary : null;
-      const datStem = dat?.name.replace(/\.dat$/i, "").toLowerCase();
-      const mat = dat
-        ? allFiles.find((file) => recordingExtension(file) === "mat" && file.name.replace(/\.mat$/i, "").toLowerCase() === datStem)
-        : extension === "mat" ? incomingPrimary : null;
+      setPendingDat(null);
+      setPendingLegacyMatFile(null);
+      setPendingLegacyMeta(null);
+      setPendingImportFiles(allFiles);
       if (extension === "edf") {
         const source = await EDFSource.create(incomingPrimary, { parseAnnotations: false });
         const importContext = await prepareSourceImportContext(source, incomingPrimary, allFiles);
         const opened = await loadSource(source, incomingPrimary, undefined, importContext);
         if (!opened) return;
+        setPendingImportFiles([]);
         const hasAnnotationChannels = source.header.signals.some((signal) => signal.isAnnotation);
         // loadSource extracted EDF+ TALs during the same exact pass used for
         // hashing and the overview. Reuse that result instead of rereading the
@@ -5467,8 +5472,23 @@ export default function Home() {
         } else if (importContext.companionBundle.files.length > 1) {
           setToast(`${source.meta.format.toUpperCase()} ready · ${importContext.companionBundle.files.filter((file) => file.status === "applied").length} companions applied · ${importContext.companionBundle.events.length} BIDS events imported`);
         }
-      } else if (dat) {
-        let legacyMetadata: LegacyMatMetadata | null = null;
+      } else {
+        const resolved = await resolveMatDatImport(
+          incomingPrimary,
+          allFiles,
+          (mat) => measureLocalFileDecode(mat, "MAT format detection", () => inspectMatRecording(mat)),
+        );
+        // Counts and format only: do not send patient metadata or file paths to logs.
+        console.info("[NeuroTrace import]", resolved.diagnostics);
+        if (resolved.kind === "standalone-mat") {
+          const importContext = await prepareSourceImportContext(resolved.source, resolved.file, allFiles);
+          const opened = await loadSource(resolved.source, resolved.file, undefined, importContext);
+          if (opened) setPendingImportFiles([]);
+          return;
+        }
+        const dat = resolved.file;
+        const mat = resolved.kind === "legacy-dat" ? resolved.mat : null;
+        const legacyMetadata = resolved.kind === "legacy-dat" ? resolved.metadata : null;
         const companionPath = portablePathParts(mat?.webkitRelativePath || mat?.name || "");
         const datPath = portablePathParts(dat.webkitRelativePath || dat.name);
         setLegacyExportHints({
@@ -5477,34 +5497,17 @@ export default function Home() {
           dataDirectory: datPath.directory || companionPath.directory,
           datFile: datPath.fileName.replace(/\.dat$/i, ""),
         });
-        if (mat) {
-          try {
-            legacyMetadata = await measureLocalFileDecode(
-              mat,
-              "Companion MAT metadata",
-              () => parseLegacyMatMetadata(mat),
-            );
-            setSelectedLegacyEventIndices(new Set(legacyMetadata.events.flatMap((event, index) =>
-              isLegacySeizureCandidate(event.label) ? [index] : [])));
-            setDatMapping({
-              sampleRate: legacyMetadata?.sampleRate ?? 0,
-              channelCount: legacyMetadata?.channelCount || legacyMetadata?.channelLabels.length || 0,
-              physicalScale: "",
-            });
-          } catch (error) {
-            setSelectedLegacyEventIndices(new Set());
-            const companionError = uploadErrorFrom(error, [mat]);
-            setUploadError({
-              ...companionError,
-              title: "Companion MAT could not be read",
-              message: `${companionError.message} The DAT can still be opened after you confirm its mapping manually.`,
-            });
-            setToast("Companion MAT needs manual mapping");
-          }
-        }
-        if (!legacyMetadata) {
-          setDatMapping({ sampleRate: 0, channelCount: 0, physicalScale: "" });
-          setSelectedLegacyEventIndices(new Set());
+        setSelectedLegacyEventIndices(new Set(legacyMetadata?.events.flatMap((event, index) =>
+          isLegacySeizureCandidate(event.label) ? [index] : []) ?? []));
+        setDatMapping({
+          sampleRate: legacyMetadata?.sampleRate ?? 0,
+          channelCount: legacyMetadata?.channelCount ?? 0,
+          physicalScale: "",
+        });
+        if (resolved.kind === "legacy-dat" && resolved.metadataIssue) {
+          setUploadError({ title: "Legacy MAT metadata needs correction", message: resolved.metadataIssue, files: [resolved.mat.name] });
+        } else if (resolved.kind === "raw-dat" && resolved.metadataError) {
+          setUploadError({ title: "Companion MAT could not be read", message: resolved.metadataError, files: [] });
         }
         setPendingDat(dat);
         setPendingLegacyMatFile(mat ?? null);
@@ -5517,19 +5520,6 @@ export default function Home() {
           setToast(`Legacy MAT + DAT mapped — ${reviewableEvents} seizure-keyword event${reviewableEvents === 1 ? "" : "s"} ready for review`);
         }
         else if (!mat) setToast("Raw DAT detected — confirm channel mapping");
-      } else if (mat) {
-        const source = await measureLocalFileDecode(
-          mat,
-          "MATLAB signal matrix",
-          () => MatSource.create(mat),
-        );
-        const importContext = await prepareSourceImportContext(source, mat, allFiles);
-        await loadSource(source, mat, undefined, importContext);
-      } else {
-        const bundle = await analyzeBidsCompanions(allFiles);
-        setUploadedFileInputs(allFiles);
-        setCompanionBundle(bundle);
-        throw new Error("The selected directory was catalogued, but it does not contain an EDF, self-contained MAT, or DAT recording that NeuroTrace can display yet.");
       }
     } catch (error) {
       const uploadFailure = uploadErrorFrom(error, files);

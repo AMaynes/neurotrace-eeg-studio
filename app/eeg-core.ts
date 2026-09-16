@@ -1328,12 +1328,15 @@ interface MatParseContext {
   littleEndian: boolean;
   numeric: MatNumericDescriptor[];
   strings: MatStringDescriptor[];
+  structures: Array<{ name: string; fieldNames: string[]; elementCount: number }>;
   warnings: string[];
 }
 
 export interface LegacyMatMetadata {
   sampleRate?: number;
   channelCount?: number;
+  /** Number of Channel struct entries, independent of the number of decoded text rows. */
+  channelEntryCount?: number;
   channelLabels: string[];
   events: Array<{ label: string; timeSec: number }>;
   warnings: string[];
@@ -1361,8 +1364,11 @@ function readMatTag(bytes: Uint8Array, offset: number, littleEndian: boolean): M
     throw new SignalFileError("TRUNCATED_FILE", "MAT v5 element tag is truncated.");
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const smallType = view.getUint16(offset, littleEndian);
-  const smallLength = view.getUint16(offset + 2, littleEndian);
+  // The upper/lower halves of the endian-decoded word carry length/type,
+  // respectively; the physical uint16 order reverses in big-endian MAT files.
+  const typeWord = view.getUint32(offset, littleEndian);
+  const smallType = typeWord & 0xffff;
+  const smallLength = typeWord >>> 16;
   if (smallLength > 0 && smallLength <= 4 && isKnownMiType(smallType)) {
     return {
       type: smallType,
@@ -1373,7 +1379,7 @@ function readMatTag(bytes: Uint8Array, offset: number, littleEndian: boolean): M
     };
   }
 
-  const type = view.getUint32(offset, littleEndian);
+  const type = typeWord;
   const byteLength = view.getUint32(offset + 4, littleEndian);
   if (type === 0 && byteLength === 0 && bytes.subarray(offset).every((value) => value === 0)) return null;
   if (!isKnownMiType(type)) {
@@ -1386,13 +1392,15 @@ function readMatTag(bytes: Uint8Array, offset: number, littleEndian: boolean): M
   }
   const paddedEnd = dataStart + align8(byteLength);
   let nextOffset = Math.min(paddedEnd, bytes.byteLength);
-  // A few writers omit padding after miCOMPRESSED despite the Level-5 spec.
-  if (
-    type === MI_COMPRESSED &&
-    dataEnd < nextOffset &&
-    bytes.subarray(dataEnd, nextOffset).some((value) => value !== 0)
-  ) {
-    nextOffset = dataEnd;
+  if (type === MI_COMPRESSED) {
+    // Only uncompressed elements require 8-byte alignment. Prefer the next
+    // complete tag immediately after zlib bytes; also accept padded writers.
+    const nextType = dataEnd + 8 <= bytes.byteLength ? view.getUint32(dataEnd, littleEndian) : 0;
+    const nextLength = dataEnd + 8 <= bytes.byteLength ? view.getUint32(dataEnd + 4, littleEndian) : 0;
+    const immediateTag = isKnownMiType(nextType) && dataEnd + 8 + nextLength <= bytes.byteLength;
+    if (immediateTag || bytes.subarray(dataEnd, nextOffset).some((value) => value !== 0)) {
+      nextOffset = dataEnd;
+    }
   }
   return {
     type,
@@ -1588,6 +1596,10 @@ async function parseMatMatrix(
   if (depth > 24) {
     throw new SignalFileError("INVALID_HEADER", "MAT v5 structure nesting exceeds the supported depth.");
   }
+  // MATLAB can encode an unset struct field/cell as an miMATRIX tag with a
+  // zero-byte payload, without flags, dimensions, or a name. Do not extend
+  // this exception to malformed nonempty matrices or unnamed top-level data.
+  if (matrixBytes.byteLength === 0 && pathPrefix) return;
   const tags = childTags(matrixBytes, context.littleEndian);
   if (tags.length < 3) throw new SignalFileError("INVALID_HEADER", "MAT v5 matrix is missing flags, dimensions, or name metadata.");
   const flagWords = readIntegerArray(tags[0], context.littleEndian);
@@ -1655,8 +1667,12 @@ async function parseMatMatrix(
           new TextDecoder("utf-8").decode(rawNames.subarray(offset, offset + fieldLength)).replace(/\0[\s\S]*$/, "").trim(),
         );
       }
-      let valueIndex = 0;
       const structureCount = dimensions.reduce((product, dimension) => product * dimension, 1);
+      if (!Number.isSafeInteger(structureCount)) {
+        throw new SignalFileError("INVALID_HEADER", `MAT structure "${name}" dimensions exceed a safe element count.`);
+      }
+      context.structures.push({ name, fieldNames, elementCount: structureCount });
+      let valueIndex = 0;
       for (const tag of tags.slice(5)) {
         if (tag.type !== MI_MATRIX) continue;
         const fieldName = fieldNames[valueIndex % Math.max(1, fieldNames.length)] || `field${valueIndex + 1}`;
@@ -1728,7 +1744,7 @@ async function loadMatV5Context(file: File): Promise<MatParseContext> {
     throw new SignalFileError("INVALID_HEADER", `MAT v5 endian indicator "${endianBytes}" is invalid.`);
   }
   const allBytes = new Uint8Array(await file.arrayBuffer());
-  const context: MatParseContext = { littleEndian, numeric: [], strings: [], warnings: [] };
+  const context: MatParseContext = { littleEndian, numeric: [], strings: [], structures: [], warnings: [] };
   await parseMatElements(allBytes.subarray(128), context);
   return context;
 }
@@ -1753,7 +1769,44 @@ function legacyEventIndex(path: string, field: "label" | "times"): number | unde
  * RawDatSource after the returned rate/count/labels are reviewed.
  */
 export async function parseLegacyMatMetadata(file: File): Promise<LegacyMatMetadata> {
+  return legacyMetadataFromContext(await loadMatV5Context(file));
+}
+
+/**
+ * Recognizes the legacy sessionInfo container before any numeric signal is
+ * selected. Returns null for other MAT schemas (including standalone EEG and
+ * v7.3), but returns incomplete metadata for a recognized legacy container so
+ * callers can report missing fields rather than silently opening header arrays.
+ */
+export async function inspectLegacyMatMetadata(file: File): Promise<LegacyMatMetadata | null> {
+  if (await isMat73File(file)) return null;
   const context = await loadMatV5Context(file);
+  return isLegacyMatContext(context) ? legacyMetadataFromContext(context) : null;
+}
+
+function isLegacyMatContext(context: MatParseContext): boolean {
+  return legacyMatContainerPaths(context).length > 0 && standaloneMatSignalCandidates(context).length === 0;
+}
+
+function legacyMatContainerPaths(context: MatParseContext): string[] {
+  return context.structures.filter(({ name, fieldNames }) =>
+    /(?:^|\.)sessioninfo$/.test(canonicalMatPath(name)) &&
+    fieldNames.some((field) => /^(sfile|channelmat)$/.test(canonicalMatPath(field))),
+  ).map(({ name }) => canonicalMatPath(name));
+}
+
+/** Signal arrays may live inside or beside sessionInfo, but acquisition metadata branches are not EEG. */
+function standaloneMatSignalCandidates(context: MatParseContext): MatNumericDescriptor[] {
+  const metadataPaths = legacyMatContainerPaths(context).flatMap((path) => [`${path}.sfile`, `${path}.channelmat`]);
+  return context.numeric.filter((descriptor) => {
+    if (descriptor.elementCount <= 1) return false;
+    const path = canonicalMatPath(descriptor.name);
+    return !metadataPaths.some((metadataPath) => path === metadataPath || path.startsWith(`${metadataPath}.`));
+  });
+}
+
+/** Extracts only the documented legacy metadata paths; gains/offsets are not channel counts. */
+function legacyMetadataFromContext(context: MatParseContext): LegacyMatMetadata {
   const warnings = [...context.warnings];
   const numericBySuffix = (suffix: string) => context.numeric.find((descriptor) =>
     canonicalMatPath(descriptor.name).endsWith(suffix),
@@ -1785,6 +1838,12 @@ export async function parseLegacyMatMetadata(file: File): Promise<LegacyMatMetad
       : "Legacy MAT metadata does not contain sessionInfo.sFile.header.num_channels.");
   }
 
+  const channelEntryCount = context.structures.find(({ name }) =>
+    canonicalMatPath(name).endsWith("sessioninfo.channelmat.channel"),
+  )?.elementCount;
+  if (channelCount !== undefined && channelEntryCount !== undefined && channelEntryCount !== channelCount) {
+    warnings.push(`Legacy MAT declares ${channelCount} channels but contains ${channelEntryCount} Channel structure entries.`);
+  }
   const channelLabels = context.strings
     .filter((descriptor) =>
       canonicalMatPath(descriptor.name).endsWith("sessioninfo.channelmat.channel.name"),
@@ -1832,6 +1891,7 @@ export async function parseLegacyMatMetadata(file: File): Promise<LegacyMatMetad
   return {
     sampleRate,
     channelCount,
+    channelEntryCount,
     channelLabels,
     events,
     warnings: [...new Set(warnings)],
@@ -2098,9 +2158,20 @@ export class MatSource implements SignalSource {
 
   static async create(file: File, options: MatSourceOptions = {}): Promise<MatSource | Mat73Source> {
     if (await isMat73File(file)) return Mat73Source.create(file, options);
+    return MatSource.fromParsedContext(file, await loadMatV5Context(file), options);
+  }
+
+  /** Identifies legacy metadata before choosing a waveform matrix, decoding Level-5 data only once. */
+  static async inspectRecording(file: File, options: MatSourceOptions = {}): Promise<MatRecordingInspection> {
+    if (await isMat73File(file)) return { kind: "standalone", source: await Mat73Source.create(file, options) };
     const context = await loadMatV5Context(file);
-    const signalCandidates = context.numeric
-      .filter((descriptor) => descriptor.elementCount > 1)
+    return isLegacyMatContext(context)
+      ? { kind: "legacy", metadata: legacyMetadataFromContext(context) }
+      : { kind: "standalone", source: MatSource.fromParsedContext(file, context, options) };
+  }
+
+  private static fromParsedContext(file: File, context: MatParseContext, options: MatSourceOptions): MatSource {
+    const signalCandidates = standaloneMatSignalCandidates(context)
       .sort((a, b) => b.elementCount - a.elementCount || a.name.localeCompare(b.name));
     if (!signalCandidates.length) {
       throw new SignalFileError(
@@ -2157,6 +2228,15 @@ export class MatSource implements SignalSource {
       request.channelIndices.map(() => firstSample / sampleRate),
     );
   }
+}
+
+export type MatRecordingInspection =
+  | { kind: "legacy"; metadata: LegacyMatMetadata }
+  | { kind: "standalone"; source: MatSource | Mat73Source };
+
+/** Uses one MAT decode for schema detection and, only for standalone files, waveform creation. */
+export async function inspectMatRecording(file: File, options: MatSourceOptions = {}): Promise<MatRecordingInspection> {
+  return MatSource.inspectRecording(file, options);
 }
 
 // ---------------------------------------------------------------------------

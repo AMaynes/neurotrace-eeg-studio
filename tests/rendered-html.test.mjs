@@ -61,7 +61,7 @@ test("ships product source without starter preview artifacts", async () => {
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
   assert.match(page, /EDFSource/);
-  assert.match(page, /MatSource/);
+  assert.match(page, /resolveMatDatImport/);
   assert.match(page, /createStoredZip/);
   assert.match(page, /aria-label="Delete annotation"/);
   assert.match(page, /aria-label="Close Settings"/);
