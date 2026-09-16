@@ -18,6 +18,7 @@
  */
 
 import { Mat73WorkerClient } from "./mat73-worker-client.ts";
+import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
 
 export type RecordingFormat =
   | "demo"
@@ -2227,6 +2228,77 @@ export class MatSource implements SignalSource {
       undefined,
       request.channelIndices.map(() => firstSample / sampleRate),
     );
+  }
+
+  /**
+   * Builds exact overview extrema directly from decoded MAT samples without
+   * copying the full requested window. Bounded batches yield to navigation and
+   * cancellation; only screen-resolution accumulators are allocated.
+   */
+  async getEnvelopeWindow(
+    startSec: number,
+    durationSec: number,
+    bucketCount: number,
+    channelIndices?: readonly number[],
+    options: SignalReadOptions = {},
+  ): Promise<EnvelopeWindowData> {
+    validateEnvelopeBucketCount(bucketCount);
+    throwIfSignalReadAborted(options.signal);
+    const normalizedRequest = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
+    const sampleRate = this.meta.sampleRates[0];
+    const grid = exactEnvelopeFrameGrid(normalizedRequest.startSec, normalizedRequest.durationSec, bucketCount, sampleRate);
+    const request = grid ? {
+      ...normalizedRequest,
+      startSec: grid.startFrame / sampleRate,
+      endSec: grid.endFrame / sampleRate,
+      durationSec: (grid.endFrame - grid.startFrame) / sampleRate,
+    } : normalizedRequest;
+    const firstSample = grid?.startFrame ?? Math.floor(request.startSec * sampleRate);
+    const endSample = Math.min(this.data[0]?.length ?? 0, grid?.endFrame ?? Math.ceil(request.endSec * sampleRate));
+    const accumulators = request.channelIndices.map(() => makeEnvelopeAccumulator(bucketCount));
+    if (request.durationSec === 0 || firstSample >= endSample || accumulators.length === 0) {
+      return makeEnvelopeWindowResult(this.meta, request, accumulators, bucketCount);
+    }
+
+    const samplesPerBatch = 65_536;
+    const maximumWorkSliceMs = 8;
+    let remainingBatchSamples = samplesPerBatch;
+    let workSliceStarted = performance.now();
+    for (let outputIndex = 0; outputIndex < request.channelIndices.length; outputIndex += 1) {
+      const samples = this.data[request.channelIndices[outputIndex]];
+      const accumulator = accumulators[outputIndex];
+      for (let chunkStart = firstSample; chunkStart < endSample;) {
+        const chunkEnd = Math.min(endSample, chunkStart + remainingBatchSamples);
+        for (let sample = chunkStart; sample < chunkEnd; sample += 1) {
+          const bucket = grid ? Math.floor((sample - grid.startFrame) / grid.framesPerBucket) : Math.min(
+            bucketCount - 1,
+            Math.floor(((sample / sampleRate - request.startSec) / request.durationSec) * bucketCount),
+          );
+          addEnvelopeSample(accumulator, bucket, samples[sample]);
+        }
+        remainingBatchSamples -= chunkEnd - chunkStart;
+        chunkStart = chunkEnd;
+        if (remainingBatchSamples === 0) {
+          throwIfSignalReadAborted(options.signal);
+          // Yield by elapsed work, not every batch: browsers clamp nested timers,
+          // so unconditional yields can add seconds to a large multichannel scan.
+          if (performance.now() - workSliceStarted >= maximumWorkSliceMs) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            throwIfSignalReadAborted(options.signal);
+            workSliceStarted = performance.now();
+          }
+          remainingBatchSamples = samplesPerBatch;
+        }
+      }
+    }
+    const result = makeEnvelopeWindowResult(this.meta, request, accumulators, bucketCount);
+    if (grid) {
+      // Equivalent frame-aligned windows must expose identical bucket metadata,
+      // even when subtracting their positive time origins would lose precision.
+      result.bucketDurationSec = grid.framesPerBucket / sampleRate;
+      result.sampleRates = request.channelIndices.map(() => sampleRate / grid.framesPerBucket);
+    }
+    return result;
   }
 }
 

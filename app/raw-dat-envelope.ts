@@ -6,6 +6,7 @@
 
 import { buildEnvelopePyramid } from "./eeg-core.ts";
 import type { EnvelopeWindowData } from "./eeg-core";
+import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
 import { IncrementalSha256 } from "./source-integrity.ts";
 
 export const DEFAULT_RAW_DAT_ENVELOPE_CHUNK_BYTES = 4 * 1024 * 1024;
@@ -292,8 +293,9 @@ export async function buildRawDatEnvelopeWindow(
     Math.max(startSec, request.startSec + request.durationSec),
   );
   const durationSec = Math.max(0, endSec - startSec);
-  const firstFrame = Math.floor(startSec * request.sampleRate);
-  const endFrame = Math.min(totalSourceFrames, Math.ceil(endSec * request.sampleRate));
+  const frameGrid = exactEnvelopeFrameGrid(startSec, durationSec, request.bucketCount, request.sampleRate);
+  const firstFrame = frameGrid?.startFrame ?? Math.floor(startSec * request.sampleRate);
+  const endFrame = Math.min(totalSourceFrames, frameGrid?.endFrame ?? Math.ceil(endSec * request.sampleRate));
   const frameCount = Math.max(0, endFrame - firstFrame);
   const accumulators = indices.map((index) => makeAccumulator(index, request));
   const wantsHash = request.integrity?.sha256 === true;
@@ -376,7 +378,9 @@ export async function buildRawDatEnvelopeWindow(
         const samples = new Int16Array(buffer);
         for (let frame = chunkStartFrame; frame < chunkEndFrame; frame += 1) {
           if (((frame - chunkStartFrame) & 0x3fff) === 0) throwIfAborted(hooks.signal);
-          let bucket = Math.floor((frame - requestStartFrame) * bucketScale);
+          let bucket = frameGrid
+            ? Math.floor((frame - frameGrid.startFrame) / frameGrid.framesPerBucket)
+            : Math.floor((frame - requestStartFrame) * bucketScale);
           if (bucket < 0) bucket = 0;
           else if (bucket >= request.bucketCount) bucket = request.bucketCount - 1;
           const frameSampleOffset = (frame - chunkStartFrame) * request.channelCount;
@@ -393,7 +397,9 @@ export async function buildRawDatEnvelopeWindow(
         const view = new DataView(buffer);
         for (let frame = chunkStartFrame; frame < chunkEndFrame; frame += 1) {
           if (((frame - chunkStartFrame) & 0x3fff) === 0) throwIfAborted(hooks.signal);
-          let bucket = Math.floor((frame - requestStartFrame) * bucketScale);
+          let bucket = frameGrid
+            ? Math.floor((frame - frameGrid.startFrame) / frameGrid.framesPerBucket)
+            : Math.floor((frame - requestStartFrame) * bucketScale);
           if (bucket < 0) bucket = 0;
           else if (bucket >= request.bucketCount) bucket = request.bucketCount - 1;
           const frameByteOffset = (frame - chunkStartFrame) * bytesPerFrame;
@@ -426,18 +432,26 @@ export async function buildRawDatEnvelopeWindow(
     integrity = { hash: sha256.hexDigest() };
     metrics.integrityMs += nowMs() - integrityStartedAt;
   }
-  const effectiveRate = durationSec > 0 ? request.bucketCount / durationSec : 0;
+  const outputStartSec = frameGrid ? frameGrid.startFrame / request.sampleRate : startSec;
+  const outputDurationSec = frameGrid
+    ? (frameGrid.endFrame - frameGrid.startFrame) / request.sampleRate
+    : durationSec;
+  const effectiveRate = frameGrid
+    ? request.sampleRate / frameGrid.framesPerBucket
+    : durationSec > 0 ? request.bucketCount / durationSec : 0;
   const window: EnvelopeWindowData = {
     data: accumulators.map((entry) => entry.data),
     minima: accumulators.map((entry) => entry.minima),
     maxima: accumulators.map((entry) => entry.maxima),
     gaps: accumulators.map((entry) => entry.gaps),
     variation: accumulators.map((entry) => entry.variation),
-    bucketDurationSec: durationSec > 0 ? durationSec / request.bucketCount : 0,
+    bucketDurationSec: frameGrid
+      ? frameGrid.framesPerBucket / request.sampleRate
+      : durationSec > 0 ? durationSec / request.bucketCount : 0,
     sampleRates: accumulators.map(() => effectiveRate),
-    channelStartSecs: accumulators.map(() => startSec),
-    startSec,
-    durationSec,
+    channelStartSecs: accumulators.map(() => outputStartSec),
+    startSec: outputStartSec,
+    durationSec: outputDurationSec,
     channelIndices: indices,
     channelLabels: indices.map((index) => request.channelLabels[index]),
     channelUnits: indices.map((index) => request.channelUnits[index]),

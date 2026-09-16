@@ -91,6 +91,7 @@ import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
 import { buildChannelRowLayout, channelRowFromFraction, orderElectrodeDisplayRows } from "./channel-layout";
+import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -1022,6 +1023,9 @@ const RAW_WINDOW_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 // Large desktop recordings benefit far more from a reusable multiresolution
 // index than from leaving nearly the entire browser memory allowance idle.
 const ENVELOPE_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
+// Leave room for a close-up beside a wide index instead of evicting that index
+// on the first zoom-in and rereading the entire recording when zooming out.
+const ENVELOPE_ENTRY_BUDGET_BYTES = ENVELOPE_CACHE_BUDGET_BYTES / 2;
 const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
 const INITIAL_PREVIEW_READ_BUDGET_BYTES = 16 * 1024 * 1024;
 const SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES = 32 * 1024 * 1024;
@@ -1044,6 +1048,10 @@ const MAX_REUSABLE_ENVELOPE_BUCKETS = 524_288;
 // pyramid for an ordinary 18-channel recording.
 const FULL_SESSION_ENVELOPE_REFINEMENT = 32;
 const LOCAL_ENVELOPE_REFINEMENT = 4;
+// Incremental DAT/MAT windows retain one fixed grid. Two bins per display
+// column support nearby zooms without rebuilding a large pyramid after a pan
+// or shifting coarse bucket centers when the cached span changes.
+const INCREMENTAL_ENVELOPE_REFINEMENT = 2;
 const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "m", "hrs"];
 const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, m: 60, hrs: 3_600 };
 const WINDOW_AMOUNT_STEP = .1;
@@ -1085,16 +1093,17 @@ function reusableEnvelopeBucketCount(
   channelCount: number,
   requiredBucketCount: number,
   fullSession: boolean,
+  incremental = false,
 ) {
   const maxBucketsByBudget = Math.max(
     1,
     // Data, min, max, gap, and variation pyramids consume less than twice the
     // finest level: four Float32 values plus one gap byte per bucket.
-    Math.floor(ENVELOPE_CACHE_BUDGET_BYTES / Math.max(1, channelCount * 17 * 2)),
+    Math.floor(ENVELOPE_ENTRY_BUDGET_BYTES / Math.max(1, channelCount * 17 * 2)),
   );
-  const refinement = fullSession
-    ? FULL_SESSION_ENVELOPE_REFINEMENT
-    : LOCAL_ENVELOPE_REFINEMENT;
+  const refinement = incremental
+    ? INCREMENTAL_ENVELOPE_REFINEMENT
+    : fullSession ? FULL_SESSION_ENVELOPE_REFINEMENT : LOCAL_ENVELOPE_REFINEMENT;
   return clamp(
     Math.ceil(requiredBucketCount * refinement),
     1,
@@ -2990,6 +2999,7 @@ export default function Home() {
           : SOURCE_READ_AHEAD_BUDGET_BYTES;
         const maximumEnvelopeReadDuration = envelopeReadBudget / Math.max(1, storageByteRate);
         if (useEnvelopePath
+          && (source instanceof EDFSource || source instanceof RawDatSource)
           && sourceVerificationRef.current
           && requiredDuration > maximumEnvelopeReadDuration * 1.01) {
           // The background verifier is already reading the complete source and
@@ -3039,10 +3049,11 @@ export default function Home() {
         if (useEnvelopePath && source.getEnvelopeWindow) {
           const overviewColumnCount = waveformOverviewColumnBudget(timebase, waveformWidth);
           const requiredBucketDuration = timebase / overviewColumnCount;
+          const visibleEnd = Math.min(meta.durationSec, signalViewStart + timebase);
           const reusableEnvelopeEntries = envelopeWindowCacheRef.current.filter((entry) =>
             entry.source === source
             && entry.startSec <= signalViewStart + 1e-9
-            && entry.endSec >= signalViewStart + timebase - 1e-9
+            && entry.endSec >= visibleEnd - 1e-9
             && entry.levels[0]?.bucketDurationSec <= requiredBucketDuration * 1.05);
           let envelopeWindow = reusableEnvelopeEntries.find((entry) => entry.channelKey === channelKey)
             ?? reusableEnvelopeEntries.find((entry) => {
@@ -3061,10 +3072,13 @@ export default function Home() {
             );
             const coversFullSession = cacheStart <= 1e-9
               && cacheEnd >= meta.durationSec - 1e-9;
+            const uniformRate = source instanceof RawDatSource || meta.format === "mat-v5"
+              ? meta.sampleRate : null;
             const requestedBucketCount = reusableEnvelopeBucketCount(
               indices.length,
               minimumCacheBuckets,
               coversFullSession,
+              Boolean(uniformRate),
             );
             const maximumSourceSampleRate = indices.reduce((maximum, index) => {
               const sampleRate = meta.sampleRates[index] ?? primarySampleRate(meta);
@@ -3077,115 +3091,179 @@ export default function Home() {
               Math.ceil(cacheDuration * maximumSourceSampleRate),
             );
             const bucketCount = Math.min(requestedBucketCount, maximumUsefulBucketCount);
-            const expectedBytes = source instanceof EDFSource
-              ? expectedEDFRecordBytes(source, cacheStart, cacheDuration)
-              : source instanceof RawDatSource
-                ? Math.min(meta.byteLength ?? 0, Math.ceil(storageByteRate * cacheDuration))
-                : 0;
-            const readOperation = expectedBytes > 0 ? performanceDiagnostics.beginSourceRead({
-              label: `${meta.format.toUpperCase()} overview`,
-              totalBytes: expectedBytes || null,
-              phase: "Reading source records",
-            }) : null;
-            const decodeOperation = performanceDiagnostics.beginDecode({
-              label: "Waveform overview",
-              totalBytes: expectedBytes || null,
-              phase: "Reducing samples to exact extrema",
-            });
+            const readSourceEnvelope = source.getEnvelopeWindow.bind(source);
+            const readOverview = async (cacheStart: number, cacheDuration: number, bucketCount: number, buildPyramid = true) => {
+              const expectedBytes = source instanceof EDFSource
+                ? expectedEDFRecordBytes(source, cacheStart, cacheDuration)
+                : source instanceof RawDatSource
+                  ? Math.min(meta.byteLength ?? 0, Math.ceil(storageByteRate * cacheDuration))
+                  : 0;
+              const readOperation = expectedBytes > 0 ? performanceDiagnostics.beginSourceRead({
+                label: `${meta.format.toUpperCase()} overview`,
+                totalBytes: expectedBytes || null,
+                phase: "Reading source records",
+              }) : null;
+              const decodeOperation = performanceDiagnostics.beginDecode({
+                label: "Waveform overview",
+                totalBytes: expectedBytes || null,
+                phase: "Reducing samples to exact extrema",
+              });
+              let envelopeData: EnvelopeWindowData;
+              let envelopePyramid: EnvelopeWindowData[] | undefined;
+              let lastReportedReadBytes = 0;
+              try {
+                if (source instanceof EDFSource) {
+                  const result = await buildEDFEnvelopeWindowOffThread({
+                    blob: source.sourceBlob,
+                    header: source.header,
+                    startSec: cacheStart,
+                    durationSec: cacheDuration,
+                    bucketCount,
+                    channelIndices: indices,
+                    pyramidMinimumBucketCount: buildPyramid ? 64 : undefined,
+                  }, {
+                    signal: abortController.signal,
+                    fallbackToMainThread: false,
+                    onProgress: (progress: EDFEnvelopeProgress) => {
+                      const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
+                      lastReportedReadBytes = progress.bytesRead;
+                      readOperation?.update({
+                        completedBytes: progress.bytesRead,
+                        totalBytes: progress.totalBytes,
+                        phase: progress.phase === "reading" ? "Reading source records" : "Source read complete",
+                        transientAllocatedBytes: transientBytes,
+                      });
+                      decodeOperation.update({
+                        completedBytes: progress.bytesRead,
+                        totalBytes: progress.totalBytes,
+                        phase: progress.phase === "complete"
+                          ? "Overview ready"
+                          : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
+                      });
+                    },
+                  });
+                  envelopeData = result.window;
+                  envelopePyramid = result.pyramidLevels;
+                  readOperation?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
+                  decodeOperation.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
+                } else if (source instanceof RawDatSource) {
+                  const result = await buildRawDatEnvelopeWindowOffThread({
+                    ...source.envelopeWorkerSource,
+                    startSec: cacheStart,
+                    durationSec: cacheDuration,
+                    bucketCount,
+                    channelIndices: indices,
+                    pyramidMinimumBucketCount: buildPyramid ? 64 : undefined,
+                  }, {
+                    signal: abortController.signal,
+                    fallbackToMainThread: false,
+                    onProgress: (progress) => {
+                      const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
+                      lastReportedReadBytes = progress.bytesRead;
+                      readOperation?.update({
+                        completedBytes: progress.bytesRead,
+                        totalBytes: progress.totalBytes,
+                        phase: progress.phase === "reading" ? "Reading DAT frames" : "Source read complete",
+                        transientAllocatedBytes: transientBytes,
+                      });
+                      decodeOperation.update({
+                        completedBytes: progress.bytesRead,
+                        totalBytes: progress.totalBytes,
+                        phase: progress.phase === "complete"
+                          ? "Overview ready"
+                          : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
+                      });
+                    },
+                  });
+                  envelopeData = result.window;
+                  envelopePyramid = result.pyramidLevels;
+                  readOperation?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
+                  decodeOperation.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
+                } else {
+                  envelopeData = await readSourceEnvelope(
+                    cacheStart,
+                    cacheDuration,
+                    bucketCount,
+                    indices,
+                    { signal: abortController.signal },
+                  );
+                  readOperation?.finish({
+                    completedBytes: expectedBytes,
+                    transientAllocatedBytes: expectedBytes,
+                  });
+                  decodeOperation.finish({ completedBytes: expectedBytes });
+                }
+              } catch (error) {
+                const finish = isAbortFailure(error) ? "cancel" : "fail";
+                readOperation?.[finish]();
+                decodeOperation[finish]();
+                throw error;
+              }
+
+              return { window: envelopeData, levels: envelopePyramid };
+            };
+
+            // Uniform-sample sources can extend an existing fixed-grid index by
+            // reading only newly exposed time. Do not re-bin the retained peaks.
+            let extendedEntry: EnvelopeWindowCache | undefined;
             let envelopeData: EnvelopeWindowData;
             let envelopePyramid: EnvelopeWindowData[] | undefined;
-            let lastReportedReadBytes = 0;
-            try {
-              if (source instanceof EDFSource) {
-                const result = await buildEDFEnvelopeWindowOffThread({
-                  blob: source.sourceBlob,
-                  header: source.header,
-                  startSec: cacheStart,
-                  durationSec: cacheDuration,
-                  bucketCount,
-                  channelIndices: indices,
-                  pyramidMinimumBucketCount: 64,
-                }, {
-                  signal: abortController.signal,
-                  fallbackToMainThread: false,
-                  onProgress: (progress: EDFEnvelopeProgress) => {
-                    const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
-                    lastReportedReadBytes = progress.bytesRead;
-                    readOperation?.update({
-                      completedBytes: progress.bytesRead,
-                      totalBytes: progress.totalBytes,
-                      phase: progress.phase === "reading" ? "Reading source records" : "Source read complete",
-                      transientAllocatedBytes: transientBytes,
-                    });
-                    decodeOperation.update({
-                      completedBytes: progress.bytesRead,
-                      totalBytes: progress.totalBytes,
-                      phase: progress.phase === "complete"
-                        ? "Overview ready"
-                        : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
-                    });
-                  },
-                });
-                envelopeData = result.window;
-                envelopePyramid = result.pyramidLevels;
-                readOperation?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
-                decodeOperation.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
-              } else if (source instanceof RawDatSource) {
-                const result = await buildRawDatEnvelopeWindowOffThread({
-                  ...source.envelopeWorkerSource,
-                  startSec: cacheStart,
-                  durationSec: cacheDuration,
-                  bucketCount,
-                  channelIndices: indices,
-                  pyramidMinimumBucketCount: 64,
-                }, {
-                  signal: abortController.signal,
-                  fallbackToMainThread: false,
-                  onProgress: (progress) => {
-                    const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
-                    lastReportedReadBytes = progress.bytesRead;
-                    readOperation?.update({
-                      completedBytes: progress.bytesRead,
-                      totalBytes: progress.totalBytes,
-                      phase: progress.phase === "reading" ? "Reading DAT frames" : "Source read complete",
-                      transientAllocatedBytes: transientBytes,
-                    });
-                    decodeOperation.update({
-                      completedBytes: progress.bytesRead,
-                      totalBytes: progress.totalBytes,
-                      phase: progress.phase === "complete"
-                        ? "Overview ready"
-                        : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
-                    });
-                  },
-                });
-                envelopeData = result.window;
-                envelopePyramid = result.pyramidLevels;
-                readOperation?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
-                decodeOperation.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
-              } else {
-                envelopeData = await source.getEnvelopeWindow(
-                  cacheStart,
-                  cacheDuration,
-                  bucketCount,
-                  indices,
-                  { signal: abortController.signal },
-                );
-                readOperation?.finish({
-                  completedBytes: expectedBytes,
-                  transientAllocatedBytes: expectedBytes,
-                });
-                decodeOperation.finish({ completedBytes: expectedBytes });
+            const extensions = uniformRate ? envelopeWindowCacheRef.current.flatMap((entry) => {
+              if (entry.source !== source || !entry.levels[0]) return [];
+              const available = new Set(entry.levels[0].channelIndices);
+              if (!indices.every((index) => available.has(index))) return [];
+              const base = projectEnvelopeChannels(entry.levels[0], indices);
+              const plan = planEnvelopeExtension({
+                base,
+                startSec: signalViewStart,
+                endSec: visibleEnd,
+                requiredBucketDurationSec: requiredBucketDuration,
+                sampleRate: uniformRate,
+                recordingDurationSec: meta.durationSec,
+                maxBaseBytes: ENVELOPE_ENTRY_BUDGET_BYTES / 2,
+              });
+              return plan ? [{ entry, plan }] : [];
+            }).sort((left, right) =>
+              left.plan.missing.reduce((sum, request) => sum + request.durationSec, 0)
+              - right.plan.missing.reduce((sum, request) => sum + request.durationSec, 0)) : [];
+            const extension = extensions[0];
+            if (extension) {
+              const pieces = [extension.plan.base];
+              for (const request of extension.plan.missing) {
+                if (abortController.signal.aborted) throw abortController.signal.reason
+                  ?? new DOMException("Overview loading canceled", "AbortError");
+                const result = await readOverview(request.startSec, request.durationSec, request.bucketCount, false);
+                pieces.push(result.window);
               }
-            } catch (error) {
-              const finish = isAbortFailure(error) ? "cancel" : "fail";
-              readOperation?.[finish]();
-              decodeOperation[finish]();
-              throw error;
+              envelopeData = mergeAdjacentEnvelopeWindows(pieces);
+              envelopePyramid = [envelopeData];
+              extendedEntry = extension.entry;
+            } else {
+              const maxBucketCount = Math.max(1, Math.floor(ENVELOPE_ENTRY_BUDGET_BYTES / Math.max(1, indices.length * 17 * 2)));
+              const aligned = uniformRate ? planAlignedEnvelopeRequest({
+                startSec: cacheStart,
+                endSec: cacheEnd,
+                bucketCount,
+                sampleRate: uniformRate,
+                recordingDurationSec: meta.durationSec,
+                maxBucketCount,
+                maximumBucketDurationSec: requiredBucketDuration,
+              }) : null;
+              const result = await readOverview(
+                aligned?.startSec ?? cacheStart,
+                aligned?.durationSec ?? cacheDuration,
+                aligned?.bucketCount ?? bucketCount,
+                !uniformRate,
+              );
+              envelopeData = result.window;
+              envelopePyramid = uniformRate ? [envelopeData] : result.levels;
             }
             if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
             envelopeWindow = makeEnvelopeCacheEntry(source, channelKey, envelopeData, envelopePyramid);
             if (envelopeWindow.byteLength <= ENVELOPE_CACHE_BUDGET_BYTES) {
+              if (extendedEntry?.channelKey === channelKey) {
+                envelopeWindowCacheRef.current = envelopeWindowCacheRef.current.filter((entry) => entry !== extendedEntry);
+              }
               envelopeWindowCacheRef.current.push(envelopeWindow);
               let cachedBytes = envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
               while (cachedBytes > ENVELOPE_CACHE_BUDGET_BYTES && envelopeWindowCacheRef.current.length) {

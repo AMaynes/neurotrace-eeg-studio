@@ -222,7 +222,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /buildRawDatEnvelopeWindowOffThread/);
   assert.match(refresh, /buildEDFFileWindowOffThread/);
   assert.match(refresh, /buildRawDatFileWindowOffThread/);
-  assert.match(refresh, /pyramidMinimumBucketCount:\s*64/);
+  assert.match(refresh, /pyramidMinimumBucketCount:\s*buildPyramid\s*\?\s*64\s*:\s*undefined/);
   assert.match(refresh, /fallbackToMainThread:\s*false/);
   assert.match(refresh, /sourceVerificationRef\.current[\s\S]*?requiredDuration\s*>\s*maximumEnvelopeReadDuration/);
   assert.match(page, /FULL_SESSION_ENVELOPE_REFINEMENT\s*=\s*32/);
@@ -240,6 +240,17 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /Math\.min\(requestedBucketCount,\s*maximumUsefulBucketCount\)/);
   assert.match(refresh, /processDisplaySignalsOffThread/);
   assert.match(refresh, /requestId\s*!==\s*displayRequestIdRef\.current/);
+  assert.match(refresh, /const useEnvelopePath\s*=\s*!filters\.enabled\s*&&\s*montage\s*===\s*"referential"/,
+    "wide-window reuse must not bypass exact filter or montage processing");
+  assert.match(refresh, /const uniformRate\s*=\s*source instanceof RawDatSource\s*\|\|\s*meta\.format\s*===\s*"mat-v5"/);
+  assert.match(refresh, /entry\.source\s*!==\s*source[\s\S]*?indices\.every\(\(index\)\s*=>\s*available\.has\(index\)\)/);
+  assert.match(refresh, /planEnvelopeExtension\([\s\S]*?maxBaseBytes:\s*ENVELOPE_ENTRY_BUDGET_BYTES\s*\/\s*2/);
+  assert.match(refresh, /mergeAdjacentEnvelopeWindows\(pieces\);\s*envelopePyramid\s*=\s*\[envelopeData\]/,
+    "incremental pans must not rebuild or shift a coarse pyramid grid");
+  assert.match(refresh, /envelopePyramid\s*=\s*uniformRate\s*\?\s*\[envelopeData\]\s*:\s*result\.levels/);
+  assert.match(page, /INCREMENTAL_ENVELOPE_REFINEMENT\s*=\s*2/,
+    "single-grid drawing stays bounded to a small multiple of screen columns");
+  assert.match(page, /ENVELOPE_ENTRY_BUDGET_BYTES\s*=\s*ENVELOPE_CACHE_BUDGET_BYTES\s*\/\s*2/);
   assert.match(refresh, /rawOwnerIsCached\s*=\s*rawWindowCacheRef\.current\.includes\(rawWindow\)/);
   assert.match(refresh, /if\s*\(rawOwnerIsCached[\s\S]*?!duplicatesRaw/);
   assert.match(refresh, /sourceStartSampleIndices[\s\S]*?processDisplaySignalsOffThread[\s\S]*?outputStartSampleIndices/);
