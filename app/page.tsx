@@ -35,7 +35,6 @@ import {
   EDFSource,
   RawDatSource,
   buildEnvelopePyramid,
-  anatomicalChannelGroup,
   buildMontage,
   displayDecimationFactor,
   detectEnvelopeSynchronizedFlatlines,
@@ -91,6 +90,7 @@ import { sha256Blob } from "./source-integrity";
 import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
+import { buildChannelRowLayout, channelRowFromFraction, orderElectrodeDisplayRows } from "./channel-layout";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -483,7 +483,6 @@ const DEFAULT_PROJECT_SAVE_SELECTION: ProjectSaveSelection = {
   recording: false,
 };
 const CHANNEL_RAIL_HEADER_HEIGHT = 28;
-const ANATOMICAL_GROUP_GAP_ROWS = 4;
 const DEFAULT_SPECTROGRAM_HEIGHT = 138;
 const MIN_SPECTROGRAM_HEIGHT = 96;
 const MAX_SPECTROGRAM_HEIGHT = 4096;
@@ -1383,37 +1382,6 @@ function applyMatlabExportIdentity(
     data_dir_hint: identity.dataDirectory || null,
     dat_file_base: identity.datFile || null,
   };
-}
-
-type ChannelRowLayout = {
-  rowStartUnits: number[];
-  totalUnits: number;
-  groupStarts: Set<number>;
-};
-
-function buildChannelRowLayout(labels: readonly string[], anatomicalSpacing: boolean): ChannelRowLayout {
-  const rowStartUnits: number[] = [];
-  const groupStarts = new Set<number>();
-  let units = 0;
-  let previousGroup: string | null = null;
-  labels.forEach((label, index) => {
-    const group = anatomicalSpacing ? anatomicalChannelGroup(label) : null;
-    if (index > 0 && group && previousGroup && group !== previousGroup) {
-      units += ANATOMICAL_GROUP_GAP_ROWS;
-      groupStarts.add(index);
-    }
-    rowStartUnits.push(units);
-    units += 1;
-    previousGroup = group;
-  });
-  return { rowStartUnits, totalUnits: Math.max(1, units), groupStarts };
-}
-
-function channelRowFromFraction(layout: ChannelRowLayout, fraction: number) {
-  if (!Number.isFinite(fraction) || fraction < 0 || fraction >= 1) return null;
-  const unit = fraction * layout.totalUnits;
-  const row = layout.rowStartUnits.findIndex((start) => unit >= start && unit < start + 1);
-  return row >= 0 ? row : null;
 }
 
 function boundedCanvasScale(width: number, height: number, requestedScale: number) {
@@ -2958,7 +2926,9 @@ export default function Home() {
     const requestId = ++displayRequestIdRef.current;
     const source = sourceRef.current;
     const selectedIndices = [...selectedChannels].sort((a, b) => a - b);
-    const indices = matlabAnatomicalLayout
+    // Preserve legacy montage inputs/pairs, but never hide selected auxiliary
+    // channels in recorded-reference mode. Sorting happens on complete display rows.
+    const indices = matlabAnatomicalLayout && montage !== "referential"
       ? orderAnatomicalChannelIndices(meta.channelLabels, selectedIndices)
       : selectedIndices;
     const channelKey = indices.join(",");
@@ -3273,7 +3243,7 @@ export default function Home() {
             viewStart: signalViewStart,
             flatlineRegions,
           };
-          setDisplay(nextDisplay);
+          setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(nextDisplay) : nextDisplay);
           displayPreviewReadyRef.current = true;
           setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
           setLoadingSignal(false);
@@ -3629,7 +3599,7 @@ export default function Home() {
           viewStart: signalViewStart,
           flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > signalViewStart && region.startSec < signalViewStart + timebase),
         };
-        setDisplay(nextDisplay);
+        setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(nextDisplay) : nextDisplay);
         displayPreviewReadyRef.current = true;
         setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
         setLoadingSignal(false);
@@ -3887,8 +3857,11 @@ export default function Home() {
         const center = rowTop + rowHeight * 0.5;
         if (rowTop + rowHeight < plotTop || rowTop > height) continue;
         if (channelRowLayout.groupStarts.has(channel)) {
-          context.strokeStyle = "rgba(87, 223, 183, .22)";
-          context.beginPath(); context.moveTo(0, rowTop - rowHeight * 2); context.lineTo(width, rowTop - rowHeight * 2); context.stroke();
+          context.save();
+          context.strokeStyle = "rgba(87, 223, 183, .5)";
+          context.lineWidth = 2;
+          context.beginPath(); context.moveTo(0, rowTop + 1); context.lineTo(width, rowTop + 1); context.stroke();
+          context.restore();
         }
         if (channelSelectionActive && channel === focusedChannel) {
           context.fillStyle = "rgba(87, 223, 183, .065)";
@@ -4186,7 +4159,7 @@ export default function Home() {
 
   const channelRailRowStyle = useCallback((channel: number): React.CSSProperties | null => {
     if (!waveformVerticalViewport || expandedChannels) {
-      return { gridRow: `${channelRowLayout.rowStartUnits[channel] + 1} / span 1` };
+      return { gridRow: `${channelRowLayout.rowGridLines[channel]} / span 1` };
     }
     const contentTop = channelRowLayout.rowStartUnits[channel] / channelRowLayout.totalUnits;
     const contentBottom = (channelRowLayout.rowStartUnits[channel] + 1) / channelRowLayout.totalUnits;
@@ -6776,7 +6749,7 @@ export default function Home() {
               style={{ "--channel-content-height": `${Math.max(245, channelRowLayout.totalUnits * 60 + 28)}px` } as React.CSSProperties}
               onScroll={updateExpandedChannelViewport}
             >
-              <div className={`channel-rail ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} style={{ gridTemplateRows: `repeat(${channelRowLayout.totalUnits}, 1fr)` }}>
+              <div className={`channel-rail ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
                 <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 <button
                   className={`channel-layout-button ${expandedChannels || waveformVerticalViewport ? "active" : ""}`}

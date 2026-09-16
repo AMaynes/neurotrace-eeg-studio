@@ -1618,7 +1618,7 @@ textarea:focus-visible {
   color: #caffef;
   box-shadow: inset -3px 0 0 var(--mint), inset 0 0 0 1px rgba(87, 223, 183, .16);
 }
-.channel-rail button.group-start { border-top: 1px solid rgba(87, 223, 183, .32); }
+.channel-rail button.group-start { border-top: 2px solid rgba(87, 223, 183, .5); }
 
 .recording-empty-state {
   flex: 1;

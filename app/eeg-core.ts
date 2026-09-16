@@ -3562,6 +3562,30 @@ export function anatomicalChannelGroup(label: string): string | null {
   return MATLAB_EXCLUDED_CHANNEL_GROUPS.has(match[1].toUpperCase()) ? null : match[1];
 }
 
+/** Display grouping accepts our derived labels without changing legacy montage pairing rules. */
+export function displayElectrodeGroup(label: string): string | null {
+  return anatomicalChannelGroup(label.replace(/ \(CAR\)$/, ""))?.toUpperCase() ?? null;
+}
+
+/**
+ * Display-only order: left, right, then other electrode prefixes; alphabetical
+ * groups and natural contact numbers within each group. Unclassified/auxiliary
+ * channels remain available at the end in source order. Never use this order to
+ * redefine existing bipolar pairs or source-channel identities.
+ */
+export function orderElectrodeChannelIndices(labels: readonly string[]): number[] {
+  const compare = new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare;
+  const side = (group: string) => group.startsWith("L") ? 0 : group.startsWith("R") ? 1 : 2;
+  return labels.map((label, index) => ({ label, index, group: displayElectrodeGroup(label) }))
+    .sort((left, right) => {
+      if (!left.group || !right.group) return Number(!left.group) - Number(!right.group) || left.index - right.index;
+      return side(left.group) - side(right.group)
+        || compare(left.group, right.group)
+        || compare(left.label.trim(), right.label.trim())
+        || left.index - right.index;
+    }).map(({ index }) => index);
+}
+
 /**
  * Matches seizure_annotation_tool_update.m: accept only `letters + digits`,
  * exclude its auxiliary groups, then stably partition contacts left, right,

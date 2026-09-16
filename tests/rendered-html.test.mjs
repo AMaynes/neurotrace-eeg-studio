@@ -1097,7 +1097,7 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(draw, /if\s*\(confineTracesToRows\s*&&\s*overflow\)[\s\S]*?context\.closePath\(\)/, "only clamped excursions leave an overflow marker");
   assert.match(draw, /const markerHalfHeight\s*=\s*Math\.min\(4,\s*rowHeight\s*\*\s*\.4\)/, "overflow markers cannot leave compact channel rows");
   assert.match(draw, /if\s*\(rowHeight\s*>=\s*2\)[\s\S]*?context\.strokeRect/, "focused-row borders are omitted when a compact row is too short to contain the stroke");
-  assert.match(page, /const ANATOMICAL_GROUP_GAP_ROWS\s*=\s*4/);
+  assert.match(page, /gridTemplateRows: channelRowLayout\.gridTemplateRows/);
   assert.match(page, /const matlabAnatomicalLayout\s*=\s*meta\.format\s*===\s*"raw-int16-le"[\s\S]*?recordingType\s*===\s*"SEEG \/ iEEG"/);
   assert.match(page, /matlabAnatomicalLayout[\s\S]*?orderAnatomicalChannelIndices\(meta\.channelLabels, selectedIndices\)/, "intracranial recordings use MATLAB anatomical channel ordering");
   assert.match(page, /channelRowFromFraction\(\s*channelRowLayout/);
