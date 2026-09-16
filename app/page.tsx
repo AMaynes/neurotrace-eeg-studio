@@ -131,6 +131,8 @@ import {
   createNeurotraceProjectArchive,
   importCustomToolFiles,
   mergeCustomToolAssets,
+  readNeurotraceProjectArchive,
+  type ImportedNeurotraceProject,
   type NeurotraceCustomToolAsset,
 } from "./neurotrace-project";
 
@@ -280,6 +282,16 @@ type UploadErrorMessage = {
   title: string;
   message: string;
   files: string[];
+};
+
+type ImportChoice = "edf" | "mat" | "mat-dat" | "neurotrace";
+
+type GuidedImportSelection = {
+  edf: File | null;
+  mat: File | null;
+  dat: File | null;
+  neurotrace: File | null;
+  supportingFiles: File[];
 };
 
 type ProjectSaveSelection = {
@@ -498,6 +510,13 @@ const MIN_SPECTROGRAM_HEIGHT = 96;
 const MAX_SPECTROGRAM_HEIGHT = 4096;
 const LEGACY_SEIZURE_EVENT_TERMS = ["sz", "seiz", "tonic", "eeg onset", "ictal"] as const;
 const SUPPORTED_RECORDING_EXTENSIONS = new Set(["edf", "mat", "dat"]);
+const EMPTY_GUIDED_IMPORT_SELECTION: GuidedImportSelection = {
+  edf: null,
+  mat: null,
+  dat: null,
+  neurotrace: null,
+  supportingFiles: [],
+};
 const SIGNAL_ERROR_CODES = new Set<SignalErrorCode>([
   "UNSUPPORTED_FORMAT",
   "INVALID_HEADER",
@@ -1705,8 +1724,8 @@ export default function Home() {
   const viewerRef = useRef<HTMLDivElement>(null);
   const waveDrawRef = useRef<() => void>(() => {});
   const viewerWheelRef = useRef<(event: WheelEvent) => void>(() => {});
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const directoryInputRef = useRef<HTMLInputElement>(null);
+  const pendingProjectImportRef = useRef<ImportedNeurotraceProject | null>(null);
+  const projectFileImportRef = useRef(false);
   const fileDragDepthRef = useRef(0);
   const annotationsRef = useRef<Annotation[]>([]);
   const candidatesRef = useRef<Candidate[]>([]);
@@ -1864,6 +1883,8 @@ export default function Home() {
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
   const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [importChoice, setImportChoice] = useState<ImportChoice | null>(null);
+  const [guidedImportSelection, setGuidedImportSelection] = useState<GuidedImportSelection>(EMPTY_GUIDED_IMPORT_SELECTION);
   const [showProjectSave, setShowProjectSave] = useState(false);
   const [projectSaveBusy, setProjectSaveBusy] = useState(false);
   const [projectSaveError, setProjectSaveError] = useState("");
@@ -2225,8 +2246,9 @@ export default function Home() {
     setShowFilters(false);
     setConfirmCommit([]);
     setCommitAdvanceAfter(false);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    if (directoryInputRef.current) directoryInputRef.current.value = "";
+    setImportChoice(null);
+    setGuidedImportSelection(EMPTY_GUIDED_IMPORT_SELECTION);
+    pendingProjectImportRef.current = null;
     undoRef.current = snapshot.undo;
     redoRef.current = snapshot.redo;
   }, [commitViewStart]);
@@ -5468,6 +5490,98 @@ export default function Home() {
     }
   }, [activeSessionId, applySessionSnapshot, commitViewStart, storeActiveSession]);
 
+  const applyImportedProjectState = useCallback((project: ImportedNeurotraceProject) => {
+    const durationSec = sourceRef.current.meta.durationSec;
+    const channelCount = sourceRef.current.meta.channelLabels.length;
+    const review = project.review && typeof project.review === "object" && !Array.isArray(project.review)
+      ? project.review as Record<string, unknown>
+      : null;
+    if (review) {
+      const rawAnnotations = Array.isArray(review.annotations) ? review.annotations : [];
+      if (rawAnnotations.some((annotation) => !hasValidRecoveryBounds(annotation, durationSec))) {
+        throw new Error("The NeuroTrace project contains labels outside the recording bounds.");
+      }
+      const restoredAnnotations = migrateAnnotationList(rawAnnotations, durationSec, channelCount);
+      if (restoredAnnotations.length !== rawAnnotations.length) {
+        throw new Error("The NeuroTrace project contains invalid labels.");
+      }
+      const rawCandidates = Array.isArray(review.candidates) ? review.candidates : [];
+      const restoredCandidates = migrateCandidateList(rawCandidates, durationSec);
+      if (restoredCandidates.length !== rawCandidates.length) {
+        throw new Error("The NeuroTrace project contains invalid source events.");
+      }
+      const restoredActiveCandidate = Number(review.activeCandidate ?? 0);
+      annotationsRef.current = restoredAnnotations;
+      setAnnotations(restoredAnnotations);
+      setCandidates(restoredCandidates);
+      setActiveCandidate(Number.isInteger(restoredActiveCandidate) && restoredActiveCandidate >= 0
+        && restoredActiveCandidate < Math.max(1, restoredCandidates.length)
+        ? restoredActiveCandidate
+        : 0);
+      setReviewer(typeof review.reviewer === "string" ? review.reviewer : "");
+    }
+
+    const workspace = project.workspace && typeof project.workspace === "object" && !Array.isArray(project.workspace)
+      ? project.workspace as Record<string, unknown>
+      : null;
+    if (workspace) {
+      const restoredTimebase = typeof workspace.timebase === "number" && Number.isFinite(workspace.timebase)
+        ? clamp(workspace.timebase, MIN_TIME_WINDOW_SECONDS, Math.max(MIN_TIME_WINDOW_SECONDS, durationSec))
+        : Math.min(20, Math.max(5, durationSec));
+      setTimebase(restoredTimebase);
+      setWindowDraftUnit("s");
+      setWindowDraftValue(null);
+      commitViewStart(clamp(
+        typeof workspace.viewStart === "number" && Number.isFinite(workspace.viewStart) ? workspace.viewStart : 0,
+        0,
+        Math.max(0, durationSec - restoredTimebase),
+      ));
+      if (typeof workspace.gain === "number" && Number.isFinite(workspace.gain) && workspace.gain > 0) setGain(workspace.gain);
+      if (workspace.traceDisplayMode === "clamped" || workspace.traceDisplayMode === "overlap") {
+        setTraceDisplayMode(workspace.traceDisplayMode);
+      }
+      if (["referential", "average", "bipolar"].includes(String(workspace.montage))) {
+        setMontage(workspace.montage as MontageMode);
+      }
+      if (workspace.filters && typeof workspace.filters === "object" && !Array.isArray(workspace.filters)) {
+        const savedFilters = workspace.filters as Partial<DisplayFilterSettings>;
+        if ([savedFilters.highPassHz, savedFilters.lowPassHz, savedFilters.notchHz].every((value) => typeof value === "number" && Number.isFinite(value))) {
+          setFilters({
+            highPassHz: savedFilters.highPassHz!,
+            lowPassHz: savedFilters.lowPassHz!,
+            notchHz: savedFilters.notchHz!,
+            enabled: savedFilters.enabled === true,
+          });
+        }
+      }
+      if (Array.isArray(workspace.selectedChannels)) {
+        setSelectedChannels(new Set(workspace.selectedChannels.filter((value): value is number =>
+          Number.isInteger(value) && Number(value) >= 0 && Number(value) < channelCount)));
+      }
+      if (Number.isInteger(workspace.focusedChannel)) {
+        setFocusedChannel(clamp(Number(workspace.focusedChannel), 0, Math.max(0, channelCount - 1)));
+      }
+      if (workspace.cursor && typeof workspace.cursor === "object" && !Array.isArray(workspace.cursor)) {
+        const cursor = workspace.cursor as Record<string, unknown>;
+        if (typeof cursor.time === "number" && Number.isFinite(cursor.time)) setCursorTime(clamp(cursor.time, 0, durationSec));
+        if (typeof cursor.amplitude === "number" && Number.isFinite(cursor.amplitude)) setCursorAmplitude(cursor.amplitude);
+        setCursorLocked(cursor.locked === true);
+      }
+      if (["1s", "100ms", "sample"].includes(String(workspace.snapMode))) {
+        setSnapMode(workspace.snapMode as "1s" | "100ms" | "sample");
+      }
+      if (typeof workspace.spectrogramOpen === "boolean") setSpectrogramOpen(workspace.spectrogramOpen);
+      if (typeof workspace.expandedChannels === "boolean") setExpandedChannels(workspace.expandedChannels);
+      if (workspace.controlBindings && typeof workspace.controlBindings === "object" && !Array.isArray(workspace.controlBindings)) {
+        const savedBindings = workspace.controlBindings as Partial<ControlBindings>;
+        setControlBindings({
+          ...DEFAULT_CONTROLS,
+          ...Object.fromEntries(Object.entries(savedBindings).filter(([, value]) => typeof value === "string" && /^[a-z]$/i.test(value))),
+        });
+      }
+    }
+  }, [commitViewStart]);
+
   const importFiles = async (files: File[]) => {
     if (!files.length || importBusyRef.current) return;
     setShowImport(true);
@@ -5625,6 +5739,15 @@ export default function Home() {
 
   const handleUploadedFiles = async (files: File[]) => {
     if (!files.length || importBusyRef.current) return;
+    const projectFile = files.find((file) => recordingExtension(file) === "neurotrace");
+    if (projectFile) {
+      await openNeurotraceProject(projectFile);
+      return;
+    }
+    if (!projectFileImportRef.current
+      && files.some((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))) {
+      pendingProjectImportRef.current = null;
+    }
     const customImport = await importCustomToolFiles(files);
     if (customImport.assets.length) {
       setCustomTools((current) => mergeCustomToolAssets(current, customImport.assets));
@@ -5646,6 +5769,177 @@ export default function Home() {
       });
       setShowImport(true);
     }
+  };
+
+  const chooseImportType = (choice: ImportChoice) => {
+    setImportChoice(choice);
+    setGuidedImportSelection(EMPTY_GUIDED_IMPORT_SELECTION);
+    setUploadError(null);
+  };
+
+  const stageGuidedFile = (
+    slot: "edf" | "mat" | "dat" | "neurotrace",
+    expectedExtension: string,
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const files = [...(event.target.files ?? [])];
+    event.target.value = "";
+    const file = files.find((candidate) => recordingExtension(candidate) === expectedExtension) ?? null;
+    if (!file) {
+      setUploadError({
+        title: `Choose a .${expectedExtension} file`,
+        message: `This step requires one file ending in .${expectedExtension}.`,
+        files: files.map((candidate) => candidate.name),
+      });
+      return;
+    }
+    setGuidedImportSelection((current) => ({ ...current, [slot]: file, supportingFiles: [] }));
+    setUploadError(null);
+  };
+
+  const stageGuidedDirectory = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = [...(event.target.files ?? [])]
+      .sort((left, right) => relativeFilePath(left).localeCompare(relativeFilePath(right), undefined, { numeric: true }));
+    event.target.value = "";
+    const edf = files.find((file) => recordingExtension(file) === "edf") ?? null;
+    const mat = files.find((file) => recordingExtension(file) === "mat") ?? null;
+    const dat = files.find((file) => recordingExtension(file) === "dat") ?? null;
+    const neurotrace = files.find((file) => recordingExtension(file) === "neurotrace") ?? null;
+    const requiredFiles = importChoice === "edf" ? [edf]
+      : importChoice === "mat" ? [mat]
+        : importChoice === "mat-dat" ? [mat, dat]
+          : [neurotrace];
+    if (requiredFiles.some((file) => !file)) {
+      const requirement = importChoice === "edf" ? "one EDF / EDF+ file"
+        : importChoice === "mat" ? "one MAT file"
+          : importChoice === "mat-dat" ? "both a MAT file and a DAT file"
+            : "one .neurotrace project";
+      setUploadError({
+        title: "Required file not found",
+        message: `That directory must contain ${requirement}.`,
+        files: [],
+      });
+      return;
+    }
+    const chosenRecordings = new Set(requiredFiles.filter((file): file is File => file !== null));
+    setGuidedImportSelection({
+      edf: importChoice === "edf" ? edf : null,
+      mat: importChoice === "mat" || importChoice === "mat-dat" ? mat : null,
+      dat: importChoice === "mat-dat" ? dat : null,
+      neurotrace: importChoice === "neurotrace" ? neurotrace : null,
+      supportingFiles: files.filter((file) => {
+        const extension = recordingExtension(file);
+        if (chosenRecordings.has(file) || extension === "neurotrace") return false;
+        if (!SUPPORTED_RECORDING_EXTENSIONS.has(extension)) return true;
+        return importChoice === "mat-dat" && (extension === "mat" || extension === "dat");
+      }),
+    });
+    setUploadError(null);
+  };
+
+  const openNeurotraceProject = async (file: File) => {
+    if (importBusyRef.current) return;
+    importBusyRef.current = true;
+    setImportBusy(true);
+    setUploadError(null);
+    let project: ImportedNeurotraceProject;
+    try {
+      project = await readNeurotraceProjectArchive(file);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The NeuroTrace project could not be read.";
+      setUploadError({ title: "NeuroTrace project could not be opened", message, files: [file.name] });
+      setToast("NeuroTrace project could not be opened");
+      importBusyRef.current = false;
+      setImportBusy(false);
+      return;
+    }
+    importBusyRef.current = false;
+    setImportBusy(false);
+    if (!project.recordingFile && !hasRecording) {
+      setUploadError({
+        title: "Recording was not included",
+        message: "This project references a recording but does not contain its bytes. Open the original recording first, then open this project again.",
+        files: [file.name],
+      });
+      setToast("NeuroTrace project needs its original recording");
+      return;
+    }
+
+    if (!project.recordingFile) {
+      const expectedHash = project.manifest.recording?.sourceContentSha256;
+      if (expectedHash && rawSourceHash && expectedHash !== rawSourceHash) {
+        setUploadError({
+          title: "Different recording is open",
+          message: "Open the recording referenced by this NeuroTrace project, then try the project again.",
+          files: [file.name],
+        });
+        setToast("NeuroTrace project does not match the open recording");
+        return;
+      }
+      try {
+        if (project.supportingFiles.length || project.customToolFiles.length) {
+          projectFileImportRef.current = true;
+          try {
+            await handleUploadedFiles([...project.supportingFiles, ...project.customToolFiles]);
+          } finally {
+            projectFileImportRef.current = false;
+          }
+        }
+        applyImportedProjectState(project);
+        setShowImport(false);
+        setToast(`Restored ${project.manifest.title} onto the open recording`);
+      } catch (error) {
+        pendingProjectImportRef.current = null;
+        const message = error instanceof Error ? error.message : "Saved review state could not be restored.";
+        setUploadError({ title: "Project could not be restored", message, files: [file.name] });
+        setShowImport(true);
+      }
+      return;
+    }
+
+    pendingProjectImportRef.current = project;
+    const files = [project.recordingFile, ...project.supportingFiles, ...project.customToolFiles];
+    projectFileImportRef.current = true;
+    try {
+      await handleUploadedFiles(files);
+    } finally {
+      projectFileImportRef.current = false;
+    }
+    if (recordingExtension(project.recordingFile) !== "dat") {
+      try {
+        applyImportedProjectState(project);
+        pendingProjectImportRef.current = null;
+        setShowImport(false);
+        setToast(`Opened ${project.manifest.title} from ${file.name}`);
+      } catch (error) {
+        pendingProjectImportRef.current = null;
+        const message = error instanceof Error ? error.message : "Saved review state could not be restored.";
+        setUploadError({ title: "Project recording opened with warnings", message, files: [file.name] });
+        setShowImport(true);
+      }
+    }
+  };
+
+  const guidedImportReady = importChoice === "edf" ? Boolean(guidedImportSelection.edf)
+    : importChoice === "mat" ? Boolean(guidedImportSelection.mat)
+      : importChoice === "mat-dat" ? Boolean(guidedImportSelection.mat && guidedImportSelection.dat)
+        : importChoice === "neurotrace" ? Boolean(guidedImportSelection.neurotrace)
+          : false;
+
+  const submitGuidedImport = async () => {
+    if (!guidedImportReady || !importChoice) return;
+    if (importChoice === "neurotrace" && guidedImportSelection.neurotrace) {
+      await openNeurotraceProject(guidedImportSelection.neurotrace);
+      return;
+    }
+    const requiredFiles = importChoice === "edf" ? [guidedImportSelection.edf]
+      : importChoice === "mat" ? [guidedImportSelection.mat]
+        : [guidedImportSelection.mat, guidedImportSelection.dat];
+    const files = mergeSelectedFiles(
+      requiredFiles.filter((file): file is File => file !== null),
+      guidedImportSelection.supportingFiles,
+    );
+    await handleUploadedFiles(files);
   };
 
   const confirmDatImport = async () => {
@@ -5802,6 +6096,12 @@ export default function Home() {
         setActiveCandidate(0);
         setToast("Recording opened, but legacy candidate review is disabled because this session has fewer than 100 channels");
       }
+      if (pendingProjectImportRef.current) {
+        const project = pendingProjectImportRef.current;
+        applyImportedProjectState(project);
+        pendingProjectImportRef.current = null;
+        setToast(`Opened ${project.manifest.title} from a NeuroTrace project`);
+      }
       setPendingDat(null);
       setPendingLegacyMatFile(null);
       setPendingLegacyMeta(null);
@@ -5809,6 +6109,7 @@ export default function Home() {
       setSelectedLegacyEventIndices(new Set());
       setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
     } catch (error) {
+      pendingProjectImportRef.current = null;
       const uploadFailure = uploadErrorFrom(error, [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null));
       setUploadError(uploadFailure);
       setToast(uploadFailure.title);
@@ -7169,28 +7470,73 @@ export default function Home() {
         <div id="recording-import-dialog" className="modal import-modal" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN A RECORDING</span>
-          <h2>Bring in the recording and everything around it.</h2>
-          <p>Open a signal, scan a directory, or add custom dictionaries, equations, filtering methods, label definitions, and channel groups. NeuroTrace catalogs them locally.</p>
-          <button className={`drop-zone ${importBusy ? "busy" : ""} ${uploadError ? "has-error" : ""}`} disabled={importBusy} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void handleUploadedFiles([...event.dataTransfer.files]); }}>
-            <span className="upload-mark">⇧</span><strong>{importBusy ? "Hunting for recording information…" : "Drop recordings, companions, or custom definitions"}</strong><small>Dictionaries, words, equations, filters, labels, and channel groups remain local and inactive</small>
-          </button>
-          <div className="import-source-actions">
-            <button type="button" disabled={importBusy} onClick={() => fileInputRef.current?.click()}>Choose files</button>
-            <button type="button" disabled={importBusy} onClick={() => directoryInputRef.current?.click()}>Choose directory</button>
-          </div>
-          <input ref={fileInputRef} hidden type="file" multiple accept=".edf,.mat,.dat,.json,.tsv,.vhdr,.vmrk,.eeg,.set,.fdt,.bdf,.nwb,.mefd,.yaml,.yml,.txt,.csv,.dict,.dictionary,.words,.equation,.formula,.filter,.method,.labels,.channelgroup" onChange={(event: ChangeEvent<HTMLInputElement>) => {
-            const files = [...(event.target.files ?? [])];
-            event.target.value = "";
-            void handleUploadedFiles(files);
-          }} />
-          <input ref={(element) => {
-            directoryInputRef.current = element;
-            if (element) element.webkitdirectory = true;
-          }} hidden type="file" multiple onChange={(event: ChangeEvent<HTMLInputElement>) => {
-            const files = [...(event.target.files ?? [])];
-            event.target.value = "";
-            void handleUploadedFiles(files);
-          }} />
+          <h2>{pendingDat ? "Confirm the DAT layout." : "Choose what you’re opening."}</h2>
+          <p>{pendingDat
+            ? "The signal bytes are ready. Confirm the recording details before NeuroTrace opens them."
+            : "Pick a format first. NeuroTrace will show exactly which file or files it needs."}</p>
+          {!pendingDat && <>
+            <div className="format-cards" role="group" aria-label="Recording formats">
+              <button type="button" className={importChoice === "edf" ? "active" : ""} aria-pressed={importChoice === "edf"} disabled={importBusy} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>One calibrated .edf recording</span></button>
+              <button type="button" className={importChoice === "mat" ? "active" : ""} aria-pressed={importChoice === "mat"} disabled={importBusy} onClick={() => chooseImportType("mat")}><strong>MAT v5</strong><span>One .mat file containing signal data</span></button>
+              <button type="button" className={importChoice === "mat-dat" ? "active" : ""} aria-pressed={importChoice === "mat-dat"} disabled={importBusy} onClick={() => chooseImportType("mat-dat")}><strong>MAT + DAT</strong><span>One metadata file + one signal file</span></button>
+              <button type="button" className={importChoice === "neurotrace" ? "active" : ""} aria-pressed={importChoice === "neurotrace"} disabled={importBusy} onClick={() => chooseImportType("neurotrace")}><strong>NeuroTrace</strong><span>One portable .neurotrace project</span></button>
+            </div>
+            {importChoice && <section className="guided-import" aria-label={`${importChoice} file requirements`}>
+              <header>
+                <div><strong>{importChoice === "edf" ? "EDF / EDF+ recording"
+                  : importChoice === "mat" ? "Standalone MATLAB recording"
+                    : importChoice === "mat-dat" ? "Legacy MATLAB session"
+                      : "NeuroTrace project"}</strong>
+                  <span>{importChoice === "edf" ? "Choose one .edf file. EDF+ uses the same extension."
+                    : importChoice === "mat" ? "Choose one MATLAB v5 .mat file that contains the signal matrix."
+                      : importChoice === "mat-dat" ? "Both files are required. Click each row to add or replace it."
+                        : "Choose one .neurotrace file saved from this app."}</span></div>
+                <b>{importBusy ? "Opening…" : "Required"}</b>
+              </header>
+              <div className="import-requirements">
+                {importChoice === "edf" && <label className={guidedImportSelection.edf ? "complete" : ""}>
+                  <input hidden type="file" accept=".edf" disabled={importBusy} onChange={(event) => stageGuidedFile("edf", "edf", event)} />
+                  <i aria-hidden="true">{guidedImportSelection.edf ? "✓" : ""}</i>
+                  <span><strong>EDF / EDF+ file</strong><small>{guidedImportSelection.edf?.name ?? "Click to choose one .edf file"}</small></span>
+                  <b>{guidedImportSelection.edf ? "Replace" : "Choose"}</b>
+                </label>}
+                {importChoice === "mat" && <label className={guidedImportSelection.mat ? "complete" : ""}>
+                  <input hidden type="file" accept=".mat" disabled={importBusy} onChange={(event) => stageGuidedFile("mat", "mat", event)} />
+                  <i aria-hidden="true">{guidedImportSelection.mat ? "✓" : ""}</i>
+                  <span><strong>MAT signal file</strong><small>{guidedImportSelection.mat?.name ?? "Click to choose one .mat file"}</small></span>
+                  <b>{guidedImportSelection.mat ? "Replace" : "Choose"}</b>
+                </label>}
+                {importChoice === "mat-dat" && <>
+                  <label className={guidedImportSelection.mat ? "complete" : ""}>
+                    <input hidden type="file" accept=".mat" disabled={importBusy} onChange={(event) => stageGuidedFile("mat", "mat", event)} />
+                    <i aria-hidden="true">{guidedImportSelection.mat ? "✓" : ""}</i>
+                    <span><strong>MAT metadata file</strong><small>{guidedImportSelection.mat?.name ?? "Click to choose the matching .mat file"}</small></span>
+                    <b>{guidedImportSelection.mat ? "Replace" : "Choose"}</b>
+                  </label>
+                  <label className={guidedImportSelection.dat ? "complete" : ""}>
+                    <input hidden type="file" accept=".dat" disabled={importBusy} onChange={(event) => stageGuidedFile("dat", "dat", event)} />
+                    <i aria-hidden="true">{guidedImportSelection.dat ? "✓" : ""}</i>
+                    <span><strong>DAT signal file</strong><small>{guidedImportSelection.dat?.name ?? "Click to choose the matching .dat file"}</small></span>
+                    <b>{guidedImportSelection.dat ? "Replace" : "Choose"}</b>
+                  </label>
+                </>}
+                {importChoice === "neurotrace" && <label className={guidedImportSelection.neurotrace ? "complete" : ""}>
+                  <input hidden type="file" accept=".neurotrace" disabled={importBusy} onChange={(event) => stageGuidedFile("neurotrace", "neurotrace", event)} />
+                  <i aria-hidden="true">{guidedImportSelection.neurotrace ? "✓" : ""}</i>
+                  <span><strong>NeuroTrace project</strong><small>{guidedImportSelection.neurotrace?.name ?? "Click to choose one .neurotrace file"}</small></span>
+                  <b>{guidedImportSelection.neurotrace ? "Replace" : "Choose"}</b>
+                </label>}
+              </div>
+              <footer>
+                <label className="directory-scan-button">
+                  <input ref={(element) => { if (element) element.webkitdirectory = true; }} hidden type="file" multiple disabled={importBusy} onChange={stageGuidedDirectory} />
+                  <span>Scan a directory instead</span>
+                  {guidedImportSelection.supportingFiles.length > 0 && <small>{guidedImportSelection.supportingFiles.length} companion file{guidedImportSelection.supportingFiles.length === 1 ? "" : "s"} found</small>}
+                </label>
+                <button type="button" className="button primary" disabled={!guidedImportReady || importBusy} onClick={() => void submitGuidedImport()}>{importBusy ? "Opening…" : importChoice === "neurotrace" ? "Open project" : "Open recording"}</button>
+              </footer>
+            </section>}
+          </>}
           {uploadError && <div className="upload-error" role="alert" aria-live="assertive">
             <span aria-hidden="true">!</span>
             <div><strong>{uploadError.title}</strong><p>{uploadError.message}</p>{uploadError.files.length > 0 && <small>{uploadError.files.join(" · ")}</small>}</div>
@@ -7228,7 +7574,6 @@ export default function Home() {
             </fieldset>}
             <button className="button primary wide" disabled={!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0) || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0) || !datPhysicalScaleValid || Boolean(datChannelNames.error) || !datLayout?.frames} onClick={confirmDatImport}>Confirm mapping &amp; open DAT</button>
           </div>}
-          <div className="format-cards"><div><strong>EDF / EDF+</strong><span>Calibrated signals, channel metadata, full recording timeline</span></div><div><strong>MAT v5</strong><span>Automatic largest-matrix detection with sampling-rate discovery</span></div><div><strong>MAT + DAT</strong><span>Manual binary confirmation for legacy Buzcode sessions</span></div></div>
           <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Hospital deployment still requires institutional privacy, security, and validation review.</p></div>
         </div>
       </div>}

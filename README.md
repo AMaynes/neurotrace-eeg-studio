@@ -66,7 +66,7 @@ See [STRUCTURE.md](STRUCTURE.md) for the authoritative repository map and [TODO.
 
 ## Recording Ingestion
 
-- **Directory and additive companion discovery:** A directory picker catalogs every selected file and opens the first supported EDF, MAT, or DAT recording in path order. Matching BIDS JSON/TSV files are resolved by subject/session/task/run entities and inheritance specificity. Recording sidecars, participant/session/scan rows, channel names, and events are applied best-effort; unrelated and unsupported files remain visible in the uploaded-file inventory. Additional companion files can be dropped anywhere onto an active workspace without replacing its waveform.
+- **Guided format selection and companion discovery:** The loader starts with EDF/EDF+, standalone MAT, MAT + DAT, or NeuroTrace project choices, then shows a checked requirement row for every file that format needs. A directory scan remains available inside the selected flow and catalogs matching BIDS JSON/TSV companions by subject/session/task/run entities and inheritance specificity. Additional companion files can be dropped anywhere onto an active workspace without replacing its waveform.
 - **Custom definitions:** Dictionaries, word lists, equations, filtering methods, label definitions, and channel groupings can be dropped alongside recording files. They remain inert local data; NeuroTrace does not execute imported text or code.
 - **EDF and EDF+:** Header metadata is parsed first, so a read-only waveform preview can open without waiting for the full file scan. Signal data is read from the local `File` in bounded time windows. A background pass verifies the exact SHA-256 identity and extracts EDF+ annotation records together; seizure-keyword events are then imported into the source-event review queue. Review edits and export remain locked until verification finishes.
 - **MATLAB v5:** The largest viable numeric signal matrix is decoded in memory. Compressed elements are supported.
@@ -86,7 +86,7 @@ Seizure source events open in a 20-second event-relative viewport centered on ti
 
 Exports are ZIP bundles containing BIDS-style events/channels tables, recording metadata, full annotation provenance, deterministic forecasting windows, an ontology, a dataset manifest, and a decision-only `matlab_compatibility.csv`. Raw EEG bytes are never included in the export.
 
-The top-bar Save control creates one versioned `.neurotrace` project file. Its checklist can include review state, workspace settings, label definitions, custom definitions, uploaded companions, and—only when explicitly selected—a copy of the original recording. The format is ZIP-compatible and contains a self-describing `manifest.json`; the system save dialog starts in Downloads and can target another folder.
+The top-bar Save control creates one versioned `.neurotrace` project file. Its checklist can include review state, workspace settings, label definitions, custom definitions, uploaded companions, and—only when explicitly selected—a copy of the original recording. The guided loader can reopen that file without copying a large embedded recording into an additional in-memory buffer. Projects saved without recording bytes can restore onto the matching recording after it is opened separately. The format is ZIP-compatible and contains a self-describing `manifest.json`; the system save dialog starts in Downloads and can target another folder.
 
 ## Privacy and Local State
 

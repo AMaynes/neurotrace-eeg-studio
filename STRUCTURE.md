@@ -15,7 +15,7 @@ neurotrace-eeg-studio/
 │   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.
 │   ├── globals.css — Defines the complete NeuroTrace visual system and responsive workspace layout.
 │   ├── layout.tsx — Supplies application metadata, social previews, viewport configuration, and the root HTML shell.
-│   ├── neurotrace-project.ts — Builds versioned `.neurotrace` ZIP containers and safely classifies inert custom definitions.
+│   ├── neurotrace-project.ts — Builds and reopens versioned `.neurotrace` ZIP containers and safely classifies inert custom definitions.
 │   ├── pages-client.tsx — Mounts the shared workstation for the browser-only GitHub Pages release.
 │   ├── page.tsx — Coordinates the browser workstation, annotation state, session workflow, rendering, and exports.
 │   └── source-integrity.ts — Computes incremental SHA-256 fingerprints without buffering complete recordings.
@@ -112,7 +112,7 @@ Builds host-aware metadata and the root document shell. It references `public/og
 
 ### `app/neurotrace-project.ts`
 
-Creates the portable, versioned `.neurotrace` ZIP container without duplicating included `Blob` data in memory. It owns archive-path sanitization, the manifest schema, and bounded classification of imported dictionaries, equations, filtering methods, label definitions, and channel groupings as inert text assets.
+Creates and reads the portable, versioned `.neurotrace` ZIP container without duplicating included recording `Blob` data in memory. It owns archive-path sanitization, stored-ZIP directory validation, the manifest schema, and bounded classification of imported dictionaries, equations, filtering methods, label definitions, and channel groupings as inert text assets.
 
 ### `app/pages-client.tsx`
 

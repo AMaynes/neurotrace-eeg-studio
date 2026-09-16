@@ -9,6 +9,7 @@ import {
   importCustomToolFiles,
   mergeCustomToolAssets,
   readCustomToolAsset,
+  readNeurotraceProjectArchive,
   safeArchivePath,
 } from "../app/neurotrace-project.ts";
 
@@ -94,6 +95,15 @@ test("creates one versioned neurotrace ZIP with selected state and binary files"
   assert.equal(manifest.recording.archivePath, "recording/patient.edf");
   assert.equal(manifest.security.importedToolsAreExecutable, false);
   assert.equal(manifest.contents.find((entry) => entry.path === "manifest.json").byteLength, entries.get("manifest.json").byteLength);
+
+  const reopened = await readNeurotraceProjectArchive(new File([result.blob], result.fileName, { type: result.blob.type }));
+  assert.equal(reopened.manifest.title, "Patient 01");
+  assert.equal(reopened.recordingFile.name, "patient.edf");
+  assert.deepEqual([...new Uint8Array(await reopened.recordingFile.arrayBuffer())], [1, 2, 3, 4]);
+  assert.deepEqual(reopened.supportingFiles.map((file) => file.name), ["events.tsv"]);
+  assert.deepEqual(reopened.customToolFiles.map((file) => file.name), ["clinical.dictionary"]);
+  assert.deepEqual(reopened.review, { annotations: [{ id: "a1" }] });
+  assert.deepEqual(reopened.workspace, { montage: "referential" });
 });
 
 test("omits unselected sections while retaining the portable manifest", async () => {

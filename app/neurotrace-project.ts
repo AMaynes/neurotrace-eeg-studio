@@ -4,8 +4,8 @@
  *
  * Architectural Relationships
  * Called by: The workstation save and mixed-file import flows in app/page.tsx.
- * Calls: Browser Blob/File streaming APIs to build a ZIP32 archive without
- * materializing included recordings as one additional in-memory copy.
+ * Calls: Browser Blob/File streaming and slice APIs to build and read ZIP32
+ * projects without materializing included recordings as an extra full copy.
  *
  * External Resources
  * The `.neurotrace` format is a stored ZIP containing a versioned JSON manifest.
@@ -25,6 +25,7 @@ export const MAX_CUSTOM_TOOL_TOTAL_BYTES = 64 * 1024 * 1024;
 const ZIP32_MAX_VALUE = 0xffffffff;
 const ZIP32_MAX_ENTRIES = 0xffff;
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 export type NeurotraceCustomToolKind =
   | "dictionary"
@@ -88,6 +89,15 @@ export type NeurotraceProjectManifest = {
     importedToolsAreExecutable: false;
     note: string;
   };
+};
+
+export type ImportedNeurotraceProject = {
+  manifest: NeurotraceProjectManifest;
+  recordingFile: File | null;
+  supportingFiles: File[];
+  customToolFiles: File[];
+  review: unknown | null;
+  workspace: unknown | null;
 };
 
 type ZipContent = string | Uint8Array | Blob;
@@ -460,5 +470,168 @@ export async function createNeurotraceProjectArchive(request: NeurotraceProjectA
     manifest,
     fileName: `${safeTitle}.neurotrace`,
     readmePath,
+  };
+}
+
+type StoredZipEntry = {
+  path: string;
+  size: number;
+  localHeaderOffset: number;
+  compressionMethod: number;
+};
+
+const ZIP_END_MIN_BYTES = 22;
+const ZIP_END_SEARCH_BYTES = 65_557;
+const MAX_PROJECT_METADATA_BYTES = 16 * 1024 * 1024;
+
+async function storedZipDirectory(file: File) {
+  if (file.size < ZIP_END_MIN_BYTES) throw new Error("The NeuroTrace project is incomplete.");
+  const tailOffset = Math.max(0, file.size - ZIP_END_SEARCH_BYTES);
+  const tail = new Uint8Array(await file.slice(tailOffset).arrayBuffer());
+  let endOffset = -1;
+  for (let index = tail.length - ZIP_END_MIN_BYTES; index >= 0; index -= 1) {
+    if (new DataView(tail.buffer, tail.byteOffset + index, 4).getUint32(0, true) === 0x06054b50) {
+      endOffset = index;
+      break;
+    }
+  }
+  if (endOffset < 0) throw new Error("The NeuroTrace project ZIP directory is missing.");
+  const end = new DataView(tail.buffer, tail.byteOffset + endOffset);
+  const entryCount = end.getUint16(10, true);
+  const directorySize = end.getUint32(12, true);
+  const directoryOffset = end.getUint32(16, true);
+  if (directorySize > MAX_PROJECT_METADATA_BYTES
+    || directoryOffset + directorySize > file.size
+    || entryCount > ZIP32_MAX_ENTRIES) {
+    throw new Error("The NeuroTrace project ZIP directory is invalid.");
+  }
+
+  const bytes = new Uint8Array(await file.slice(directoryOffset, directoryOffset + directorySize).arrayBuffer());
+  const entries = new Map<string, StoredZipEntry>();
+  let offset = 0;
+  for (let entryIndex = 0; entryIndex < entryCount; entryIndex += 1) {
+    if (offset + 46 > bytes.length) throw new Error("The NeuroTrace project ZIP directory is truncated.");
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset);
+    if (view.getUint32(0, true) !== 0x02014b50) throw new Error("The NeuroTrace project ZIP directory is invalid.");
+    const compressionMethod = view.getUint16(10, true);
+    const compressedSize = view.getUint32(20, true);
+    const uncompressedSize = view.getUint32(24, true);
+    const nameLength = view.getUint16(28, true);
+    const extraLength = view.getUint16(30, true);
+    const commentLength = view.getUint16(32, true);
+    const localHeaderOffset = view.getUint32(42, true);
+    const nextOffset = offset + 46 + nameLength + extraLength + commentLength;
+    if (nextOffset > bytes.length || compressedSize !== uncompressedSize) {
+      throw new Error("The NeuroTrace project contains an unsupported compressed entry.");
+    }
+    const path = decoder.decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+    if (!path || safeArchivePath(path) !== path || entries.has(path)) {
+      throw new Error("The NeuroTrace project contains an invalid archive path.");
+    }
+    entries.set(path, { path, size: uncompressedSize, localHeaderOffset, compressionMethod });
+    offset = nextOffset;
+  }
+  return entries;
+}
+
+async function storedZipEntryBlob(file: File, entry: StoredZipEntry) {
+  if (entry.compressionMethod !== 0) throw new Error("Compressed NeuroTrace project entries are not supported.");
+  const headerBytes = new Uint8Array(await file.slice(entry.localHeaderOffset, entry.localHeaderOffset + 30).arrayBuffer());
+  if (headerBytes.byteLength !== 30 || new DataView(headerBytes.buffer).getUint32(0, true) !== 0x04034b50) {
+    throw new Error(`The NeuroTrace project entry ${entry.path} is damaged.`);
+  }
+  const header = new DataView(headerBytes.buffer);
+  const dataOffset = entry.localHeaderOffset + 30 + header.getUint16(26, true) + header.getUint16(28, true);
+  const dataEnd = dataOffset + entry.size;
+  if (dataEnd > file.size) throw new Error(`The NeuroTrace project entry ${entry.path} is truncated.`);
+  return file.slice(dataOffset, dataEnd);
+}
+
+async function readProjectJson(file: File, entries: Map<string, StoredZipEntry>, path: string | null) {
+  if (!path) return null;
+  const entry = entries.get(path);
+  if (!entry) throw new Error(`The NeuroTrace project is missing ${path}.`);
+  if (entry.size > MAX_PROJECT_METADATA_BYTES) throw new Error(`The NeuroTrace project metadata ${path} is too large.`);
+  return JSON.parse(await (await storedZipEntryBlob(file, entry)).text()) as unknown;
+}
+
+/** Reads a versioned, stored-ZIP `.neurotrace` project without copying large recordings into memory. */
+export async function readNeurotraceProjectArchive(file: File): Promise<ImportedNeurotraceProject> {
+  const entries = await storedZipDirectory(file);
+  const rawManifest = await readProjectJson(file, entries, "manifest.json");
+  if (!rawManifest || typeof rawManifest !== "object" || Array.isArray(rawManifest)) {
+    throw new Error("The NeuroTrace project manifest is invalid.");
+  }
+  const manifest = rawManifest as NeurotraceProjectManifest;
+  if (manifest.schema !== NEUROTRACE_PROJECT_SCHEMA || manifest.formatVersion !== NEUROTRACE_PROJECT_VERSION) {
+    throw new Error("This NeuroTrace project version is not supported.");
+  }
+  if (typeof manifest.title !== "string"
+    || !manifest.sections || typeof manifest.sections !== "object" || Array.isArray(manifest.sections)
+    || [manifest.sections.review, manifest.sections.workspace, manifest.sections.labelDefinitions,
+      manifest.sections.customTools, manifest.sections.supportingFiles]
+      .some((path) => path !== null && typeof path !== "string")
+    || (manifest.recording !== null && (!manifest.recording || typeof manifest.recording !== "object"
+      || typeof manifest.recording.name !== "string" || typeof manifest.recording.included !== "boolean"
+      || (manifest.recording.archivePath !== null && typeof manifest.recording.archivePath !== "string")))) {
+    throw new Error("The NeuroTrace project manifest is invalid.");
+  }
+
+  const makeFile = async (path: string, name: string, mimeType = "application/octet-stream", lastModified?: number) => {
+    const entry = entries.get(path);
+    if (!entry) throw new Error(`The NeuroTrace project is missing ${path}.`);
+    return new File([await storedZipEntryBlob(file, entry)], name, { type: mimeType, lastModified });
+  };
+
+  const recordingFile = manifest.recording?.included && manifest.recording.archivePath
+    ? await makeFile(manifest.recording.archivePath, manifest.recording.name)
+    : null;
+
+  const supportingFiles: File[] = [];
+  const supportingIndex = await readProjectJson(file, entries, manifest.sections.supportingFiles);
+  if (supportingIndex && typeof supportingIndex === "object" && !Array.isArray(supportingIndex)) {
+    const files = (supportingIndex as { files?: unknown }).files;
+    if (!Array.isArray(files)) throw new Error("The NeuroTrace supporting-file index is invalid.");
+    for (const value of files) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The NeuroTrace supporting-file index is invalid.");
+      const item = value as Record<string, unknown>;
+      if (typeof item.archivePath !== "string" || typeof item.sourceName !== "string") {
+        throw new Error("The NeuroTrace supporting-file index is invalid.");
+      }
+      supportingFiles.push(await makeFile(
+        item.archivePath,
+        item.sourceName,
+        typeof item.mimeType === "string" ? item.mimeType : "application/octet-stream",
+        typeof item.lastModified === "number" ? item.lastModified : undefined,
+      ));
+    }
+  }
+
+  const customToolFiles: File[] = [];
+  const customToolIndex = await readProjectJson(file, entries, manifest.sections.customTools);
+  if (customToolIndex && typeof customToolIndex === "object" && !Array.isArray(customToolIndex)) {
+    const tools = (customToolIndex as { tools?: unknown }).tools;
+    if (!Array.isArray(tools)) throw new Error("The NeuroTrace custom-tool index is invalid.");
+    for (const value of tools) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The NeuroTrace custom-tool index is invalid.");
+      const item = value as Record<string, unknown>;
+      if (typeof item.archivePath !== "string" || typeof item.sourceName !== "string") {
+        throw new Error("The NeuroTrace custom-tool index is invalid.");
+      }
+      customToolFiles.push(await makeFile(
+        item.archivePath,
+        item.sourceName,
+        typeof item.mimeType === "string" ? item.mimeType : "text/plain",
+      ));
+    }
+  }
+
+  return {
+    manifest,
+    recordingFile,
+    supportingFiles,
+    customToolFiles,
+    review: await readProjectJson(file, entries, manifest.sections.review),
+    workspace: await readProjectJson(file, entries, manifest.sections.workspace),
   };
 }

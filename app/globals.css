@@ -786,17 +786,6 @@ textarea:focus-visible {
 .modal-eyebrow { color: var(--mint); font-size: 8px; letter-spacing: .14em; font-weight: 800; }
 .modal h2 { margin: 7px 0 8px; font-size: 24px; letter-spacing: -.025em; }
 .modal > p { margin: 0 0 17px; color: #83999e; font-size: 10px; line-height: 1.55; }
-.drop-zone { width: 100%; min-height: 128px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 1px dashed #3a6960; border-radius: 9px; background: radial-gradient(circle at 50% 35%, rgba(87, 223, 183, .1), transparent 65%), #0c1d20; color: #d8e7e3; cursor: pointer; transition: .2s; }
-.drop-zone:hover { border-color: var(--mint); background-color: #102622; transform: translateY(-1px); }
-.drop-zone.busy { pointer-events: none; opacity: .72; }
-.drop-zone.has-error { border-color: #9b4b52; background: radial-gradient(circle at 50% 35%, rgba(255, 107, 123, .09), transparent 65%), #1b1418; }
-.upload-mark { display: grid; place-items: center; width: 33px; height: 33px; border: 1px solid #3c6e64; border-radius: 50%; color: var(--mint); font-size: 18px; }
-.drop-zone strong { font-size: 11px; }
-.drop-zone small { color: #668079; font-size: 8px; }
-.import-source-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 8px; }
-.import-source-actions button { height: 34px; border: 1px solid #31564f; border-radius: 6px; background: #10251f; color: #a8cbc1; cursor: pointer; font-size: 9px; font-weight: 750; }
-.import-source-actions button:hover { border-color: var(--mint); color: #e0f4ee; }
-.import-source-actions button:disabled { cursor: not-allowed; opacity: .42; }
 .upload-error { display: grid; grid-template-columns: 24px minmax(0, 1fr) 24px; align-items: start; gap: 9px; margin-top: 10px; padding: 10px; border: 1px solid #713b43; border-radius: 7px; background: #211419; color: #e7c8cc; }
 .upload-error > span { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid #9b4b52; border-radius: 50%; color: #ff7d89; font-size: 11px; font-weight: 900; }
 .upload-error > div { min-width: 0; }
@@ -805,10 +794,33 @@ textarea:focus-visible {
 .upload-error small { display: block; margin-top: 5px; overflow-wrap: anywhere; color: #8f7378; font-size: 7px; }
 .upload-error button { width: 24px; height: 24px; border: 0; background: transparent; color: #a98389; cursor: pointer; font-size: 14px; }
 .upload-error button:hover { color: #ffd4d8; }
-.format-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-top: 12px; }
-.format-cards div { min-height: 65px; display: flex; flex-direction: column; gap: 5px; padding: 8px; border: 1px solid #20383f; border-radius: 6px; background: #0a171c; }
+.format-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.format-cards button { min-width: 0; min-height: 72px; display: flex; flex-direction: column; gap: 5px; padding: 10px; border: 1px solid #20383f; border-radius: 7px; background: #0a171c; color: #d7e4e1; text-align: left; cursor: pointer; transition: .16s ease; }
+.format-cards button:hover { border-color: #3b685f; background: #0d2021; }
+.format-cards button.active { border-color: var(--mint); background: #102821; box-shadow: inset 0 0 0 1px rgba(87, 223, 183, .16); }
 .format-cards strong { font-size: 8px; }
-.format-cards span { color: #62787e; font-size: 7px; line-height: 1.4; }
+.format-cards span { color: #6e858a; font-size: 7px; line-height: 1.4; }
+.guided-import { margin-top: 10px; overflow: hidden; border: 1px solid #2d4d50; border-radius: 8px; background: #0a171b; }
+.guided-import > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 11px 12px; border-bottom: 1px solid #1d353a; background: #0c1d20; }
+.guided-import > header > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.guided-import > header strong { color: #d9e9e5; font-size: 9px; }
+.guided-import > header span { color: #789095; font-size: 7px; line-height: 1.45; }
+.guided-import > header > b { flex: none; color: var(--mint); font-size: 7px; letter-spacing: .09em; text-transform: uppercase; }
+.import-requirements { display: grid; gap: 6px; padding: 9px; }
+.import-requirements > label { min-width: 0; min-height: 50px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid #294147; border-radius: 6px; background: #0d1b20; cursor: pointer; }
+.import-requirements > label:hover { border-color: #436b62; background: #10221f; }
+.import-requirements > label.complete { border-color: #397262; background: #10241f; }
+.import-requirements > label > i { width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid #496067; border-radius: 4px; color: #071410; background: #0a1519; font-size: 10px; font-style: normal; font-weight: 900; }
+.import-requirements > label.complete > i { border-color: var(--mint); background: var(--mint); }
+.import-requirements label > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.import-requirements label > span strong { overflow: hidden; color: #cbded9; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.import-requirements label > span small { overflow: hidden; color: #70868b; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.import-requirements label > b { color: #84aaa1; font-size: 7px; }
+.guided-import > footer { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 9px; border-top: 1px solid #1d353a; }
+.directory-scan-button { min-width: 0; display: flex; flex-direction: column; gap: 2px; color: #83a69e; cursor: pointer; font-size: 8px; font-weight: 700; }
+.directory-scan-button:hover { color: var(--mint); }
+.directory-scan-button small { color: #617a7a; font-size: 7px; font-weight: 500; }
+.guided-import > footer .button { flex: none; min-width: 112px; }
 .research-notice { display: flex; gap: 9px; margin-top: 12px; padding: 9px; border: 1px solid #3e3825; border-radius: 6px; background: #1c1a12; }
 .research-notice > span { color: var(--gold); }
 .research-notice p { margin: 0; color: #918b76; font-size: 7px; line-height: 1.45; }
