@@ -1120,7 +1120,7 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(page, /const row\s*=\s*channelRowFromClientY\(event\.clientY,\s*rect\)/);
 });
 
-test("renders wide recordings with a clipped-voltage halo around out-of-range peaks", async () => {
+test("renders all signal units with a gain-aware clipping halo around out-of-range peaks", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const ribbonStart = page.indexOf("function drawSampleClippingRibbon");
   const ribbonEnd = page.indexOf("function expectedEDFRecordBytes", ribbonStart);
@@ -1128,7 +1128,8 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   assert.match(ribbon, /gaussianClippingHaloIntensity/);
   assert.match(ribbon, /clippingExcessIntensity/);
   assert.match(ribbon, /peakWidth/, "true exceedances remain narrow peaks over the Gaussian trail");
-  assert.match(ribbon, /clippingThresholdMicrovolts\s*=\s*100[\s\S]*?fullColorExcessMicrovolts\s*=\s*200/);
+  assert.match(ribbon, /traceClippingRange\(rowHeight,\s*baseline,\s*pixelsPerUnit,\s*TRACE_ROW_EDGE_INSET_PX\)/);
+  assert.doesNotMatch(ribbon, /Microvolts|display\.units|legacyRawCountDisplay/, "the visible clamp, not a physical-unit assumption, determines overflow colors");
   assert.match(ribbon, /context\.fillRect\(left,\s*ribbonTop/, "clipped peaks use a thin time-aligned indicator rather than waveform extrema");
 
   const envelopeBranchStart = page.indexOf("if (envelope) {");
@@ -1138,7 +1139,9 @@ test("renders wide recordings with a clipped-voltage halo around out-of-range pe
   assert.match(envelopeBranch, /envelopeWindowMatchesViewport\([\s\S]*?envelope\.startSec[\s\S]*?envelope\.bucketDurationSec[\s\S]*?values\.length[\s\S]*?displayStart[\s\S]*?timebase/);
   assert.match(envelopeBranch, /envelope\.gaps,\s*envelope,/, "the single waveform path receives both extrema rather than a resmoothed mean");
   assert.match(envelopeBranch, /drawSampleClippingRibbon\([\s\S]*?envelope\.minima[\s\S]*?envelope\.maxima/, "extrema remain available for clipping indicators");
-  assert.match(envelopeBranch, /confineTracesToRows[\s\S]*?showMicrovoltClipping/, "heat ribbons are limited to clamped mode");
+  assert.match(envelopeBranch, /if\s*\(confineTracesToRows\s*&&\s*envelopeWindowMatchesViewport/, "heat ribbons are limited to clamped, current overview data");
+  assert.doesNotMatch(page, /showMicrovoltClipping/, "counts and other signal units retain the overflow ribbon");
+  assert.match(envelopeBranch, /drawSampleClippingRibbon\([\s\S]*?baseline,\s*scale,/, "overview colors use the actual gain-adjusted drawing scale");
   assert.match(page, /drawSampleClippingRibbon\([\s\S]*?values,[\s\S]*?values,/, "close raw-sample views retain the clipping ribbon");
   assert.doesNotMatch(page, /function drawOverviewEnvelope|function drawGroupedExtrema/, "extrema cannot be rendered as additional waveforms");
 });

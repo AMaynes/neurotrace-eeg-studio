@@ -7,6 +7,7 @@
 import { buildEnvelopePyramid } from "./eeg-core.ts";
 import type { EnvelopeWindowData } from "./eeg-core";
 import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
+import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
 import { IncrementalSha256 } from "./source-integrity.ts";
 
 export const DEFAULT_RAW_DAT_ENVELOPE_CHUNK_BYTES = 4 * 1024 * 1024;
@@ -79,6 +80,8 @@ export interface RawDatEnvelopeBuildRequest {
   channelIndices?: readonly number[];
   chunkSizeBytes?: number;
   integrity?: RawDatEnvelopeIntegrityRequest;
+  /** Publish exact, completed prefixes at this interval; omitted disables previews. */
+  overviewIntervalMs?: number;
   /**
    * When set, build conservative full-coverage envelope levels down to this
    * approximate bucket count before returning from the worker.
@@ -97,6 +100,8 @@ export interface RawDatEnvelopeBuildResult {
 export interface RawDatEnvelopeBuildHooks {
   signal?: AbortSignal;
   onProgress?: (progress: RawDatEnvelopeProgress) => void;
+  /** Independent snapshots containing completed prefix buckets only. */
+  onOverview?: (window: EnvelopeWindowData) => void;
   backend?: "worker" | "direct";
   /** Retains the portable decoder for parity tests and unusual environments. */
   decoder?: "auto" | "portable-data-view";
@@ -298,6 +303,35 @@ export async function buildRawDatEnvelopeWindow(
   const endFrame = Math.min(totalSourceFrames, frameGrid?.endFrame ?? Math.ceil(endSec * request.sampleRate));
   const frameCount = Math.max(0, endFrame - firstFrame);
   const accumulators = indices.map((index) => makeAccumulator(index, request));
+  const outputStartSec = frameGrid ? frameGrid.startFrame / request.sampleRate : startSec;
+  const outputDurationSec = frameGrid
+    ? (frameGrid.endFrame - frameGrid.startFrame) / request.sampleRate
+    : durationSec;
+  const effectiveRate = frameGrid
+    ? request.sampleRate / frameGrid.framesPerBucket
+    : durationSec > 0 ? request.bucketCount / durationSec : 0;
+  const window: EnvelopeWindowData = {
+    data: accumulators.map((entry) => entry.data),
+    minima: accumulators.map((entry) => entry.minima),
+    maxima: accumulators.map((entry) => entry.maxima),
+    gaps: accumulators.map((entry) => entry.gaps),
+    variation: accumulators.map((entry) => entry.variation),
+    bucketDurationSec: frameGrid
+      ? frameGrid.framesPerBucket / request.sampleRate
+      : durationSec > 0 ? durationSec / request.bucketCount : 0,
+    sampleRates: accumulators.map(() => effectiveRate),
+    channelStartSecs: accumulators.map(() => outputStartSec),
+    startSec: outputStartSec,
+    durationSec: outputDurationSec,
+    channelIndices: indices,
+    channelLabels: indices.map((index) => request.channelLabels[index]),
+    channelUnits: indices.map((index) => request.channelUnits[index]),
+  };
+  const publishOverview = createProgressiveEnvelopePublisher(
+    window,
+    request.overviewIntervalMs,
+    hooks.onOverview,
+  );
   const wantsHash = request.integrity?.sha256 === true;
   const sha256 = wantsHash ? new IncrementalSha256() : null;
   const plannedFrameCount = wantsHash
@@ -416,6 +450,15 @@ export async function buildRawDatEnvelopeWindow(
       if (!wantsHash) metrics.framesRead += decodedFrames;
       metrics.samplesDecoded += decodedFrames * accumulators.length;
       hooks.onProgress?.(progress("decoding", metrics, startedAt));
+      throwIfAborted(hooks.signal);
+      // The next unread frame's bucket is not complete yet. Integer-grid and
+      // fractional-grid paths use the same assignments as the decode loop.
+      const completedBuckets = chunkEndFrame === endFrame
+        ? request.bucketCount
+        : Math.min(request.bucketCount - 1, frameGrid
+          ? Math.floor((chunkEndFrame - frameGrid.startFrame) / frameGrid.framesPerBucket)
+          : Math.floor((chunkEndFrame - requestStartFrame) * bucketScale));
+      publishOverview(completedBuckets);
     }
   } else if (wantsHash) {
     await readOpaqueSpan(requestedByteStart, requestedByteEnd);
@@ -432,30 +475,6 @@ export async function buildRawDatEnvelopeWindow(
     integrity = { hash: sha256.hexDigest() };
     metrics.integrityMs += nowMs() - integrityStartedAt;
   }
-  const outputStartSec = frameGrid ? frameGrid.startFrame / request.sampleRate : startSec;
-  const outputDurationSec = frameGrid
-    ? (frameGrid.endFrame - frameGrid.startFrame) / request.sampleRate
-    : durationSec;
-  const effectiveRate = frameGrid
-    ? request.sampleRate / frameGrid.framesPerBucket
-    : durationSec > 0 ? request.bucketCount / durationSec : 0;
-  const window: EnvelopeWindowData = {
-    data: accumulators.map((entry) => entry.data),
-    minima: accumulators.map((entry) => entry.minima),
-    maxima: accumulators.map((entry) => entry.maxima),
-    gaps: accumulators.map((entry) => entry.gaps),
-    variation: accumulators.map((entry) => entry.variation),
-    bucketDurationSec: frameGrid
-      ? frameGrid.framesPerBucket / request.sampleRate
-      : durationSec > 0 ? durationSec / request.bucketCount : 0,
-    sampleRates: accumulators.map(() => effectiveRate),
-    channelStartSecs: accumulators.map(() => outputStartSec),
-    startSec: outputStartSec,
-    durationSec: outputDurationSec,
-    channelIndices: indices,
-    channelLabels: indices.map((index) => request.channelLabels[index]),
-    channelUnits: indices.map((index) => request.channelUnits[index]),
-  };
   let pyramidLevels: EnvelopeWindowData[] | undefined;
   if (request.pyramidMinimumBucketCount !== undefined) {
     const pyramidStartedAt = nowMs();

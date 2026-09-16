@@ -19,6 +19,7 @@
 
 import { Mat73WorkerClient } from "./mat73-worker-client.ts";
 import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
+import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
 
 export type RecordingFormat =
   | "demo"
@@ -89,6 +90,13 @@ export interface EnvelopeWindowData extends WindowData {
   bucketDurationSec: number;
 }
 
+export interface EnvelopeReadOptions extends SignalReadOptions {
+  /** Opt-in minimum delay between independently owned, complete-prefix previews. */
+  overviewIntervalMs?: number;
+  /** Preview data is exact only for its returned time range, never unread future data. */
+  onOverview?: (window: EnvelopeWindowData) => void;
+}
+
 export interface SignalSource {
   readonly meta: RecordingMeta;
   getWindow(
@@ -102,7 +110,7 @@ export interface SignalSource {
     durationSec: number,
     bucketCount: number,
     channelIndices?: readonly number[],
-    options?: SignalReadOptions,
+    options?: EnvelopeReadOptions,
   ): Promise<EnvelopeWindowData>;
 }
 
@@ -2092,8 +2100,10 @@ export class Mat73Source implements SignalSource {
         this.meta,
         request,
         result.data,
-        undefined,
-        request.channelIndices.map(() => result.firstSample / sampleRate),
+        request.channelIndices.map(() => result.bucketDurationSec > 0 ? 1 / result.bucketDurationSec : 0),
+        // Envelope buckets are anchored to the requested interval, not the
+        // earlier source frame included to cover a fractional sample boundary.
+        request.channelIndices.map(() => request.startSec),
       ),
       minima: result.minima,
       maxima: result.maxima,
@@ -2233,14 +2243,15 @@ export class MatSource implements SignalSource {
   /**
    * Builds exact overview extrema directly from decoded MAT samples without
    * copying the full requested window. Bounded batches yield to navigation and
-   * cancellation; only screen-resolution accumulators are allocated.
+   * cancellation; only screen-resolution accumulators are allocated. Each time
+   * chunk covers every selected channel before publishing a completed prefix.
    */
   async getEnvelopeWindow(
     startSec: number,
     durationSec: number,
     bucketCount: number,
     channelIndices?: readonly number[],
-    options: SignalReadOptions = {},
+    options: EnvelopeReadOptions = {},
   ): Promise<EnvelopeWindowData> {
     validateEnvelopeBucketCount(bucketCount);
     throwIfSignalReadAborted(options.signal);
@@ -2260,15 +2271,23 @@ export class MatSource implements SignalSource {
       return makeEnvelopeWindowResult(this.meta, request, accumulators, bucketCount);
     }
 
-    const samplesPerBatch = 65_536;
+    const result = envelopeWindowFromAccumulators(this.meta, request, accumulators, bucketCount);
+    if (grid) {
+      // Equivalent frame-aligned windows must expose identical bucket metadata,
+      // even when subtracting their positive time origins would lose precision.
+      result.bucketDurationSec = grid.framesPerBucket / sampleRate;
+      result.sampleRates = request.channelIndices.map(() => sampleRate / grid.framesPerBucket);
+    }
+    const publishOverview = createProgressiveEnvelopePublisher(result, options.overviewIntervalMs, options.onOverview);
+    const samplesPerBatch = Math.max(1, Math.floor(65_536 / accumulators.length));
     const maximumWorkSliceMs = 8;
-    let remainingBatchSamples = samplesPerBatch;
     let workSliceStarted = performance.now();
-    for (let outputIndex = 0; outputIndex < request.channelIndices.length; outputIndex += 1) {
-      const samples = this.data[request.channelIndices[outputIndex]];
-      const accumulator = accumulators[outputIndex];
-      for (let chunkStart = firstSample; chunkStart < endSample;) {
-        const chunkEnd = Math.min(endSample, chunkStart + remainingBatchSamples);
+    for (let chunkStart = firstSample; chunkStart < endSample;) {
+      const chunkEnd = Math.min(endSample, chunkStart + samplesPerBatch);
+      for (let outputIndex = 0; outputIndex < request.channelIndices.length; outputIndex += 1) {
+        throwIfSignalReadAborted(options.signal);
+        const samples = this.data[request.channelIndices[outputIndex]];
+        const accumulator = accumulators[outputIndex];
         for (let sample = chunkStart; sample < chunkEnd; sample += 1) {
           const bucket = grid ? Math.floor((sample - grid.startFrame) / grid.framesPerBucket) : Math.min(
             bucketCount - 1,
@@ -2276,28 +2295,22 @@ export class MatSource implements SignalSource {
           );
           addEnvelopeSample(accumulator, bucket, samples[sample]);
         }
-        remainingBatchSamples -= chunkEnd - chunkStart;
-        chunkStart = chunkEnd;
-        if (remainingBatchSamples === 0) {
-          throwIfSignalReadAborted(options.signal);
-          // Yield by elapsed work, not every batch: browsers clamp nested timers,
-          // so unconditional yields can add seconds to a large multichannel scan.
-          if (performance.now() - workSliceStarted >= maximumWorkSliceMs) {
-            await new Promise<void>((resolve) => setTimeout(resolve, 0));
-            throwIfSignalReadAborted(options.signal);
-            workSliceStarted = performance.now();
-          }
-          remainingBatchSamples = samplesPerBatch;
-        }
+      }
+      chunkStart = chunkEnd;
+      const completedBuckets = chunkEnd === endSample ? bucketCount : grid
+        ? Math.floor((chunkEnd - grid.startFrame) / grid.framesPerBucket)
+        : Math.floor(((chunkEnd / sampleRate - request.startSec) / request.durationSec) * bucketCount);
+      publishOverview(completedBuckets);
+      throwIfSignalReadAborted(options.signal);
+      // Yield by elapsed work, not every batch: browsers clamp nested timers,
+      // so unconditional yields can add seconds to a large multichannel scan.
+      if (performance.now() - workSliceStarted >= maximumWorkSliceMs) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        throwIfSignalReadAborted(options.signal);
+        workSliceStarted = performance.now();
       }
     }
-    const result = makeEnvelopeWindowResult(this.meta, request, accumulators, bucketCount);
-    if (grid) {
-      // Equivalent frame-aligned windows must expose identical bucket metadata,
-      // even when subtracting their positive time origins would lose precision.
-      result.bucketDurationSec = grid.framesPerBucket / sampleRate;
-      result.sampleRates = request.channelIndices.map(() => sampleRate / grid.framesPerBucket);
-    }
+    accumulators.forEach(finishEnvelopeAccumulator);
     return result;
   }
 }
@@ -2588,6 +2601,16 @@ function makeEnvelopeWindowResult(
   bucketCount: number,
 ): EnvelopeWindowData {
   accumulators.forEach(finishEnvelopeAccumulator);
+  return envelopeWindowFromAccumulators(meta, request, accumulators, bucketCount);
+}
+
+/** Wraps live arrays without finalizing empty or partially accumulated buckets. */
+function envelopeWindowFromAccumulators(
+  meta: RecordingMeta,
+  request: NormalizedWindow,
+  accumulators: EnvelopeAccumulator[],
+  bucketCount: number,
+): EnvelopeWindowData {
   const effectiveRate = request.durationSec > 0 ? bucketCount / request.durationSec : 0;
   return {
     ...makeWindowResult(

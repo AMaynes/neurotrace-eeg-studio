@@ -103,10 +103,10 @@ test("CAR and bipolar views share electrode gaps; ordinary layouts have no group
   assert.equal(buildChannelRowLayout([], true).totalUnits, 1);
 });
 
-test("viewer sorts both trace paths after derivation and uses thick dividers with fractional grid tracks", async () => {
+test("viewer sorts all three trace paths after derivation and uses thick dividers with fractional grid tracks", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.equal(page.match(/setDisplay\(matlabAnatomicalLayout \? orderElectrodeDisplayRows\(nextDisplay\) : nextDisplay\)/g)?.length, 2);
+  assert.equal(page.match(/setDisplay\(matlabAnatomicalLayout \? orderElectrodeDisplayRows\(nextDisplay\) : nextDisplay\)/g)?.length, 3);
   assert.match(page, /const indices = matlabAnatomicalLayout && montage !== "referential"/);
   assert.match(page, /gridTemplateRows: channelRowLayout\.gridTemplateRows/);
   assert.match(page, /gridRow: `\$\{channelRowLayout\.rowGridLines\[channel\]\}/);

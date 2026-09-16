@@ -28,6 +28,7 @@ import {
   measureRawTraceGeometry,
   resolveStableTraceBaseline,
   robustTraceBaseline,
+  traceClippingRange,
   waveformGeometryGroupingStride,
   waveformGeometryFitsBudget,
   waveformOverviewColumnBudget,
@@ -136,6 +137,51 @@ test("uses equal severity for the same distance above and below 100 microvolts",
   assert.equal(clippingExcessIntensity(-100, 100, -100, 100, 200), 0);
   assert.equal(clippingExcessIntensity(-300, 100, -100, 100, 200), 1);
   assert.equal(clippingExcessIntensity(-100, 300, -100, 100, 200), 1);
+});
+
+test("clipping thresholds follow the visible inset row, baseline, and gain in any signal units", () => {
+  const rowHeight = 60;
+  for (const baseline of [0, 27, -5_000]) {
+    for (const pixelsPerUnit of [.216, .003, 216]) {
+      const range = traceClippingRange(rowHeight, baseline, pixelsPerUnit, 4);
+      assert.ok(range);
+      const halfRange = 26 / pixelsPerUnit;
+      assert.equal(range.minimum, baseline - halfRange);
+      assert.equal(range.maximum, baseline + halfRange);
+      const intensity = (minimum, maximum) => clippingExcessIntensity(
+        minimum, maximum, range.minimum, range.maximum, range.fullIntensityExcess,
+      );
+      assert.equal(intensity(range.minimum, range.maximum), 0, "values exactly on the clamp are not overflow");
+      assert.ok(Math.abs(intensity(baseline, range.maximum + halfRange) - .5) < 1e-10);
+      assert.ok(Math.abs(intensity(range.minimum - halfRange, baseline) - .5) < 1e-10);
+      const increasedGain = traceClippingRange(rowHeight, baseline, pixelsPerUnit * 2, 4);
+      assert.ok(increasedGain);
+      assert.equal(increasedGain.minimum, baseline - halfRange / 2);
+      assert.equal(increasedGain.maximum, baseline + halfRange / 2);
+      assert.ok(clippingExcessIntensity(
+        range.minimum, range.maximum,
+        increasedGain.minimum, increasedGain.maximum, increasedGain.fullIntensityExcess,
+      ) > 0, "increasing gain colors newly clamped samples");
+    }
+  }
+  assert.equal(traceClippingRange(8, 0, 1, 4), null, "a collapsed trace cannot define a color span");
+  assert.equal(traceClippingRange(60, Number.NaN, 1, 4), null);
+  assert.equal(traceClippingRange(60, 0, 0, 4), null);
+  assert.equal(traceClippingRange(60, 0, Number.POSITIVE_INFINITY, 4), null);
+  assert.equal(traceClippingRange(60, 0, 1, -4), null);
+});
+
+test("clipping halos cannot color missing samples or cross a gap into a finite island", () => {
+  const gaps = Uint8Array.of(0, 1, 0, 0);
+  const minima = [0, 0, 0, 0];
+  const maxima = [300, 0, 0, 0];
+  assert.equal(gaussianClippingHaloIntensity(minima, maxima, gaps, 0, -100, 100, 200), 1);
+  assert.equal(gaussianClippingHaloIntensity(minima, maxima, gaps, 1, -100, 100, 200), 0);
+  assert.equal(gaussianClippingHaloIntensity(minima, maxima, gaps, 2, -100, 100, 200), 0);
+  assert.equal(gaussianClippingHaloIntensity(minima, maxima, gaps, 3, -100, 100, 200), 0);
+  maxima[1] = Number.NaN;
+  assert.equal(gaussianClippingHaloIntensity(minima, maxima, undefined, 1, -100, 100, 200), 0);
+  assert.equal(gaussianClippingHaloIntensity(minima, maxima, undefined, 2, -100, 100, 200), 0);
 });
 
 test("suppresses clipping halos until zoomed envelope coverage matches the viewport", () => {

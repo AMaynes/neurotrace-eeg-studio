@@ -17,6 +17,78 @@ import {
   selectEnvelopePyramidLevel,
 } from "../app/eeg-core.ts";
 import { sha256Blob } from "../app/source-integrity.ts";
+import { envelopeOverviewTransferList } from "../app/progressive-envelope.ts";
+
+test("mixed-rate EDF progressive prefixes preserve final fractional-grid extrema and variation", async () => {
+  const file = makeEDF([
+    {
+      label: "A",
+      dimension: "uV",
+      samplesPerRecord: 4,
+      records: [[1, -20, 3, 40], [5, -60, 7, 80], [9, -100, 11, 120], [13, -140, 15, 160]],
+    },
+    {
+      label: "B",
+      dimension: "mV",
+      physicalMinimum: -1,
+      physicalMaximum: 1,
+      samplesPerRecord: 3,
+      records: [[12, 24, -36], [-48, 60, -72], [84, -96, 108], [-120, 132, -144]],
+    },
+  ], 4);
+  const header = await parseEDFHeader(file);
+  const snapshots = [];
+  const result = await executeEDFEnvelopeBuild({
+    blob: file,
+    header,
+    startSec: 0.2,
+    durationSec: 3.6,
+    bucketCount: 5,
+    channelIndices: [1, 0],
+    chunkSizeBytes: header.bytesPerDataRecord,
+    overviewIntervalMs: Number.EPSILON,
+    integrity: { sha256: true },
+  }, {
+    onOverview: (window) => snapshots.push(structuredClone(window, { transfer: envelopeOverviewTransferList(window) })),
+  });
+  assert.deepEqual(snapshots.map((window) => window.data[0].length), [1, 2, 3, 5]);
+  assert.equal(result.integrity.hash, await sha256Blob(file));
+  assert.equal(result.metrics.bytesRead, file.size, "hashing and previews share one source pass");
+  for (const snapshot of snapshots) {
+    const count = snapshot.data[0].length;
+    assert.equal(snapshot.startSec, result.window.startSec);
+    assert.equal(snapshot.durationSec, count * result.window.bucketDurationSec);
+    assert.deepEqual(snapshot.channelIndices, [1, 0]);
+    for (const field of ["data", "minima", "maxima", "gaps", "variation"]) {
+      snapshot[field].forEach((channel, index) => {
+        assert.deepEqual(channel, result.window[field][index].slice(0, count), `${field} must be final before publication`);
+      });
+    }
+  }
+});
+
+test("EDF progressive reads stop on preview cancellation and never emit later snapshots", async () => {
+  const file = fixtureFile();
+  const header = await parseEDFHeader(file);
+  const controller = new AbortController();
+  let snapshots = 0;
+  await assert.rejects(buildEDFEnvelopeWindow({
+    blob: file,
+    header,
+    startSec: 0,
+    durationSec: 2,
+    bucketCount: 4,
+    chunkSizeBytes: header.bytesPerDataRecord,
+    overviewIntervalMs: 500,
+  }, {
+    signal: controller.signal,
+    onOverview: () => {
+      snapshots++;
+      controller.abort();
+    },
+  }), { name: "AbortError" });
+  assert.equal(snapshots, 1);
+});
 
 function latin1Bytes(text, width) {
   const output = new Uint8Array(width).fill(0x20);

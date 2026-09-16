@@ -11,6 +11,7 @@ import {
 } from "../app/raw-dat-envelope.ts";
 import { RawDatSource } from "../app/eeg-core.ts";
 import { sha256Blob } from "../app/source-integrity.ts";
+import { envelopeOverviewTransferList } from "../app/progressive-envelope.ts";
 
 function rawDatBlob(frames) {
   const channelCount = frames[0]?.length ?? 0;
@@ -313,4 +314,66 @@ test("Raw DAT worker wiring transfers results and terminates immediately on abor
   assert.match(client, /worker\.terminate\(\)/);
   assert.match(worker, /rawDatEnvelopeTransferList\(result\)/);
   assert.match(worker, /type: "progress"/);
+  assert.match(worker, /type: "overview"/);
+  assert.match(worker, /envelopeOverviewTransferList\(window\)/);
+});
+
+test("Raw DAT progressive prefixes exactly match final calibrated buckets across chunk boundaries", async () => {
+  const blob = rawDatBlob(frames);
+  const request = requestFor(blob, {
+    bucketCount: 3,
+    overviewIntervalMs: Number.EPSILON,
+    integrity: { sha256: true },
+  });
+  const snapshots = [];
+  const result = await buildRawDatEnvelopeWindow(request, {
+    onOverview: (window) => snapshots.push(structuredClone(window, { transfer: envelopeOverviewTransferList(window) })),
+  });
+  assert.deepEqual(snapshots.map((window) => window.data[0].length), [1, 2, 3]);
+  assert.equal(result.integrity.hash, await sha256Blob(blob));
+  assert.equal(result.metrics.bytesRead, blob.size, "progressive publication must not reread any data");
+  for (const snapshot of snapshots) {
+    const count = snapshot.data[0].length;
+    assert.equal(snapshot.durationSec, count * result.window.bucketDurationSec);
+    assert.deepEqual(snapshot.channelIndices, result.window.channelIndices);
+    assert.deepEqual(snapshot.channelLabels, result.window.channelLabels);
+    assert.deepEqual(snapshot.channelUnits, result.window.channelUnits);
+    for (const field of ["data", "minima", "maxima", "gaps", "variation"]) {
+      snapshot[field].forEach((channel, index) => {
+        assert.deepEqual(channel, result.window[field][index].slice(0, count), `${field} must be final before publication`);
+      });
+    }
+  }
+});
+
+test("Raw DAT progressive reads stop when their first exact prefix is cancelled", async () => {
+  const controller = new AbortController();
+  let snapshots = 0;
+  await assert.rejects(buildRawDatEnvelopeWindow(requestFor(rawDatBlob(frames), {
+    bucketCount: 4,
+    overviewIntervalMs: 500,
+  }), {
+    signal: controller.signal,
+    onOverview: () => {
+      snapshots++;
+      controller.abort();
+    },
+  }), { name: "AbortError" });
+  assert.equal(snapshots, 1);
+});
+
+test("Raw DAT does not publish a prefix after its decode progress callback cancels", async () => {
+  const controller = new AbortController();
+  let snapshots = 0;
+  await assert.rejects(buildRawDatEnvelopeWindow(requestFor(rawDatBlob(frames), {
+    bucketCount: 4,
+    overviewIntervalMs: 500,
+  }), {
+    signal: controller.signal,
+    onProgress: (progress) => {
+      if (progress.phase === "decoding") controller.abort();
+    },
+    onOverview: () => { snapshots++; },
+  }), { name: "AbortError" });
+  assert.equal(snapshots, 0);
 });

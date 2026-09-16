@@ -10,10 +10,13 @@ import type {
   RawDatEnvelopeWorkerRequest,
   RawDatEnvelopeWorkerResponse,
 } from "./raw-dat-envelope-worker";
+import type { EnvelopeWindowData } from "./eeg-core";
 
 export interface RawDatEnvelopeWorkerOptions {
   signal?: AbortSignal;
   onProgress?: (progress: RawDatEnvelopeProgress) => void;
+  /** Independent exact prefixes when request.overviewIntervalMs is enabled. */
+  onOverview?: (window: EnvelopeWindowData) => void;
   /** Defaults to true for compatibility when module workers are unavailable. */
   fallbackToMainThread?: boolean;
 }
@@ -41,6 +44,7 @@ function buildDirectly(
     backend: "direct",
     signal: options.signal,
     onProgress: options.onProgress,
+    onOverview: options.onOverview,
   });
 }
 
@@ -97,12 +101,18 @@ export function buildRawDatEnvelopeWindowOffThread(
 
     worker.onmessage = (event: MessageEvent<RawDatEnvelopeWorkerResponse>) => {
       const response = event.data;
-      if (response.requestId !== requestId) return;
+      if (settled || response.requestId !== requestId) return;
       if (response.type === "progress") {
         try {
           options.onProgress?.(response.progress);
         } catch {
           // Diagnostics must not invalidate a successful signal read.
+        }
+      } else if (response.type === "overview") {
+        try {
+          options.onOverview?.(response.window);
+        } catch {
+          // Preview consumers must not invalidate the final signal read.
         }
       } else if (response.type === "complete") {
         finish(() => resolve(response.result));

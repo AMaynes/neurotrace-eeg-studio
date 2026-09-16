@@ -7,6 +7,8 @@ import {
   type RawDatEnvelopeBuildResult,
   type RawDatEnvelopeProgress,
 } from "./raw-dat-envelope.ts";
+import type { EnvelopeWindowData } from "./eeg-core";
+import { envelopeOverviewTransferList } from "./progressive-envelope.ts";
 
 export type RawDatEnvelopeWorkerRequest = {
   type: "build";
@@ -16,6 +18,7 @@ export type RawDatEnvelopeWorkerRequest = {
 
 export type RawDatEnvelopeWorkerResponse =
   | { type: "progress"; requestId: number; progress: RawDatEnvelopeProgress }
+  | { type: "overview"; requestId: number; window: EnvelopeWindowData }
   | { type: "complete"; requestId: number; result: RawDatEnvelopeBuildResult }
   | { type: "error"; requestId: number; name: string; message: string };
 
@@ -30,6 +33,12 @@ workerScope.onmessage = (event) => {
     backend: "worker",
     onProgress: (progress) => {
       workerScope.postMessage({ type: "progress", requestId, progress });
+    },
+    onOverview: (window) => {
+      workerScope.postMessage(
+        { type: "overview", requestId, window },
+        envelopeOverviewTransferList(window),
+      );
     },
   }).then(
     (result) => {

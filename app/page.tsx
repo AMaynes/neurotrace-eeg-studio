@@ -92,6 +92,12 @@ import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
 import { buildChannelRowLayout, channelRowFromFraction, orderElectrodeDisplayRows } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
+import {
+  RecordingOverviewCache,
+  RECORDING_OVERVIEW_CACHE_BYTES,
+  recordingOverviewDisplayWindow,
+  recordingOverviewPlan,
+} from "./recording-overview";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -100,6 +106,7 @@ import {
   gaussianClippingHaloIntensity,
   resolveStableTraceBaseline,
   robustTraceBaseline,
+  traceClippingRange,
   waveformOverviewColumnBudget,
 } from "./waveform-geometry";
 import {
@@ -372,6 +379,8 @@ type DisplayWindow = {
   warnings: string[];
   viewStart: number;
   flatlineRegions: Array<{ startSec: number; endSec: number }>;
+  /** Only present while drawing a progressively indexed recording overview. */
+  indexedThroughSec?: number;
 };
 
 type RawWindowCache = {
@@ -1032,7 +1041,7 @@ const SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES = 32 * 1024 * 1024;
 // A full-width drag shifts less than one window so trackpad/mouse movement can
 // be precise without breaking the shared waveform/spectrogram time lock.
 const SPECTROGRAM_DRAG_PAN_SCALE = 0.3;
-const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES;
+const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES + RECORDING_OVERVIEW_CACHE_BYTES;
 const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 // The waveform is continuously repainted while navigating. A HiDPI backing
 // store made a large desktop pane rasterize up to eight million pixels for
@@ -1238,10 +1247,11 @@ function drawSampleClippingRibbon(
   rowTop: number,
   rowHeight: number,
   baseline: number,
+  pixelsPerUnit: number,
 ) {
   if (rowHeight < 4 || !minima.length || maxima.length !== minima.length) return;
-  const clippingThresholdMicrovolts = 100;
-  const fullColorExcessMicrovolts = 200;
+  const range = traceClippingRange(rowHeight, baseline, pixelsPerUnit, TRACE_ROW_EDGE_INSET_PX);
+  if (!range) return;
   const haloColorScale = .3;
   const ribbonTop = rowTop + rowHeight - Math.min(3, rowHeight * .08);
   for (let index = 0; index < minima.length; index += 1) {
@@ -1251,9 +1261,9 @@ function drawSampleClippingRibbon(
       maxima,
       gaps,
       index,
-      baseline - clippingThresholdMicrovolts,
-      baseline + clippingThresholdMicrovolts,
-      fullColorExcessMicrovolts,
+      range.minimum,
+      range.maximum,
+      range.fullIntensityExcess,
     );
     if (haloIntensity < .005) continue;
     const left = ((startSec + index * bucketDurationSec - displayStart) / timebase) * width;
@@ -1265,9 +1275,9 @@ function drawSampleClippingRibbon(
     const localIntensity = clippingExcessIntensity(
       minima[index],
       maxima[index],
-      baseline - clippingThresholdMicrovolts,
-      baseline + clippingThresholdMicrovolts,
-      fullColorExcessMicrovolts,
+      range.minimum,
+      range.maximum,
+      range.fullIntensityExcess,
     );
     if (localIntensity < .005) continue;
     const peakWidth = Math.min(bucketWidth, Math.max(1, bucketWidth * .3));
@@ -1723,6 +1733,8 @@ export default function Home() {
   const rawWindowCacheRef = useRef<RawWindowCache[]>([]);
   const processedWindowCacheRef = useRef<ProcessedWindowCache[]>([]);
   const envelopeWindowCacheRef = useRef<EnvelopeWindowCache[]>([]);
+  const recordingOverviewCacheRef = useRef(new RecordingOverviewCache());
+  const [recordingOverviewRevision, setRecordingOverviewRevision] = useState(0);
   const cursorFrameRef = useRef<number | null>(null);
   const pendingCursorRef = useRef<{
     time: number;
@@ -1757,8 +1769,9 @@ export default function Home() {
     rawEntries: rawWindowCacheRef.current.length,
     processedBytes: processedWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0),
     processedEntries: processedWindowCacheRef.current.length,
-    envelopeBytes: envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0),
-    envelopeEntries: envelopeWindowCacheRef.current.length,
+    envelopeBytes: envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0)
+      + recordingOverviewCacheRef.current.byteLength,
+    envelopeEntries: envelopeWindowCacheRef.current.length + recordingOverviewCacheRef.current.size,
   }), []);
 
   const [meta, setMeta] = useState<RecordingMeta>(() => sourceMeta(demoSource));
@@ -2928,6 +2941,19 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [activeCandidate, activeSessionId, annotations, candidates, hasRecording, reviewer, sessionKey, sourceInterpretation, verifyingSource]);
 
+  // Progress must not repeatedly cancel a detailed read. Only coarse views
+  // that can use the recording index subscribe to its incremental revisions.
+  const overviewPlanForView = useMemo(() => recordingOverviewPlan(meta), [meta]);
+  const canUseRecordingOverview = !filters.enabled && montage === "referential"
+    && overviewPlanForView !== null
+    && waveformWidth >= MIN_WAVEFORM_WIDTH_FOR_ENVELOPE
+    && [...selectedChannels].some((index) =>
+      (meta.sampleRates[index] ?? primarySampleRate(meta)) * timebase > Math.max(2, waveformWidth * 1.5))
+    && (timebase >= meta.durationSec - 1e-9
+      || overviewPlanForView.durationSec / overviewPlanForView.bucketCount
+        <= timebase / waveformOverviewColumnBudget(timebase, waveformWidth) * 1.05);
+  const overviewRefreshRevision = canUseRecordingOverview ? recordingOverviewRevision : 0;
+
   useEffect(() => {
     displayAbortRef.current?.abort();
     const abortController = new AbortController();
@@ -2977,6 +3003,41 @@ export default function Home() {
           ]),
           values,
         ));
+        const wholeOverview = recordingOverviewCacheRef.current.get(source);
+        if (canUseRecordingOverview && wholeOverview) {
+          const visible = recordingOverviewDisplayWindow(wholeOverview, signalViewStart, timebase, indices);
+          const sourceIndices = indices.map((index) => [index]);
+          const nextDisplay: DisplayWindow = {
+            data: visible.data,
+            traceBaselines: stableTraceBaselines(visible.data, visible.channelLabels, sourceIndices, visible.channelUnits),
+            envelopes: visible.data.map((_, position) => ({
+              minima: visible.minima[position], maxima: visible.maxima[position], gaps: visible.gaps[position],
+              variation: visible.variation?.[position], startSec: visible.startSec,
+              bucketDurationSec: visible.bucketDurationSec,
+            })),
+            labels: visible.channelLabels,
+            sampleRates: visible.sampleRates,
+            sourceSampleRates: indices.map((index) => meta.sampleRates[index] ?? primarySampleRate(meta)),
+            startSecs: visible.channelStartSecs,
+            units: visible.channelUnits,
+            sourceIndices,
+            primarySourceIndices: indices,
+            warnings: [],
+            viewStart: signalViewStart,
+            flatlineRegions: mergeNearbyFlatlineRegions(
+              detectEnvelopeSynchronizedFlatlines(visible.minima, visible.maxima, visible.gaps,
+                visible.bucketDurationSec, { startSec: visible.startSec, thresholdFraction: .8, minimumDurationSec: .25 }),
+              FLATLINE_DISPLAY_MERGE_GAP_SECONDS,
+            ),
+            indexedThroughSec: wholeOverview.complete ? undefined : wholeOverview.window.durationSec,
+          };
+          displayAppliedRequestIdRef.current = requestId;
+          setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(nextDisplay) : nextDisplay);
+          displayPreviewReadyRef.current = true;
+          setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
+          setLoadingSignal(false);
+          return;
+        }
         const useEnvelopePath = !filters.enabled
           && montage === "referential"
           && waveformWidth >= MIN_WAVEFORM_WIDTH_FOR_ENVELOPE
@@ -2999,14 +3060,13 @@ export default function Home() {
           : SOURCE_READ_AHEAD_BUDGET_BYTES;
         const maximumEnvelopeReadDuration = envelopeReadBudget / Math.max(1, storageByteRate);
         if (useEnvelopePath
-          && (source instanceof EDFSource || source instanceof RawDatSource)
           && sourceVerificationRef.current
           && requiredDuration > maximumEnvelopeReadDuration * 1.01) {
           // The background verifier is already reading the complete source and
           // building the reusable overview. Starting a second hours-wide scan
           // here used to make both operations contend for disk and CPU. Keep
-          // the current preview on screen; the effect reruns when verification
-          // publishes the full-session pyramid.
+          // the current preview on screen until the first indexed prefix can
+          // be shown. Completed prefixes update coarse views during the scan.
           return;
         }
         const decodedWindowBudget = source instanceof EDFSource || source instanceof RawDatSource
@@ -3705,7 +3765,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [filters, hasRecording, matlabAnatomicalLayout, meta, montage, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
+  }, [canUseRecordingOverview, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
   const spectrogramInputPlan = useMemo(() => {
     const targetDisplayIndices = channelSelectionActive
@@ -4010,8 +4070,6 @@ export default function Home() {
         const scale = legacyRawCountDisplay
           ? (rowHeight * gain) / LEGACY_RAW_COUNTS_PER_ROW
           : (rowHeight * 0.36 * gain) / 100;
-        const showMicrovoltClipping = !legacyRawCountDisplay
-          && ["µv", "μv", "uv"].includes((display.units[channel] ?? "").trim().toLowerCase());
         const selected = channelSelectionActive && channel === focusedChannel;
         let overflow = false;
         context.save();
@@ -4045,7 +4103,6 @@ export default function Home() {
             envelope,
           );
           if (confineTracesToRows
-            && showMicrovoltClipping
             && envelopeWindowMatchesViewport(
                 envelope.startSec,
                 envelope.bucketDurationSec,
@@ -4066,6 +4123,7 @@ export default function Home() {
               rowTop,
               rowHeight,
               baseline,
+              scale,
             );
           }
         } else {
@@ -4088,7 +4146,7 @@ export default function Home() {
             plotTop,
             plotHeight,
           );
-          if (confineTracesToRows && showMicrovoltClipping) {
+          if (confineTracesToRows) {
             drawSampleClippingRibbon(
               context,
               values,
@@ -4102,6 +4160,7 @@ export default function Home() {
               rowTop,
               rowHeight,
               baseline,
+              scale,
             );
           }
         }
@@ -5121,15 +5180,19 @@ export default function Home() {
           setToast(`Waveform ready · indexing and verifying… ${Math.min(100, bucket * 10)}%`);
         }
       };
+      const fullOverviewPlan = recordingOverviewPlan(nextMeta);
+      const publishRecordingOverview = (window: EnvelopeWindowData, complete = false) => {
+        if (verificationAbortController.signal.aborted) return;
+        if (recordingOverviewCacheRef.current.put(source, window, { complete })
+          && sourceRef.current === source) {
+          setRecordingOverviewRevision((revision) => revision + 1);
+        }
+      };
       let verification: Awaited<ReturnType<typeof verifySourceOffThread>>;
       try {
         if (source instanceof EDFSource) {
-          const overviewChannelIndices = [...recommendedChannels].sort((left, right) => left - right);
-          const fullOverviewBuckets = reusableEnvelopeBucketCount(
-            Math.max(1, overviewChannelIndices.length),
-            2_048,
-            true,
-          );
+          const overviewChannelIndices = fullOverviewPlan?.channelIndices ?? [];
+          const fullOverviewBuckets = fullOverviewPlan?.bucketCount ?? 1;
           const result = await buildEDFEnvelopeWindowOffThread({
             blob: file,
             header: source.header,
@@ -5137,11 +5200,12 @@ export default function Home() {
             durationSec: nextMeta.durationSec,
             bucketCount: fullOverviewBuckets,
             channelIndices: overviewChannelIndices,
-            pyramidMinimumBucketCount: 64,
+            overviewIntervalMs: 500,
             integrity: { sha256: true, edfAnnotations: true },
           }, {
             signal: verificationAbortController.signal,
             fallbackToMainThread: false,
+            onOverview: publishRecordingOverview,
             onProgress: (progress) => reportVerificationProgress(
               progress.bytesRead,
               progress.totalBytes,
@@ -5156,45 +5220,25 @@ export default function Home() {
             hash,
             edfAnnotations: result.integrity?.edfAnnotations,
           };
-          const overview = result.window;
-          if (overview.data.length) {
-            const overviewKey = overview.channelIndices.join(",");
-            const overviewEntry = makeEnvelopeCacheEntry(source, overviewKey, overview, result.pyramidLevels);
-            if (overviewEntry.byteLength <= ENVELOPE_CACHE_BUDGET_BYTES) {
-              envelopeWindowCacheRef.current = envelopeWindowCacheRef.current.filter((entry) => !(
-                entry.source === source
-                && entry.channelKey === overviewKey
-                && entry.startSec <= 1e-9
-                && entry.endSec >= nextMeta.durationSec - 1e-9
-              ));
-              envelopeWindowCacheRef.current.push(overviewEntry);
-              let cachedBytes = envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
-              while (cachedBytes > ENVELOPE_CACHE_BUDGET_BYTES && envelopeWindowCacheRef.current.length) {
-                cachedBytes -= envelopeWindowCacheRef.current.shift()?.byteLength ?? 0;
-              }
-            }
-          }
+          publishRecordingOverview(result.window, true);
           verificationRead.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
           verificationDecode?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
           verificationDecode = null;
         } else if (source instanceof RawDatSource) {
-          const overviewChannelIndices = orderAnatomicalChannelIndices(nextMeta.channelLabels, recommendedChannels);
-          const fullOverviewBuckets = reusableEnvelopeBucketCount(
-            Math.max(1, overviewChannelIndices.length),
-            2_048,
-            true,
-          );
+          const overviewChannelIndices = fullOverviewPlan?.channelIndices ?? [];
+          const fullOverviewBuckets = fullOverviewPlan?.bucketCount ?? 1;
           const result = await buildRawDatEnvelopeWindowOffThread({
             ...source.envelopeWorkerSource,
             startSec: 0,
             durationSec: nextMeta.durationSec,
             bucketCount: fullOverviewBuckets,
             channelIndices: overviewChannelIndices,
-            pyramidMinimumBucketCount: 64,
+            overviewIntervalMs: 500,
             integrity: { sha256: true },
           }, {
             signal: verificationAbortController.signal,
             fallbackToMainThread: false,
+            onOverview: publishRecordingOverview,
             onProgress: (progress) => reportVerificationProgress(
               progress.bytesRead,
               progress.totalBytes,
@@ -5206,29 +5250,23 @@ export default function Home() {
           const hash = result.integrity?.hash;
           if (!hash) throw new Error("DAT verification completed without a source hash.");
           verification = { hash };
-          const overview = result.window;
-          if (overview.data.length) {
-            const overviewKey = overview.channelIndices.join(",");
-            const overviewEntry = makeEnvelopeCacheEntry(source, overviewKey, overview, result.pyramidLevels);
-            if (overviewEntry.byteLength <= ENVELOPE_CACHE_BUDGET_BYTES) {
-              envelopeWindowCacheRef.current = envelopeWindowCacheRef.current.filter((entry) => !(
-                entry.source === source
-                && entry.channelKey === overviewKey
-                && entry.startSec <= 1e-9
-                && entry.endSec >= nextMeta.durationSec - 1e-9
-              ));
-              envelopeWindowCacheRef.current.push(overviewEntry);
-              let cachedBytes = envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0);
-              while (cachedBytes > ENVELOPE_CACHE_BUDGET_BYTES && envelopeWindowCacheRef.current.length) {
-                cachedBytes -= envelopeWindowCacheRef.current.shift()?.byteLength ?? 0;
-              }
-            }
-          }
+          publishRecordingOverview(result.window, true);
           verificationRead.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
           verificationDecode?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
           verificationDecode = null;
         } else {
-          verification = await verifySourceOffThread(file, {
+          // MAT already has an envelope reader. Build its compact all-channel
+          // index once alongside hashing, rather than starting hours-wide scans
+          // whenever the user later changes the zoom or enabled channels.
+          const overviewPromise = fullOverviewPlan && source.getEnvelopeWindow
+            ? source.getEnvelopeWindow(0, nextMeta.durationSec, fullOverviewPlan.bucketCount,
+              fullOverviewPlan.channelIndices, {
+                signal: verificationAbortController.signal,
+                overviewIntervalMs: 500,
+                onOverview: publishRecordingOverview,
+              }).then((window) => publishRecordingOverview(window, true))
+            : Promise.resolve();
+          const verificationPromise = verifySourceOffThread(file, {
             signal: verificationAbortController.signal,
             fallbackToMainThread: false,
             onProgress: (bytesHashed, totalBytes) => reportVerificationProgress(
@@ -5237,9 +5275,11 @@ export default function Home() {
               "Reading and hashing local source",
             ),
           });
+          [verification] = await Promise.all([verificationPromise, overviewPromise]);
           verificationRead.finish({ completedBytes: file.size, totalBytes: file.size });
         }
       } catch (error) {
+        verificationAbortController.abort(error);
         const finish = isAbortFailure(error) ? "cancel" : "fail";
         verificationRead[finish]();
         verificationDecode?.[finish]();
@@ -6741,7 +6781,7 @@ export default function Home() {
               disabled={!hasRecording}
               aria-label="Allow channel traces to overlap"
               aria-pressed={traceDisplayMode === "overlap"}
-              title={traceDisplayMode === "clamped" ? "Switch to overlapping channel traces" : "Switch to clamped traces with voltage heat lines"}
+              title={traceDisplayMode === "clamped" ? "Switch to overlapping channel traces" : "Switch to clamped traces with overflow heat lines"}
               onClick={() => {
                 const nextMode = traceDisplayMode === "clamped" ? "overlap" : "clamped";
                 setTraceDisplayMode(nextMode);
@@ -6885,6 +6925,16 @@ export default function Home() {
                   {loadingSignal && <div className="signal-loading" role="status"><span /> {verifyingSource
                     ? "Preparing signal window… The file is also still being validated, so this may take longer than usual."
                     : "Preparing signal window…"}</div>}
+                  {!loadingSignal && display.indexedThroughSec !== undefined && <>
+                    {display.indexedThroughSec < viewStart + timebase && <div
+                      className="signal-indexing-pending"
+                      style={{ left: `${clamp((display.indexedThroughSec - viewStart) / timebase, 0, 1) * 100}%` }}
+                    ><span>Not indexed yet</span></div>}
+                    <div className="signal-indexing-status" role="status">
+                      Building overview · {Math.min(100, Math.floor(display.indexedThroughSec / meta.durationSec * 100))}%
+                      {verifyingSource ? " · File validation is also in progress" : ""}
+                    </div>
+                  </>}
                   {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
                   {!display.data.length && !loadingSignal && <div className="no-channels" role="status">
                     <strong>{display.warnings.length ? `${montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average-reference" : "Signal"} view unavailable` : "No visible channels"}</strong>

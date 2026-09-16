@@ -2,6 +2,8 @@
 
 import { executeEDFEnvelopeBuild } from "./edf-envelope-integrity.ts";
 import { edfEnvelopeTransferList } from "./edf-envelope.ts";
+import type { EnvelopeWindowData } from "./eeg-core";
+import { envelopeOverviewTransferList } from "./progressive-envelope.ts";
 import type {
   EDFEnvelopeBuildRequest,
   EDFEnvelopeBuildResult,
@@ -16,6 +18,7 @@ export type EDFEnvelopeWorkerRequest = {
 
 export type EDFEnvelopeWorkerResponse =
   | { type: "progress"; requestId: number; progress: EDFEnvelopeProgress }
+  | { type: "overview"; requestId: number; window: EnvelopeWindowData }
   | { type: "complete"; requestId: number; result: EDFEnvelopeBuildResult }
   | { type: "error"; requestId: number; name: string; message: string };
 
@@ -30,6 +33,12 @@ workerScope.onmessage = (event) => {
     backend: "worker",
     onProgress: (progress) => {
       workerScope.postMessage({ type: "progress", requestId, progress });
+    },
+    onOverview: (window) => {
+      workerScope.postMessage(
+        { type: "overview", requestId, window },
+        envelopeOverviewTransferList(window),
+      );
     },
   }).then(
     (result) => {

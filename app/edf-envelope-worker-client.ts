@@ -9,10 +9,13 @@ import type {
   EDFEnvelopeWorkerRequest,
   EDFEnvelopeWorkerResponse,
 } from "./edf-envelope-worker";
+import type { EnvelopeWindowData } from "./eeg-core";
 
 export interface EDFEnvelopeWorkerOptions {
   signal?: AbortSignal;
   onProgress?: (progress: EDFEnvelopeProgress) => void;
+  /** Independent exact prefixes when request.overviewIntervalMs is enabled. */
+  onOverview?: (window: EnvelopeWindowData) => void;
   /** Defaults to true for compatibility when module workers are unavailable. */
   fallbackToMainThread?: boolean;
 }
@@ -43,6 +46,7 @@ async function buildDirectly(
   return executeEDFEnvelopeBuild(request, {
     backend: "direct",
     signal: options.signal,
+    onOverview: options.onOverview,
     onProgress: (progress) => {
       try {
         options.onProgress?.(progress);
@@ -109,12 +113,18 @@ export function buildEDFEnvelopeWindowOffThread(
 
     worker.onmessage = (event: MessageEvent<EDFEnvelopeWorkerResponse>) => {
       const response = event.data;
-      if (response.requestId !== requestId) return;
+      if (settled || response.requestId !== requestId) return;
       if (response.type === "progress") {
         try {
           options.onProgress?.(response.progress);
         } catch {
           // Diagnostics must not invalidate an otherwise successful signal read.
+        }
+      } else if (response.type === "overview") {
+        try {
+          options.onOverview?.(response.window);
+        } catch {
+          // Preview consumers must not invalidate the final signal read.
         }
       } else if (response.type === "complete") {
         finish(() => resolve(response.result));

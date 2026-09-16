@@ -574,6 +574,9 @@ textarea:focus-visible {
 .signal-loading,
 .no-channels { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; background: rgba(7, 18, 22, .72); color: #97adb1; font-size: 9px; pointer-events: none; }
 .signal-loading span { width: 13px; height: 13px; border: 2px solid #314d53; border-top-color: var(--mint); border-radius: 50%; animation: spin .8s linear infinite; }
+.signal-indexing-pending { position: absolute; inset: 0 0 0 auto; display: flex; align-items: center; justify-content: center; overflow: hidden; background: repeating-linear-gradient(135deg, transparent, transparent 9px, rgba(112, 147, 154, .07) 9px, rgba(112, 147, 154, .07) 10px); color: #80989d; font-size: 10px; pointer-events: none; }
+.signal-indexing-pending span { white-space: nowrap; padding: 5px; background: rgba(7, 18, 22, .8); }
+.signal-indexing-status { position: absolute; top: 32px; right: 8px; max-width: calc(100% - 16px); padding: 5px 8px; border: 1px solid #314d53; border-radius: 4px; background: rgba(7, 18, 22, .9); color: #97adb1; font-size: 10px; pointer-events: none; }
 .no-channels { flex-direction: column; }
 .no-channels strong { color: #cbd9d9; }
 .no-channels span { color: #657a80; }

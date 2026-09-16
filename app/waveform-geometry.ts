@@ -457,9 +457,34 @@ export function estimateEnvelopeActivityRate(
 }
 
 /**
+ * Converts the actual inset drawing limits into signal units. No physical-unit
+ * assumption is needed: the same projection applies to volts, counts, or a.u.
+ * One visible span of additional excess reaches the ribbon's strongest color.
+ * Collapsed or invalid projections have no meaningful clipping range.
+ */
+export function traceClippingRange(
+  rowHeightPx: number,
+  baseline: number,
+  pixelsPerUnit: number,
+  edgeInsetPx: number,
+) {
+  if (!Number.isFinite(rowHeightPx) || !(rowHeightPx > 0)
+    || !Number.isFinite(baseline)
+    || !Number.isFinite(pixelsPerUnit) || !(pixelsPerUnit > 0)
+    || !Number.isFinite(edgeInsetPx) || edgeInsetPx < 0) return null;
+  const halfRange = (rowHeightPx / 2 - Math.min(edgeInsetPx, rowHeightPx / 2)) / pixelsPerUnit;
+  const minimum = baseline - halfRange;
+  const maximum = baseline + halfRange;
+  const fullIntensityExcess = 2 * halfRange;
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)
+    || !(maximum > minimum) || !Number.isFinite(fullIntensityExcess)) return null;
+  return { minimum, maximum, fullIntensityExcess };
+}
+
+/**
  * Returns a Gaussian-like halo around buckets whose extrema exceed the visible
- * voltage range. Only true clipping seeds the halo; neighboring buckets merely
- * receive its smooth lead-in or fade-out.
+ * signal range. Only true clipping seeds the halo; neighboring finite buckets
+ * receive its smooth lead-in or fade-out. Missing data interrupts the halo.
  */
 export function gaussianClippingHaloIntensity(
   minima: ArrayLike<number>,
@@ -475,7 +500,9 @@ export function gaussianClippingHaloIntensity(
     throw new Error("Clipping halo arrays must have equal lengths.");
   }
   if (!Number.isSafeInteger(targetIndex) || targetIndex < 0 || targetIndex >= minima.length) return 0;
-  if (gaps?.[targetIndex]) return 0;
+  if (gaps?.[targetIndex]
+    || !Number.isFinite(minima[targetIndex])
+    || !Number.isFinite(maxima[targetIndex])) return 0;
   if (!Number.isFinite(visibleMinimum)
     || !Number.isFinite(visibleMaximum)
     || !(visibleMaximum > visibleMinimum)
@@ -486,28 +513,29 @@ export function gaussianClippingHaloIntensity(
 
   const radius = Math.max(1, Math.ceil(sigmaBuckets * 3));
   let halo = 0;
-  const first = Math.max(0, targetIndex - radius);
-  const last = Math.min(minima.length - 1, targetIndex + radius);
-  for (let sourceIndex = first; sourceIndex <= last; sourceIndex += 1) {
-    if (gaps?.[sourceIndex]) continue;
-    const minimum = minima[sourceIndex];
-    const maximum = maxima[sourceIndex];
-    if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
-    const seed = clippingExcessIntensity(
-      minimum,
-      maximum,
-      visibleMinimum,
-      visibleMaximum,
-      fullIntensityExcess,
-    );
-    if (!(seed > 0)) continue;
-    const distance = (targetIndex - sourceIndex) / sigmaBuckets;
-    halo = Math.max(halo, seed * Math.exp(-.5 * distance * distance));
+  for (const direction of [-1, 1]) {
+    for (let offset = direction < 0 ? 0 : 1; offset <= radius; offset += 1) {
+      const sourceIndex = targetIndex + direction * offset;
+      if (sourceIndex < 0 || sourceIndex >= minima.length || gaps?.[sourceIndex]) break;
+      const minimum = minima[sourceIndex];
+      const maximum = maxima[sourceIndex];
+      if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) break;
+      const seed = clippingExcessIntensity(
+        minimum,
+        maximum,
+        visibleMinimum,
+        visibleMaximum,
+        fullIntensityExcess,
+      );
+      if (!(seed > 0)) continue;
+      const distance = offset / sigmaBuckets;
+      halo = Math.max(halo, seed * Math.exp(-.5 * distance * distance));
+    }
   }
   return halo;
 }
 
-/** Normalizes a bucket's distance beyond either voltage threshold. */
+/** Normalizes a bucket's distance beyond either visible signal boundary. */
 export function clippingExcessIntensity(
   minimum: number,
   maximum: number,
@@ -527,7 +555,7 @@ export function clippingExcessIntensity(
 }
 
 /**
- * Maps normalized voltage excess to the clipping ribbon's perceptual scale:
+ * Maps normalized signal excess to the clipping ribbon's perceptual scale:
  * viewer-background green at the threshold, lime midway, yellow high, and
  * orange at the most extreme values.
  */

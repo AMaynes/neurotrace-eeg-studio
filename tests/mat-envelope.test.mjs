@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MatSource, RawDatSource } from "../app/eeg-core.ts";
 import { mergeAdjacentEnvelopeWindows } from "../app/envelope-cache.ts";
+import { buildRawDatEnvelopeWindow } from "../app/raw-dat-envelope.ts";
 import { matWriter } from "./fixtures/legacy-mat.mjs";
 
 async function matSource(channels, sampleRate = 4, options = {}) {
@@ -181,4 +182,118 @@ test("standalone MAT overview cancels already-aborted and superseded scans, then
   assert.equal(retry.data[0].length, 10);
   assert.equal(Math.min(...retry.minima[0]), 0);
   assert.equal(Math.max(...retry.maxima[0]), 100);
+});
+
+test("progressive MAT previews contain exact completed prefixes for every selected channel on aligned and fractional grids", async (t) => {
+  const channels = Array.from({ length: 3 }, (_, channel) => Float32Array.from(
+    { length: 150_001 }, (_, frame) => (frame % (101 + channel)) - 50 + channel * 1_000,
+  ));
+  channels[0][700] = Number.NaN;
+  channels[2][32_767] = 31_000;
+  channels[2][32_768] = -32_000;
+  const source = await matSource(channels, 1000, {
+    channelLabels: ["A", "B", "C"], channelUnits: ["count", "µV", "a.u."],
+  });
+  t.mock.method(performance, "now", () => 0);
+  for (const [start, duration, buckets] of [[.137, 120, 600], [.1375, 120.001, 137]]) {
+    const snapshots = [];
+    const originalSnapshots = [];
+    const expected = await source.getEnvelopeWindow(start, duration, buckets, [2, 0]);
+    const result = await source.getEnvelopeWindow(start, duration, buckets, [2, 0], {
+      overviewIntervalMs: 100,
+      onOverview(snapshot) {
+        snapshots.push(snapshot);
+        originalSnapshots.push(structuredClone(snapshot));
+      },
+    });
+    assert.deepEqual(result, expected, "publication cannot change final source extrema, means, variation, gaps, or timing");
+    assert.ok(snapshots.length >= 2, "a useful prefix arrives before the completed window even under a time throttle");
+    assert.ok(snapshots[0].data[0].length < buckets);
+    assert.equal(snapshots.at(-1).data[0].length, buckets);
+    assert.deepEqual(snapshots, originalSnapshots, "later accumulation must never mutate an already published snapshot");
+    for (const snapshot of snapshots) {
+      const completed = snapshot.data[0].length;
+      assert.deepEqual(snapshot.channelIndices, [2, 0]);
+      assert.deepEqual(snapshot.channelLabels, ["C", "A"]);
+      assert.deepEqual(snapshot.channelUnits, ["a.u.", "count"]);
+      assert.equal(snapshot.startSec, result.startSec);
+      assert.equal(snapshot.bucketDurationSec, result.bucketDurationSec);
+      assert.equal(snapshot.durationSec, completed * result.bucketDurationSec);
+      assert.deepEqual(snapshot.sampleRates, result.sampleRates);
+      assert.deepEqual(snapshot.channelStartSecs, result.channelStartSecs);
+      for (const field of ["data", "minima", "maxima", "gaps", "variation"]) {
+        for (let channel = 0; channel < 2; channel += 1) {
+          assert.equal(snapshot[field][channel].length, completed, "all channels end at the same completed bucket");
+          assert.deepEqual(snapshot[field][channel], result[field][channel].slice(0, completed));
+          assert.notEqual(snapshot[field][channel].buffer, result[field][channel].buffer);
+        }
+      }
+    }
+  }
+});
+
+test("progressive MAT snapshots normalize empty and missing buckets without mutating live accumulation", async () => {
+  const source = await matSource([[1, Number.NaN, 3, 4], [11, 12, 13, 14]], 4);
+  const snapshots = [];
+  const result = await source.getEnvelopeWindow(0, 1, 8, undefined, {
+    overviewIntervalMs: 1,
+    onOverview(snapshot) { snapshots.push(structuredClone(snapshot)); snapshot.data[0].fill(999); },
+  });
+  assert.equal(snapshots.length, 1);
+  assert.deepEqual(snapshots[0], result);
+  assert.deepEqual([...result.data[0]], [1, NaN, NaN, NaN, 3, NaN, 4, NaN]);
+  assert.deepEqual([...result.gaps[0]], [0, 0, 1, 0, 0, 0, 0, 0]);
+  assert.deepEqual([...result.minima[0]], [1, NaN, NaN, NaN, 3, NaN, 4, NaN]);
+});
+
+test("time-chunked multichannel MAT accumulation remains byte-identical to the production DAT worker builder", async () => {
+  const channels = Array.from({ length: 3 }, (_, channel) => Float32Array.from(
+    { length: 70_001 }, (_, frame) => (frame % (131 + channel)) - 65,
+  ));
+  channels[2][21_844] = -32_000;
+  channels[2][21_845] = 31_000;
+  const channelLabels = ["A", "B", "C"];
+  const channelUnits = ["count", "count", "count"];
+  const source = await matSource(channels, 1000, { channelLabels, channelUnits });
+  const bytes = Buffer.alloc(channels.length * channels[0].length * 2);
+  channels[0].forEach((_, frame) => channels.forEach((channel, index) => {
+    bytes.writeInt16LE(channel[frame], (frame * channels.length + index) * 2);
+  }));
+  const dat = await RawDatSource.create(new File([bytes], "synthetic-chunked.dat"), {
+    sampleRate: 1000, channelCount: 3, channelLabels, channelUnits,
+  });
+  // Compare the same inclusive first source frame; fractional bucket widths
+  // still exercise the non-integer grid independently of the MAT accumulator.
+  for (const [start, duration, buckets] of [[.125, 65, 650], [.125, 65.001, 37]]) {
+    const expected = await buildRawDatEnvelopeWindow({
+      ...dat.envelopeWorkerSource,
+      startSec: start, durationSec: duration, bucketCount: buckets, channelIndices: [2, 0, 1],
+    });
+    assert.deepEqual(
+      await source.getEnvelopeWindow(start, duration, buckets, [2, 0, 1], { overviewIntervalMs: 1, onOverview() {} }),
+      expected.window,
+    );
+  }
+});
+
+test("progressive MAT cancellation stops after a completed multichannel prefix and permits an exact retry", async (t) => {
+  const channels = [new Float32Array(100_000).fill(7), new Float32Array(100_000).fill(19)];
+  const source = await matSource(channels, 1000);
+  t.mock.method(performance, "now", () => 0);
+  const controller = new AbortController();
+  const reason = new Error("Synthetic superseding zoom");
+  const snapshots = [];
+  await assert.rejects(source.getEnvelopeWindow(0, 100, 100, [1, 0], {
+    signal: controller.signal,
+    overviewIntervalMs: 1,
+    onOverview(snapshot) { snapshots.push(snapshot); controller.abort(reason); },
+  }), (error) => error === reason);
+  assert.equal(snapshots.length, 1, "the canceled scan cannot publish more previews");
+  assert.equal(snapshots[0].durationSec, 32);
+  assert.deepEqual(snapshots[0].channelIndices, [1, 0]);
+  assert.deepEqual([...snapshots[0].data[0]], new Array(32).fill(19));
+  assert.deepEqual([...snapshots[0].data[1]], new Array(32).fill(7));
+  const retry = await source.getEnvelopeWindow(0, 100, 100, [1, 0]);
+  assert.deepEqual([...retry.data[0]], new Array(100).fill(19));
+  assert.deepEqual([...retry.data[1]], new Array(100).fill(7));
 });

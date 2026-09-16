@@ -5,6 +5,7 @@
  */
 
 import { buildEnvelopePyramid } from "./eeg-core.ts";
+import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
 import type {
   EDFHeader,
   EDFSignalHeader,
@@ -69,6 +70,8 @@ export interface EDFEnvelopeBuildRequest {
   channelIndices?: readonly number[];
   chunkSizeBytes?: number;
   integrity?: EDFEnvelopeIntegrityRequest;
+  /** Publish exact, completed prefixes at this interval; omitted disables previews. */
+  overviewIntervalMs?: number;
   /**
    * When set, build conservative full-coverage envelope levels down to this
    * approximate bucket count before returning from the worker. The first
@@ -104,6 +107,8 @@ export interface EDFEnvelopeSourceChunk {
 export interface EDFEnvelopeBuildHooks {
   signal?: AbortSignal;
   onProgress?: (progress: EDFEnvelopeProgress) => void;
+  /** Independent snapshots containing completed prefix buckets only. */
+  onOverview?: (window: EnvelopeWindowData) => void;
   /** Allows hashing/indexing to piggyback on the exact same sequential reads. */
   onSourceChunk?: (chunk: EDFEnvelopeSourceChunk) => void | Promise<void>;
   /** Read every declared EDF record even if the display window is smaller. */
@@ -329,6 +334,27 @@ export async function buildEDFEnvelopeWindow(
     endSec,
     request.bucketCount,
   );
+  const effectiveRate = durationSec > 0 ? request.bucketCount / durationSec : 0;
+  const window: EnvelopeWindowData = {
+    data: selected.map((entry) => entry.accumulator.data),
+    minima: selected.map((entry) => entry.accumulator.minima),
+    maxima: selected.map((entry) => entry.accumulator.maxima),
+    gaps: selected.map((entry) => entry.accumulator.gaps),
+    variation: selected.map((entry) => entry.accumulator.variation),
+    bucketDurationSec: durationSec > 0 ? durationSec / request.bucketCount : 0,
+    sampleRates: selected.map(() => effectiveRate),
+    channelStartSecs: selected.map(() => startSec),
+    startSec,
+    durationSec,
+    channelIndices: indices,
+    channelLabels: selected.map((entry) => entry.signal.label),
+    channelUnits: selected.map((entry) => entry.unit),
+  };
+  const publishOverview = createProgressiveEnvelopePublisher(
+    window,
+    request.overviewIntervalMs,
+    hooks.onOverview,
+  );
   const requestedFirstRecord = Math.floor(startSec / request.header.dataRecordDurationSec);
   const requestedLastRecord = Math.min(
     request.header.dataRecordCount,
@@ -463,6 +489,16 @@ export async function buildEDFEnvelopeWindow(
       metrics.decodeMs += nowMs() - decodeStartedAt;
       metrics.recordsRead += chunkEndRecord - chunkRecord;
       hooks.onProgress?.(makeProgress("decoding", metrics, startedAt));
+      throwIfAborted(hooks.signal);
+      // Mixed-rate signals can enter the next bucket at different samples.
+      // Publish only the common prefix that none of them can modify again.
+      const completedBuckets = selected.reduce((minimum, entry) => {
+        const nextSample = Math.max(entry.firstSample, chunkEndRecord * entry.signal.samplesPerRecord);
+        return Math.min(minimum, nextSample >= entry.endSample
+          ? request.bucketCount
+          : Math.min(request.bucketCount - 1, Math.floor((nextSample - entry.requestStartSample) * entry.bucketScale)));
+      }, request.bucketCount);
+      publishOverview(completedBuckets);
     }
   }
 
@@ -475,22 +511,6 @@ export async function buildEDFEnvelopeWindow(
   const finalizeStartedAt = nowMs();
   for (const entry of selected) finishAccumulator(entry.accumulator, hooks.signal);
   metrics.decodeMs += nowMs() - finalizeStartedAt;
-  const effectiveRate = durationSec > 0 ? request.bucketCount / durationSec : 0;
-  const window: EnvelopeWindowData = {
-    data: selected.map((entry) => entry.accumulator.data),
-    minima: selected.map((entry) => entry.accumulator.minima),
-    maxima: selected.map((entry) => entry.accumulator.maxima),
-    gaps: selected.map((entry) => entry.accumulator.gaps),
-    variation: selected.map((entry) => entry.accumulator.variation),
-    bucketDurationSec: durationSec > 0 ? durationSec / request.bucketCount : 0,
-    sampleRates: selected.map(() => effectiveRate),
-    channelStartSecs: selected.map(() => startSec),
-    startSec,
-    durationSec,
-    channelIndices: indices,
-    channelLabels: selected.map((entry) => entry.signal.label),
-    channelUnits: selected.map((entry) => entry.unit),
-  };
   let pyramidLevels: EnvelopeWindowData[] | undefined;
   if (request.pyramidMinimumBucketCount !== undefined) {
     const pyramidStartedAt = nowMs();
