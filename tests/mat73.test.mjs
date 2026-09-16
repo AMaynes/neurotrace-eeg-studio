@@ -50,9 +50,9 @@ test("MAT v7.3 envelope timing follows the bucket grid and is accepted by the re
     sampleRateSource: "/Fs", channelLabels: ["A", "B"], warnings: [],
   };
   const client = {
-    async readEnvelope(request) {
+    async readEnvelope(request, _signal, onOverview) {
       requests.push(request);
-      return {
+      const result = {
         firstSample: request.firstSample,
         bucketDurationSec: request.durationSec / request.bucketCount,
         data: request.channelIndices.map(() => new Float32Array(request.bucketCount)),
@@ -60,6 +60,13 @@ test("MAT v7.3 envelope timing follows the bucket grid and is accepted by the re
         maxima: request.channelIndices.map(() => new Float32Array(request.bucketCount).fill(10)),
         gaps: request.channelIndices.map(() => new Uint8Array(request.bucketCount)),
       };
+      if (onOverview) onOverview({ ...result,
+        data: result.data.map((values) => values.slice(0, 10)),
+        minima: result.minima.map((values) => values.slice(0, 10)),
+        maxima: result.maxima.map((values) => values.slice(0, 10)),
+        gaps: result.gaps.map((values) => values.slice(0, 10)),
+      });
+      return result;
     },
     async readWindow(firstSample, endSample, channelIndices) {
       return { firstSample, data: channelIndices.map(() => new Float32Array(endSample - firstSample)) };
@@ -68,11 +75,19 @@ test("MAT v7.3 envelope timing follows the bucket grid and is accepted by the re
   };
   t.mock.method(Mat73WorkerClient, "create", async () => ({ client, metadata }));
   const source = await Mat73Source.create(new File(["synthetic"], "overview-v73.mat"));
-  const whole = await source.getEnvelopeWindow(0, 3600, 2048);
+  const prefixes = [];
+  const whole = await source.getEnvelopeWindow(0, 3600, 2048, undefined, {
+    overviewIntervalMs: 500,
+    onOverview: (window) => prefixes.push(window),
+  });
   assert.deepEqual(whole.sampleRates, [2048 / 3600, 2048 / 3600]);
   assert.deepEqual(whole.channelStartSecs, [0, 0]);
   assert.equal(whole.bucketDurationSec, 3600 / 2048);
   const cache = new RecordingOverviewCache();
+  assert.equal(requests[0].overviewIntervalMs, 500);
+  assert.equal(prefixes.length, 1);
+  assert.equal(prefixes[0].durationSec, 10 * 3600 / 2048);
+  assert.equal(cache.put(source, prefixes[0], { complete: false }), true);
   assert.equal(cache.put(source, whole, { complete: true }), true,
     "source sample rates must not incorrectly describe a screen-resolution overview");
   assert.equal(cache.get(source).window, whole);

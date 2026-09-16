@@ -1,4 +1,9 @@
-/** File-backed HDF5 reader for MATLAB v7.3 recordings. */
+/**
+ * File-backed HDF5 reader for MATLAB v7.3 recordings. HDF5 calls are synchronous
+ * and confined to this worker. Envelope jobs yield between bounded chunks so
+ * ordinary reads and cancellation can run; close invalidates every active job
+ * before releasing the file, preventing stale jobs from accessing its datasets.
+ */
 
 import h5wasm, { Dataset, Group, Reference } from "h5wasm";
 import {
@@ -11,6 +16,7 @@ import {
   type Mat73WorkerRequest,
   type Mat73WorkerResponse,
 } from "./mat73";
+import { createProgressiveEnvelopePublisher } from "./progressive-envelope";
 
 const MOUNT_PATH = "/neurotrace-mat73";
 const NUMERIC_DTYPE = /^(?:[<>=|])?[bBhHiIlLqQefd]$/;
@@ -22,6 +28,8 @@ let signalDataset: Dataset | null = null;
 let metadata: Mat73OpenResult | null = null;
 let mounted = false;
 let mountedFs: Awaited<typeof h5wasm.ready>["FS"] | null = null;
+let fileGeneration = 0;
+const envelopeJobs = new Map<number, AbortController>();
 
 const workerScope = self as unknown as {
   onmessage: ((event: MessageEvent<Mat73WorkerRequest>) => void) | null;
@@ -144,7 +152,9 @@ function chooseChannelLabels(
 
 async function openMatFile(file: File): Promise<Mat73OpenResult> {
   if (openedFile) throw signalError("INVALID_HEADER", "A MATLAB v7.3 file is already open in this worker.");
+  const generation = ++fileGeneration;
   const { FS } = await h5wasm.ready;
+  if (generation !== fileGeneration) throw new DOMException("MATLAB v7.3 open canceled", "AbortError");
   mountedFs = FS;
   FS.mkdir(MOUNT_PATH);
   FS.mount(FS.filesystems.WORKERFS, { files: [file] }, MOUNT_PATH);
@@ -254,17 +264,57 @@ function readWindow(firstSample: number, endSample: number, channelIndices: numb
   return { data: outputs, firstSample };
 }
 
-function readEnvelope(request: Extract<Mat73WorkerRequest, { type: "envelope" }>): Mat73EnvelopeResult {
+/** A message task yields without the nested-timer delay of repeated setTimeout. */
+function yieldToWorkerRequests() {
+  return new Promise<void>((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
+}
+
+async function readEnvelope(
+  request: Extract<Mat73WorkerRequest, { type: "envelope" }>,
+  signal: AbortSignal,
+  generation: number,
+): Promise<Mat73EnvelopeResult> {
   validateRead(request.firstSample, request.endSample, request.channelIndices);
   if (!Number.isInteger(request.bucketCount) || request.bucketCount <= 0 || request.bucketCount > 1_000_000) {
     throw signalError("INVALID_WINDOW", "MATLAB v7.3 envelope bucket count is invalid.");
   }
   const { dataset, metadata: openMetadata } = requireOpen();
+  const checkActive = () => {
+    signal.throwIfAborted();
+    if (generation !== fileGeneration) throw new DOMException("MATLAB v7.3 source changed", "AbortError");
+  };
+  checkActive();
   const minima = request.channelIndices.map(() => new Float32Array(request.bucketCount).fill(Number.POSITIVE_INFINITY));
   const maxima = request.channelIndices.map(() => new Float32Array(request.bucketCount).fill(Number.NEGATIVE_INFINITY));
   const gaps = request.channelIndices.map(() => new Uint8Array(request.bucketCount).fill(1));
   const data = request.channelIndices.map(() => new Float32Array(request.bucketCount).fill(Number.NaN));
   const counts = request.channelIndices.map(() => new Uint32Array(request.bucketCount));
+  const bucketDurationSec = request.durationSec / request.bucketCount;
+  const publishOverview = createProgressiveEnvelopePublisher({
+    data, minima, maxima, gaps, bucketDurationSec,
+    startSec: request.startSec,
+    durationSec: request.durationSec,
+    channelIndices: request.channelIndices,
+    channelLabels: request.channelIndices.map((index) => openMetadata.channelLabels[index]),
+    channelUnits: request.channelIndices.map(() => "a.u."),
+    sampleRates: request.channelIndices.map(() => bucketDurationSec > 0 ? 1 / bucketDurationSec : 0),
+    channelStartSecs: request.channelIndices.map(() => request.startSec),
+  }, request.overviewIntervalMs, (window) => {
+    checkActive();
+    const result: Mat73EnvelopeResult = {
+      data: window.data, minima: window.minima, maxima: window.maxima, gaps: window.gaps,
+      bucketDurationSec: window.bucketDurationSec, firstSample: request.firstSample,
+    };
+    workerScope.postMessage({ type: "overview", requestId: request.requestId, result }, mat73TransferList(result));
+  });
   const sampleCount = request.endSample - request.firstSample;
   if (!sampleCount || !request.channelIndices.length) {
     minima.forEach((channel) => channel.fill(0));
@@ -283,6 +333,7 @@ function readEnvelope(request: Extract<Mat73WorkerRequest, { type: "envelope" }>
   const channelSpan = maximumChannel - minimumChannel + 1;
   const samplesPerChunk = Math.max(1, Math.floor(READ_CHUNK_BYTES / (channelSpan * 8)));
   for (let chunkStart = request.firstSample; chunkStart < request.endSample; chunkStart += samplesPerChunk) {
+    checkActive();
     const chunkEnd = Math.min(request.endSample, chunkStart + samplesPerChunk);
     const chunkSamples = chunkEnd - chunkStart;
     const ranges: Parameters<Dataset["slice"]>[0] = openMetadata.sampleAxis === 0
@@ -313,7 +364,14 @@ function readEnvelope(request: Extract<Mat73WorkerRequest, { type: "envelope" }>
         gaps[outputIndex][bucket] = 0;
       });
     }
+    const completedBuckets = chunkEnd === request.endSample ? request.bucketCount : Math.max(0, Math.min(
+      request.bucketCount - 1,
+      Math.floor(((chunkEnd / openMetadata.sampleRate - request.startSec) / request.durationSec) * request.bucketCount),
+    ));
+    publishOverview(completedBuckets);
+    if (chunkEnd < request.endSample) await yieldToWorkerRequests();
   }
+  checkActive();
   data.forEach((_, channelIndex) => {
     for (let bucket = 0; bucket < request.bucketCount; bucket += 1) {
       if (gaps[channelIndex][bucket]) {
@@ -333,6 +391,9 @@ function readEnvelope(request: Extract<Mat73WorkerRequest, { type: "envelope" }>
 }
 
 function closeFile() {
+  fileGeneration += 1;
+  for (const controller of envelopeJobs.values()) controller.abort();
+  envelopeJobs.clear();
   openedFile?.close();
   openedFile = null;
   signalDataset = null;
@@ -359,8 +420,18 @@ workerScope.onmessage = (event) => {
       const result = readWindow(request.firstSample, request.endSample, request.channelIndices);
       workerScope.postMessage({ type: "window", requestId: request.requestId, result }, mat73TransferList(result));
     } else if (request.type === "envelope") {
-      const result = readEnvelope(request);
-      workerScope.postMessage({ type: "envelope", requestId: request.requestId, result }, mat73TransferList(result));
+      const controller = new AbortController();
+      const generation = fileGeneration;
+      envelopeJobs.set(request.requestId, controller);
+      void readEnvelope(request, controller.signal, generation).then((result) => {
+        if (!controller.signal.aborted && generation === fileGeneration) {
+          workerScope.postMessage({ type: "envelope", requestId: request.requestId, result }, mat73TransferList(result));
+        }
+      }, (error: unknown) => {
+        if (!controller.signal.aborted && generation === fileGeneration) postError(request.requestId, error);
+      }).finally(() => envelopeJobs.delete(request.requestId));
+    } else if (request.type === "cancel") {
+      envelopeJobs.get(request.requestId)?.abort();
     } else {
       closeFile();
       workerScope.postMessage({ type: "closed", requestId: request.requestId });

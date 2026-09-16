@@ -77,8 +77,8 @@ test("157-channel hour index serves whole-file zooms and newly enabled channels 
 test("existing zoom controls use protected overviews without new buttons, modes, or filter overrides", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(page, /wholeFileOverviewMode|setWholeFileOverviewMode|aria-label="Whole file"/);
-  assert.match(page, /const canUseRecordingOverview\s*=\s*!filters\.enabled\s*&&\s*montage\s*===\s*"referential"/);
-  assert.match(page, /const overviewRefreshRevision\s*=\s*canUseRecordingOverview\s*\?\s*recordingOverviewRevision\s*:\s*0/,
+  assert.match(page, /recordingOverviewDisplayPolicy\(\{/);
+  assert.match(page, /const overviewRefreshRevision\s*=\s*overviewDisplayPolicy\s*===\s*"final"\s*\?\s*recordingOverviewRevision\s*:\s*0/,
     "index progress must not cancel detailed reads that cannot use the coarse index");
   const refresh = page.slice(page.indexOf("const refreshWindow ="), page.indexOf("const spectrogramInputPlan"));
   assert.ok(refresh.indexOf("recordingOverviewDisplayWindow") < refresh.indexOf("sourceVerificationRef.current"),

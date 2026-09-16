@@ -224,7 +224,11 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /buildRawDatFileWindowOffThread/);
   assert.match(refresh, /pyramidMinimumBucketCount:\s*buildPyramid\s*\?\s*64\s*:\s*undefined/);
   assert.match(refresh, /fallbackToMainThread:\s*false/);
-  assert.match(refresh, /sourceVerificationRef\.current[\s\S]*?requiredDuration\s*>\s*maximumEnvelopeReadDuration/);
+  assert.match(refresh, /if \(overviewDisplayPolicy === "final" && sourceVerificationRef\.current\)/,
+    "only views fully served by the background index may await its first prefix");
+  assert.doesNotMatch(refresh, /requiredDuration\s*>\s*maximumEnvelopeReadDuration/,
+    "foreground detail must not wait for unrelated whole-file verification");
+  assert.match(refresh, /onOverview:\s*publishWindowPreview/);
   assert.match(page, /FULL_SESSION_ENVELOPE_REFINEMENT\s*=\s*32/);
   assert.match(page, /adaptiveTimeGridInterval\(timebase/);
   assert.match(page, /MAX_INTERACTIVE_TIMELINE_ANNOTATIONS\s*=\s*400/);

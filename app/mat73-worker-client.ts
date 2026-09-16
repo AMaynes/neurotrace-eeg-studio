@@ -17,6 +17,7 @@ interface PendingRequest {
   reject: (error: unknown) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
+  onOverview?: (result: Mat73EnvelopeResult) => void;
 }
 
 let nextRequestId = 1;
@@ -50,6 +51,14 @@ export class Mat73WorkerClient {
       const response = event.data;
       const pending = this.pending.get(response.requestId);
       if (!pending) return;
+      if (response.type === "overview") {
+        try {
+          pending.onOverview?.(response.result);
+        } catch {
+          // An optional display preview must not invalidate the final read.
+        }
+        return;
+      }
       this.finishRequest(response.requestId);
       if (response.type === "error") {
         pending.reject(responseError(response));
@@ -101,18 +110,27 @@ export class Mat73WorkerClient {
   readEnvelope(
     request: Omit<Extract<Mat73WorkerRequest, { type: "envelope" }>, "type" | "requestId">,
     signal?: AbortSignal,
+    onOverview?: (result: Mat73EnvelopeResult) => void,
   ) {
-    return this.send<Mat73EnvelopeResult>({ type: "envelope", ...request }, signal);
+    return this.send<Mat73EnvelopeResult>({ type: "envelope", ...request }, signal, onOverview);
   }
 
   close() {
     if (this.failedError) return;
-    void this.send<undefined>({ type: "close" }).finally(() => this.worker.terminate());
+    // No caller may remain waiting for a task whose worker is being closed.
+    for (const [id, pending] of this.pending) {
+      this.finishRequest(id);
+      pending.reject(new DOMException("MATLAB v7.3 source closed", "AbortError"));
+    }
+    const closing = this.send<undefined>({ type: "close" });
+    this.failedError = new Error("MATLAB v7.3 source is closed.");
+    void closing.then(() => this.worker.terminate(), () => this.worker.terminate());
   }
 
   private send<T extends WorkerResult>(
     request: ClientRequest,
     signal?: AbortSignal,
+    onOverview?: (result: Mat73EnvelopeResult) => void,
   ): Promise<T> {
     if (signal?.aborted) return Promise.reject(abortReason(signal));
     if (this.failedError) return Promise.reject(this.failedError);
@@ -121,6 +139,11 @@ export class Mat73WorkerClient {
       const onAbort = signal
         ? () => {
           this.finishRequest(id);
+          try {
+            this.worker.postMessage({ type: "cancel", requestId: id } satisfies Mat73WorkerRequest);
+          } catch {
+            // A failed/terminated worker has no remaining work to cancel.
+          }
           reject(abortReason(signal));
         }
         : undefined;
@@ -129,6 +152,7 @@ export class Mat73WorkerClient {
         reject,
         signal,
         onAbort,
+        onOverview,
       });
       signal?.addEventListener("abort", onAbort!, { once: true });
       try {

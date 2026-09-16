@@ -2080,13 +2080,31 @@ export class Mat73Source implements SignalSource {
     durationSec: number,
     bucketCount: number,
     channelIndices?: readonly number[],
-    options: SignalReadOptions = {},
+    options: EnvelopeReadOptions = {},
   ): Promise<EnvelopeWindowData> {
     validateEnvelopeBucketCount(bucketCount);
     const request = normalizeWindowRequest(this.meta, startSec, durationSec, channelIndices);
     const sampleRate = this.meta.sampleRate;
     const firstSample = Math.floor(request.startSec * sampleRate);
     const endSample = Math.min(this.sampleCount, Math.ceil(request.endSec * sampleRate));
+    const toWindow = (result: Awaited<ReturnType<Mat73WorkerClient["readEnvelope"]>>, complete: boolean): EnvelopeWindowData => ({
+      ...makeWindowResult(
+        this.meta,
+        complete ? request : {
+          ...request,
+          durationSec: (result.data[0]?.length ?? 0) * result.bucketDurationSec,
+          endSec: request.startSec + (result.data[0]?.length ?? 0) * result.bucketDurationSec,
+        },
+        result.data,
+        request.channelIndices.map(() => result.bucketDurationSec > 0 ? 1 / result.bucketDurationSec : 0),
+        // Buckets start at the requested time, not the earlier source frame.
+        request.channelIndices.map(() => request.startSec),
+      ),
+      minima: result.minima,
+      maxima: result.maxima,
+      gaps: result.gaps,
+      bucketDurationSec: result.bucketDurationSec,
+    });
     const result = await this.client.readEnvelope({
       firstSample,
       endSample,
@@ -2094,22 +2112,9 @@ export class Mat73Source implements SignalSource {
       durationSec: request.durationSec,
       bucketCount,
       channelIndices: request.channelIndices,
-    }, options.signal);
-    return {
-      ...makeWindowResult(
-        this.meta,
-        request,
-        result.data,
-        request.channelIndices.map(() => result.bucketDurationSec > 0 ? 1 / result.bucketDurationSec : 0),
-        // Envelope buckets are anchored to the requested interval, not the
-        // earlier source frame included to cover a fractional sample boundary.
-        request.channelIndices.map(() => request.startSec),
-      ),
-      minima: result.minima,
-      maxima: result.maxima,
-      gaps: result.gaps,
-      bucketDurationSec: result.bucketDurationSec,
-    };
+      overviewIntervalMs: options.overviewIntervalMs,
+    }, options.signal, options.onOverview ? (preview) => options.onOverview?.(toWindow(preview, false)) : undefined);
+    return toWindow(result, true);
   }
 }
 

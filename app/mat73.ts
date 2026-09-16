@@ -49,13 +49,16 @@ export type Mat73WorkerRequest =
     durationSec: number;
     bucketCount: number;
     channelIndices: number[];
+    overviewIntervalMs?: number;
   }
+  | { type: "cancel"; requestId: number }
   | { type: "close"; requestId: number };
 
 export type Mat73WorkerResponse =
   | { type: "opened"; requestId: number; result: Mat73OpenResult }
   | { type: "window"; requestId: number; result: Mat73WindowResult }
   | { type: "envelope"; requestId: number; result: Mat73EnvelopeResult }
+  | { type: "overview"; requestId: number; result: Mat73EnvelopeResult }
   | { type: "closed"; requestId: number }
   | {
     type: "error";

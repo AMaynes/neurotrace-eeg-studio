@@ -98,6 +98,7 @@ import {
   recordingOverviewDisplayWindow,
   recordingOverviewPlan,
 } from "./recording-overview";
+import { recordingOverviewDisplayPolicy } from "./overview-display-policy";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -393,6 +394,10 @@ type DisplayWindow = {
   flatlineRegions: Array<{ startSec: number; endSec: number }>;
   /** Only present while drawing a progressively indexed recording overview. */
   indexedThroughSec?: number;
+  /** A coarse preview is usable while the requested finer grid is still loading. */
+  refiningOverview?: boolean;
+  /** Absolute start of the unread tail, never represented as a flat signal. */
+  unreadAfterSec?: number;
 };
 
 type RawWindowCache = {
@@ -2966,15 +2971,16 @@ export default function Home() {
   // Progress must not repeatedly cancel a detailed read. Only coarse views
   // that can use the recording index subscribe to its incremental revisions.
   const overviewPlanForView = useMemo(() => recordingOverviewPlan(meta), [meta]);
-  const canUseRecordingOverview = !filters.enabled && montage === "referential"
-    && overviewPlanForView !== null
-    && waveformWidth >= MIN_WAVEFORM_WIDTH_FOR_ENVELOPE
-    && [...selectedChannels].some((index) =>
-      (meta.sampleRates[index] ?? primarySampleRate(meta)) * timebase > Math.max(2, waveformWidth * 1.5))
-    && (timebase >= meta.durationSec - 1e-9
-      || overviewPlanForView.durationSec / overviewPlanForView.bucketCount
-        <= timebase / waveformOverviewColumnBudget(timebase, waveformWidth) * 1.05);
-  const overviewRefreshRevision = canUseRecordingOverview ? recordingOverviewRevision : 0;
+  const overviewDisplayPolicy = overviewPlanForView ? recordingOverviewDisplayPolicy({
+    recordingDurationSec: meta.durationSec,
+    overviewBucketDurationSec: overviewPlanForView.durationSec / overviewPlanForView.bucketCount,
+    viewDurationSec: timebase,
+    waveformWidthPx: waveformWidth,
+    sourceSampleRates: [...selectedChannels].map((index) => meta.sampleRates[index] ?? primarySampleRate(meta)),
+    filtersEnabled: filters.enabled,
+    montage,
+  }) : "none";
+  const overviewRefreshRevision = overviewDisplayPolicy === "final" ? recordingOverviewRevision : 0;
 
   useEffect(() => {
     displayAbortRef.current?.abort();
@@ -3025,19 +3031,21 @@ export default function Home() {
           ]),
           values,
         ));
-        const wholeOverview = recordingOverviewCacheRef.current.get(source);
-        if (canUseRecordingOverview && wholeOverview) {
-          const visible = recordingOverviewDisplayWindow(wholeOverview, signalViewStart, timebase, indices);
+        let previewCoverageEndSec = signalViewStart;
+        const showOverviewPreview = (visible: EnvelopeWindowData, status: Pick<DisplayWindow,
+          "indexedThroughSec" | "refiningOverview" | "unreadAfterSec">) => {
+          if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
           const sourceIndices = indices.map((index) => [index]);
+          const labels = indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`);
           const nextDisplay: DisplayWindow = {
             data: visible.data,
-            traceBaselines: stableTraceBaselines(visible.data, visible.channelLabels, sourceIndices, visible.channelUnits),
+            traceBaselines: stableTraceBaselines(visible.data, labels, sourceIndices, visible.channelUnits),
             envelopes: visible.data.map((_, position) => ({
               minima: visible.minima[position], maxima: visible.maxima[position], gaps: visible.gaps[position],
               variation: visible.variation?.[position], startSec: visible.startSec,
               bucketDurationSec: visible.bucketDurationSec,
             })),
-            labels: visible.channelLabels,
+            labels,
             sampleRates: visible.sampleRates,
             sourceSampleRates: indices.map((index) => meta.sampleRates[index] ?? primarySampleRate(meta)),
             startSecs: visible.channelStartSecs,
@@ -3051,14 +3059,24 @@ export default function Home() {
                 visible.bucketDurationSec, { startSec: visible.startSec, thresholdFraction: .8, minimumDurationSec: .25 }),
               FLATLINE_DISPLAY_MERGE_GAP_SECONDS,
             ),
-            indexedThroughSec: wholeOverview.complete ? undefined : wholeOverview.window.durationSec,
+            ...status,
           };
           displayAppliedRequestIdRef.current = requestId;
           setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(nextDisplay) : nextDisplay);
           displayPreviewReadyRef.current = true;
           setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
           setLoadingSignal(false);
-          return;
+        };
+        const wholeOverview = recordingOverviewCacheRef.current.get(source);
+        if (overviewDisplayPolicy !== "none" && wholeOverview) {
+          const visible = recordingOverviewDisplayWindow(wholeOverview, signalViewStart, timebase, indices);
+          previewCoverageEndSec = wholeOverview.window.durationSec;
+          showOverviewPreview(visible, {
+            indexedThroughSec: wholeOverview.complete ? undefined : previewCoverageEndSec,
+            unreadAfterSec: wholeOverview.complete ? undefined : previewCoverageEndSec,
+            refiningOverview: overviewDisplayPolicy === "preview",
+          });
+          if (overviewDisplayPolicy === "final") return;
         }
         const useEnvelopePath = !filters.enabled
           && montage === "referential"
@@ -3080,15 +3098,10 @@ export default function Home() {
         const envelopeReadBudget = sourceVerificationRef.current
           ? INITIAL_PREVIEW_READ_BUDGET_BYTES
           : SOURCE_READ_AHEAD_BUDGET_BYTES;
-        const maximumEnvelopeReadDuration = envelopeReadBudget / Math.max(1, storageByteRate);
-        if (useEnvelopePath
-          && sourceVerificationRef.current
-          && requiredDuration > maximumEnvelopeReadDuration * 1.01) {
-          // The background verifier is already reading the complete source and
-          // building the reusable overview. Starting a second hours-wide scan
-          // here used to make both operations contend for disk and CPU. Keep
-          // the current preview on screen until the first indexed prefix can
-          // be shown. Completed prefixes update coarse views during the scan.
+        if (overviewDisplayPolicy === "final" && sourceVerificationRef.current) {
+          // Only a view fully served by the background index waits for its
+          // first prefix. Finer windows read their selected region immediately;
+          // they must not wait for unrelated hours of whole-file validation.
           return;
         }
         const decodedWindowBudget = source instanceof EDFSource || source instanceof RawDatSource
@@ -3175,6 +3188,19 @@ export default function Home() {
             const bucketCount = Math.min(requestedBucketCount, maximumUsefulBucketCount);
             const readSourceEnvelope = source.getEnvelopeWindow.bind(source);
             const readOverview = async (cacheStart: number, cacheDuration: number, bucketCount: number, buildPyramid = true) => {
+              const publishWindowPreview = (prefix: EnvelopeWindowData) => {
+                if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+                const prefixEnd = prefix.startSec + prefix.durationSec;
+                // Never replace a complete coarse view with a shorter fine
+                // prefix, or replace a retained extension with its far edge.
+                if (prefix.startSec > signalViewStart + 1e-9 || prefixEnd <= previewCoverageEndSec
+                  || prefixEnd <= signalViewStart) return;
+                previewCoverageEndSec = prefixEnd;
+                showOverviewPreview(sliceEnvelopeWindow(prefix, signalViewStart, timebase), {
+                  refiningOverview: true,
+                  unreadAfterSec: prefixEnd < visibleEnd ? prefixEnd : undefined,
+                });
+              };
               const expectedBytes = source instanceof EDFSource
                 ? expectedEDFRecordBytes(source, cacheStart, cacheDuration)
                 : source instanceof RawDatSource
@@ -3203,9 +3229,11 @@ export default function Home() {
                     bucketCount,
                     channelIndices: indices,
                     pyramidMinimumBucketCount: buildPyramid ? 64 : undefined,
+                    overviewIntervalMs: 500,
                   }, {
                     signal: abortController.signal,
                     fallbackToMainThread: false,
+                    onOverview: publishWindowPreview,
                     onProgress: (progress: EDFEnvelopeProgress) => {
                       const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
                       lastReportedReadBytes = progress.bytesRead;
@@ -3236,9 +3264,11 @@ export default function Home() {
                     bucketCount,
                     channelIndices: indices,
                     pyramidMinimumBucketCount: buildPyramid ? 64 : undefined,
+                    overviewIntervalMs: 500,
                   }, {
                     signal: abortController.signal,
                     fallbackToMainThread: false,
+                    onOverview: publishWindowPreview,
                     onProgress: (progress) => {
                       const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
                       lastReportedReadBytes = progress.bytesRead;
@@ -3267,7 +3297,7 @@ export default function Home() {
                     cacheDuration,
                     bucketCount,
                     indices,
-                    { signal: abortController.signal },
+                    { signal: abortController.signal, overviewIntervalMs: 500, onOverview: publishWindowPreview },
                   );
                   readOperation?.finish({
                     completedBytes: expectedBytes,
@@ -3787,7 +3817,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [canUseRecordingOverview, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
+  }, [overviewDisplayPolicy, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
   const spectrogramInputPlan = useMemo(() => {
     const targetDisplayIndices = channelSelectionActive
@@ -7226,13 +7256,15 @@ export default function Home() {
                   {loadingSignal && <div className="signal-loading" role="status"><span /> {verifyingSource
                     ? "Preparing signal window… The file is also still being validated, so this may take longer than usual."
                     : "Preparing signal window…"}</div>}
-                  {!loadingSignal && display.indexedThroughSec !== undefined && <>
-                    {display.indexedThroughSec < viewStart + timebase && <div
+                  {!loadingSignal && (display.indexedThroughSec !== undefined || display.refiningOverview) && <>
+                    {display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase && <div
                       className="signal-indexing-pending"
-                      style={{ left: `${clamp((display.indexedThroughSec - viewStart) / timebase, 0, 1) * 100}%` }}
+                      style={{ left: `${clamp((display.unreadAfterSec - viewStart) / timebase, 0, 1) * 100}%` }}
                     ><span>Not indexed yet</span></div>}
                     <div className="signal-indexing-status" role="status">
-                      Building overview · {Math.min(100, Math.floor(display.indexedThroughSec / meta.durationSec * 100))}%
+                      {display.refiningOverview
+                        ? "Overview shown · loading finer detail…"
+                        : `Building overview · ${Math.min(100, Math.floor((display.indexedThroughSec ?? 0) / meta.durationSec * 100))}%`}
                       {verifyingSource ? " · File validation is also in progress" : ""}
                     </div>
                   </>}
