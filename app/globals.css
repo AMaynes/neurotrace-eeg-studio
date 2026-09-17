@@ -613,8 +613,6 @@ textarea:focus-visible {
 .spectrogram-frequency-control button { min-width: 20px; padding: 0 4px; }
 .spectrogram-frequency-control output { min-width: 45px; color: #9fb7bb; font-size: 7px; text-align: center; }
 .spectrogram-zoom-box { position: absolute; z-index: 5; min-width: 1px; min-height: 1px; border: 1px dashed rgba(87, 223, 183, .95); background: rgba(87, 223, 183, .14); box-shadow: inset 0 0 16px rgba(87, 223, 183, .08); pointer-events: none; }
-.spectrogram-help { position: absolute; z-index: 9; top: 31px; right: 7px; display: flex; flex-direction: column; gap: 4px; max-width: 330px; padding: 9px 10px; border: 1px solid #426169; border-radius: 5px; background: rgba(7, 18, 22, .97); box-shadow: 0 12px 32px rgba(0, 0, 0, .48); color: #9fb3b7; font: 7px ui-monospace, monospace; pointer-events: none; }
-.spectrogram-help strong { color: #e1edeb; font-size: 8px; }
 
 .timeline { position: relative; flex: 0 0 auto; border-bottom: 1px solid var(--border); background: #0a161b; user-select: none; }
 .timeline.box-selecting { cursor: crosshair; }
@@ -1828,31 +1826,6 @@ textarea:focus-visible {
 .channel-toggle-copy small { color: #60767c; font-size: 8px; }
 .channel-modal-note { margin: 10px 0 0 !important; font-size: 8px !important; }
 
-.help-modal { width: min(760px, calc(100vw - 32px)); }
-.help-sections {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
-  margin-top: 18px;
-}
-.help-sections section {
-  min-height: 76px;
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 8px;
-  padding: 9px;
-  border: 1px solid #20383f;
-  border-radius: 7px;
-  background: #0a171c;
-}
-.help-sections section > span {
-  color: var(--mint);
-  font: 800 9px ui-monospace, monospace;
-}
-.help-sections section > div { min-width: 0; }
-.help-sections strong { color: #d7e4e3; font-size: 10px; }
-.help-sections p { margin: 4px 0 0; color: #778d92; font-size: 9px; line-height: 1.45; }
-
 .settings-modal { width: min(680px, calc(100vw - 32px)); }
 .settings-section {
   margin-top: 14px;
@@ -2684,12 +2657,10 @@ textarea:focus-visible {
 .empty-session-labels strong,
 .channel-modal-tools button,
 .channel-toggle-copy strong,
-.help-sections p,
 .binding-list > label,
 .interaction-settings > label,
 .binding-note { font-size: 10px; }
 .session-map-button strong,
-.help-sections strong,
 .settings-heading strong { font-size: 11px; }
 
 /* Unavailable controls should recede clearly from the active clinical workspace. */
@@ -2758,7 +2729,6 @@ textarea:focus-visible {
   .file-summary-grid { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
   .channel-analysis-card > header { align-items: flex-start; flex-direction: column; }
   .channel-analysis-card > header label { width: 100%; }
-  .help-sections,
   .binding-list { grid-template-columns: 1fr; }
 }
 

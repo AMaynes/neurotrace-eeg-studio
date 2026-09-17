@@ -33,9 +33,11 @@ test("exposes TheStateEditor processing controls and linked navigation", async (
   assert.match(panel, /viewDuration \* 0\.15/);
   assert.match(panel, /effectiveDisplayMaxHz \+ 10/);
   assert.match(panel, /colorLimitShift/);
-  assert.match(panel, /Z box zoom · drag a time-frequency area/i);
-  assert.match(panel, /Frequency range shows the visible band/i);
-  assert.match(panel, /waveform controls also set time zoom/i);
+  const tutorials = await readFile(projectFile("app/tutorials.ts"), "utf8");
+  assert.match(panel, /onClick=\{onHelp\} aria-label="Open spectrogram tutorials"/);
+  assert.match(tutorials, /Select Z, just to the right of B/);
+  assert.match(tutorials, /Frequency range controls the visible Hz band/i);
+  assert.match(tutorials, /increase Window in the waveform toolbar/i);
   assert.equal((panel.match(/SPECTROGRAM_DRAG_PAN_SCALE/g) ?? []).length, 2);
   assert.match(page, /\(canvasShell \?\? spectrogramShell\)\?\.getBoundingClientRect\(\) \?\? viewerRect/);
   assert.match(page, /if \(spectrogramShell && \(event\.ctrlKey \|\| event\.metaKey\)\)[\s\S]*?return/);

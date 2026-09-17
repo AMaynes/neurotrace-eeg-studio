@@ -13,12 +13,14 @@ neurotrace-eeg-studio/
 │   ├── bids-companions.ts — Catalogs selected files and resolves matching BIDS JSON/TSV metadata, tables, channels, and events.
 │   ├── chatgpt-auth.ts — Provides optional ChatGPT-host authentication helpers; unused by the public GitHub build.
 │   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.
-│   ├── globals.css — Defines the complete NeuroTrace visual system and responsive workspace layout.
+│   ├── globals.css — Defines the shared NeuroTrace visual system and responsive workspace layout.
 │   ├── layout.tsx — Supplies application metadata, social previews, viewport configuration, and the root HTML shell.
 │   ├── neurotrace-project.ts — Builds and reopens versioned `.neurotrace` ZIP containers and safely classifies inert custom definitions.
 │   ├── pages-client.tsx — Mounts the shared workstation for the browser-only GitHub Pages release.
 │   ├── page.tsx — Coordinates the browser workstation, annotation state, session workflow, rendering, and exports.
-│   └── source-integrity.ts — Computes incremental SHA-256 fingerprints without buffering complete recordings.
+│   ├── source-integrity.ts — Computes incremental SHA-256 fingerprints without buffering complete recordings.
+│   ├── tutorial-center.tsx / tutorial-center.css — Own the tutorial hub and live, non-blocking walkthrough coach.
+│   └── tutorials.ts — Defines task-based lessons, prerequisites, and guide placement policy.
 ├── build/
 │   └── sites-vite-plugin.ts — Copies Sites metadata and migrations into deployment output.
 ├── db/
@@ -104,7 +106,11 @@ Defines recording metadata and source contracts, EDF/EDF+ parsing, legacy MAT/DA
 
 ### `app/globals.css`
 
-Defines product colors, typography, panel layout, waveform/timeline controls, dialogs, responsive sizing, and accessibility states. Component-specific behavior remains in `page.tsx`; this file owns presentation only.
+Defines shared product colors, typography, panel layout, waveform/timeline controls, dialogs, responsive sizing, and accessibility states. Tutorial-specific presentation lives in `tutorial-center.css`; these stylesheets contain no behavior.
+
+### `app/tutorial-center.tsx` and `app/tutorials.ts`
+
+The tutorial center owns topic selection, previews, walkthrough progress, and measured target highlighting. Guides move inside an open workspace dialog to preserve its focus trap. The lesson catalog owns instructional copy, prerequisites, stable `data-tutorial` target names, and viewport placement policy. The page supplies only explicit panel-reveal actions; tutorials never invoke recording or annotation mutations.
 
 ### `app/layout.tsx`
 

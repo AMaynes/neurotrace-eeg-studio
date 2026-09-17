@@ -94,7 +94,7 @@ test("ships product source without starter preview artifacts", async () => {
 
 test("keeps context and model-label palettes visually and semantically separate", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const sidebarStart = page.indexOf('<aside className="right-sidebar">');
+  const sidebarStart = page.indexOf('<aside className="right-sidebar"');
   const sidebarEnd = page.indexOf("</aside>", sidebarStart);
   const sidebar = page.slice(sidebarStart, sidebarEnd);
   const contextPosition = sidebar.indexOf("Context palette");
@@ -138,7 +138,7 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   assert.match(emptyState, /<button type="button" className="empty-load-prompt" onClick=\{\(\) => setShowImport\(true\)\}/, "only the lower load prompt opens file selection");
   assert.doesNotMatch(emptyState.slice(0, emptyState.indexOf("empty-load-prompt")), /onClick=/, "the large welcome introduction is not clickable");
 
-  const leftStart = page.indexOf('<aside className="left-sidebar">');
+  const leftStart = page.indexOf('<aside className="left-sidebar"');
   const leftEnd = page.indexOf("</aside>", leftStart);
   const leftSidebar = page.slice(leftStart, leftEnd);
   assert.doesNotMatch(leftSidebar, /compact-load-recording|>Load recording</, "the left panel never shows a duplicate recording loader");
@@ -153,15 +153,16 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   // Closed dialogs do not appear in the initial SSR response, so their
   // accessibility contract is verified directly in the conditional JSX.
   sourceHas(/aria-label="Channel controls"/, "channel dialog is named");
-  sourceHas(/aria-label="Help"/, "Help dialog is named");
+  const tutorials = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
+  assert.match(tutorials, /aria-label="Help"/, "Help dialog is named");
   sourceHas(/aria-label="Settings"/, "Settings dialog is named");
   sourceHas(/aria-modal="true"/, "workspace dialogs are exposed as modal");
 });
 
 test("keeps requested signal tools in the primary toolbar without legacy clutter", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const toolbarStart = page.indexOf('<div className="viewer-toolbar">');
-  const toolbarEnd = page.indexOf('<div className="overview-block">', toolbarStart);
+  const toolbarStart = page.indexOf('<div className="viewer-toolbar"');
+  const toolbarEnd = page.indexOf('<div className="overview-block"', toolbarStart);
   assert.ok(toolbarStart >= 0 && toolbarEnd > toolbarStart, "primary viewer toolbar is present");
 
   const toolbar = page.slice(toolbarStart, toolbarEnd);
@@ -513,7 +514,7 @@ test("wires channel, Help, and Settings dialogs to operable controls", async () 
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
   const channelsStart = page.indexOf("{showChannels &&");
-  const channelsEnd = page.indexOf("{showHelp &&", channelsStart);
+  const channelsEnd = page.indexOf("<TutorialCenter", channelsStart);
   const channels = page.slice(channelsStart, channelsEnd);
   assert.match(channels, /role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Channel controls"/);
   assert.match(channels, /aria-label="Close channel controls"/);
@@ -527,14 +528,14 @@ test("wires channel, Help, and Settings dialogs to operable controls", async () 
   assert.match(channels, /source channel \{index \+ 1\}/);
   assert.match(channels, /original channel provenance/i);
 
-  const helpStart = page.indexOf("{showHelp &&");
-  const helpEnd = page.indexOf("{showSettings &&", helpStart);
-  const help = page.slice(helpStart, helpEnd);
+  const help = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
+  const lessons = await readFile(new URL("../app/tutorials.ts", import.meta.url), "utf8");
   assert.match(help, /role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Help"/);
   assert.match(help, /aria-label="Close Help"/);
-  assert.match(help, /Session tabs/);
-  assert.match(help, /Waveform labeling/);
-  assert.match(help, /CH\+ channel manager/);
+  assert.match(help, /role="tablist" aria-label="Tutorial topics"/);
+  assert.match(lessons, /Session tabs/);
+  assert.match(lessons, /Label a moment or a window/);
+  assert.match(lessons, /CH\+ channel manager/);
 
   const settingsStart = page.indexOf("{showSettings &&");
   const settingsEnd = page.indexOf("{showSessionMap &&", settingsStart);
@@ -637,7 +638,7 @@ test("resizes the spectrogram vertically from its top edge", async () => {
 
 test("keeps the right panel label view ordered like the ontology palette", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const sidebarStart = page.indexOf('<aside className="right-sidebar">');
+  const sidebarStart = page.indexOf('<aside className="right-sidebar"');
   const sidebarEnd = page.indexOf("</aside>", sidebarStart);
   assert.ok(sidebarStart >= 0 && sidebarEnd > sidebarStart, "the right label panel is present");
   const sidebar = page.slice(sidebarStart, sidebarEnd);
@@ -681,7 +682,7 @@ test("toggles all label types without deleting annotations or changing palette p
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const buttonStart = page.indexOf('className="label-visibility-toggle"');
   const button = page.slice(buttonStart, page.indexOf('</button>', buttonStart));
-  assert.ok(buttonStart > page.indexOf('<aside className="right-sidebar">'));
+  assert.ok(buttonStart > page.indexOf('<aside className="right-sidebar"'));
   assert.match(button, /Hide all labels/);
   assert.match(button, /Show all labels/);
   assert.match(button, /setLabelsVisible\(\(visible\) => !visible\)/);
@@ -710,7 +711,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   assert.match(page, /const \[boxZoomActive, setBoxZoomActive\] = useState\(false\)/);
   assert.match(page, /const inspectionMode = boxZoomActive/);
   const boxZoomButton = page.indexOf('className={`tool-button box-zoom-button');
-  const transportControls = page.indexOf('<div className="transport-group">', boxZoomButton);
+  const transportControls = page.indexOf('<div className="transport-group"', boxZoomButton);
   assert.ok(boxZoomButton >= 0 && transportControls > boxZoomButton, "Box zoom sits immediately left of the page and play controls");
   assert.match(page.slice(boxZoomButton, transportControls), /aria-label="Box zoom"[\s\S]*?aria-pressed=\{boxZoomActive\}/);
 
@@ -801,7 +802,7 @@ test("toggles live resource usage from the control left of Help and Settings", a
   assert.match(page, /id="recording-import-dialog" className="modal import-modal"/, "upload targets the existing import dialog");
   assert.match(actions, /setRightPanelView\("resources"\)[\s\S]*?setRightPanelOpen\(true\)/);
 
-  const sidebarStart = page.indexOf('<aside className="right-sidebar">');
+  const sidebarStart = page.indexOf('<aside className="right-sidebar"');
   const sidebarEnd = page.indexOf("</aside>", sidebarStart);
   const sidebar = page.slice(sidebarStart, sidebarEnd);
   assert.match(sidebar, /rightPanelView\s*===\s*"resources"\s*\?\s*<ResourceUsagePanel/);
@@ -870,7 +871,7 @@ test("keeps Session Map focused on whole-recording navigation", async () => {
 
 test("opens patient information as a modal instead of expanding the left panel", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const leftStart = page.indexOf('<aside className="left-sidebar">');
+  const leftStart = page.indexOf('<aside className="left-sidebar"');
   const leftEnd = page.indexOf("</aside>", leftStart);
   const left = page.slice(leftStart, leftEnd);
   assert.match(left, /setShowPatientInfo\(true\)/);

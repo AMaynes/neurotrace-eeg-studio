@@ -99,6 +99,8 @@ import {
   recordingOverviewPlan,
 } from "./recording-overview";
 import { recordingOverviewDisplayPolicy } from "./overview-display-policy";
+import { TutorialCenter } from "./tutorial-center";
+import type { TutorialTopic } from "./tutorials";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -1880,6 +1882,7 @@ export default function Home() {
   const [dragGhost, setDragGhost] = useState<{ labelId: string; time: number } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [helpTopic, setHelpTopic] = useState<TutorialTopic>("start");
   const [showSettings, setShowSettings] = useState(false);
   const [showChannels, setShowChannels] = useState(false);
   const [showSessionMap, setShowSessionMap] = useState(false);
@@ -6535,6 +6538,8 @@ export default function Home() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      // Coach controls own their shortcuts; Escape elsewhere still clears real selections.
+      if (target?.closest(".tutorial-coach")) return;
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
       if (target?.closest(".spectrogram-panel") && event.key !== "Escape") return;
       const zoomModifier = event.metaKey || event.ctrlKey;
@@ -6881,7 +6886,7 @@ export default function Home() {
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /><i /></span>
           <div><strong>NEUROTRACE</strong><span>Clinical EEG Studio</span></div>
         </div>
-        <nav className="session-tab-strip" role="tablist" aria-label="EEG sessions" onKeyDown={(event) => {
+        <nav className="session-tab-strip" data-tutorial="sessions" role="tablist" aria-label="EEG sessions" onKeyDown={(event) => {
           if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || importBusy) return;
           event.preventDefault();
           const currentIndex = Math.max(0, sessionTabs.findIndex((tab) => tab.id === activeSessionId));
@@ -6928,6 +6933,7 @@ export default function Home() {
         <div className="top-actions utility-actions">
           <button
             className="utility-button save-project-button"
+            data-tutorial="save"
             aria-label="Save NeuroTrace project"
             aria-haspopup="dialog"
             aria-expanded={showProjectSave}
@@ -6940,6 +6946,7 @@ export default function Home() {
           ><span aria-hidden="true">⇩</span></button>
           <button
             className="utility-button upload-recording-button"
+            data-tutorial="upload"
             disabled={importBusy}
             aria-label="Upload recording or companion files"
             aria-haspopup="dialog"
@@ -6966,13 +6973,13 @@ export default function Home() {
               setRightPanelOpen(true);
             }}
           ><span className="resource-glyph" aria-hidden="true"><i /><i /><i /></span></button>
-          <button className="utility-button" aria-label="Open Help" title="Help" onClick={() => setShowHelp(true)}><span aria-hidden="true">?</span></button>
+          <button className="utility-button" data-tutorial="help" aria-label="Open Help" title="Tutorials & walkthroughs" onClick={() => setShowHelp(true)}><span aria-hidden="true">?</span></button>
           <button className="utility-button" aria-label="Open Settings" title="Settings" onClick={() => setShowSettings(true)}><span className="settings-glyph" aria-hidden="true">⚙</span></button>
         </div>
       </header>
 
       <div className={`workspace-grid ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
-        <aside className="left-sidebar">
+        <aside className="left-sidebar" data-tutorial="recording-panel">
           {hasRecording && <section className="recording-summary">
             <>
               <div className="recording-file-line"><strong title={meta.name}>{shortFileName(meta.name)}</strong><span>File type: {meta.format.toUpperCase()}</span></div>
@@ -6987,7 +6994,7 @@ export default function Home() {
 
           <button className="session-map-row" disabled={!hasRecording} onClick={() => setShowSessionMap(true)}><span>Session Map</span><b aria-hidden="true">↗</b></button>
 
-          <section className="session-labels-section" ref={sessionLabelsSectionRef} style={{ height: sessionLabelsHeight }}>
+          <section className="session-labels-section" data-tutorial="session-labels" ref={sessionLabelsSectionRef} style={{ height: sessionLabelsHeight }}>
             <div className="sidebar-centered-heading">
               <strong>Session Labels</strong>
               <span>{sessionContextAnnotations.length}</span>
@@ -7073,17 +7080,17 @@ export default function Home() {
             verifyingSource={verifyingSource}
             sourceHash={sourceHash}
           /> : <>
-          <div className="viewer-toolbar">
+          <div className="viewer-toolbar" data-tutorial="signal-tools">
             <div className="panel-toggle-pair" aria-label="Workspace panels">
               <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title={`${leftPanelOpen ? "Hide" : "Show"} recording panel`} onClick={() => setLeftPanelOpen((value) => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
               <button className={`panel-icon-button ${rightPanelOpen ? "active" : ""}`} aria-label={`${rightPanelOpen ? "Hide" : "Show"} right panel`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} ${rightPanelView === "resources" ? "resource usage" : rightPanelView === "inspect" ? "general info" : "context and label"} panel`} onClick={() => setRightPanelOpen((value) => !value)}><span className="panel-glyph right" aria-hidden="true"><i /><i /><i /></span></button>
               <button className={`panel-bottom-button ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} title={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} onClick={() => setBottomTracksOpen((value) => !value)}><span className="bottom-panel-glyph" aria-hidden="true"><i /><i /><i /></span></button>
             </div>
             <span className="toolbar-kicker">Signal tools</span>
-            <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} aria-label="Spectrogram" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
-            <label className="toolbar-select"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">Anatomical bipolar</option></select></label>
-            <button className={`compact-toggle ${showFilters ? "active" : ""}`} aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
-            <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} role="group" aria-label="Window">
+            <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} data-tutorial="spectrogram-toggle" aria-label="Spectrogram" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
+            <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">Anatomical bipolar</option></select></label>
+            <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
+            <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
               <span className="window-control-label">Window</span>
               <label className="window-amount-field"><input
                 disabled={!hasRecording}
@@ -7106,9 +7113,10 @@ export default function Home() {
               </div>
               <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
             </div>
-            <div className="gain-control" role="group" aria-label="Gain"><span>Gain</span><b>{gain.toFixed(1)}×</b><div className="gain-step-buttons"><button disabled={!hasRecording} aria-label="Increase gain" title="Increase gain" onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button><button disabled={!hasRecording} aria-label="Decrease gain" title="Decrease gain" onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button></div></div>
+            <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain"><span>Gain</span><b>{gain.toFixed(1)}×</b><div className="gain-step-buttons"><button disabled={!hasRecording} aria-label="Increase gain" title="Increase gain" onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button><button disabled={!hasRecording} aria-label="Decrease gain" title="Decrease gain" onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button></div></div>
             <button
               className={`trace-display-toggle ${traceDisplayMode === "overlap" ? "active" : ""}`}
+              data-tutorial="clamp"
               disabled={!hasRecording}
               aria-label="Allow channel traces to overlap"
               aria-pressed={traceDisplayMode === "overlap"}
@@ -7122,6 +7130,7 @@ export default function Home() {
             <div className="toolbar-spacer" />
             <button
               className={`tool-button box-zoom-button ${boxZoomActive ? "active" : ""}`}
+              data-tutorial="waveform-zoom"
               disabled={!hasRecording}
               aria-label="Box zoom"
               aria-pressed={boxZoomActive}
@@ -7137,7 +7146,7 @@ export default function Home() {
                 setToast(nextActive ? "Box zoom active — drag a rectangle on the waveform" : "Box zoom off — waveform drag creates labeling windows");
               }}
             ><span aria-hidden="true">⌗</span></button>
-            <div className="transport-group">
+            <div className="transport-group" data-tutorial="transport">
               <button disabled={!hasRecording} aria-label="Previous page" onClick={() => setViewStartSafe((value) => value - timebase)}>‹</button>
               <button disabled={!hasRecording} className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => setPlaying((value) => !value)}>{playing ? "Ⅱ" : "▶"}</button>
               <button disabled={!hasRecording} aria-label="Next page" onClick={() => setViewStartSafe((value) => value + timebase)}>›</button>
@@ -7178,7 +7187,7 @@ export default function Home() {
           </section>}
 
           {hasRecording ? <>
-          <div className="overview-block">
+          <div className="overview-block" data-tutorial="overview">
             <div className="overview-label"><span>FULL SESSION</span><strong>{formatClock(viewStart)} — {formatClock(viewStart + timebase)}</strong></div>
             <div className="overview-track" ref={overviewRef} onPointerDown={(event) => {
               const rect = event.currentTarget.getBoundingClientRect();
@@ -7198,8 +7207,8 @@ export default function Home() {
               style={{ "--channel-content-height": `${Math.max(245, channelRowLayout.totalUnits * 60 + 28)}px` } as React.CSSProperties}
               onScroll={updateExpandedChannelViewport}
             >
-              <div className={`channel-rail ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
-                <button className="channel-manager-button" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
+              <div className={`channel-rail ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
+                <button className="channel-manager-button" data-tutorial="channels" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 <button
                   className={`channel-layout-button ${expandedChannels || waveformVerticalViewport ? "active" : ""}`}
                   aria-label={waveformVerticalViewport ? "Reset vertical box zoom" : `${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`}
@@ -7241,7 +7250,7 @@ export default function Home() {
                   onDrop={onLabelDrop}
                   onDragLeave={() => setDragGhost(null)}
                 >
-                  <canvas ref={canvasRef} tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to fit its time and channel area to the full view." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
+                  <canvas ref={canvasRef} data-tutorial="waveform" tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to fit its time and channel area to the full view." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
                   {!inspectionMode && selection && <div className="wave-selection" style={{
                     left: `${((Math.max(viewStart, selection.start) - viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(viewStart + timebase, selection.end) - Math.max(viewStart, selection.start)) / timebase) * 100)}%`,
@@ -7292,10 +7301,12 @@ export default function Home() {
               onCommitStart={(start) => commitViewStart(clamp(start, 0, Math.max(0, meta.durationSec - timebase)))}
               onCenter={jumpTo}
               onZoom={zoomToTimeRange}
+              onHelp={() => { setHelpTopic("spectrogram"); setShowHelp(true); }}
             />}
 
             {bottomTracksOpen && <div
               className={`timeline ${annotationSelectionBox ? "box-selecting" : ""}`}
+              data-tutorial="label-tracks"
               ref={timelineRef}
               onPointerDown={onTimelinePointerDown}
               onPointerMove={onTimelinePointerMove}
@@ -7372,10 +7383,11 @@ export default function Home() {
           </>}
         </section>
 
-        <aside className="right-sidebar">
+        <aside className="right-sidebar" data-tutorial={rightPanelView === "labels" ? "label-panel" : undefined}>
           <button
             type="button"
             className="label-visibility-toggle"
+            data-tutorial="label-visibility"
             aria-label={labelsVisible ? "Hide all labels" : "Show all labels"}
             aria-pressed={!labelsVisible}
             title="Toggle all session, context, ePhys window, and ePhys instance labels. Saved labels are not changed."
@@ -7425,7 +7437,7 @@ export default function Home() {
           <div className="ontology-search-row">
             <input className="palette-search" aria-label="Search label ontology" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
           </div>
-          <section className="compact-context-palette">
+          <section className="compact-context-palette" data-tutorial="context-palette">
             <h2>Context Labels</h2>
             <p className="palette-kind">Context palette · click = instance · selected span = window</p>
             <div className="compact-context-only">
@@ -7438,7 +7450,7 @@ export default function Home() {
                 </button>)}
             </div>
           </section>
-          <section className="compact-ephys-palette">
+          <section className="compact-ephys-palette" data-tutorial="ephys-palette">
             <div className="ephys-palette-heading">
               <h2>ePhys Labels</h2>
               <div className="ephys-label-menu">
@@ -7446,6 +7458,7 @@ export default function Home() {
                   type="button"
                   className="ephys-label-menu-toggle"
                   aria-label="Choose visible ePhys label types"
+                  data-tutorial="label-picker"
                   aria-haspopup="dialog"
                   aria-expanded={showEphysLabelPicker}
                   aria-controls="ephys-label-picker"
@@ -7499,7 +7512,7 @@ export default function Home() {
       </div>}
 
       {showImport && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !importBusy) setShowImport(false); }}>
-        <div id="recording-import-dialog" className="modal import-modal" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
+        <div id="recording-import-dialog" className="modal import-modal" data-tutorial="import" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN A RECORDING</span>
           <h2>{pendingDat ? "Confirm the DAT layout." : "Choose what you’re opening."}</h2>
@@ -7611,7 +7624,7 @@ export default function Home() {
       </div>}
 
       {showProjectSave && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !projectSaveBusy) setShowProjectSave(false); }}>
-        <div id="project-save-dialog" className="modal project-save-modal" role="dialog" aria-modal="true" aria-label="Save NeuroTrace project" tabIndex={-1}>
+        <div id="project-save-dialog" className="modal project-save-modal" data-tutorial="save-dialog" role="dialog" aria-modal="true" aria-label="Save NeuroTrace project" tabIndex={-1}>
           <button className="modal-close" disabled={projectSaveBusy} onClick={() => setShowProjectSave(false)} aria-label="Close project save">×</button>
           <span className="modal-eyebrow">SAVE PROJECT</span>
           <h2>Keep the whole workspace in one file.</h2>
@@ -7650,7 +7663,7 @@ export default function Home() {
       }}>Commit with advisory</button></div></div></div>}
 
       {showChannels && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowChannels(false); }}>
-        <div className="modal channel-modal" role="dialog" aria-modal="true" aria-label="Channel controls" tabIndex={-1}>
+        <div className="modal channel-modal" data-tutorial="channel-dialog" role="dialog" aria-modal="true" aria-label="Channel controls" tabIndex={-1}>
           <button className="modal-close" onClick={() => setShowChannels(false)} aria-label="Close channel controls">×</button>
           <span className="modal-eyebrow">CHANNEL DISPLAY</span>
           <h2>Choose what appears in the recording.</h2>
@@ -7678,33 +7691,21 @@ export default function Home() {
         </div>
       </div>}
 
-      {showHelp && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowHelp(false); }}>
-        <div className="modal help-modal" role="dialog" aria-modal="true" aria-label="Help" tabIndex={-1}>
-          <button className="modal-close" onClick={() => setShowHelp(false)} aria-label="Close Help">×</button>
-          <span className="modal-eyebrow">NEUROTRACE GUIDE</span>
-          <h2>Everything in this workspace.</h2>
-          <p className="controls-intro">The viewer is organized around a recording, its clinical context, time-window labels, and precise instance labels.</p>
-          <div className="help-sections">
-            {[
-              ["Session tabs", "Each tab is an independent annotation workspace. Press + for a blank session, then load its recording."],
-              ["Recording info", "Shows the source file and recording type. Open Patient Info for identifiers, reviewer, source integrity, replacement, and export controls."],
-              ["Instance queue", "File events, instance labels, and non-session context events appear in time order. Select one or use the arrows to jump straight to it."],
-              ["Source-event review", "Seizure-keyword file events open around relative time zero. Enter reviewer initials, optionally rate confidence 1–3, mark onset then offset, and Accept or Skip to advance."],
-              ["Signal tools", "Spectrogram opens the focused-channel time-frequency view. Montage, filters, window, gain, and Clamped/Overlap only change the display; raw samples stay immutable."],
-              ["Waveform display", "Each row draws one continuous, time-aligned centerline. Clamped contains excursions and adds a voltage-severity line; Overlap permits traces to cross rows."],
-              ["CH+ channel manager", "Opens detected source channels. Toggle visibility without losing source-channel provenance."],
-              ["Waveform labeling", "Click once to pin a time, then click any ePhys label to create an instance there. Drag across time, then click a label to apply it to that exact window."],
-              ["Annotation tracks", "Context may stack, windowed labels occupy spans, and instance labels mark single moments. Drag annotations to move them or between the two ePhys tracks to convert geometry."],
-              ["Context Labels", "Clinical Observation, Medication, and Other are the three timed context tools. Whole-session labels are added only with + in the left Session Labels panel."],
-              ["ePhys Labels", "The same ontology can describe a single instant or a selected window. Use … to choose which sleep, rhythmic/periodic, seizure, artifact, and spike label types stay visible."],
-              ["Inspector and deletion", "Select any annotation to edit timing, notes, reviewer, and confidence, commit a revision, or use the trash can. Delete/Backspace also removes the selection."],
-              ["Session map", "Session map gives a hoverable, clickable whole-recording view."],
-              ["Navigation", "Trackpad or mouse-wheel movement pans through time. The Window number and unit button stage a new view; the check button applies it. Pinch or Ctrl/⌘ +/- zooms immediately and rebuilds a Nyquist-safe, time-aligned trace. Escape clears the current interaction."],
-            ].map(([title, copy], index) => <section key={title}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{title}</strong><p>{copy}</p></div></section>)}
-          </div>
-          <div className="research-notice"><span>✦</span><p><strong>Research annotation workspace.</strong> Not for diagnosis or autonomous clinical decision-making. Clinical deployment requires institutional validation and privacy review.</p></div>
-        </div>
-      </div>}
+      <TutorialCenter
+        open={showHelp}
+        topic={helpTopic}
+        hasRecording={hasRecording && activeSessionContentView === "recording"}
+        canAnnotate={reviewReady}
+        onTopicChange={setHelpTopic}
+        onClose={() => setShowHelp(false)}
+        onOpen={() => setShowHelp(true)}
+        onReveal={(area) => {
+          if (area === "recording-panel") setLeftPanelOpen(true);
+          else if (area === "label-panel") selectRightPanelTool("labels");
+          else if (area === "label-tracks") setBottomTracksOpen(true);
+          else if (area === "spectrogram" && hasRecording) setSpectrogramOpen(true);
+        }}
+      />
 
       {showSettings && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowSettings(false); }}>
         <div className="modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1}>
@@ -7896,6 +7897,7 @@ type SpectrogramPanelProps = {
   onCommitStart(start: number): void;
   onCenter(time: number): void;
   onZoom(start: number, end: number): void;
+  onHelp(): void;
 };
 
 // Frequency labels live in the channel rail, never inside the shared time plot.
@@ -7926,6 +7928,7 @@ function SpectrogramPanel({
   onCommitStart,
   onCenter,
   onZoom,
+  onHelp,
 }: SpectrogramPanelProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -7981,7 +7984,6 @@ function SpectrogramPanel({
   const [displayMaxHz, setDisplayMaxHz] = useState(BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ);
   const [colorLimitShift, setColorLimitShift] = useState(0);
   const [overlay, setOverlay] = useState<"none" | "theta">("none");
-  const [showSpectrogramHelp, setShowSpectrogramHelp] = useState(false);
   const displayedPowers = useMemo(
     () => spectrum ? displaySpectrogramPowers(spectrum, smoothingSeconds) : null,
     [smoothingSeconds, spectrum],
@@ -8379,9 +8381,9 @@ function SpectrogramPanel({
       </div>
     </div>
     <div className="spectrogram-canvas-shell">
-      <div className="spectrogram-toolbar" aria-label="Spectrogram controls">
-        <button type="button" className={tool === "browse" ? "active" : ""} aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); }} title="Browse: click to center, hold and drag to pan (B)">B</button>
-        <button type="button" className={tool === "box-zoom" ? "active" : ""} aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => setTool("box-zoom")} title="Box zoom: drag a time-frequency area to fit it to the view (Z)">Z</button>
+      <div className="spectrogram-toolbar" data-tutorial="spectrogram-controls" aria-label="Spectrogram controls">
+        <button type="button" className={tool === "browse" ? "active" : ""} data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); }} title="Browse: click to center, hold and drag to pan (B)">B</button>
+        <button type="button" className={tool === "box-zoom" ? "active" : ""} data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => setTool("box-zoom")} title="Box zoom: drag a time-frequency area to fit it to the view (Z)">Z</button>
         <div className="spectrogram-frequency-control" role="group" aria-label="Displayed frequency range">
           <span>Frequency range</span>
           <button
@@ -8422,10 +8424,11 @@ function SpectrogramPanel({
         </label>
         <button type="button" onClick={() => setColorLimitShift((value) => value + 0.1)} title="Raise color limits (Down arrow)">C−</button>
         <button type="button" onClick={() => setColorLimitShift((value) => value - 0.1)} title="Lower color limits (Up arrow)">C+</button>
-        <button type="button" onClick={() => setShowSpectrogramHelp((value) => !value)} aria-expanded={showSpectrogramHelp} title="Spectrogram controls">?</button>
+        <button type="button" onClick={onHelp} aria-label="Open spectrogram tutorials" title="Spectrogram tutorials">?</button>
       </div>
       <canvas
         ref={ref}
+        data-tutorial="spectrogram-plot"
         tabIndex={0}
         role="img"
         aria-label={`${label} multitaper spectrogram. ${tool === "box-zoom" ? "Box zoom selected; drag a time-frequency area to zoom." : "Browse selected; click to center or drag to pan."}`}
@@ -8489,15 +8492,6 @@ function SpectrogramPanel({
         }}
       />
       {zoomBox && <div className="spectrogram-zoom-box" aria-hidden="true" style={zoomBox} />}
-      {showSpectrogramHelp && <div className="spectrogram-help" role="status">
-        <strong>Spectrogram controls</strong>
-        <span>Relative whitened power · color scale stays fixed while panning</span>
-        <span>Uses full-resolution montage samples; waveform display filters do not apply</span>
-        <span>B browse · click center · hold/drag pan · wheel/trackpad pan</span>
-        <span>Z box zoom · drag a time-frequency area</span>
-        <span>←/→ shift 15% · ↑/↓ color</span>
-        <span>Frequency range shows the visible band · ↺ resets it · waveform controls also set time zoom</span>
-      </div>}
     </div>
   </div>;
 }

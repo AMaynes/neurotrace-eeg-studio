@@ -56,6 +56,10 @@ Every push to `main` runs the GitHub Pages workflow, which:
 source of this artifact. Generated files in `pages-dist/` and the deployed bundle
 must not be hand-edited or committed.
 
+## Tutorials
+
+The top-right `?` opens a tutorial hub with six topic tabs and 11 task-based lessons. Preview any step, then start a Back/Next walkthrough that highlights the actual workspace controls. The spectrogram’s `?` opens the same hub on its Spectrogram tab. Guides can reveal closed panels on request, but never load files, create annotations, or save changes automatically. Completed walkthroughs are tracked for the current app visit.
+
 ## System Overview
 
 The browser owns the active recording and annotation state. `app/page.tsx` coordinates the interface and session workflow, `app/eeg-core.ts` parses recordings and supplies time-bounded signal windows and zoomed-out display envelopes, and the source-integrity modules compute a stable source fingerprint off the main UI thread. Annotation recovery uses browser-local storage; exports are assembled and downloaded locally.
