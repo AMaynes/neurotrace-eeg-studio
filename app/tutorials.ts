@@ -156,6 +156,19 @@ export function tutorialTabIndex(key: string, current: number): number | null {
 }
 
 export type TutorialRect = { left: number; top: number; width: number; height: number };
+export type TutorialCoachPosition = { left: number; top: number; width: number };
+
+/** Keep a manually placed coach reachable after dragging, resizing, or changing steps. */
+export function clampTutorialCoachPosition(position: TutorialCoachPosition, viewport: { width: number; height: number }, height: number): TutorialCoachPosition {
+  const margin = 12;
+  const width = Math.max(1, Math.min(position.width, viewport.width - margin * 2));
+  const visibleHeight = Math.max(1, Math.min(height, viewport.height - margin * 2));
+  return {
+    left: Math.max(margin, Math.min(position.left, viewport.width - width - margin)),
+    top: Math.max(margin, Math.min(position.top, viewport.height - visibleHeight - margin)),
+    width,
+  };
+}
 
 /** Choose the viewport corner covering the least highlighted area, with bounded dimensions. */
 export function placeTutorialCoach(viewport: { width: number; height: number }, size: { width: number; height: number }, target: TutorialRect | null) {

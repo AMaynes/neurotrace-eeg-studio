@@ -31,8 +31,10 @@ function harness(overrides = {}) {
   let hookIndex = 0;
   const slots = [];
   const actions = [];
+  const portalHosts = [];
+  const focusTargets = [];
   const body = {};
-  const surface = { host: body, rect: null, fallback: false, ready: false, dialogName: null };
+  const surface = { host: body, rect: null, fallback: false, ready: false, dialogName: null, viewport: { width: 1280, height: 720 } };
   const props = {
     open: true, topic: "start", hasRecording: true, canAnnotate: true,
     onClose() { props.open = false; }, onOpen() { props.open = true; },
@@ -46,21 +48,38 @@ function harness(overrides = {}) {
       if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
       return [slots[index], (next) => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }];
     },
-    useRef: () => ({ current: null }), useEffect() {},
+    useRef(initial) {
+      const index = hookIndex++;
+      if (!(index in slots)) slots[index] = { current: initial };
+      return slots[index];
+    },
+    useEffect() {},
     useTourSurface: (_step, active) => active ? surface : null,
-    createPortal: (children) => children,
+    createPortal: (children, host) => { portalHosts.push(host); return children; },
     window: { innerWidth: 1280, innerHeight: 720 },
     requestAnimationFrame: (callback) => { callback(); return 1; },
     document: { body, querySelector: () => ({ focus() {}, scrollIntoView() {} }) },
   };
   const TutorialCenter = new Function(...Object.keys(scope), `${compiled}\nreturn exports.TutorialCenter;`)(...Object.values(scope));
   const api = {
-    props, surface, actions, tree: null,
-    render() { hookIndex = 0; api.tree = TutorialCenter(props); return api.tree; },
+    props, surface, actions, portalHosts, focusTargets, tree: null, coachHeight: 300,
+    render() {
+      hookIndex = 0;
+      portalHosts.length = 0;
+      api.tree = TutorialCenter(props);
+      const coach = nodes(api.tree).find((node) => node.type === "section" && node.props.className?.startsWith("tutorial-coach"));
+      if (coach) coach.props.ref.current = {
+        getBoundingClientRect: () => ({ left: 380, top: 340, width: 500, ...coach.props.style, height: api.coachHeight }),
+        querySelector: (selector) => ({ focus: () => focusTargets.push(selector) }),
+      };
+      return api.tree;
+    },
     find(predicate) { const result = nodes(api.tree).find(predicate); assert.ok(result, "expected tutorial control exists"); return result; },
     button(name) { return api.find((node) => node.type === "button" && (node.props["aria-label"] === name || text(node) === name)); },
     click(name) { const button = api.button(name); assert.ok(!button.props.disabled, `${name} is enabled`); button.props.onClick(); api.render(); },
     markup() { return renderToStaticMarkup(api.tree); },
+    coach() { return api.find((node) => node.type === "section" && node.props.className?.startsWith("tutorial-coach")); },
+    resize(width, height) { surface.viewport = { width, height }; scope.window.innerWidth = width; scope.window.innerHeight = height; api.render(); },
   };
   api.render();
   return api;
@@ -196,4 +215,96 @@ test("floating coach prefers a clear corner and remains bounded on narrow or sho
     assert.ok(result.left + result.width <= viewport.width);
     assert.ok(result.top + result.maxHeight <= viewport.height);
   }
+});
+
+function pointer(overrides = {}) {
+  return {
+    pointerId: 1, isPrimary: true, button: 0, clientX: 940, clientY: 400,
+    preventDefault() {},
+    currentTarget: { focus() {}, setPointerCapture() {}, hasPointerCapture: () => true, releasePointerCapture() {} },
+    ...overrides,
+  };
+}
+
+test("the header drags the coach and keeps the chosen position across steps and target changes", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  const before = ui.coach().props.style;
+  let captured = null;
+  const event = pointer();
+  event.currentTarget.setPointerCapture = (id) => { captured = id; };
+  ui.button("Move walkthrough panel").props.onPointerDown(event); ui.render();
+  assert.equal(captured, 1);
+  ui.button("Move walkthrough panel").props.onPointerMove(pointer({ clientX: event.clientX - 200, clientY: event.clientY - 150 })); ui.render();
+  assert.equal(ui.coach().props.style.left, before.left - 200);
+  assert.equal(ui.coach().props.style.top, before.top - 150);
+  ui.button("Move walkthrough panel").props.onPointerUp(pointer({ clientX: event.clientX - 200, clientY: event.clientY - 150 })); ui.render();
+  const placed = { ...ui.coach().props.style };
+  ui.click("Next →");
+  ui.surface.rect = { left: placed.left, top: placed.top, width: 400, height: 300 }; ui.render();
+  assert.deepEqual(ui.coach().props.style, placed, "new targets do not override the user's placement");
+  ui.click("Back");
+  assert.deepEqual(ui.coach().props.style, placed);
+  assert.deepEqual(ui.actions, []);
+});
+
+test("dragging clamps the panel to the viewport, including after the viewport shrinks", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  ui.button("Move walkthrough panel").props.onPointerDown(pointer()); ui.render();
+  ui.button("Move walkthrough panel").props.onPointerMove(pointer({ clientX: -1000, clientY: -1000 })); ui.render();
+  assert.equal(ui.coach().props.style.left, 12);
+  assert.equal(ui.coach().props.style.top, 12);
+  ui.button("Move walkthrough panel").props.onPointerMove(pointer({ clientX: 5000, clientY: 5000 })); ui.render();
+  assert.equal(ui.coach().props.style.left + ui.coach().props.style.width, 1280 - 12);
+  ui.resize(320, 260);
+  const style = ui.coach().props.style;
+  assert.equal(style.width, 296);
+  assert.equal(style.left, 12);
+  assert.equal(style.top, 12);
+  assert.equal(style.maxHeight, 236);
+  assert.deepEqual(catalog.clampTutorialCoachPosition({ left: 900, top: 800, width: 360 }, { width: 800, height: 600 }, 450), { left: 428, top: 138, width: 360 });
+});
+
+test("non-primary pointers and canceled drags cannot move the coach or interfere with its buttons", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  for (const overrides of [{ button: 2 }, { isPrimary: false }]) {
+    ui.button("Move walkthrough panel").props.onPointerDown(pointer(overrides)); ui.render();
+    assert.doesNotMatch(ui.coach().props.className, /tutorial-coach-manual/);
+  }
+  ui.button("Move walkthrough panel").props.onPointerDown(pointer()); ui.render();
+  const initial = ui.coach().props.style;
+  ui.button("Move walkthrough panel").props.onPointerMove(pointer({ pointerId: 2, clientX: 0 })); ui.render();
+  assert.deepEqual(ui.coach().props.style, initial);
+  let released = false;
+  const event = pointer(); event.currentTarget.releasePointerCapture = () => { released = true; };
+  ui.button("Move walkthrough panel").props.onPointerCancel(event); ui.render();
+  ui.button("Move walkthrough panel").props.onPointerMove(pointer({ clientX: 0 })); ui.render();
+  assert.equal(released, true);
+  assert.deepEqual(ui.coach().props.style, initial);
+  ui.click("Next →");
+  assert.match(ui.markup(), /STEP 2 OF 4/);
+  ui.click("End walkthrough");
+  assert.equal(ui.markup(), "");
+});
+
+test("keyboard movement and reset work, including when the coach belongs to an open dialog", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  ui.surface.dialogName = "Load recording";
+  const backdrop = {};
+  ui.surface.host = { querySelector: () => ({ focus() {} }), closest: () => backdrop };
+  ui.surface.rect = { left: 360, top: 200, width: 560, height: 320 }; ui.render();
+  let prevented = false;
+  const key = { key: "ArrowLeft", shiftKey: true, preventDefault() { prevented = true; }, stopPropagation() {} };
+  ui.button("Move walkthrough panel").props.onKeyDown(key); ui.render();
+  assert.equal(prevented, true);
+  assert.match(ui.coach().props.className, /tutorial-coach-embedded.*tutorial-coach-manual/);
+  assert.equal(ui.coach().props.style.left, 340);
+  assert.equal(ui.coach().props.style.width, 500, "undocking retains the panel width so the drag handle does not jump");
+  assert.equal(ui.button("All tutorials").props.disabled, true, "modal focus ownership is unchanged");
+  assert.deepEqual(ui.portalHosts, [ui.surface.host, backdrop], "the highlight shares the dialog's stacking context below the coach");
+  ui.click("Reset walkthrough position");
+  assert.equal(ui.coach().props.style, undefined, "reset restores the normal in-dialog placement");
+  assert.equal(ui.focusTargets.at(-1), ".tutorial-drag-handle", "reset does not strand focus on a removed button");
+  ui.button("Move walkthrough panel").props.onKeyDown(key); ui.render();
+  ui.button("Move walkthrough panel").props.onKeyDown({ ...key, key: "Home" }); ui.render();
+  assert.equal(ui.coach().props.style, undefined);
 });

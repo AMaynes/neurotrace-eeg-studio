@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import "./tutorial-center.css";
 import {
   placeTutorialCoach,
+  clampTutorialCoachPosition,
   tutorialBlockReason,
   tutorialLessons,
   tutorialTabIndex,
   tutorialTopics,
   type TutorialRect,
+  type TutorialCoachPosition,
   type TutorialReveal,
   type TutorialStep,
   type TutorialTopic,
@@ -27,7 +29,7 @@ type TutorialCenterProps = {
 };
 
 type Tour = { lessonId: string; stepIndex: number };
-type TourSurface = { host: HTMLElement; rect: TutorialRect | null; fallback: boolean; ready: boolean; dialogName: string | null };
+type TourSurface = { host: HTMLElement; rect: TutorialRect | null; fallback: boolean; ready: boolean; dialogName: string | null; viewport: { width: number; height: number } };
 
 /** Measure only the visible part of a target, including clipping by collapsed/scrolling panels. */
 function visibleTargetRect(element: HTMLElement): TutorialRect | null {
@@ -54,6 +56,7 @@ function visibleTargetRect(element: HTMLElement): TutorialRect | null {
 
 function sameSurface(a: TourSurface | null, b: TourSurface): boolean {
   return a?.host === b.host && a.fallback === b.fallback && a.ready === b.ready && a.dialogName === b.dialogName
+    && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height
     && JSON.stringify(a.rect) === JSON.stringify(b.rect);
 }
 
@@ -90,6 +93,7 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
         fallback: Boolean(fallback),
         ready: Boolean(readyRect),
         dialogName: dialog?.getAttribute("aria-label") ?? null,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
       };
       setSurface((current) => sameSurface(current, next) ? current : next);
     };
@@ -120,7 +124,9 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
   const [tour, setTour] = useState<Tour | null>(null);
   const [completed, setCompleted] = useState<Set<string>>(() => new Set());
   const [coachSize, setCoachSize] = useState({ width: 360, height: 320 });
+  const [coachPosition, setCoachPosition] = useState<TutorialCoachPosition | null>(null);
   const coachRef = useRef<HTMLElement>(null);
+  const coachDragRef = useRef<{ pointerId: number; grabX: number; grabY: number; width: number } | null>(null);
   const lessons = tutorialLessons.filter((lesson) => lesson.topic === topic);
   const selected = lessons.find((lesson) => lesson.id === selectedId) ?? lessons[0];
   const previewIndex = preview?.lessonId === selected.id ? preview.index : 0;
@@ -131,6 +137,8 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
   const tourBlock = activeLesson ? tutorialBlockReason(activeLesson, hasRecording, canAnnotate) : null;
   const surface = useTourSurface(activeStep, Boolean(tour) && !open);
   const embedded = Boolean(surface?.dialogName);
+
+  useEffect(() => () => { coachDragRef.current = null; }, [open, surface?.host]);
 
   useEffect(() => {
     const coach = coachRef.current;
@@ -164,11 +172,34 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
     if (nextIndex === activeLesson.steps.length) setCompleted((current) => new Set([...current, activeLesson.id]));
   };
 
-  const coachStyle: CSSProperties | undefined = !embedded && surface ? { ...placeTutorialCoach(
-    { width: window.innerWidth, height: window.innerHeight },
+  const moveCoach = (left: number, top: number, width: number) => {
+    const height = coachRef.current?.getBoundingClientRect().height ?? coachSize.height;
+    setCoachPosition(clampTutorialCoachPosition({ left, top, width }, { width: window.innerWidth, height: window.innerHeight }, height));
+  };
+  const dragCoach = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = coachDragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    moveCoach(event.clientX - drag.grabX, event.clientY - drag.grabY, drag.width);
+  };
+  const stopDraggingCoach = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (coachDragRef.current?.pointerId !== event.pointerId) return;
+    coachDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const resetCoachPosition = () => {
+    coachDragRef.current = null;
+    setCoachPosition(null);
+    // The reset button disappears; leave focus on the persistent drag handle.
+    coachRef.current?.querySelector<HTMLButtonElement>(".tutorial-drag-handle")?.focus({ preventScroll: true });
+  };
+  const coachStyle: CSSProperties | undefined = surface && coachPosition ? {
+    ...clampTutorialCoachPosition(coachPosition, surface.viewport, coachSize.height),
+    maxHeight: surface.viewport.height - 24,
+  } : !embedded && surface ? { ...placeTutorialCoach(
+    surface.viewport,
     { width: 360, height: Math.max(260, coachSize.height) },
     surface.rect,
-  ), maxHeight: window.innerHeight - 24 } : undefined;
+  ), maxHeight: surface.viewport.height - 24 } : undefined;
 
   return <>
     {open && <div className="modal-backdrop tutorial-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -225,6 +256,7 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
           <div><p>You stay in control. Guides never load files, create labels, or save changes for you. Actions you take in the workspace are real.</p>
             {blockReason && <p className="tutorial-prerequisite" role="status">{blockReason}</p>}</div>
           <button className="button primary tutorial-start" disabled={Boolean(blockReason)} onClick={() => {
+            resetCoachPosition();
             setTour({ lessonId: selected.id, stepIndex: 0 });
             onClose();
           }}>{completed.has(selected.id) ? "Replay walkthrough" : "Start walkthrough"}<span aria-hidden="true"> →</span></button>
@@ -234,12 +266,44 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
     {surface && activeLesson && tour && createPortal(<>
       <section
         ref={coachRef}
-        className={`tutorial-coach ${embedded ? "tutorial-coach-embedded" : ""}`}
+        className={`tutorial-coach ${embedded ? "tutorial-coach-embedded" : ""} ${coachPosition ? "tutorial-coach-manual" : ""}`}
         style={coachStyle}
         aria-label={`${activeLesson.title} walkthrough`}
         onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); endTour(); } }}
       >
-        <header><span>{activeStep ? `STEP ${tour.stepIndex + 1} OF ${activeLesson.steps.length}` : "WALKTHROUGH COMPLETE"}</span><button aria-label="End walkthrough" title="End walkthrough" onClick={endTour}>×</button></header>
+        <header>
+          <button
+            className="tutorial-drag-handle"
+            aria-label="Move walkthrough panel"
+            title="Drag to move · Arrow keys to nudge · Home to reset position"
+            onPointerDown={(event) => {
+              if (event.button !== 0 || !event.isPrimary) return;
+              const rect = coachRef.current?.getBoundingClientRect();
+              if (!rect) return;
+              event.preventDefault();
+              event.currentTarget.focus({ preventScroll: true });
+              event.currentTarget.setPointerCapture(event.pointerId);
+              coachDragRef.current = { pointerId: event.pointerId, grabX: event.clientX - rect.left, grabY: event.clientY - rect.top, width: rect.width };
+              moveCoach(rect.left, rect.top, rect.width);
+            }}
+            onPointerMove={dragCoach}
+            onPointerUp={(event) => { dragCoach(event); stopDraggingCoach(event); }}
+            onPointerCancel={stopDraggingCoach}
+            onLostPointerCapture={stopDraggingCoach}
+            onKeyDown={(event) => {
+              if (event.key === "Home") { event.preventDefault(); resetCoachPosition(); return; }
+              const delta = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, [number, number]>)[event.key];
+              const rect = coachRef.current?.getBoundingClientRect();
+              if (!delta || !rect) return;
+              event.preventDefault();
+              event.stopPropagation();
+              const distance = event.shiftKey ? 40 : 10;
+              moveCoach(rect.left + delta[0] * distance, rect.top + delta[1] * distance, rect.width);
+            }}
+          ><span aria-hidden="true">⠿</span><span>{activeStep ? `STEP ${tour.stepIndex + 1} OF ${activeLesson.steps.length}` : "WALKTHROUGH COMPLETE"}</span><small>Drag to move</small></button>
+          {coachPosition && <button aria-label="Reset walkthrough position" title="Reset position" onClick={resetCoachPosition}>↺</button>}
+          <button aria-label="End walkthrough" title="End walkthrough" onClick={endTour}>×</button>
+        </header>
         <div className="tutorial-progress" aria-hidden="true">{activeLesson.steps.map((step, index) => <i key={step.title} className={index <= tour.stepIndex ? "active" : ""} />)}</div>
         <div className="tutorial-coach-copy" aria-live="polite" aria-atomic="true">
           <span className="tutorial-coach-lesson">{activeLesson.title}</span>
@@ -261,6 +325,6 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
         </footer>
       </section>
     </>, surface.host)}
-    {surface?.rect && activeStep && !tourBlock && createPortal(<div className="tutorial-spotlight" aria-hidden="true" style={surface.rect} />, document.body)}
+    {surface?.rect && activeStep && !tourBlock && createPortal(<div className="tutorial-spotlight" aria-hidden="true" style={surface.rect} />, embedded ? surface.host.closest(".modal-backdrop") ?? document.body : document.body)}
   </>;
 }
