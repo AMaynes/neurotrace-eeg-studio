@@ -6863,7 +6863,6 @@ export default function Home() {
       return true;
     };
     switch (action) {
-      case "show-recording-panel": setLeftPanelOpen(true); return true;
       case "show-label-panel": selectRightPanelTool("labels"); return true;
       case "show-label-tracks": setBottomTracksOpen(true); return true;
       case "jump-overview": case "page-forward": return moveTime(timebase);

@@ -21,9 +21,11 @@ export type TutorialStep = {
   unavailable: string;
   reveal?: TutorialReveal;
   tip?: string;
-  completeOn?: readonly TutorialAction[];
-  assist?: { action: TutorialAssistAction; description: string; completesStep?: boolean };
-};
+} & (
+  // Reading-only steps cannot offer an action or advance on unrelated workspace activity.
+  | { completeOn?: never; assist?: never }
+  | { completeOn: readonly [TutorialAction, ...TutorialAction[]]; assist?: { action: TutorialAssistAction; description: string; completesStep?: boolean } }
+);
 export type TutorialLesson = {
   id: string;
   topic: TutorialTopic;
@@ -50,9 +52,9 @@ export const tutorialLessons: readonly TutorialLesson[] = [
     description: "Meet the recording panel, signal tools, and labeling area.",
     steps: [
       { title: "Session tabs", target: "sessions", instruction: "Each top tab is an independent workspace. Switch tabs to return to another session; + creates a blank one.", unavailable: "Close any open dialog to see the session tabs." },
-      { assist: { action: "show-recording-panel", description: "Show the recording panel." }, title: "Recording info and queue", target: "recording-panel", reveal: "recording-panel", instruction: "The left panel holds recording information, whole-session labels, and the instance queue. Queue entries jump to their time in the recording.", unavailable: "Show the left recording panel to see these tools." },
+      { title: "Recording info and queue", target: "recording-panel", reveal: "recording-panel", instruction: "The left panel holds recording information, whole-session labels, and the instance queue. Queue entries jump to their time in the recording.", unavailable: "Show the left recording panel to see these tools." },
       { title: "Signal tools", target: "signal-tools", instruction: "The toolbar controls montage, filters, time window, gain, and trace display. These adjust the view; they do not rewrite raw samples.", unavailable: "Return to a session with a waveform." },
-      { completeOn: ["label-panel-opened"], assist: { action: "show-label-panel", description: "Show the labeling panel." }, title: "Labeling tools", target: "label-panel", reveal: "label-panel", instruction: "The right panel holds timed context and ePhys labels. Use the panel buttons in Signal tools whenever you need more room for the waveform.", unavailable: "Show the Labeling tools panel." },
+      { title: "Labeling tools", target: "label-panel", reveal: "label-panel", instruction: "The right panel holds timed context and ePhys labels. Use the panel buttons in Signal tools whenever you need more room for the waveform.", unavailable: "Show the Labeling tools panel." },
     ],
   },
   {
@@ -97,7 +99,7 @@ export const tutorialLessons: readonly TutorialLesson[] = [
     description: "Understand time, frequency, colors, and channel selection.",
     steps: [
       { completeOn: ["spectrogram-opened"], assist: { action: "open-spectrogram", description: "Show the spectrogram." }, title: "Open the spectrogram", target: "spectrogram-toggle", readyTarget: "spectrogram-plot", instruction: "Click Spectrogram in Signal tools to show the time-frequency panel below the waveform. Leave it open for the next steps.", unavailable: "Return to the waveform toolbar." },
-      { assist: { action: "open-spectrogram", description: "Show the spectrogram; select Next when you have read the explanation." }, title: "Read the axes and colors", target: "spectrogram-plot", reveal: "spectrogram", instruction: "Time runs left to right, aligned with the waveform. Frequency increases upward in Hz. Colors show relative whitened power, not waveform voltage: warmer colors mean higher displayed power.", unavailable: "Open Spectrogram in Signal tools.", tip: "This is a relative view, not an absolute power measurement or an automatic interpretation of the recording." },
+      { title: "Read the axes and colors", target: "spectrogram-plot", reveal: "spectrogram", instruction: "Time runs left to right, aligned with the waveform. Frequency increases upward in Hz. Colors show relative whitened power, not waveform voltage: warmer colors mean higher displayed power.", unavailable: "Open Spectrogram in Signal tools.", tip: "This is a relative view, not an absolute power measurement or an automatic interpretation of the recording." },
       { completeOn: ["channel-focused"], title: "Focus a channel", target: "channel-rail", instruction: "Click a channel name to focus its spectrogram. The label beside the spectrogram identifies the selected channel.", unavailable: "Return to the waveform and channel names." },
       { completeOn: ["channel-focus-cleared"], assist: { action: "clear-channel-focus", description: "Clear channel focus and show all enabled channels in the spectrogram." }, title: "Return to all enabled channels", target: "channel-rail", instruction: "Click the waveform and press Escape to clear that selection and return to the average power of all enabled channels.", unavailable: "Return to the waveform and channel names.", tip: "The label beside the spectrogram tells you which channel or group it currently represents." },
       { completeOn: ["spectrogram-adjusted"], title: "Set frequency range and smoothing", target: "spectrogram-controls", reveal: "spectrogram", instruction: "Frequency range controls the visible Hz band. Smooth averages power over time; 0s removes that extra smoothing. C− / C+ adjust the color limits, not the signal.", unavailable: "Open Spectrogram in Signal tools.", tip: "Longer smoothing can blur brief changes. The color scale stays fixed while you pan the same signal." },

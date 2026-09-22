@@ -17,7 +17,7 @@ export type TutorialAction =
 
 /** Allowlisted view-only assistance. File, label, montage and save choices stay manual. */
 export type TutorialAssistAction =
-  | "open-import" | "open-save" | "show-recording-panel" | "show-label-panel" | "show-label-tracks"
+  | "open-import" | "open-save" | "show-label-panel" | "show-label-tracks"
   | "jump-overview" | "pan-waveform" | "page-forward" | "shorten-window"
   | "enable-waveform-zoom" | "disable-waveform-zoom" | "zoom-waveform" | "open-channels"
   | "increase-gain" | "toggle-clamp" | "open-filters" | "open-spectrogram"

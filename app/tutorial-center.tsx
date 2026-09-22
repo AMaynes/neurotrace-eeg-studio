@@ -339,12 +339,12 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, session
           {tourBlock && <p className="tutorial-prerequisite">{tourBlock}</p>}
           {activeStep && !tourBlock && !surface.ready && (!surface.rect || surface.fallback) && <p className="tutorial-prerequisite">{embedded && !surface.rect ? `Close ${surface.dialogName} to continue in the workspace. ` : ""}{activeStep.unavailable}</p>}
         </div>
-        {activeStep?.assist && !tourBlock && (!embedded || surface.ready) && <div className="tutorial-assistance">
+        {activeStep?.completeOn?.length && activeStep.assist && !tourBlock && !embedded && !surface.ready && <div className="tutorial-assistance">
           <button className="tutorial-do" onClick={() => {
             if (!onAssist(activeStep.assist!.action)) { setAssistFailure(tour); return; }
             setAssistFailure(null);
-            // Opening a chooser/revealing a reading step is assistance, not completion.
-            if (activeStep.completeOn && activeStep.assist!.completesStep !== false) advance();
+            // Opening a chooser can assist an action without completing the user's choices.
+            if (activeStep.assist!.completesStep !== false) advance();
           }}>Do it for me</button>
           <small>{activeStep.assist.description}</small>
           {assistFailure === tour && <small role="status">This action is unavailable here. Show the highlighted area, or select Next to continue.</small>}

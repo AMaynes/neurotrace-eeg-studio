@@ -197,11 +197,65 @@ test("contextual spectrogram help selects its topic and reveals hidden controls 
   ui.click("Start walkthrough →"); ui.click("Next →");
   assert.match(ui.markup(), /Open Spectrogram in Signal tools/);
   assert.deepEqual(ui.actions, []);
+  assert.doesNotMatch(ui.markup(), />Do it for me</, "explaining axes and colors is not an action");
   ui.click("Show this area");
   assert.deepEqual(ui.actions, ["spectrogram"]);
+  assert.match(ui.markup(), /STEP 2 OF 5/, "revealing the plot does not skip its explanation");
+  ui.surface.rect = { left: 100, top: 400, width: 800, height: 200 }; ui.render();
+  assert.doesNotMatch(ui.markup(), />Show this area</, "reveal is offered only while the area is hidden");
+  assert.doesNotMatch(ui.markup(), />Do it for me</);
   assert.match(page, /onHelp=\{\(\) => \{ setHelpTopic\("spectrogram"\); setShowHelp\(true\); \}\}/);
   assert.match(page, /onClick=\{onHelp\} aria-label="Open spectrogram tutorials"/);
   assert.doesNotMatch(page, /showSpectrogramHelp|help-sections/);
+});
+
+test("every step offers assistance only for a real action, never just an explanation", () => {
+  for (const lesson of catalog.tutorialLessons) {
+    const ui = harness({ topic: lesson.topic });
+    ui.find((node) => node.type === "button" && node.props["aria-pressed"] !== undefined && text(node).startsWith(lesson.title)).props.onClick();
+    ui.render(); ui.click("Start walkthrough →");
+    for (const step of lesson.steps) {
+      const hasAssistance = nodes(ui.tree).some((node) => node.type === "button" && text(node) === "Do it for me");
+      assert.equal(hasAssistance, Boolean(step.completeOn?.length && step.assist), `${lesson.id}: ${step.title}`);
+      if (!step.completeOn) {
+        assert.equal(step.assist, undefined);
+        assert.match(ui.markup(), /Read this step, then select Next/);
+      }
+      ui.click("Next →");
+    }
+    assert.doesNotMatch(ui.markup(), />Do it for me</, "completed lessons have no action to assist");
+    ui.dispose();
+  }
+});
+
+test("the workspace tour stays informational even when its panels are opened", () => {
+  const lesson = catalog.tutorialLessons.find((item) => item.id === "workspace");
+  const ui = harness();
+  ui.find((node) => node.type === "button" && text(node).startsWith(lesson.title)).props.onClick();
+  ui.render(); ui.click("Start walkthrough →");
+  for (let index = 0; index < lesson.steps.length; index++) {
+    assert.doesNotMatch(ui.markup(), />Do it for me</);
+    ui.emit("label-panel-opened");
+    assert.match(ui.markup(), new RegExp(`STEP ${index + 1} OF 4`), "opening a panel cannot complete a reading step");
+    ui.click("Next →");
+  }
+  assert.deepEqual(ui.actions, []);
+  ui.dispose();
+});
+
+test("an already open target does not offer a redundant Do it for me button", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  assert.ok(ui.button("Do it for me"));
+  ui.surface.ready = true; ui.render();
+  assert.match(ui.markup(), /That area is already open/);
+  assert.doesNotMatch(ui.markup(), />Do it for me</);
+  ui.surface.dialogName = "Load recording"; ui.render();
+  assert.doesNotMatch(ui.markup(), />Do it for me</);
+  ui.surface.ready = false; ui.surface.dialogName = null; ui.render();
+  ui.click("Do it for me");
+  assert.deepEqual(ui.actions, ["assist:open-import"]);
+  assert.match(ui.markup(), /STEP 2 OF 4/);
+  ui.dispose();
 });
 
 test("the guide stays inside open dialogs and cannot open a competing tutorial modal", () => {
@@ -416,7 +470,7 @@ test("Do it for me is explicit, uses the specific safe command, and does not ski
   ui.dispose();
 });
 
-test("assistance that only reveals a chooser or reading area waits for the actual action", () => {
+test("assistance that opens a chooser waits for the user's actual choices", () => {
   const ui = harness({ topic: "labels" });
   ui.click("Organize label types and visibilityChoose your palette, distinguish label types, and hide overlays.4 steps · About 1 min");
   ui.click("Start walkthrough →"); ui.click("Do it for me");
