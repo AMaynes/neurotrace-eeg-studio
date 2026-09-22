@@ -103,6 +103,7 @@ import { TutorialCenter } from "./tutorial-center";
 import type { TutorialTopic } from "./tutorials";
 import { notifyTutorialAction, type TutorialAssistAction } from "./tutorial-events";
 import { useTutorialMilestones } from "./tutorial-progress";
+import { recordZoomChange, type ZoomView, type ZoomHistoryEntry, type ZoomGestureState, type SpectrogramFrequencyRange } from "./zoom-history";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -264,10 +265,13 @@ type Candidate = {
 };
 
 type AnnotationHistorySnapshot = {
+  kind?: "annotation";
   annotations: Annotation[];
   candidates: Candidate[];
   activeCandidate: number;
 };
+
+type WorkspaceHistorySnapshot = AnnotationHistorySnapshot | ZoomHistoryEntry;
 
 type MatlabExportIdentity = {
   patientId: string;
@@ -469,8 +473,11 @@ type SessionWorkspaceSnapshot = {
   rawSourceHash: string;
   sourceInterpretation: Record<string, unknown> | null;
   recoveryStatus: "saved" | "error";
-  undo: AnnotationHistorySnapshot[];
-  redo: AnnotationHistorySnapshot[];
+  waveformVerticalViewport: NormalizedVerticalViewport | null;
+  channelScrollTop: number;
+  spectrogramFrequencyRange: SpectrogramFrequencyRange;
+  undo: WorkspaceHistorySnapshot[];
+  redo: WorkspaceHistorySnapshot[];
 };
 
 const LABELS: LabelDefinition[] = [
@@ -1571,6 +1578,9 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     snapMode: "100ms",
     spectrogramOpen: false,
     expandedChannels: false,
+    waveformVerticalViewport: null,
+    channelScrollTop: 0,
+    spectrogramFrequencyRange: { min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ },
     candidates: [],
     activeCandidate: 0,
     sourceHash: "",
@@ -1739,8 +1749,10 @@ export default function Home() {
   const annotationsRef = useRef<Annotation[]>([]);
   const candidatesRef = useRef<Candidate[]>([]);
   const activeCandidateIndexRef = useRef(0);
-  const undoRef = useRef<AnnotationHistorySnapshot[]>([]);
-  const redoRef = useRef<AnnotationHistorySnapshot[]>([]);
+  const undoRef = useRef<WorkspaceHistorySnapshot[]>([]);
+  const redoRef = useRef<WorkspaceHistorySnapshot[]>([]);
+  const zoomGestureRef = useRef<ZoomGestureState>({});
+  const pendingZoomScrollRef = useRef<number | null>(null);
   const pointerRef = useRef<WavePointerState | null>(null);
   const wheelFrameRef = useRef<number | null>(null);
   const wheelPanSettleTimerRef = useRef<number | null>(null);
@@ -1869,6 +1881,20 @@ export default function Home() {
   const [playing, setPlaying] = useState(false);
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
   const [expandedChannels, setExpandedChannels] = useState(false);
+  const [spectrogramFrequencyRange, setSpectrogramFrequencyRange] = useState<SpectrogramFrequencyRange>({ min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ });
+  const zoomViewRef = useRef<ZoomView>({ viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: 0, frequencyRange: spectrogramFrequencyRange });
+  useLayoutEffect(() => {
+    zoomViewRef.current = { viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: channelScrollOffsetRef.current, frequencyRange: spectrogramFrequencyRange };
+  }, [viewStart, timebase, gain, waveformVerticalViewport, expandedChannels, spectrogramFrequencyRange]);
+  useLayoutEffect(() => {
+    const scrollTop = pendingZoomScrollRef.current;
+    if (scrollTop === null || !waveformScrollRef.current) return;
+    // Session restoration briefly has no rows; scrolling now would clamp the saved offset to zero.
+    if (scrollTop > 0 && expandedChannels && !display.data.length) return;
+    waveformScrollRef.current.scrollTop = scrollTop;
+    channelScrollOffsetRef.current = waveformScrollRef.current.scrollTop;
+    pendingZoomScrollRef.current = null;
+  });
   const [paletteSearch, setPaletteSearch] = useState("");
   const [enabledEphysLabelIds, setEnabledEphysLabelIds] = useState<Set<string>>(() => new Set(["ictal"]));
   const [showEphysLabelPicker, setShowEphysLabelPicker] = useState(false);
@@ -2125,6 +2151,9 @@ export default function Home() {
       snapMode,
       spectrogramOpen,
       expandedChannels,
+      waveformVerticalViewport,
+      channelScrollTop: pendingZoomScrollRef.current ?? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current,
+      spectrogramFrequencyRange,
       candidates,
       activeCandidate,
       sourceHash,
@@ -2155,7 +2184,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, timebase, traceDisplayMode, uploadedFileInputs, viewStart]);
+  }, [activeCandidate, activeSessionId, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2219,7 +2248,10 @@ export default function Home() {
     setSelection(snapshot.selection);
     setInspectionRange(null);
     setInspectionDragging(false);
-    setWaveformVerticalViewport(null);
+    setWaveformVerticalViewport(snapshot.waveformVerticalViewport ?? null);
+    pendingZoomScrollRef.current = snapshot.channelScrollTop ?? 0;
+    setSpectrogramFrequencyRange(snapshot.spectrogramFrequencyRange ?? { min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ });
+    zoomGestureRef.current = {};
     setCursorTime(snapshot.cursorTime);
     setCursorAmplitude(snapshot.cursorAmplitude);
     setCursorLocked(snapshot.cursorLocked);
@@ -2372,16 +2404,60 @@ export default function Home() {
     MIN_RENDERABLE_SAMPLE_COUNT / Math.max(Number.EPSILON, focusedSourceSampleRate),
   );
 
-  const setTimeWindow = useCallback((requested: number, anchorTime = viewStart + timebase / 2) => {
+  const readZoomView = useCallback((): ZoomView => ({
+    ...zoomViewRef.current,
+    viewStart: viewStartRef.current,
+    channelScrollTop: pendingZoomScrollRef.current ?? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current,
+  }), []);
+
+  const cancelPendingViewFrames = useCallback(() => {
+    // A queued wheel frame must not reapply a zoom after undo or redo restores the view.
+    if (zoomWheelFrameRef.current !== null) window.cancelAnimationFrame(zoomWheelFrameRef.current);
+    if (wheelFrameRef.current !== null) window.cancelAnimationFrame(wheelFrameRef.current);
+    if (channelScrollFrameRef.current !== null) window.cancelAnimationFrame(channelScrollFrameRef.current);
+    zoomWheelFrameRef.current = null;
+    wheelFrameRef.current = null;
+    channelScrollFrameRef.current = null;
+    zoomWheelDeltaRef.current = 0;
+    wheelDeltaRef.current = 0;
+    pointerRef.current = null;
+    if (cursorFrameRef.current !== null) window.cancelAnimationFrame(cursorFrameRef.current);
+    cursorFrameRef.current = null;
+    pendingCursorRef.current = null;
+  }, []);
+
+  const applyZoomView = useCallback((view: ZoomView) => {
+    cancelPendingViewFrames();
+    if (view.timebase !== zoomViewRef.current.timebase) setWindowDraftValue(null);
+    zoomViewRef.current = view;
+    commitViewStart(view.viewStart);
+    setTimebase(view.timebase);
+    setGain(view.gain);
+    setWaveformVerticalViewport(view.verticalViewport);
+    setExpandedChannels(view.expandedChannels);
+    pendingZoomScrollRef.current = view.channelScrollTop;
+    setSpectrogramFrequencyRange(view.frequencyRange);
+    setInspectionRange(null);
+    setInspectionDragging(false);
+  }, [cancelPendingViewFrames, commitViewStart]);
+
+  const changeZoomView = useCallback((patch: Partial<ZoomView>, group?: string) => {
+    if (!hasRecording) return;
+    const before = readZoomView();
+    const after = { ...before, ...patch };
+    if (recordZoomChange(undoRef.current, redoRef.current, before, after, zoomGestureRef.current, group)) applyZoomView(after);
+  }, [applyZoomView, hasRecording, readZoomView]);
+
+  const setTimeWindow = useCallback((requested: number, anchorTime?: number, group?: string) => {
+    const current = readZoomView();
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
     const next = clamp(requested, Math.min(minimumRenderableWindow, maximumWindow), maximumWindow);
-    const anchor = clamp(anchorTime, viewStart, viewStart + timebase);
-    const anchorRatio = timebase > 0 ? (anchor - viewStart) / timebase : 0.5;
-    commitViewStart(clamp(anchor - anchorRatio * next, 0, Math.max(0, meta.durationSec - next)));
-    setTimebase(next);
-  }, [commitViewStart, meta.durationSec, minimumRenderableWindow, timebase, viewStart]);
+    const anchor = clamp(anchorTime ?? current.viewStart + current.timebase / 2, current.viewStart, current.viewStart + current.timebase);
+    const anchorRatio = current.timebase > 0 ? (anchor - current.viewStart) / current.timebase : 0.5;
+    changeZoomView({ viewStart: clamp(anchor - anchorRatio * next, 0, Math.max(0, meta.durationSec - next)), timebase: next }, group);
+  }, [changeZoomView, meta.durationSec, minimumRenderableWindow, readZoomView]);
 
-  const zoomToTimeRange = useCallback((start: number, end: number) => {
+  const zoomToTimeRange = useCallback((start: number, end: number, otherAxes: Partial<ZoomView> = {}) => {
     const rangeStart = clamp(Math.min(start, end), 0, meta.durationSec);
     const rangeEnd = clamp(Math.max(start, end), rangeStart, meta.durationSec);
     const selectedDuration = rangeEnd - rangeStart;
@@ -2392,9 +2468,8 @@ export default function Home() {
       maximumWindow,
     );
     const center = (rangeStart + rangeEnd) / 2;
-    commitViewStart(clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)));
-    setTimebase(nextDuration);
-  }, [commitViewStart, meta.durationSec, minimumRenderableWindow]);
+    changeZoomView({ ...otherAxes, viewStart: clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)), timebase: nextDuration });
+  }, [changeZoomView, meta.durationSec, minimumRenderableWindow]);
 
   const zoomTimeWindow = useCallback((direction: "in" | "out", anchorTime?: number) => {
     setTimeWindow(timebase + (direction === "in" ? -WINDOW_ZOOM_STEP_SECONDS : WINDOW_ZOOM_STEP_SECONDS), anchorTime);
@@ -2459,9 +2534,18 @@ export default function Home() {
   }, []);
 
   const undo = useCallback(() => {
+    cancelPendingViewFrames();
+    zoomGestureRef.current = {};
     const previous = undoRef.current.pop();
     if (!previous) {
       setToast("Nothing to undo");
+      return;
+    }
+    if (previous.kind === "zoom") {
+      redoRef.current.push(previous);
+      setPlaying(false);
+      applyZoomView(previous.before);
+      setToast("Zoom undone");
       return;
     }
     redoRef.current.push({
@@ -2478,12 +2562,21 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setToast("Last annotation change undone");
-  }, []);
+  }, [applyZoomView, cancelPendingViewFrames]);
 
   const redo = useCallback(() => {
+    cancelPendingViewFrames();
+    zoomGestureRef.current = {};
     const next = redoRef.current.pop();
     if (!next) {
       setToast("Nothing to redo");
+      return;
+    }
+    if (next.kind === "zoom") {
+      undoRef.current.push(next);
+      setPlaying(false);
+      applyZoomView(next.after);
+      setToast("Zoom restored");
       return;
     }
     undoRef.current.push({
@@ -2500,7 +2593,7 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setToast("Annotation change restored");
-  }, []);
+  }, [applyZoomView, cancelPendingViewFrames]);
 
   const addAnnotation = useCallback((
     label: LabelDefinition,
@@ -4420,7 +4513,7 @@ export default function Home() {
     };
   }, [display.labels, display.sourceIndices]);
 
-  const fitWaveformVerticallyToInspectionBox = useCallback((range: InspectionBox, rect: DOMRect) => {
+  const waveformZoomForInspectionBox = useCallback((range: InspectionBox, rect: DOMRect): Partial<ZoomView> => {
     const canvasHeight = Math.max(1, rect.height);
     const plotTopFraction = clamp(CHANNEL_RAIL_HEADER_HEIGHT / canvasHeight, 0, 1);
     const plotFractionSpan = Math.max(Number.EPSILON, 1 - plotTopFraction);
@@ -4437,12 +4530,13 @@ export default function Home() {
           top: clamp((range.top - plotTopFraction) / plotFractionSpan, 0, 1),
           bottom: clamp((range.bottom - plotTopFraction) / plotFractionSpan, 0, 1),
         };
-    if (selection.bottom <= selection.top) return;
-    setWaveformVerticalViewport((current) => composeVerticalViewport(expandedChannels ? null : current, selection));
-    setExpandedChannels(false);
-    channelScrollOffsetRef.current = 0;
-    if (waveformScrollRef.current) waveformScrollRef.current.scrollTop = 0;
-  }, [channelRowLayout.totalUnits, expandedChannels]);
+    if (selection.bottom <= selection.top) return {};
+    return {
+      verticalViewport: composeVerticalViewport(expandedChannels ? null : waveformVerticalViewport, selection),
+      expandedChannels: false,
+      channelScrollTop: 0,
+    };
+  }, [channelRowLayout.totalUnits, expandedChannels, waveformVerticalViewport]);
 
   const inspectionMode = boxZoomActive;
 
@@ -4552,8 +4646,9 @@ export default function Home() {
       const horizontalDrag = Math.abs(event.clientX - pointer.startX) > 3;
       const verticalDrag = Math.abs(pointerY - pointer.startY) > 3;
       if (horizontalDrag || verticalDrag) {
-        if (horizontalDrag && range.end > range.start) zoomToTimeRange(range.start, range.end);
-        if (verticalDrag) fitWaveformVerticallyToInspectionBox(range, rect);
+        const verticalZoom = verticalDrag ? waveformZoomForInspectionBox(range, rect) : {};
+        if (horizontalDrag && range.end > range.start) zoomToTimeRange(range.start, range.end, verticalZoom);
+        else changeZoomView(verticalZoom);
         notifyTutorialAction("waveform-zoomed");
         setToast(`Box fitted to the waveform view · ${(range.end - range.start).toFixed(2)} s × ${range.channelLabels.length} channel${range.channelLabels.length === 1 ? "" : "s"}`);
       } else {
@@ -4909,7 +5004,7 @@ export default function Home() {
           zoomWheelDeltaRef.current = 0;
           zoomWheelFrameRef.current = null;
           const direction = boundedDelta < 0 ? -1 : 1;
-          setTimeWindow(timebase + direction * WINDOW_ZOOM_STEP_SECONDS, zoomWheelAnchorRef.current);
+          setTimeWindow(zoomViewRef.current.timebase + direction * WINDOW_ZOOM_STEP_SECONDS, zoomWheelAnchorRef.current, "wheel");
           notifyTutorialAction("waveform-zoomed");
         });
       }
@@ -5118,6 +5213,7 @@ export default function Home() {
     const targetSessionId = activeSessionId;
     const nextMeta = sourceMeta(source);
     storeActiveSession();
+    cancelPendingViewFrames();
     const previousSnapshot = sessionSnapshotsRef.current.get(targetSessionId);
     sourceVerificationAbortRef.current?.abort(new DOMException("Source verification superseded", "AbortError"));
     const verificationAbortController = new AbortController();
@@ -5179,6 +5275,9 @@ export default function Home() {
     setAnnotations([]);
     undoRef.current = [];
     redoRef.current = [];
+    zoomGestureRef.current = {};
+    pendingZoomScrollRef.current = 0;
+    setSpectrogramFrequencyRange({ min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ });
     setShowImport(false);
 
     let lastProgressBucket = -1;
@@ -5532,7 +5631,7 @@ export default function Home() {
       if (previousSnapshot && activeSessionIdRef.current === targetSessionId) applySessionSnapshot(previousSnapshot);
       throw error;
     }
-  }, [activeSessionId, applySessionSnapshot, commitViewStart, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, storeActiveSession]);
 
   const applyImportedProjectState = useCallback((project: ImportedNeurotraceProject) => {
     const durationSec = sourceRef.current.meta.durationSec;
@@ -6560,10 +6659,11 @@ export default function Home() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      // Coach controls own their shortcuts; Escape elsewhere still clears real selections.
-      if (target?.closest(".tutorial-coach")) return;
+      const historyShortcut = (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "z";
+      // Coach controls own their local shortcuts, but view undo works after assisted zooms too.
+      if (target?.closest(".tutorial-coach") && !historyShortcut) return;
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
-      if (target?.closest(".spectrogram-panel") && event.key !== "Escape") return;
+      if (target?.closest(".spectrogram-panel") && event.key !== "Escape" && !historyShortcut) return;
       const zoomModifier = event.metaKey || event.ctrlKey;
       const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
       const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
@@ -6592,6 +6692,17 @@ export default function Home() {
         return;
       }
       if (modalOpen) return;
+      // Keep native text undo, but allow view undo after a toolbar button or spectrogram click.
+      if (historyShortcut) {
+        if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (hasRecording) {
+          if (event.shiftKey) redo();
+          else undo();
+        }
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         if (dragAnnotationRef.current) {
@@ -6629,12 +6740,6 @@ export default function Home() {
         return;
       }
       const lower = event.key.toLowerCase();
-      if ((event.metaKey || event.ctrlKey) && lower === "z") {
-        event.preventDefault();
-        if (event.shiftKey) redo();
-        else undo();
-        return;
-      }
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === "ArrowLeft") {
         event.preventDefault();
@@ -6878,7 +6983,7 @@ export default function Home() {
       case "enable-waveform-zoom": return boxZoomActive || clickControl("waveform-zoom");
       case "disable-waveform-zoom": return !boxZoomActive || clickControl("waveform-zoom");
       case "open-channels": setShowChannels(true); return true;
-      case "increase-gain": setGain((value) => value >= 8 ? value / 1.25 : Math.min(8, value * 1.25)); return true;
+      case "increase-gain": changeZoomView({ gain: gain >= 8 ? gain / 1.25 : Math.min(8, gain * 1.25) }); return true;
       case "toggle-clamp": return clickControl("clamp");
       case "open-filters": setShowFilters(true); return true;
       case "open-spectrogram": setSpectrogramOpen(true); return true;
@@ -7208,7 +7313,7 @@ export default function Home() {
               </div>
               <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
             </div>
-            <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain"><span>Gain</span><b>{gain.toFixed(1)}×</b><div className="gain-step-buttons"><button disabled={!hasRecording} aria-label="Increase gain" title="Increase gain" onClick={() => setGain((value) => Math.min(8, value * 1.25))}>+</button><button disabled={!hasRecording} aria-label="Decrease gain" title="Decrease gain" onClick={() => setGain((value) => Math.max(0.25, value / 1.25))}>−</button></div></div>
+            <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain"><span>Gain</span><b>{gain.toFixed(1)}×</b><div className="gain-step-buttons"><button disabled={!hasRecording} aria-label="Increase gain" title="Increase gain" onClick={() => changeZoomView({ gain: Math.min(8, gain * 1.25) })}>+</button><button disabled={!hasRecording} aria-label="Decrease gain" title="Decrease gain" onClick={() => changeZoomView({ gain: Math.max(0.25, gain / 1.25) })}>−</button></div></div>
             <button
               className={`trace-display-toggle ${traceDisplayMode === "overlap" ? "active" : ""}`}
               data-tutorial="clamp"
@@ -7312,10 +7417,10 @@ export default function Home() {
                   title={waveformVerticalViewport ? "Fit all channels" : `${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`}
                   onClick={() => {
                     if (waveformVerticalViewport) {
-                      setWaveformVerticalViewport(null);
+                      changeZoomView({ verticalViewport: null });
                       setToast("Full channel view restored");
                     } else {
-                      setExpandedChannels((value) => !value);
+                      changeZoomView({ expandedChannels: !expandedChannels, channelScrollTop: 0 });
                     }
                   }}
                 >{waveformVerticalViewport ? "↕" : "E"}</button>
@@ -7397,7 +7502,12 @@ export default function Home() {
               onPreviewStart={previewViewStartSafe}
               onCommitStart={(start) => commitViewStart(clamp(start, 0, Math.max(0, meta.durationSec - timebase)))}
               onCenter={jumpTo}
-              onZoom={zoomToTimeRange}
+              frequencyRange={spectrogramFrequencyRange}
+              onFrequencyRangeChange={(frequencyRange) => changeZoomView({ frequencyRange })}
+              onZoom={(range, frequencyRange) => {
+                if (range) zoomToTimeRange(range.start, range.end, frequencyRange ? { frequencyRange } : {});
+                else if (frequencyRange) changeZoomView({ frequencyRange });
+              }}
               onHelp={() => { setHelpTopic("spectrogram"); setShowHelp(true); }}
             />}
 
@@ -7823,7 +7933,7 @@ export default function Home() {
             <div className="settings-heading"><strong>Pointer and timing controls</strong></div>
             <label><span>Label snapping</span><select value={snapMode} onChange={(event) => setSnapMode(event.target.value as "1s" | "100ms" | "sample")}><option value="1s">1 second</option><option value="100ms">100 milliseconds</option><option value="sample">Focused channel sample</option></select></label>
             <div className="fixed-control-grid">
-              {[["Click", "Pin instance time"], ["Click + drag", "Select label window"], ["Wheel / trackpad", "Pan in time"], ["Pinch or ⌘ +/−", "EEG-only zoom"], ["Delete / ⌫", "Delete selected label"], ["Escape", "Clear selection and cursor"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
+              {[["Click", "Pin instance time"], ["Click + drag", "Select label window"], ["Wheel / trackpad", "Pan in time"], ["Pinch or Ctrl/⌘ +/−", "EEG-only zoom"], ["Ctrl/⌘ Z", "Undo label edit or zoom"], ["Ctrl/⌘ Shift Z", "Redo label edit or zoom"], ["Delete / ⌫", "Delete selected label"], ["Escape", "Clear selection and cursor"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
             </div>
           </section>
         </div>
@@ -7995,7 +8105,9 @@ type SpectrogramPanelProps = {
   onPreviewStart(start: number): void;
   onCommitStart(start: number): void;
   onCenter(time: number): void;
-  onZoom(start: number, end: number): void;
+  frequencyRange: SpectrogramFrequencyRange;
+  onFrequencyRangeChange(range: SpectrogramFrequencyRange): void;
+  onZoom(range: { start: number; end: number } | null, frequencyRange?: SpectrogramFrequencyRange): void;
   onHelp(): void;
 };
 
@@ -8026,6 +8138,8 @@ function SpectrogramPanel({
   onPreviewStart,
   onCommitStart,
   onCenter,
+  frequencyRange,
+  onFrequencyRangeChange,
   onZoom,
   onHelp,
 }: SpectrogramPanelProps) {
@@ -8079,8 +8193,7 @@ function SpectrogramPanel({
   const [tool, setTool] = useState<SpectrogramTool>("browse");
   const [zoomBox, setZoomBox] = useState<SpectrogramZoomBox | null>(null);
   const [smoothingSeconds, setSmoothingSeconds] = useState(BUZCODE_DEFAULT_SMOOTHING_SECONDS);
-  const [displayMinHz, setDisplayMinHz] = useState(0);
-  const [displayMaxHz, setDisplayMaxHz] = useState(BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ);
+  const { min: displayMinHz, max: displayMaxHz } = frequencyRange;
   const [colorLimitShift, setColorLimitShift] = useState(0);
   const [overlay, setOverlay] = useState<"none" | "theta">("none");
   const displayedPowers = useMemo(
@@ -8394,10 +8507,12 @@ function SpectrogramPanel({
     if (interaction.tool === "box-zoom") {
       const box = zoomBoxFromInteraction(interaction, event.currentTarget);
       setZoomBox(null);
+      let timeRange: { start: number; end: number } | null = null;
+      let nextFrequencyRange: SpectrogramFrequencyRange | undefined;
       if (box.width >= SPECTROGRAM_MINIMUM_DRAG_PX) {
         const startTime = viewStart + plotRatio(interaction.startX, event.currentTarget) * viewDuration;
         const endTime = viewStart + plotRatio(interaction.currentX, event.currentTarget) * viewDuration;
-        onZoom(Math.min(startTime, endTime), Math.max(startTime, endTime));
+        timeRange = { start: Math.min(startTime, endTime), end: Math.max(startTime, endTime) };
       }
       if (box.height >= SPECTROGRAM_MINIMUM_DRAG_PX) {
         const startFrequency = frequencyFromPointer(interaction.startY, event.currentTarget);
@@ -8405,11 +8520,14 @@ function SpectrogramPanel({
         const nextMinimumHz = Math.max(0, Math.floor(Math.min(startFrequency, endFrequency)));
         const nextMaximumHz = Math.min(maximumDisplayHz, Math.ceil(Math.max(startFrequency, endFrequency)));
         if (nextMaximumHz - nextMinimumHz >= 1) {
-          setDisplayMinHz(nextMinimumHz);
-          setDisplayMaxHz(nextMaximumHz);
+          nextFrequencyRange = { min: nextMinimumHz, max: nextMaximumHz };
         }
       }
-      if (box.width >= SPECTROGRAM_MINIMUM_DRAG_PX || box.height >= SPECTROGRAM_MINIMUM_DRAG_PX) notifyTutorialAction("spectrogram-zoomed");
+      if (timeRange || nextFrequencyRange) {
+        // Both axes belong to one box gesture and therefore one undo entry.
+        onZoom(timeRange, nextFrequencyRange);
+        notifyTutorialAction("spectrogram-zoomed");
+      }
       return;
     }
     const distance = interaction.currentX - interaction.startX;
@@ -8491,7 +8609,7 @@ function SpectrogramPanel({
             type="button"
             aria-label="Lower maximum displayed frequency"
             disabled={effectiveDisplayMaxHz - effectiveDisplayMinHz <= minimumDisplayHz}
-            onClick={() => { setDisplayMaxHz(Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10)); notifyTutorialAction("spectrogram-adjusted"); }}
+            onClick={() => { onFrequencyRangeChange({ min: displayMinHz, max: Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
             title="Show a narrower, lower-frequency range"
           >−</button>
           <output aria-live="polite">{Math.round(effectiveDisplayMinHz)}–{Math.round(effectiveDisplayMaxHz)} Hz</output>
@@ -8499,7 +8617,7 @@ function SpectrogramPanel({
             type="button"
             aria-label="Raise maximum displayed frequency"
             disabled={effectiveDisplayMaxHz >= maximumDisplayHz}
-            onClick={() => { setDisplayMaxHz(Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10)); notifyTutorialAction("spectrogram-adjusted"); }}
+            onClick={() => { onFrequencyRangeChange({ min: displayMinHz, max: Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
             title="Show a wider frequency range"
           >+</button>
           <button
@@ -8507,8 +8625,7 @@ function SpectrogramPanel({
             aria-label="Reset displayed frequency range"
             data-tutorial="spectrogram-reset"
             onClick={() => {
-              setDisplayMinHz(0);
-              setDisplayMaxHz(Math.min(maximumDisplayHz, BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ));
+              onFrequencyRangeChange({ min: 0, max: Math.min(maximumDisplayHz, BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ) });
               notifyTutorialAction("spectrogram-adjusted");
             }}
             title="Reset to the default frequency range"
@@ -8577,6 +8694,7 @@ function SpectrogramPanel({
           if (interaction.tool === "browse") onCommitStart(interaction.originalViewStart);
         }}
         onKeyDown={(event) => {
+          if (event.metaKey || event.ctrlKey || event.altKey) return;
           const key = event.key.toLowerCase();
           if (!["arrowleft", "arrowright", "arrowup", "arrowdown", "b", "z", "escape"].includes(key)) return;
           if (key === "escape") {

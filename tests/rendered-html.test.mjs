@@ -720,9 +720,9 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   const pointerHandlers = page.slice(pointerStart, pointerEnd);
   assert.match(pointerHandlers, /inspectionBox: inspectionMode && pointerRef\.current\.moved/);
   assert.match(pointerHandlers, /if \(pending\.inspectionBox\) setInspectionRange\(pending\.inspectionBox\)/);
-  assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end\)/);
-  assert.match(pointerHandlers, /fitWaveformVerticallyToInspectionBox\(range, rect\)/);
-  assert.match(page, /composeVerticalViewport\(expandedChannels \? null : current, selection\)/);
+  assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end, verticalZoom\)/);
+  assert.match(pointerHandlers, /waveformZoomForInspectionBox\(range, rect\)/);
+  assert.match(page, /composeVerticalViewport\(expandedChannels \? null : waveformVerticalViewport, selection\)/);
   assert.match(page, /expandedChannels[\s\S]*?channelRowLayout\.totalUnits \* 60/, "expanded, scrolled channels use content-space box bounds");
   assert.doesNotMatch(pointerHandlers, /setInspectionRowRange|setSelectedChannels/, "box zoom preserves every enabled channel");
   assert.match(pointerHandlers, /setSelection\(\{ start: Math\.min\(pointer\.startTime, time\), end: Math\.max\(pointer\.startTime, time\) \}\)/);

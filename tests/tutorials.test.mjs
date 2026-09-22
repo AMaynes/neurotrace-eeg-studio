@@ -284,7 +284,7 @@ test("tour Escape is local to the coach so waveform Escape can still clear chann
   ui.render();
   assert.equal(prevented, true);
   assert.equal(ui.markup(), "");
-  assert.match(page, /if \(target\?\.closest\("\.tutorial-coach"\)\) return;/);
+  assert.match(page, /if \(target\?\.closest\("\.tutorial-coach"\) && !historyShortcut\) return;/);
   assert.match(page, /setChannelSelectionActive\(false\)/);
 });
 

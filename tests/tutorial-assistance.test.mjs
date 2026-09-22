@@ -19,22 +19,22 @@ function fixture(overrides = {}) {
   const changes = [];
   const click = [];
   const buttons = new Map();
-  const values = { gain: 1, labelsVisible: true };
+  const values = { labelsVisible: true };
   const state = {
     showEphysLabelPicker: false, showSettings: false, showChannels: false, showImport: false,
     showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
     queueDetailEntry: null, confirmCommit: [], hasRecording: true, activeSessionContentView: "recording",
-    meta: { durationSec: 90 }, viewStartRef: { current: 0 }, viewStart: 0, timebase: 20,
+    meta: { durationSec: 90 }, viewStartRef: { current: 0 }, viewStart: 0, timebase: 20, gain: 1,
     minimumRenderableWindow: 0.01, boxZoomActive: false, reviewReady: true, display: { data: [new Float32Array(10)] },
     document: { querySelector: (selector) => buttons.get(selector) ?? null },
     ...overrides,
   };
   for (const name of ["setShowImport", "setProjectSaveError", "setShowProjectSave", "setPlaying", "setViewStartSafe",
     "setLeftPanelOpen", "selectRightPanelTool", "setBottomTracksOpen", "setTimeWindow", "setWindowDraftValue",
-    "setShowChannels", "setGain", "setShowFilters", "setSpectrogramOpen", "setChannelSelectionActive",
+    "setShowChannels", "changeZoomView", "setShowFilters", "setSpectrogramOpen", "setChannelSelectionActive",
     "setBoxZoomActive", "setActiveTool", "setMarkOnset", "setSelection", "setCursorTime", "setCursorLocked",
     "setShowEphysLabelPicker", "setShowSessionContextPicker", "setLabelsVisible"]) {
-    state[name] = (value) => changes.push([name, typeof value === "function" ? value(values[name === "setGain" ? "gain" : "labelsVisible"]) : value]);
+    state[name] = (value) => changes.push([name, typeof value === "function" ? value(values.labelsVisible) : value]);
   }
   const assist = new Function(...Object.keys(state), `${compiled}\nreturn assistTutorial;`)(...Object.values(state));
   return {
@@ -100,6 +100,8 @@ test("safe button assistance uses existing handlers, rejects missing/disabled co
   const zoomed = fixture({ boxZoomActive: true });
   assert.equal(zoomed.assist("enable-waveform-zoom"), true);
   assert.deepEqual(zoomed.click, []);
+  assert.equal(ui.assist("increase-gain"), true);
+  assert.deepEqual(ui.changes.at(-1), ["changeZoomView", { gain: 1.25 }], "assisted amplitude zoom uses the shared history path");
 });
 
 test("zoom assistance preserves the center and refuses to falsely complete at minimum zoom", () => {

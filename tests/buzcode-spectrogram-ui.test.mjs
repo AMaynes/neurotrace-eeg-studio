@@ -21,10 +21,11 @@ test("exposes TheStateEditor processing controls and linked navigation", async (
   assert.ok(boxZoomButton > browseButton, "box zoom sits immediately after browse");
   assert.ok(frequencyRange > boxZoomButton, "frequency controls follow the navigation tools");
   assert.match(panel, /useState<SpectrogramTool>\("browse"\)/);
-  assert.match(panel, /interaction\.tool === "box-zoom"[\s\S]*?onZoom\(Math\.min\(startTime, endTime\), Math\.max\(startTime, endTime\)\)/);
-  assert.match(panel, /setDisplayMinHz\(nextMinimumHz\)[\s\S]*?setDisplayMaxHz\(nextMaximumHz\)/);
+  assert.match(panel, /timeRange = \{ start: Math\.min\(startTime, endTime\), end: Math\.max\(startTime, endTime\) \}/);
+  assert.match(panel, /nextFrequencyRange = \{ min: nextMinimumHz, max: nextMaximumHz \}/);
+  assert.match(panel, /onZoom\(timeRange, nextFrequencyRange\)/, "both axes are committed together for undo");
   assert.match(panel, /className="spectrogram-zoom-box"/);
-  assert.match(page, /onZoom=\{zoomToTimeRange\}/);
+  assert.match(page, /zoomToTimeRange\(range\.start, range\.end, frequencyRange \? \{ frequencyRange \} : \{\}\)/);
   assert.match(panel, /role="group" aria-label="Displayed frequency range"/);
   assert.match(panel, /aria-label="Lower maximum displayed frequency"/);
   assert.match(panel, /aria-label="Raise maximum displayed frequency"/);
