@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { subscribeTutorialActions, type TutorialAssistAction } from "./tutorial-events";
 import "./tutorial-center.css";
@@ -161,16 +161,19 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, session
 
   useEffect(() => () => { coachDragRef.current = null; }, [open, surface?.host]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const coach = coachRef.current;
     if (!coach || !surface || open) return;
-    const resize = new ResizeObserver(() => {
+    const measure = () => {
       const { width, height } = coach.getBoundingClientRect();
       setCoachSize((current) => current.width === width && current.height === height ? current : { width, height });
-    });
+    };
+    // Reposition before paint when a new step, message, or width changes the box height.
+    measure();
+    const resize = new ResizeObserver(measure);
     resize.observe(coach);
     return () => resize.disconnect();
-  }, [open, surface?.host, surface]);
+  }, [open, surface, activeStep, tourBlock, assistFailure, coachPosition]);
 
   const endTour = () => {
     advancedTourRef.current = tour;
@@ -216,13 +219,11 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, session
     // The reset button disappears; leave focus on the persistent drag handle.
     coachRef.current?.querySelector<HTMLButtonElement>(".tutorial-drag-handle")?.focus({ preventScroll: true });
   };
-  const coachStyle: CSSProperties | undefined = surface && coachPosition ? {
-    ...clampTutorialCoachPosition(coachPosition, surface.viewport, coachSize.height),
-    maxHeight: surface.viewport.height - 24,
-  } : !embedded && surface ? { ...placeTutorialCoach(
+  const coachStyle: CSSProperties | undefined = surface ? { ...placeTutorialCoach(
     surface.viewport,
-    { width: 360, height: Math.max(260, coachSize.height) },
+    { width: coachPosition?.width ?? 360, height: coachSize.height },
     surface.rect,
+    coachPosition,
   ), maxHeight: surface.viewport.height - 24 } : undefined;
 
   return <>

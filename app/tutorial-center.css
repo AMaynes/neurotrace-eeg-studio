@@ -64,10 +64,8 @@
 .tutorial-coach .tutorial-next { border-color: #7ae1c2; background: #77e1c1; color: #082c23; font-weight: 700; }
 .tutorial-coach .tutorial-library-link { border: 0; padding-inline: 0; background: transparent; color: #95c7bc; font-size: 11px; }
 .tutorial-coach .tutorial-reveal { color: #89edcf; border-color: #529c89; }
-.tutorial-coach-embedded { position: sticky; bottom: 0; width: 100%; max-width: 100%; max-height: 44dvh; margin-top: 20px; box-shadow: 0 -6px 25px #07171db3; }
-/* Retain dialog focus ownership while letting a dragged coach escape its scrolling content. */
-.tutorial-coach-manual { position: fixed; bottom: auto; margin: 0; max-width: calc(100vw - 24px); }
-.modal:has(.tutorial-coach-manual) { animation: none; }
+/* Keep modal focus ownership, but position outside its scrolling content using viewport coordinates. */
+.modal:has(.tutorial-coach) { animation: none; }
 @media (max-width: 700px) {
   .tutorial-backdrop { padding: 8px; }
   .tutorial-hub.modal { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }

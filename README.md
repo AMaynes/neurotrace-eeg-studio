@@ -58,7 +58,7 @@ must not be hand-edited or committed.
 
 ## Tutorials
 
-The top-right `?` opens a tutorial hub with six topic tabs and 11 task-based lessons. Steps advance automatically when their action is completed; reading-only steps wait for Next, and Back/Next remain available throughout. A slow pulsing outline highlights the target (steady when reduced motion is preferred). “Do it for me” can open tools, navigate, adjust the view, or select an example time window; it never chooses files, creates annotations, or saves a project. Each button explains its action. Drag the walkthrough’s top bar to move it aside; its position stays put between steps, and ↺ restores automatic placement. The spectrogram’s `?` opens the same hub on its Spectrogram tab. Completed walkthroughs are tracked for the current app visit.
+The top-right `?` opens a tutorial hub with six topic tabs and 11 task-based lessons. Steps advance automatically when their action is completed; reading-only steps wait for Next, and Back/Next remain available throughout. A slow pulsing outline highlights the target (steady when reduced motion is preferred). “Do it for me” can open tools, navigate, adjust the view, or select an example time window; it never chooses files, creates annotations, or saves a project. Each button explains its action. Drag the walkthrough’s top bar to move it aside; it keeps your preferred position unless that covers the highlighted target. The guide moves clear of the target, including inside dialogs, or covers the smallest possible area when space is tight. ↺ restores automatic placement. The spectrogram’s `?` opens the same hub on its Spectrogram tab. Completed walkthroughs are tracked for the current app visit.
 
 ## System Overview
 

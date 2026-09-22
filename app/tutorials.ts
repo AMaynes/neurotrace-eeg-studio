@@ -176,21 +176,39 @@ export function clampTutorialCoachPosition(position: TutorialCoachPosition, view
   };
 }
 
-/** Choose the viewport corner covering the least highlighted area, with bounded dimensions. */
-export function placeTutorialCoach(viewport: { width: number; height: number }, size: { width: number; height: number }, target: TutorialRect | null) {
+/** Keep the preferred position when clear; otherwise move as little as possible to uncover the target. */
+export function placeTutorialCoach(
+  viewport: { width: number; height: number },
+  size: { width: number; height: number },
+  target: TutorialRect | null,
+  preferred?: TutorialCoachPosition | null,
+) {
   const margin = 12;
+  const gap = 12;
   const width = Math.max(1, Math.min(size.width, viewport.width - margin * 2));
   const height = Math.max(1, Math.min(size.height, viewport.height - margin * 2));
-  const positions = [
-    { left: viewport.width - width - margin, top: viewport.height - height - margin },
-    { left: margin, top: viewport.height - height - margin },
-    { left: viewport.width - width - margin, top: margin },
-    { left: margin, top: margin },
-  ];
-  const overlap = (position: { left: number; top: number }) => target
-    ? Math.max(0, Math.min(position.left + width, target.left + target.width) - Math.max(position.left, target.left))
-      * Math.max(0, Math.min(position.top + height, target.top + target.height) - Math.max(position.top, target.top))
-    : 0;
-  positions.sort((a, b) => overlap(a) - overlap(b));
-  return { ...positions[0], width, maxHeight: height };
+  const right = Math.max(margin, viewport.width - width - margin);
+  const bottom = Math.max(margin, viewport.height - height - margin);
+  const origin = clampTutorialCoachPosition({ left: preferred?.left ?? right, top: preferred?.top ?? bottom, width }, viewport, height);
+  if (!target) return { ...origin, maxHeight: height };
+
+  // Overlap changes at these edges. Including the preferred coordinates finds the
+  // nearest clear position, not just a corner; edges also minimize unavoidable overlap.
+  const xs = [origin.left, margin, right, target.left - width - gap, target.left - width, target.left + target.width, target.left + target.width + gap];
+  const ys = [origin.top, margin, bottom, target.top - height - gap, target.top - height, target.top + target.height, target.top + target.height + gap];
+  const overlap = (position: TutorialCoachPosition, padding: number) =>
+    Math.max(0, Math.min(position.left + width, target.left + target.width + padding) - Math.max(position.left, target.left - padding))
+      * Math.max(0, Math.min(position.top + height, target.top + target.height + padding) - Math.max(position.top, target.top - padding));
+  const candidates = xs.flatMap((left) => ys.map((top) => {
+    const position = clampTutorialCoachPosition({ left, top, width }, viewport, height);
+    return {
+      position,
+      overlap: overlap(position, 0),
+      clearanceOverlap: overlap(position, gap),
+      distance: (position.left - origin.left) ** 2 + (position.top - origin.top) ** 2,
+    };
+  }));
+  // Never sacrifice a clear target merely to preserve the optional breathing room.
+  candidates.sort((a, b) => a.overlap - b.overlap || a.clearanceOverlap - b.clearanceOverlap || a.distance - b.distance);
+  return { ...candidates[0].position, maxHeight: height };
 }
