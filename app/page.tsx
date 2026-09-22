@@ -101,6 +101,8 @@ import {
 import { recordingOverviewDisplayPolicy } from "./overview-display-policy";
 import { TutorialCenter } from "./tutorial-center";
 import type { TutorialTopic } from "./tutorials";
+import { notifyTutorialAction, type TutorialAssistAction } from "./tutorial-events";
+import { useTutorialMilestones } from "./tutorial-progress";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -2396,6 +2398,7 @@ export default function Home() {
 
   const zoomTimeWindow = useCallback((direction: "in" | "out", anchorTime?: number) => {
     setTimeWindow(timebase + (direction === "in" ? -WINDOW_ZOOM_STEP_SECONDS : WINDOW_ZOOM_STEP_SECONDS), anchorTime);
+    notifyTutorialAction("waveform-zoomed");
   }, [setTimeWindow, timebase]);
 
   const windowUnitSeconds = WINDOW_UNIT_SECONDS[windowDraftUnit];
@@ -2434,6 +2437,7 @@ export default function Home() {
     setTimeWindow(nextWindow);
     setWindowDraftValue(null);
     setToast(`Window synced to ${formatWindowAmount(nextWindow / windowUnitSeconds)} ${windowDraftUnit}`);
+    notifyTutorialAction("window-applied");
   };
 
   const commitMutation = useCallback((mutator: (current: Annotation[]) => Annotation[]) => {
@@ -2626,6 +2630,7 @@ export default function Home() {
       return [...adjusted, next];
     });
     setSelectedAnnotationId(next.id);
+    if (track === "instance" || track === "windowed") notifyTutorialAction("ephys-label-added");
     setSelectedAnnotationIds(new Set([next.id]));
     setCursorTime(next.start);
     setCursorLocked(true);
@@ -4549,6 +4554,7 @@ export default function Home() {
       if (horizontalDrag || verticalDrag) {
         if (horizontalDrag && range.end > range.start) zoomToTimeRange(range.start, range.end);
         if (verticalDrag) fitWaveformVerticallyToInspectionBox(range, rect);
+        notifyTutorialAction("waveform-zoomed");
         setToast(`Box fitted to the waveform view · ${(range.end - range.start).toFixed(2)} s × ${range.channelLabels.length} channel${range.channelLabels.length === 1 ? "" : "s"}`);
       } else {
         setToast(`Inspecting ${formatDisplayChannelLabel(display.labels[row] ?? "waveform")} at ${formatClock(time, true)} — drag a box to zoom`);
@@ -4567,9 +4573,11 @@ export default function Home() {
     } else if (pointer.moved && Math.abs(time - pointer.startTime) > 0) {
       setSelection({ start: Math.min(pointer.startTime, time), end: Math.max(pointer.startTime, time) });
       setToast(`Selected ${Math.abs(time - pointer.startTime).toFixed(1)} s — choose a label`);
+      notifyTutorialAction("time-selected");
     } else {
       setSelection(null);
       setToast(`Cursor locked at ${formatClock(time, true)} — choose an instance label or press Esc`);
+      notifyTutorialAction("time-selected");
     }
   };
 
@@ -4773,6 +4781,7 @@ export default function Home() {
     event.preventDefault();
     event.stopPropagation();
     setSelectedAnnotationId(item.id);
+    notifyTutorialAction("annotation-inspected");
     const moveGroup = mode === "move" && selectedAnnotationIds.has(item.id) && selectedAnnotationIds.size > 1;
     const originals = moveGroup
       ? annotationsRef.current.filter((annotation) => selectedAnnotationIds.has(annotation.id) && annotationGeometry(annotation) !== "session")
@@ -4901,6 +4910,7 @@ export default function Home() {
           zoomWheelFrameRef.current = null;
           const direction = boundedDelta < 0 ? -1 : 1;
           setTimeWindow(timebase + direction * WINDOW_ZOOM_STEP_SECONDS, zoomWheelAnchorRef.current);
+          notifyTutorialAction("waveform-zoomed");
         });
       }
       return;
@@ -4936,6 +4946,7 @@ export default function Home() {
       wheelDeltaRef.current = 0;
       wheelFrameRef.current = null;
       previewViewStartSafe((current) => current + seconds);
+      if (seconds !== 0) notifyTutorialAction(spectrogramShell ? "spectrogram-panned" : "waveform-panned");
       clearWheelPanSettle();
       wheelPanSettleTimerRef.current = window.setTimeout(() => {
         wheelPanSettleTimerRef.current = null;
@@ -5959,6 +5970,16 @@ export default function Home() {
         : importChoice === "neurotrace" ? Boolean(guidedImportSelection.neurotrace)
           : false;
 
+  useTutorialMilestones({
+    scope: activeSessionId, stateKey: sessionKey, recording: hasRecording ? meta.id : null,
+    importOpen: showImport, importFormat: importChoice, filesReady: guidedImportReady,
+    channelsOpen: showChannels, montage, gain, clamp: traceDisplayMode,
+    filtersOpen: showFilters, boxZoom: boxZoomActive, spectrogramOpen,
+    labelsPanelOpen: rightPanelOpen && rightPanelView === "labels",
+    labelPickerOpen: showEphysLabelPicker, sessionLabelPickerOpen: showSessionContextPicker,
+    labelsVisible, saveOpen: showProjectSave, saveOptions: projectSaveSelection,
+  });
+
   const submitGuidedImport = async () => {
     if (!guidedImportReady || !importChoice) return;
     if (importChoice === "neurotrace" && guidedImportSelection.neurotrace) {
@@ -6483,6 +6504,7 @@ export default function Home() {
       setShowProjectSave(false);
       setProjectSaveError("");
       setToast(`Saved ${result.fileName} as one portable project file`);
+      notifyTutorialAction("project-saved");
     } catch (error) {
       const message = error instanceof Error ? error.message : "The project could not be saved.";
       setProjectSaveError(message);
@@ -6587,6 +6609,7 @@ export default function Home() {
         setMarkOnset(null);
         setCursorLocked(false);
         setChannelSelectionActive(false);
+        notifyTutorialAction("channel-focus-cleared");
         setDragGhost(null);
         setShowSessionContextPicker(false);
         setActiveTool("cursor");
@@ -6616,15 +6639,17 @@ export default function Home() {
       if (event.key === "ArrowLeft") {
         event.preventDefault();
         if (selectedAnnotationIds.size) moveSelectedAnnotations(-1, event.shiftKey);
-        else setViewStartSafe((value) => value - (event.shiftKey ? 10 : 1));
+        else { setViewStartSafe((value) => value - (event.shiftKey ? 10 : 1)); notifyTutorialAction("waveform-panned"); }
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
         if (selectedAnnotationIds.size) moveSelectedAnnotations(1, event.shiftKey);
-        else setViewStartSafe((value) => value + (event.shiftKey ? 10 : 1));
+        else { setViewStartSafe((value) => value + (event.shiftKey ? 10 : 1)); notifyTutorialAction("waveform-panned"); }
       } else if (event.key === "PageDown") {
         event.preventDefault(); setViewStartSafe((value) => value + timebase);
+        notifyTutorialAction("transport-used");
       } else if (event.key === "PageUp") {
         event.preventDefault(); setViewStartSafe((value) => value - timebase);
+        notifyTutorialAction("transport-used");
       } else if (lower === controlBindings.redo && event.shiftKey) {
         redo();
       } else if (lower === controlBindings.undo && !event.shiftKey) {
@@ -6810,6 +6835,77 @@ export default function Home() {
       setToast(boxZoomActive
         ? "Labeling tools open — Box zoom remains active"
         : "Labeling mode — drag across time to select a labeling window");
+    }
+  };
+
+  /** Explicit, synchronous view actions only. Never choose files, labels, or save contents. */
+  const assistTutorial = (action: TutorialAssistAction): boolean => {
+    const modalOpen = showEphysLabelPicker || showSettings || showChannels || showImport || showProjectSave
+      || showSessionMap || showPatientInfo || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
+    if (modalOpen) return (action === "open-import" && showImport) || (action === "open-save" && showProjectSave)
+      || (action === "open-channels" && showChannels) || (action === "open-label-picker" && showEphysLabelPicker);
+    if (action === "open-import") { setShowImport(true); return true; }
+    if (action === "open-save") { setProjectSaveError(""); setShowProjectSave(true); return true; }
+    if (!hasRecording || activeSessionContentView !== "recording") return false;
+    const clickControl = (anchor: string) => {
+      const button = document.querySelector<HTMLButtonElement>(`button[data-tutorial="${anchor}"]`);
+      if (!button || button.disabled || !button.getClientRects().length) return false;
+      button.click();
+      return true;
+    };
+    const moveTime = (distance: number) => {
+      const start = viewStartRef.current;
+      const next = Math.min(Math.max(0, meta.durationSec - timebase), start + distance);
+      const destination = next === start ? Math.max(0, start - distance) : next;
+      if (destination === start) return false;
+      setPlaying(false);
+      setViewStartSafe(destination);
+      return true;
+    };
+    switch (action) {
+      case "show-recording-panel": setLeftPanelOpen(true); return true;
+      case "show-label-panel": selectRightPanelTool("labels"); return true;
+      case "show-label-tracks": setBottomTracksOpen(true); return true;
+      case "jump-overview": case "page-forward": return moveTime(timebase);
+      case "pan-waveform": return moveTime(1);
+      case "shorten-window": case "zoom-waveform": {
+        const next = Math.max(Math.min(minimumRenderableWindow, meta.durationSec), timebase / 2);
+        if (next >= timebase) return false;
+        setPlaying(false);
+        setTimeWindow(next);
+        setWindowDraftValue(null);
+        return true;
+      }
+      case "enable-waveform-zoom": return boxZoomActive || clickControl("waveform-zoom");
+      case "disable-waveform-zoom": return !boxZoomActive || clickControl("waveform-zoom");
+      case "open-channels": setShowChannels(true); return true;
+      case "increase-gain": setGain((value) => value >= 8 ? value / 1.25 : Math.min(8, value * 1.25)); return true;
+      case "toggle-clamp": return clickControl("clamp");
+      case "open-filters": setShowFilters(true); return true;
+      case "open-spectrogram": setSpectrogramOpen(true); return true;
+      case "clear-channel-focus": setChannelSelectionActive(false); return true;
+      case "spectrogram-browse": return clickControl("spectrogram-browse");
+      case "spectrogram-zoom-tool": return clickControl("spectrogram-zoom");
+      case "spectrogram-reset": return clickControl("spectrogram-reset");
+      case "select-time-window": {
+        if (!reviewReady || !display.data.length) return false;
+        setPlaying(false);
+        setBoxZoomActive(false);
+        setActiveTool("cursor");
+        setMarkOnset(null);
+        const start = viewStart + timebase / 4;
+        const end = Math.min(meta.durationSec, viewStart + timebase * 3 / 4);
+        if (end <= start) return false;
+        setSelection({ start, end });
+        setCursorTime(start);
+        setCursorLocked(true);
+        return true;
+      }
+      case "open-label-picker": selectRightPanelTool("labels"); setShowEphysLabelPicker(true); return true;
+      case "open-session-label-picker":
+        if (!reviewReady) return false;
+        setLeftPanelOpen(true); setShowSessionContextPicker(true); return true;
+      case "toggle-labels": setLabelsVisible((value) => !value); return true;
     }
   };
   const activeDisplayViews: ArrayBufferView[] = [
@@ -7147,9 +7243,9 @@ export default function Home() {
               }}
             ><span aria-hidden="true">⌗</span></button>
             <div className="transport-group" data-tutorial="transport">
-              <button disabled={!hasRecording} aria-label="Previous page" onClick={() => setViewStartSafe((value) => value - timebase)}>‹</button>
-              <button disabled={!hasRecording} className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => setPlaying((value) => !value)}>{playing ? "Ⅱ" : "▶"}</button>
-              <button disabled={!hasRecording} aria-label="Next page" onClick={() => setViewStartSafe((value) => value + timebase)}>›</button>
+              <button disabled={!hasRecording} aria-label="Previous page" onClick={() => { setViewStartSafe((value) => value - timebase); notifyTutorialAction("transport-used"); }}>‹</button>
+              <button disabled={!hasRecording} className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => { setPlaying((value) => !value); notifyTutorialAction("transport-used"); }}>{playing ? "Ⅱ" : "▶"}</button>
+              <button disabled={!hasRecording} aria-label="Next page" onClick={() => { setViewStartSafe((value) => value + timebase); notifyTutorialAction("transport-used"); }}>›</button>
             </div>
           </div>
 
@@ -7192,6 +7288,7 @@ export default function Home() {
             <div className="overview-track" ref={overviewRef} onPointerDown={(event) => {
               const rect = event.currentTarget.getBoundingClientRect();
               jumpTo(((event.clientX - rect.left) / rect.width) * meta.durationSec);
+              notifyTutorialAction("overview-jumped");
             }}>
               <div className="overview-wave" aria-hidden="true">{Array.from({ length: 110 }, (_, index) => <i key={index} style={{ height: `${18 + ((index * 37) % 33) + (index > 13 && index < 19 ? 30 : 0)}%` }} />)}</div>
               {labelsVisible && annotations.filter((item) => item.labelId === "ictal").map((item) => <span key={item.id} className="overview-event" style={{ left: `${(item.start / meta.durationSec) * 100}%`, width: `${Math.max(0.2, ((item.end - item.start) / meta.durationSec) * 100)}%` }} />)}
@@ -7238,6 +7335,7 @@ export default function Home() {
                     onClick={() => {
                       setFocusedChannel(index);
                       setChannelSelectionActive(true);
+                      notifyTutorialAction("channel-focused");
                     }}
                   ><strong>{formatDisplayChannelLabel(label)}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>;
                 })}
@@ -7486,7 +7584,7 @@ export default function Home() {
       {showEphysLabelPicker && <div className="modal-backdrop" onMouseDown={(event) => {
         if (event.target === event.currentTarget) setShowEphysLabelPicker(false);
       }}>
-        <div id="ephys-label-picker" className="modal ephys-label-picker" role="dialog" aria-modal="true" aria-label="Visible ePhys label types" tabIndex={-1}>
+        <div id="ephys-label-picker" className="modal ephys-label-picker" role="dialog" aria-modal="true" data-tutorial="label-picker-dialog" aria-label="Visible ePhys label types" tabIndex={-1}>
           <button className="modal-close" type="button" onClick={() => setShowEphysLabelPicker(false)} aria-label="Close ePhys label picker">×</button>
           <header><strong>Visible ePhys label types</strong><span>{enabledEphysLabelIds.size} of {selectableEphysLabels.length}</span></header>
           <div className="ephys-label-picker-actions">
@@ -7520,7 +7618,7 @@ export default function Home() {
             ? "The signal bytes are ready. Confirm the recording details before NeuroTrace opens them."
             : "Pick a format first. NeuroTrace will show exactly which file or files it needs."}</p>
           {!pendingDat && <>
-            <div className="format-cards" role="group" aria-label="Recording formats">
+            <div className="format-cards" data-tutorial="import-formats" role="group" aria-label="Recording formats">
               <button type="button" className={importChoice === "edf" ? "active" : ""} aria-pressed={importChoice === "edf"} disabled={importBusy} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>One calibrated .edf recording</span></button>
               <button type="button" className={importChoice === "mat" ? "active" : ""} aria-pressed={importChoice === "mat"} disabled={importBusy} onClick={() => chooseImportType("mat")}><strong>MAT v5</strong><span>One .mat file containing signal data</span></button>
               <button type="button" className={importChoice === "mat-dat" ? "active" : ""} aria-pressed={importChoice === "mat-dat"} disabled={importBusy} onClick={() => chooseImportType("mat-dat")}><strong>MAT + DAT</strong><span>One metadata file + one signal file</span></button>
@@ -7538,7 +7636,7 @@ export default function Home() {
                         : "Choose one .neurotrace file saved from this app."}</span></div>
                 <b>{importBusy ? "Opening…" : "Required"}</b>
               </header>
-              <div className="import-requirements">
+              <div className="import-requirements" data-tutorial="import-files">
                 {importChoice === "edf" && <label className={guidedImportSelection.edf ? "complete" : ""}>
                   <input hidden type="file" accept=".edf" disabled={importBusy} onChange={(event) => stageGuidedFile("edf", "edf", event)} />
                   <i aria-hidden="true">{guidedImportSelection.edf ? "✓" : ""}</i>
@@ -7578,7 +7676,7 @@ export default function Home() {
                   <span>Scan a directory instead</span>
                   {guidedImportSelection.supportingFiles.length > 0 && <small>{guidedImportSelection.supportingFiles.length} companion file{guidedImportSelection.supportingFiles.length === 1 ? "" : "s"} found</small>}
                 </label>
-                <button type="button" className="button primary" disabled={!guidedImportReady || importBusy} onClick={() => void submitGuidedImport()}>{importBusy ? "Opening…" : importChoice === "neurotrace" ? "Open project" : "Open recording"}</button>
+                <button type="button" className="button primary" data-tutorial="import-open" disabled={!guidedImportReady || importBusy} onClick={() => void submitGuidedImport()}>{importBusy ? "Opening…" : importChoice === "neurotrace" ? "Open project" : "Open recording"}</button>
               </footer>
             </section>}
           </>}
@@ -7629,7 +7727,7 @@ export default function Home() {
           <span className="modal-eyebrow">SAVE PROJECT</span>
           <h2>Keep the whole workspace in one file.</h2>
           <p><strong>{projectFileName}</strong> is a versioned, ZIP-compatible NeuroTrace project. Choose exactly what belongs inside.</p>
-          <div className="project-save-options">
+          <div className="project-save-options" data-tutorial="save-options">
             {projectSaveOptions.map((option) => <label className={option.disabled ? "disabled" : ""} key={option.key}>
               <input
                 type="checkbox"
@@ -7653,7 +7751,7 @@ export default function Home() {
           {projectSaveError && <div className="project-save-error" role="alert">{projectSaveError}</div>}
           <footer className="project-save-footer">
             <span><strong>Downloads by default.</strong> Your system save dialog can choose any other folder.</span>
-            <button className="button primary" disabled={projectSaveBusy || selectedProjectSectionCount === 0} onClick={() => void saveNeurotraceProject()}>{projectSaveBusy ? "Building project…" : "Choose location & save"}</button>
+            <button className="button primary" data-tutorial="save-confirm" disabled={projectSaveBusy || selectedProjectSectionCount === 0} onClick={() => void saveNeurotraceProject()}>{projectSaveBusy ? "Building project…" : "Choose location & save"}</button>
           </footer>
         </div>
       </div>}
@@ -7696,6 +7794,8 @@ export default function Home() {
         topic={helpTopic}
         hasRecording={hasRecording && activeSessionContentView === "recording"}
         canAnnotate={reviewReady}
+        sessionId={activeSessionId}
+        onAssist={assistTutorial}
         onTopicChange={setHelpTopic}
         onClose={() => setShowHelp(false)}
         onOpen={() => setShowHelp(true)}
@@ -8310,6 +8410,7 @@ function SpectrogramPanel({
           setDisplayMaxHz(nextMaximumHz);
         }
       }
+      if (box.width >= SPECTROGRAM_MINIMUM_DRAG_PX || box.height >= SPECTROGRAM_MINIMUM_DRAG_PX) notifyTutorialAction("spectrogram-zoomed");
       return;
     }
     const distance = interaction.currentX - interaction.startX;
@@ -8324,6 +8425,7 @@ function SpectrogramPanel({
     } else {
       onCenter(viewStart + plotRatio(event.clientX, event.currentTarget) * viewDuration);
     }
+    notifyTutorialAction("spectrogram-panned");
   };
 
   return <div ref={panelRef} className={`spectrogram-panel tool-${tool}`} style={{ height: spectrogramHeight }}>
@@ -8382,15 +8484,15 @@ function SpectrogramPanel({
     </div>
     <div className="spectrogram-canvas-shell">
       <div className="spectrogram-toolbar" data-tutorial="spectrogram-controls" aria-label="Spectrogram controls">
-        <button type="button" className={tool === "browse" ? "active" : ""} data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); }} title="Browse: click to center, hold and drag to pan (B)">B</button>
-        <button type="button" className={tool === "box-zoom" ? "active" : ""} data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => setTool("box-zoom")} title="Box zoom: drag a time-frequency area to fit it to the view (Z)">Z</button>
+        <button type="button" className={tool === "browse" ? "active" : ""} data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); notifyTutorialAction("spectrogram-browse"); }} title="Browse: click to center, hold and drag to pan (B)">B</button>
+        <button type="button" className={tool === "box-zoom" ? "active" : ""} data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => { setTool("box-zoom"); notifyTutorialAction("spectrogram-zoom-tool"); }} title="Box zoom: drag a time-frequency area to fit it to the view (Z)">Z</button>
         <div className="spectrogram-frequency-control" role="group" aria-label="Displayed frequency range">
           <span>Frequency range</span>
           <button
             type="button"
             aria-label="Lower maximum displayed frequency"
             disabled={effectiveDisplayMaxHz - effectiveDisplayMinHz <= minimumDisplayHz}
-            onClick={() => setDisplayMaxHz(Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10))}
+            onClick={() => { setDisplayMaxHz(Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10)); notifyTutorialAction("spectrogram-adjusted"); }}
             title="Show a narrower, lower-frequency range"
           >−</button>
           <output aria-live="polite">{Math.round(effectiveDisplayMinHz)}–{Math.round(effectiveDisplayMaxHz)} Hz</output>
@@ -8398,21 +8500,23 @@ function SpectrogramPanel({
             type="button"
             aria-label="Raise maximum displayed frequency"
             disabled={effectiveDisplayMaxHz >= maximumDisplayHz}
-            onClick={() => setDisplayMaxHz(Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10))}
+            onClick={() => { setDisplayMaxHz(Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10)); notifyTutorialAction("spectrogram-adjusted"); }}
             title="Show a wider frequency range"
           >+</button>
           <button
             type="button"
             aria-label="Reset displayed frequency range"
+            data-tutorial="spectrogram-reset"
             onClick={() => {
               setDisplayMinHz(0);
               setDisplayMaxHz(Math.min(maximumDisplayHz, BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ));
+              notifyTutorialAction("spectrogram-adjusted");
             }}
             title="Reset to the default frequency range"
           >↺</button>
         </div>
         <label>Smooth
-          <select value={smoothingSeconds} onChange={(event) => setSmoothingSeconds(Number(event.target.value))}>
+          <select value={smoothingSeconds} onChange={(event) => { setSmoothingSeconds(Number(event.target.value)); notifyTutorialAction("spectrogram-adjusted"); }}>
             {BUZCODE_SMOOTHING_OPTIONS.map((seconds) => <option value={seconds} key={seconds}>{seconds}s</option>)}
           </select>
         </label>
@@ -8422,8 +8526,8 @@ function SpectrogramPanel({
             <option value="theta">θ ratio</option>
           </select>
         </label>
-        <button type="button" onClick={() => setColorLimitShift((value) => value + 0.1)} title="Raise color limits (Down arrow)">C−</button>
-        <button type="button" onClick={() => setColorLimitShift((value) => value - 0.1)} title="Lower color limits (Up arrow)">C+</button>
+        <button type="button" onClick={() => { setColorLimitShift((value) => value + 0.1); notifyTutorialAction("spectrogram-adjusted"); }} title="Raise color limits (Down arrow)">C−</button>
+        <button type="button" onClick={() => { setColorLimitShift((value) => value - 0.1); notifyTutorialAction("spectrogram-adjusted"); }} title="Lower color limits (Up arrow)">C+</button>
         <button type="button" onClick={onHelp} aria-label="Open spectrogram tutorials" title="Spectrogram tutorials">?</button>
       </div>
       <canvas
@@ -8489,6 +8593,10 @@ function SpectrogramPanel({
           else if (key === "arrowdown") setColorLimitShift((value) => value + 0.1);
           else if (key === "b") { setTool("browse"); setZoomBox(null); }
           else if (key === "z") setTool("box-zoom");
+          if (key === "b") notifyTutorialAction("spectrogram-browse");
+          else if (key === "z") notifyTutorialAction("spectrogram-zoom-tool");
+          else if (key === "arrowleft" || key === "arrowright") notifyTutorialAction("spectrogram-panned");
+          else notifyTutorialAction("spectrogram-adjusted");
         }}
       />
       {zoomBox && <div className="spectrogram-zoom-box" aria-hidden="true" style={zoomBox} />}

@@ -38,6 +38,13 @@
 .tutorial-hub button:focus-visible, .tutorial-coach button:focus-visible { outline: 2px solid #a7f9e0; outline-offset: 3px; }
 .tutorial-hub button:disabled, .tutorial-coach button:disabled { cursor: not-allowed; }
 .tutorial-spotlight { position: fixed; z-index: 110; border: 2px solid #78f4cd; border-radius: 5px; box-shadow: 0 0 0 4px #5ae5b92b, 0 0 24px #5ae5b947; pointer-events: none; }
+.tutorial-spotlight { animation: tutorial-attention 2.8s ease-in-out infinite; }
+@keyframes tutorial-attention { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .tutorial-spotlight { animation: none; } }
+.tutorial-assistance { display: grid; justify-items: start; gap: 7px; margin-top: 14px; }
+.tutorial-assistance small { color: #9ebdb6; font-size: 11px; line-height: 1.5; }
+.tutorial-coach .tutorial-do { border-color: #63c6ad; color: #94f2d5; }
+.tutorial-coach .tutorial-advance-hint { color: #94aaa6; font-size: 10px; line-height: 1.4; }
 .tutorial-coach { position: fixed; z-index: 120; width: 360px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 18px; overflow: auto; border: 1px solid #4b9c88; border-radius: 12px; background: #10252a; box-shadow: 0 16px 70px #0009; color: #dcece7; text-align: left; }
 .tutorial-coach > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .tutorial-coach button { min-height: 32px; padding: 6px 11px; border: 1px solid #395a5c; border-radius: 5px; background: #112126; color: #c7dcda; font-family: inherit; font-size: 12px; cursor: pointer; }

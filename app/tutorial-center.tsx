@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
+import { subscribeTutorialActions, type TutorialAssistAction } from "./tutorial-events";
 import "./tutorial-center.css";
 import {
   placeTutorialCoach,
@@ -22,6 +23,8 @@ type TutorialCenterProps = {
   topic: TutorialTopic;
   hasRecording: boolean;
   canAnnotate: boolean;
+  sessionId: string;
+  onAssist(action: TutorialAssistAction): boolean;
   onTopicChange(topic: TutorialTopic): void;
   onClose(): void;
   onOpen(): void;
@@ -105,6 +108,8 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
     window.addEventListener("scroll", schedule, true);
     // CSS panel transitions may finish after the initial measurement.
     document.addEventListener("transitionend", schedule, true);
+    document.addEventListener("animationend", schedule, true);
+    document.addEventListener("animationcancel", schedule, true);
     schedule();
     return () => {
       cancelAnimationFrame(frame);
@@ -113,20 +118,24 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
       window.removeEventListener("resize", schedule);
       window.removeEventListener("scroll", schedule, true);
       document.removeEventListener("transitionend", schedule, true);
+      document.removeEventListener("animationend", schedule, true);
+      document.removeEventListener("animationcancel", schedule, true);
     };
   }, [active, step]);
   return active ? surface : null;
 }
 
-export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopicChange, onClose, onOpen, onReveal }: TutorialCenterProps) {
+export function TutorialCenter({ open, topic, hasRecording, canAnnotate, sessionId, onAssist, onTopicChange, onClose, onOpen, onReveal }: TutorialCenterProps) {
   const [selectedId, setSelectedId] = useState(tutorialLessons[0].id);
   const [preview, setPreview] = useState<{ lessonId: string; index: number } | null>(null);
   const [tour, setTour] = useState<Tour | null>(null);
   const [completed, setCompleted] = useState<Set<string>>(() => new Set());
   const [coachSize, setCoachSize] = useState({ width: 360, height: 320 });
   const [coachPosition, setCoachPosition] = useState<TutorialCoachPosition | null>(null);
+  const [assistFailure, setAssistFailure] = useState<Tour | null>(null);
   const coachRef = useRef<HTMLElement>(null);
   const coachDragRef = useRef<{ pointerId: number; grabX: number; grabY: number; width: number } | null>(null);
+  const advancedTourRef = useRef<Tour | null>(null);
   const lessons = tutorialLessons.filter((lesson) => lesson.topic === topic);
   const selected = lessons.find((lesson) => lesson.id === selectedId) ?? lessons[0];
   const previewIndex = preview?.lessonId === selected.id ? preview.index : 0;
@@ -137,6 +146,18 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
   const tourBlock = activeLesson ? tutorialBlockReason(activeLesson, hasRecording, canAnnotate) : null;
   const surface = useTourSurface(activeStep, Boolean(tour) && !open);
   const embedded = Boolean(surface?.dialogName);
+
+  useEffect(() => {
+    if (open || tourBlock || !tour || !activeLesson || !activeStep?.completeOn) return;
+    const expectedTour = tour;
+    return subscribeTutorialActions(activeStep.completeOn, () => {
+      if (advancedTourRef.current === expectedTour) return;
+      advancedTourRef.current = expectedTour;
+      const nextIndex = Math.min(activeLesson.steps.length, expectedTour.stepIndex + 1);
+      setTour((current) => current === expectedTour ? { ...current, stepIndex: nextIndex } : current);
+      if (nextIndex === activeLesson.steps.length) setCompleted((current) => new Set([...current, activeLesson.id]));
+    });
+  }, [open, tourBlock, tour, activeLesson, activeStep, sessionId]);
 
   useEffect(() => () => { coachDragRef.current = null; }, [open, surface?.host]);
 
@@ -152,12 +173,14 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
   }, [open, surface?.host, surface]);
 
   const endTour = () => {
+    advancedTourRef.current = tour;
     setTour(null);
     // Do not strand keyboard focus on a removed floating guide.
     if (!embedded) document.querySelector<HTMLElement>("[data-tutorial='help']")?.focus();
     else surface?.host.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
   };
   const openLibrary = () => {
+    advancedTourRef.current = tour;
     if (activeLesson) {
       onTopicChange(activeLesson.topic);
       setSelectedId(activeLesson.id);
@@ -166,7 +189,8 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
     onOpen();
   };
   const advance = () => {
-    if (!tour || !activeLesson) return;
+    if (!tour || !activeLesson || advancedTourRef.current === tour) return;
+    advancedTourRef.current = tour;
     const nextIndex = Math.min(activeLesson.steps.length, tour.stepIndex + 1);
     setTour({ ...tour, stepIndex: nextIndex });
     if (nextIndex === activeLesson.steps.length) setCompleted((current) => new Set([...current, activeLesson.id]));
@@ -253,9 +277,10 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
           </section>
         </div>
         <footer className="tutorial-footer">
-          <div><p>You stay in control. Guides never load files, create labels, or save changes for you. Actions you take in the workspace are real.</p>
+          <div><p>Steps advance when you complete the action. “Do it for me” can open tools or adjust the view. You choose files, labels, and final saves. Workspace actions are real.</p>
             {blockReason && <p className="tutorial-prerequisite" role="status">{blockReason}</p>}</div>
           <button className="button primary tutorial-start" disabled={Boolean(blockReason)} onClick={() => {
+            advancedTourRef.current = tour;
             resetCoachPosition();
             setTour({ lessonId: selected.id, stepIndex: 0 });
             onClose();
@@ -308,11 +333,22 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
         <div className="tutorial-coach-copy" aria-live="polite" aria-atomic="true">
           <span className="tutorial-coach-lesson">{activeLesson.title}</span>
           <h3>{activeStep?.title ?? "You’ve reached the end."}</h3>
-          <p>{surface.ready ? "That area is open. Keep it open and select Next to continue." : activeStep?.instruction ?? "Replay whenever you need a refresher, or choose another lesson. This completes the guide, not a save or commit."}</p>
+          <p>{surface.ready ? "That area is already open. Select Next to continue." : activeStep?.instruction ?? "Replay whenever you need a refresher, or choose another lesson. This completes the guide, not a save or commit."}</p>
           {activeStep?.tip && <p className="tutorial-tip">{activeStep.tip}</p>}
           {tourBlock && <p className="tutorial-prerequisite">{tourBlock}</p>}
           {activeStep && !tourBlock && !surface.ready && (!surface.rect || surface.fallback) && <p className="tutorial-prerequisite">{embedded && !surface.rect ? `Close ${surface.dialogName} to continue in the workspace. ` : ""}{activeStep.unavailable}</p>}
         </div>
+        {activeStep?.assist && !tourBlock && (!embedded || surface.ready) && <div className="tutorial-assistance">
+          <button className="tutorial-do" onClick={() => {
+            if (!onAssist(activeStep.assist!.action)) { setAssistFailure(tour); return; }
+            setAssistFailure(null);
+            // Opening a chooser/revealing a reading step is assistance, not completion.
+            if (activeStep.completeOn && activeStep.assist!.completesStep !== false) advance();
+          }}>Do it for me</button>
+          <small>{activeStep.assist.description}</small>
+          {assistFailure === tour && <small role="status">This action is unavailable here. Show the highlighted area, or select Next to continue.</small>}
+        </div>}
+        {activeStep && <p className="tutorial-advance-hint">{activeStep.completeOn ? "Advances automatically when done · Next skips this step" : "Read this step, then select Next"}</p>}
         {activeStep?.reveal && !surface.rect && !embedded && !tourBlock && <button className="tutorial-reveal" onClick={() => {
           onReveal(activeStep.reveal!);
           // Wait for the requested panel to mount before bringing an offscreen control into view.
@@ -320,7 +356,7 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, onTopic
         }}>Show this area</button>}
         <footer>
           <button className="tutorial-library-link" disabled={embedded} title={embedded ? "Close this dialog first to return to tutorials" : "Choose another lesson"} onClick={openLibrary}>All tutorials</button>
-          <div><button disabled={tour.stepIndex === 0} onClick={() => setTour({ ...tour, stepIndex: Math.max(0, tour.stepIndex - 1) })}>Back</button>
+          <div><button disabled={tour.stepIndex === 0} onClick={() => { advancedTourRef.current = tour; setTour({ ...tour, stepIndex: Math.max(0, tour.stepIndex - 1) }); }}>Back</button>
             {activeStep ? <button className="tutorial-next" onClick={advance}>Next →</button> : <button className="tutorial-next" onClick={endTour}>Done</button>}</div>
         </footer>
       </section>

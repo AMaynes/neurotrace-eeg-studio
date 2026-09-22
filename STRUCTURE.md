@@ -20,6 +20,7 @@ neurotrace-eeg-studio/
 │   ├── page.tsx — Coordinates the browser workstation, annotation state, session workflow, rendering, and exports.
 │   ├── source-integrity.ts — Computes incremental SHA-256 fingerprints without buffering complete recordings.
 │   ├── tutorial-center.tsx / tutorial-center.css — Own the tutorial hub and live, non-blocking walkthrough coach.
+│   ├── tutorial-events.ts / tutorial-progress.ts — Payload-free action notifications and committed UI milestones for walkthrough advancement.
 │   └── tutorials.ts — Defines task-based lessons, prerequisites, and guide placement policy.
 ├── build/
 │   └── sites-vite-plugin.ts — Copies Sites metadata and migrations into deployment output.
@@ -110,7 +111,7 @@ Defines shared product colors, typography, panel layout, waveform/timeline contr
 
 ### `app/tutorial-center.tsx` and `app/tutorials.ts`
 
-The tutorial center owns topic selection, previews, walkthrough progress, and measured target highlighting. Guides move inside an open workspace dialog to preserve its focus trap. The lesson catalog owns instructional copy, prerequisites, stable `data-tutorial` target names, and viewport placement policy. The page supplies only explicit panel-reveal actions; tutorials never invoke recording or annotation mutations.
+The tutorial center owns topic selection, previews, walkthrough progress, and measured target highlighting, including remeasurement after dialog animations. Guides move inside an open workspace dialog to preserve its focus trap. The lesson catalog owns copy, prerequisites, stable targets, completion signals, and opt-in assistance descriptions. `tutorial-events.ts` carries payload-free semantic notifications; `tutorial-progress.ts` observes committed UI milestones and ignores initial mounting/session restoration. One matching action advances only one step. The page supplies an allowlisted, view-only assistance handler: it never chooses files, creates labels, changes a montage automatically, or saves projects. Reading and user-choice steps retain manual navigation.
 
 ### `app/layout.tsx`
 

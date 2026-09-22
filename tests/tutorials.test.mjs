@@ -6,6 +6,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as catalog from "../app/tutorials.ts";
+import { subscribeTutorialActions } from "../app/tutorial-events.ts";
 
 const componentSource = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
@@ -33,10 +34,14 @@ function harness(overrides = {}) {
   const actions = [];
   const portalHosts = [];
   const focusTargets = [];
+  const actionTarget = new EventTarget();
+  const effectSlots = [];
+  let pendingEffects = [];
   const body = {};
   const surface = { host: body, rect: null, fallback: false, ready: false, dialogName: null, viewport: { width: 1280, height: 720 } };
   const props = {
-    open: true, topic: "start", hasRecording: true, canAnnotate: true,
+    open: true, topic: "start", hasRecording: true, canAnnotate: true, sessionId: "session-1",
+    onAssist(action) { actions.push(`assist:${action}`); return true; },
     onClose() { props.open = false; }, onOpen() { props.open = true; },
     onTopicChange(topic) { props.topic = topic; }, onReveal(area) { actions.push(area); },
     ...overrides,
@@ -53,7 +58,18 @@ function harness(overrides = {}) {
       if (!(index in slots)) slots[index] = { current: initial };
       return slots[index];
     },
-    useEffect() {},
+    useEffect(effect, dependencies) {
+      const index = hookIndex++;
+      const previous = effectSlots[index];
+      if (!previous || dependencies.some((value, i) => !Object.is(value, previous.dependencies[i]))) {
+        pendingEffects.push(() => {
+          previous?.cleanup?.();
+          effectSlots[index] = { dependencies, cleanup: effect() };
+        });
+      }
+    },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    subscribeTutorialActions: (events, complete) => subscribeTutorialActions(events, complete, actionTarget),
     useTourSurface: (_step, active) => active ? surface : null,
     createPortal: (children, host) => { portalHosts.push(host); return children; },
     window: { innerWidth: 1280, innerHeight: 720 },
@@ -72,6 +88,9 @@ function harness(overrides = {}) {
         getBoundingClientRect: () => ({ left: 380, top: 340, width: 500, ...coach.props.style, height: api.coachHeight }),
         querySelector: (selector) => ({ focus: () => focusTargets.push(selector) }),
       };
+      const effects = pendingEffects;
+      pendingEffects = [];
+      effects.forEach((effect) => effect());
       return api.tree;
     },
     find(predicate) { const result = nodes(api.tree).find(predicate); assert.ok(result, "expected tutorial control exists"); return result; },
@@ -80,6 +99,8 @@ function harness(overrides = {}) {
     markup() { return renderToStaticMarkup(api.tree); },
     coach() { return api.find((node) => node.type === "section" && node.props.className?.startsWith("tutorial-coach")); },
     resize(width, height) { surface.viewport = { width, height }; scope.window.innerWidth = width; scope.window.innerHeight = height; api.render(); },
+    emit(action) { actionTarget.dispatchEvent(new CustomEvent("neurotrace:tutorial-action", { detail: action })); api.render(); },
+    dispose() { effectSlots.forEach((effect) => effect?.cleanup?.()); },
   };
   api.render();
   return api;
@@ -175,7 +196,7 @@ test("the guide stays inside open dialogs and cannot open a competing tutorial m
   assert.match(ui.markup(), /tutorial-coach-embedded/);
   assert.equal(ui.button("All tutorials").props.disabled, true);
   ui.surface.ready = true; ui.render();
-  assert.match(ui.markup(), /That area is open/);
+  assert.match(ui.markup(), /That area is already open/);
   assert.doesNotMatch(ui.markup(), /Close Load recording to continue/);
   ui.surface.ready = false;
   ui.click("Next →");
@@ -245,6 +266,83 @@ test("the header drags the coach and keeps the chosen position across steps and 
   ui.click("Back");
   assert.deepEqual(ui.coach().props.style, placed);
   assert.deepEqual(ui.actions, []);
+});
+
+test("completed actions advance once; unrelated clicks, duplicate events, Back, and skipped steps do not cascade", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  ui.emit("gain-changed");
+  assert.match(ui.markup(), /STEP 1 OF 4/);
+  ui.emit("import-opened");
+  assert.match(ui.markup(), /STEP 2 OF 4/);
+  ui.emit("import-opened");
+  assert.match(ui.markup(), /STEP 2 OF 4/);
+  ui.emit("import-format-chosen");
+  assert.match(ui.markup(), /STEP 3 OF 4/);
+  ui.click("Back");
+  assert.match(ui.markup(), /STEP 2 OF 4/);
+  ui.click("Next →"); ui.emit("import-format-chosen");
+  assert.match(ui.markup(), /STEP 3 OF 4/);
+  ui.emit("import-files-ready"); ui.emit("recording-opened");
+  assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
+  ui.click("All tutorials");
+  assert.match(ui.markup(), /1 \/ 11 walkthroughs completed/);
+  assert.deepEqual(ui.actions, []);
+  ui.dispose();
+});
+
+test("auto-advance pauses in the hub and while prerequisites are unmet, and cleans up after ending", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  ui.props.open = true; ui.render(); ui.emit("import-opened");
+  ui.props.open = false; ui.render();
+  assert.match(ui.markup(), /STEP 1 OF 4/);
+  ui.click("End walkthrough"); ui.emit("import-opened");
+  assert.equal(ui.markup(), "");
+  ui.dispose();
+  const labels = harness({ topic: "labels" }); labels.click("Start walkthrough →");
+  labels.props.canAnnotate = false; labels.render(); labels.emit("label-panel-opened");
+  assert.match(labels.markup(), /STEP 1 OF 4/);
+  assert.doesNotMatch(labels.markup(), />Do it for me</);
+  labels.dispose();
+});
+
+test("Do it for me is explicit, uses the specific safe command, and does not skip failed assistance", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  assert.deepEqual(ui.actions, []);
+  ui.props.onAssist = () => false; ui.render(); ui.click("Do it for me");
+  assert.match(ui.markup(), /STEP 1 OF 4/);
+  assert.match(ui.markup(), /This action is unavailable/);
+  ui.props.onAssist = (action) => { ui.actions.push(action); return true; };
+  ui.render();
+  ui.click("Do it for me");
+  assert.deepEqual(ui.actions, ["open-import"]);
+  assert.match(ui.markup(), /STEP 2 OF 4/);
+  assert.doesNotMatch(ui.markup(), />Do it for me</, "the guide never chooses a recording format");
+  ui.click("Next →");
+  assert.doesNotMatch(ui.markup(), />Do it for me</, "the guide never chooses private files");
+  ui.dispose();
+});
+
+test("assistance that only reveals a chooser or reading area waits for the actual action", () => {
+  const ui = harness({ topic: "labels" });
+  ui.click("Organize label types and visibilityChoose your palette, distinguish label types, and hide overlays.4 steps · About 1 min");
+  ui.click("Start walkthrough →"); ui.click("Do it for me");
+  assert.deepEqual(ui.actions, ["assist:open-label-picker"]);
+  assert.match(ui.markup(), /STEP 1 OF 4/);
+  ui.emit("label-picker-opened");
+  assert.match(ui.markup(), /STEP 1 OF 4/);
+  ui.emit("label-picker-closed");
+  assert.match(ui.markup(), /STEP 2 OF 4/);
+  ui.dispose();
+});
+
+test("auto-advancing does not move a manually positioned coach or mutate the workspace", () => {
+  const ui = harness(); ui.click("Start walkthrough →");
+  ui.button("Move walkthrough panel").props.onPointerDown(pointer()); ui.render();
+  const position = ui.coach().props.style;
+  ui.emit("import-opened");
+  assert.deepEqual(ui.coach().props.style, position);
+  assert.deepEqual(ui.actions, []);
+  ui.dispose();
 });
 
 test("dragging clamps the panel to the viewport, including after the viewport shrinks", () => {
