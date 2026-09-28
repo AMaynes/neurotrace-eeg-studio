@@ -542,11 +542,11 @@ test("wires channel, Help, and Settings dialogs to operable controls", async () 
   const settings = page.slice(settingsStart, settingsEnd);
   assert.match(settings, /role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Settings"/);
   assert.match(settings, /aria-label="Close Settings"/);
-  assert.match(settings, /Restore defaults/);
-  assert.match(settings, /controlBindings\[row\.key\]/);
+  assert.match(settings, /ShortcutSettings bindings=\{controlBindings\}/);
   assert.match(settings, /setControlBindings/);
-  assert.match(settings, /updateControlBinding/);
-  assert.match(settings, /swaps the two actions/);
+  const shortcutSettings = await readFile(new URL("../app/shortcut-settings.tsx", import.meta.url), "utf8");
+  assert.match(shortcutSettings, /Restore defaults/);
+  assert.match(shortcutSettings, /shortcutConflict/);
   assert.match(settings, /Label snapping/);
 
   const keyboardStart = page.indexOf("const modalOpen");
@@ -558,7 +558,7 @@ test("wires channel, Help, and Settings dialogs to operable controls", async () 
   assert.match(keyboard, /event\.key\s*===\s*"Escape"/);
   assert.match(page, /setAttribute\("inert"/);
   assert.match(page, /event\.key\s*!==\s*"Tab"/);
-  assert.match(page, /modalOpen\s*&&\s*zoomModifier/);
+  assert.match(page, /modalOpen\s*&&\s*zoomShortcut/);
 });
 
 test("reattaches non-passive waveform wheel controls after a blank session loads", async () => {
@@ -904,8 +904,8 @@ test("starts with a compact Session Labels area and resizes it against Instance 
   assert.match(page, /availableHeight:\s*sessionHeight\s*\+\s*queueHeight/);
   assert.match(page, /resize\.startHeight\s*\+\s*\(event\.clientY\s*-\s*resize\.startY\)/);
   assert.match(page, /ref=\{queueSectionRef\}/);
-  assert.match(page, /ArrowUp/);
-  assert.match(page, /ArrowDown/);
+  assert.match(page, /shortcutAction\(event, controlBindings, \["queueResize"\]\)/);
+  assert.match(page, /action === "queueGrow" \? 10 : -10/);
   assert.match(css, /\.left-sidebar \.session-labels-section\s*\{[^}]*flex:\s*0 0 auto;[^}]*min-height:\s*105px;/);
   assert.match(css, /\.left-split-resize-handle\s*\{[^}]*height:\s*9px;[^}]*cursor:\s*ns-resize;/);
 });
@@ -1059,9 +1059,8 @@ test("box-selects labels and moves or deletes the selected group atomically", as
   assert.match(page, /drag\.mode\s*===\s*"move"\s*&&\s*drag\.originals\.length\s*>\s*1/);
   assert.match(page, /const sharedDelta\s*=\s*clamp\(snappedDelta,\s*-earliest,\s*meta\.durationSec\s*-\s*latest\)/);
   assert.match(page, /Object\.fromEntries\(drag\.originals\.map/);
-  assert.match(page, /if\s*\(selectedAnnotationIds\.size\)\s*moveSelectedAnnotations\(-1,\s*event\.shiftKey\)/);
-  assert.match(page, /if\s*\(selectedAnnotationIds\.size\)\s*moveSelectedAnnotations\(1,\s*event\.shiftKey\)/);
-  assert.match(page, /Delete"\s*\|\|\s*event\.key\s*===\s*"Backspace"\)\s*&&\s*selectedAnnotationIds\.size/);
+  assert.match(page, /if\s*\(selectedAnnotationIds\.size\)\s*moveSelectedAnnotations\(direction,\s*fast\)/);
+  assert.match(page, /action === "delete" && selectedAnnotationIds\.size/);
   assert.match(page, /deleteSelectedAnnotations\(\)/);
   assert.match(page, /commitMutation\(\(\)\s*=>\s*remaining\)/);
   assert.match(css, /\.annotation-selection-box\s*\{[^}]*border:\s*1px dashed #7ce8c7;[^}]*pointer-events:\s*none;/);

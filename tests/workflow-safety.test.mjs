@@ -100,16 +100,17 @@ test("global shortcuts leave native controls alone and reserve Enter and Space f
   const keyboard = section(page, "const onKey = (event: KeyboardEvent)", 'window.addEventListener("keydown"');
   assert.match(keyboard, /closest\("input, textarea, select, button, a, \[role='button'\], \[contenteditable='true'\]"\)/);
   assert.match(keyboard, /if\s*\(interactiveTarget\)\s*return/);
-  assert.match(keyboard, /if\s*\(event\.metaKey\s*\|\|\s*event\.ctrlKey\s*\|\|\s*event\.altKey\)\s*return/);
+  assert.match(keyboard, /shortcutAction\(event, controlBindings/);
+  assert.match(keyboard, /if \(editingTarget && !\(clearShortcut && event.key === "Escape"\)\) return/);
   assert.match(keyboard, /target\s*===\s*canvasRef\.current/);
   assert.doesNotMatch(keyboard, /controlBindings\.commit\s*\|\|\s*event\.key\s*===\s*"Enter"\s*\|\|\s*event\.code\s*===\s*"Space"/);
 
-  const modalEscape = section(keyboard, 'if (event.key === "Escape" && modalOpen)', "if (modalOpen) return");
+  const modalEscape = section(keyboard, 'if (clearShortcut && modalOpen', "if (modalOpen) return");
   assert.ok(modalEscape.indexOf("confirmCommit.length") < modalEscape.indexOf("showAnnotationEditor"), "Escape closes the top advisory before its editor");
   assert.doesNotMatch(modalEscape, /setSelectedAnnotationId\(null\)|setSelectedAnnotationIds\(new Set\(\)\)/);
-  assert.match(keyboard, /closest\("\.spectrogram-panel"\) && event\.key !== "Escape"/);
+  assert.match(keyboard, /closest\("\.spectrogram-panel"\) && !clearShortcut && !historyShortcut/);
   assert.match(keyboard, /event\.key === "Escape"[\s\S]*?setChannelSelectionActive\(false\)/);
-  const selectionEscape = section(keyboard, 'if (event.key === "Escape")', "if (interactiveTarget) return");
+  const selectionEscape = section(keyboard, 'if (clearShortcut)', "if (interactiveTarget) return");
   assert.doesNotMatch(selectionEscape, /setWaveformVerticalViewport\(null\)/, "Escape preserves the current waveform zoom");
 });
 

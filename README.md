@@ -149,6 +149,8 @@ NeuroTrace runs locally in the browser. It does not upload the recording, and di
 
 Zooms share the annotation undo/redo chain: **Ctrl/Cmd+Z** undoes the latest edit or zoom, and **Ctrl/Cmd+Shift+Z** redoes it. This includes time-window changes, pinch/keyboard zoom, waveform and spectrogram box zoom (both axes together), frequency range changes, gain, and channel-layout resets. A continuous pinch is one history step. Each session keeps its own history; typing in a text field retains native text undo.
 
+**Controls** lists every application keyboard shortcut, grouped by focus area. Search, click a binding to replace it, use **+ Add** for alternatives, or **×** to disable one. Conflicts in overlapping focus areas are blocked. Preferences persist locally and with workspace saves; existing letter bindings migrate automatically. Key hints and tutorial instructions follow remaps. Tab, native text editing, and pointer gestures remain standard and are documented separately. A non-Ctrl/Cmd undo binding also cancels a pending ictal onset before undoing history.
+
 - The app reads the recording header first, so the first waveform can appear before full-file verification finishes.
 - EDF, DAT, and MATLAB v7.3 stay file-backed. Only the current time window, selected channels, and a small read-ahead area are decoded into RAM. MATLAB v5 is the exception: its full signal matrix is kept in RAM.
 - File-backed reads and signal processing run in background workers. MATLAB v5 overviews scan the already-decoded matrix in short, cancellable work slices without copying the entire requested window. If the view changes, old work is canceled.

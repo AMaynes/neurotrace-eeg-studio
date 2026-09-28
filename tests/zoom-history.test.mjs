@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import { recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
 import { composeVerticalViewport } from "../app/waveform-viewport.ts";
+import { DEFAULT_CONTROLS, shortcutAction } from "../app/shortcuts.ts";
 
 const initialView = () => ({
   viewStart: 30, timebase: 20, gain: 1, verticalViewport: null,
@@ -212,6 +213,7 @@ test("Ctrl/Cmd+Z and Shift+Z reach shared history from waveform, spectrogram, bu
       const ui = workspace(); ui.setTimeWindow(10);
       const onKey = compile(declaration("onKey"), {
         ...ui.scope, undo: ui.undo, redo: ui.redo,
+        controlBindings: DEFAULT_CONTROLS, shortcutAction, canvasRef: { current: null }, markOnset: null,
         showEphysLabelPicker: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
         showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
         queueDetailEntry: null, confirmCommit: [],

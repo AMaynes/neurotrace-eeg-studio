@@ -1,0 +1,15 @@
+.shortcut-settings > p, .shortcut-group > p { font-size: 11px !important; line-height: 1.5; color: #91aaae; }
+.shortcut-settings > input { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid #315048; border-radius: 5px; background: #10221f; color: #d4e8e3; }
+.shortcut-status { min-height: 36px; padding: 8px 0; color: var(--mint); font-size: 11px; line-height: 1.4; }
+.shortcut-group { border-top: 1px solid #294147; padding: 8px 0; }
+.shortcut-group summary { display: list-item; cursor: pointer; color: #c9dcd9; font-size: 12px; }
+.shortcut-group summary small { margin-left: 8px; color: #8ea5a9; }
+.shortcut-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #1a2e34; font-size: 11px; color: #adc3c5; }
+.shortcut-row > span { flex: 1; min-width: 0; }
+.shortcut-bindings { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 5px; max-width: 60%; }
+.shortcut-chip { display: inline-flex; }
+.shortcut-chip button { border: 1px solid #365951; border-radius: 4px; padding: 6px; background: #10221f; color: var(--mint); cursor: pointer; font: 10px ui-monospace, monospace; }
+.shortcut-chip button + button { color: #9bb5b0; border-left: 0; }
+.shortcut-chip button.recording { outline: 2px solid var(--mint); background: #214139; }
+.shortcut-chip button:focus-visible, .shortcut-group summary:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+@media (max-width: 540px) { .shortcut-row { align-items: flex-start; flex-direction: column; } .shortcut-bindings { max-width: 100%; justify-content: flex-start; } }

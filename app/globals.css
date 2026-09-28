@@ -1850,8 +1850,6 @@ textarea:focus-visible {
   cursor: pointer;
   font-size: 9px;
 }
-.binding-list { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 12px; }
-.binding-list > label,
 .interaction-settings > label {
   min-height: 36px;
   display: flex;
@@ -1862,9 +1860,6 @@ textarea:focus-visible {
   color: #96aaad;
   font-size: 9px;
 }
-.binding-input { display: flex; align-items: center; gap: 5px; }
-.binding-input b { color: #627a7f; font-size: 8px; }
-.binding-input select,
 .interaction-settings select {
   height: 27px;
   border: 1px solid #315048;
@@ -1874,7 +1869,6 @@ textarea:focus-visible {
   padding: 0 7px;
   font: 800 9px ui-monospace, monospace;
 }
-.binding-note { display: block; margin-top: 9px; color: #6f858a; font-size: 9px; line-height: 1.45; }
 .interaction-settings > label select { color: #c9d9d8; font-family: inherit; font-weight: 600; }
 .fixed-control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 10px; }
 .fixed-control-grid > div { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 5px; border: 1px solid #1f353b; border-radius: 5px; background: #0d1c21; }
@@ -2657,9 +2651,7 @@ textarea:focus-visible {
 .empty-session-labels strong,
 .channel-modal-tools button,
 .channel-toggle-copy strong,
-.binding-list > label,
-.interaction-settings > label,
-.binding-note { font-size: 10px; }
+.interaction-settings > label { font-size: 10px; }
 .session-map-button strong,
 .settings-heading strong { font-size: 11px; }
 
@@ -2729,7 +2721,6 @@ textarea:focus-visible {
   .file-summary-grid { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
   .channel-analysis-card > header { align-items: flex-start; flex-direction: column; }
   .channel-analysis-card > header label { width: 100%; }
-  .binding-list { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

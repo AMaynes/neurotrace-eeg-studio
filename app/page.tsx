@@ -100,6 +100,8 @@ import {
 } from "./recording-overview";
 import { recordingOverviewDisplayPolicy } from "./overview-display-policy";
 import { TutorialCenter } from "./tutorial-center";
+import { ShortcutSettings } from "./shortcut-settings";
+import { DEFAULT_CONTROLS, normalizeControlBindings, matchesShortcut, shortcutAction, shortcutHint, type ControlBindings, type ShortcutAction } from "./shortcuts";
 import type { TutorialTopic } from "./tutorials";
 import { notifyTutorialAction, type TutorialAssistAction } from "./tutorial-events";
 import { useTutorialMilestones } from "./tutorial-progress";
@@ -179,7 +181,6 @@ type LabelDefinition = {
   track: TrackId;
   defaultDuration: number;
   category: "Context" | "Seizure" | "Rhythmic / periodic" | "Ictal pathology" | "Sleep stage" | "Other";
-  shortcut?: string;
   hidden?: boolean;
 };
 
@@ -333,16 +334,6 @@ type SourceImportContext = {
   importedAnnotations: Annotation[];
 };
 
-type ControlBindings = {
-  undo: string;
-  redo: string;
-  commit: string;
-  nextCandidate: string;
-  previousCandidate: string;
-  ictalOnset: string;
-  ictalOffset: string;
-};
-
 type SessionTab = {
   id: string;
   title: string;
@@ -485,15 +476,15 @@ const LABELS: LabelDefinition[] = [
   { id: "laterality", name: "Lateralization / locality", short: "LOCALITY", color: "#b99cf7", geometry: "session", track: "context", defaultDuration: 0, category: "Context" },
   { id: "note", name: "Other", short: "OTHER", color: "#8db7f3", geometry: "interval", track: "context", defaultDuration: 5, category: "Context" },
   { id: "medication", name: "Medication", short: "MED", color: "#78d5c8", geometry: "interval", track: "context", defaultDuration: 30, category: "Context" },
-  { id: "ictal", name: "Ictal", short: "ICTAL", color: "#ff6b7b", geometry: "interval", track: "windowed", defaultDuration: 12, category: "Seizure", shortcut: "1" },
-  { id: "preictal", name: "Pre-ictal", short: "PRE", color: "#f3a85f", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Seizure", shortcut: "2" },
-  { id: "postictal", name: "Post-ictal", short: "POST", color: "#d887ef", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Seizure", shortcut: "3" },
-  { id: "gpd", name: "GPDs — generalized periodic discharges", short: "GPD", color: "#f3bb5f", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "4" },
-  { id: "lpd", name: "LPDs — lateralized periodic discharges", short: "LPD", color: "#f0a758", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "5" },
-  { id: "bipd", name: "BIPDs — bilateral independent periodic discharges", short: "BIPD", color: "#df9163", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "6" },
-  { id: "grda", name: "GRDA — generalized rhythmic delta activity", short: "GRDA", color: "#e7c765", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "7" },
-  { id: "lrda", name: "LRDA — lateralized rhythmic delta activity", short: "LRDA", color: "#d8b159", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "8" },
-  { id: "gsw", name: "GSW — generalized spike-and-wave / sharp-and-wave", short: "GSW", color: "#f6cf6a", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic", shortcut: "9" },
+  { id: "ictal", name: "Ictal", short: "ICTAL", color: "#ff6b7b", geometry: "interval", track: "windowed", defaultDuration: 12, category: "Seizure" },
+  { id: "preictal", name: "Pre-ictal", short: "PRE", color: "#f3a85f", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Seizure" },
+  { id: "postictal", name: "Post-ictal", short: "POST", color: "#d887ef", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Seizure" },
+  { id: "gpd", name: "GPDs — generalized periodic discharges", short: "GPD", color: "#f3bb5f", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic" },
+  { id: "lpd", name: "LPDs — lateralized periodic discharges", short: "LPD", color: "#f0a758", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic" },
+  { id: "bipd", name: "BIPDs — bilateral independent periodic discharges", short: "BIPD", color: "#df9163", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic" },
+  { id: "grda", name: "GRDA — generalized rhythmic delta activity", short: "GRDA", color: "#e7c765", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic" },
+  { id: "lrda", name: "LRDA — lateralized rhythmic delta activity", short: "LRDA", color: "#d8b159", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic" },
+  { id: "gsw", name: "GSW — generalized spike-and-wave / sharp-and-wave", short: "GSW", color: "#f6cf6a", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Rhythmic / periodic" },
   { id: "wake", name: "W — Wake", short: "W", color: "#67d7a2", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
   { id: "sleep-unspecified", name: "Sleep", short: "SLEEP", color: "#668fc4", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
   { id: "n1", name: "N1 sleep", short: "N1", color: "#79c7f5", geometry: "interval", track: "windowed", defaultDuration: 30, category: "Sleep stage" },
@@ -1110,18 +1101,6 @@ const MAX_INTERACTIVE_TIMELINE_ANNOTATIONS = 400;
 const TIMELINE_DENSITY_BINS_PER_TRACK = 256;
 
 const performanceDiagnostics = new PerformanceDiagnosticsCollector();
-
-const DEFAULT_CONTROLS: ControlBindings = {
-  undo: "u",
-  redo: "u",
-  commit: "s",
-  nextCandidate: "n",
-  previousCandidate: "p",
-  ictalOnset: "i",
-  ictalOffset: "o",
-};
-
-const CONTROL_OPTIONS = "abcdefghijklmnopqrstuvwxyz".split("");
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -2083,13 +2062,9 @@ export default function Home() {
     try {
       const savedControls = localStorage.getItem("neurotrace:controls");
       if (savedControls) {
-        const parsed = JSON.parse(savedControls) as Partial<ControlBindings>;
         // Browser-local key bindings are external preferences restored once after hydration.
         // eslint-disable-next-line react-hooks/set-state-in-effect
-        setControlBindings({
-          ...DEFAULT_CONTROLS,
-          ...Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === "string" && /^[a-z]$/i.test(value as string))),
-        });
+        setControlBindings(normalizeControlBindings(JSON.parse(savedControls)));
       }
     } catch { /* local preferences are optional */ }
   }, []);
@@ -2364,19 +2339,6 @@ export default function Home() {
       setToast("Recording display restored");
     }
   }, [activeSessionId, hasRecording, importBusy, sessionTabs, switchSession]);
-
-  const updateControlBinding = useCallback((binding: keyof ControlBindings, value: string) => {
-    setControlBindings((current) => {
-      const next = { ...current };
-      const conflict = (Object.entries(current) as Array<[keyof ControlBindings, string]>).find(([key, assigned]) =>
-        key !== binding
-        && assigned === value
-        && !([key, binding].includes("undo") && [key, binding].includes("redo")));
-      if (conflict) next[conflict[0]] = current[binding];
-      next[binding] = value;
-      return next;
-    });
-  }, []);
 
   const setViewStartSafe = useCallback((next: number | ((value: number) => number)) => {
     const value = typeof next === "function" ? next(viewStartRef.current) : next;
@@ -5716,11 +5678,7 @@ export default function Home() {
       if (typeof workspace.spectrogramOpen === "boolean") setSpectrogramOpen(workspace.spectrogramOpen);
       if (typeof workspace.expandedChannels === "boolean") setExpandedChannels(workspace.expandedChannels);
       if (workspace.controlBindings && typeof workspace.controlBindings === "object" && !Array.isArray(workspace.controlBindings)) {
-        const savedBindings = workspace.controlBindings as Partial<ControlBindings>;
-        setControlBindings({
-          ...DEFAULT_CONTROLS,
-          ...Object.fromEntries(Object.entries(savedBindings).filter(([, value]) => typeof value === "string" && /^[a-z]$/i.test(value))),
-        });
+        setControlBindings(normalizeControlBindings(workspace.controlBindings));
       }
     }
   }, [commitViewStart]);
@@ -6659,21 +6617,24 @@ export default function Home() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      const historyShortcut = (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "z";
+      // The recorder owns every captured key, including a newly assigned dialog-close key.
+      if (event.isComposing || target?.closest("[data-shortcut-recorder]")) return;
+      const action = shortcutAction(event, controlBindings, target === canvasRef.current ? ["workspace", "viewer", "waveform"] : ["workspace", "viewer"]);
+      const historyShortcut = action === "undo" || action === "redo";
+      const clearShortcut = action === "clear";
+      const zoomShortcut = action === "zoomIn" || action === "zoomOut";
       // Coach controls own their local shortcuts, but view undo works after assisted zooms too.
       if (target?.closest(".tutorial-coach") && !historyShortcut) return;
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
-      if (target?.closest(".spectrogram-panel") && event.key !== "Escape" && !historyShortcut) return;
-      const zoomModifier = event.metaKey || event.ctrlKey;
-      const zoomInKey = ["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code);
-      const zoomOutKey = ["-", "_"].includes(event.key) || ["Minus", "NumpadSubtract"].includes(event.code);
+      const editingTarget = target?.closest("input, textarea, select, [contenteditable='true']");
+      if (target?.closest(".spectrogram-panel") && !clearShortcut && !historyShortcut) return;
       const modalOpen = showEphysLabelPicker || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
-      if (modalOpen && zoomModifier && (zoomInKey || zoomOutKey)) {
+      if (modalOpen && zoomShortcut && !editingTarget && !target?.closest("[data-shortcut-scope]")) {
         event.preventDefault();
         event.stopPropagation();
         return;
       }
-      if (event.key === "Escape" && modalOpen) {
+      if (clearShortcut && modalOpen && (!editingTarget || event.key === "Escape")) {
         event.preventDefault();
         if (confirmCommit.length) {
           setConfirmCommit([]);
@@ -6692,18 +6653,22 @@ export default function Home() {
         return;
       }
       if (modalOpen) return;
+      if (editingTarget && !(clearShortcut && event.key === "Escape")) return;
       // Keep native text undo, but allow view undo after a toolbar button or spectrogram click.
       if (historyShortcut) {
-        if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
         event.preventDefault();
         event.stopPropagation();
         if (hasRecording) {
-          if (event.shiftKey) redo();
-          else undo();
+          if (action === "redo") redo();
+          else if (markOnset !== null && !event.metaKey && !event.ctrlKey) {
+            setMarkOnset(null);
+            setActiveTool("seizure");
+            setToast("Pending seizure onset removed");
+          } else undo();
         }
         return;
       }
-      if (event.key === "Escape") {
+      if (clearShortcut) {
         event.preventDefault();
         if (dragAnnotationRef.current) {
           dragAnnotationRef.current = null;
@@ -6729,49 +6694,37 @@ export default function Home() {
         return;
       }
       if (interactiveTarget) return;
-      if (zoomModifier && (zoomInKey || zoomOutKey)) {
+      // Focused panels own their local bindings, even when customized to viewer keys.
+      if (target?.closest("[data-shortcut-scope]")) return;
+      if (zoomShortcut) {
         event.preventDefault();
         event.stopPropagation();
-        if (hasRecording) zoomTimeWindow(zoomInKey ? "in" : "out", cursorLocked ? cursorTime : undefined);
+        if (hasRecording) zoomTimeWindow(action === "zoomIn" ? "in" : "out", cursorLocked ? cursorTime : undefined);
         return;
       }
       if (!hasRecording) {
-        if (event.key === "?") setShowHelp(true);
+        if (action === "help") { event.preventDefault(); setShowHelp(true); }
         return;
       }
-      const lower = event.key.toLowerCase();
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        if (selectedAnnotationIds.size) moveSelectedAnnotations(-1, event.shiftKey);
-        else { setViewStartSafe((value) => value - (event.shiftKey ? 10 : 1)); notifyTutorialAction("waveform-panned"); }
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        if (selectedAnnotationIds.size) moveSelectedAnnotations(1, event.shiftKey);
-        else { setViewStartSafe((value) => value + (event.shiftKey ? 10 : 1)); notifyTutorialAction("waveform-panned"); }
-      } else if (event.key === "PageDown") {
+      if (!action) return;
+      event.preventDefault();
+      if (action === "panLeft" || action === "panLeftFast" || action === "panRight" || action === "panRightFast") {
+        const direction = action === "panLeft" || action === "panLeftFast" ? -1 : 1;
+        const fast = action.endsWith("Fast");
+        if (selectedAnnotationIds.size) moveSelectedAnnotations(direction, fast);
+        else { setViewStartSafe((value) => value + direction * (fast ? 10 : 1)); notifyTutorialAction("waveform-panned"); }
+      } else if (action === "pageForward") {
         event.preventDefault(); setViewStartSafe((value) => value + timebase);
         notifyTutorialAction("transport-used");
-      } else if (event.key === "PageUp") {
+      } else if (action === "pageBack") {
         event.preventDefault(); setViewStartSafe((value) => value - timebase);
         notifyTutorialAction("transport-used");
-      } else if (lower === controlBindings.redo && event.shiftKey) {
-        redo();
-      } else if (lower === controlBindings.undo && !event.shiftKey) {
-        if (markOnset !== null) {
-          setMarkOnset(null);
-          setActiveTool("seizure");
-          setToast("Pending seizure onset removed");
-        } else {
-          undo();
-        }
-      } else if (lower === controlBindings.ictalOnset) {
-        setMarkOnset(cursorTime); setActiveTool("seizure"); setToast(`Onset placed at ${formatClock(cursorTime, true)} — press ${controlBindings.ictalOffset.toUpperCase()} at offset`);
-      } else if (lower === controlBindings.ictalOffset && markOnset !== null) {
+      } else if (action === "ictalOnset") {
+        setMarkOnset(cursorTime); setActiveTool("seizure"); setToast(`Onset placed at ${formatClock(cursorTime, true)} — offset shortcut: ${shortcutHint(controlBindings, "ictalOffset")}`);
+      } else if (action === "ictalOffset" && markOnset !== null) {
         if (cursorTime > markOnset) { addAnnotation(LABEL_BY_ID.get("ictal")!, markOnset, cursorTime); setMarkOnset(null); setActiveTool("cursor"); }
         else setToast("Offset must be after onset");
-      } else if (lower === controlBindings.commit || ((event.key === "Enter" || event.code === "Space") && target === canvasRef.current)) {
-        if (event.code === "Space") event.preventDefault();
+      } else if (action === "commit" || action === "confirmWaveform") {
         const selectedBelongsToActiveCandidate = !selectedAnnotation
           || (selectedAnnotation.id === activeCandidateAnnotation?.id
             && selectedAnnotation.candidateId === activeCandidateItem?.id
@@ -6780,16 +6733,16 @@ export default function Home() {
           && !["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)
           && selectedBelongsToActiveCandidate) acceptActiveCandidate();
         else commitSelected();
-      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedAnnotationIds.size) {
+      } else if (action === "delete" && selectedAnnotationIds.size) {
         event.preventDefault(); deleteSelectedAnnotations();
-      } else if (lower === controlBindings.nextCandidate && instanceQueueEntries.length) {
+      } else if (action === "nextCandidate" && instanceQueueEntries.length) {
         selectInstanceQueueEntry(Math.min(instanceQueueEntries.length - 1, activeQueueIndex + 1));
-      } else if (lower === controlBindings.previousCandidate && instanceQueueEntries.length) {
+      } else if (action === "previousCandidate" && instanceQueueEntries.length) {
         selectInstanceQueueEntry(Math.max(0, activeQueueIndex - 1));
-      } else if (event.key === "?") {
+      } else if (action === "help") {
         setShowHelp(true);
-      } else if (/^[1-9]$/.test(event.key)) {
-        const label = LABELS.find((item) => item.shortcut === event.key);
+      } else if (action.startsWith("label:")) {
+        const label = LABEL_BY_ID.get(action.slice(6));
         if (label) placePaletteLabel(label);
       }
     };
@@ -6827,15 +6780,6 @@ export default function Home() {
   const filteredChannelOptions = meta.channelLabels
     .map((name, index) => ({ name, index }))
     .filter(({ name }) => name.toLowerCase().includes(channelSearch.toLowerCase()));
-  const controlRows: Array<{ key: keyof ControlBindings; label: string; modifier?: string }> = [
-    { key: "undo", label: "Undo" },
-    { key: "redo", label: "Redo", modifier: "Shift" },
-    { key: "commit", label: "Commit selected label" },
-    { key: "nextCandidate", label: "Next queued event" },
-    { key: "previousCandidate", label: "Previous queued event" },
-    { key: "ictalOnset", label: "Set ictal onset" },
-    { key: "ictalOffset", label: "Set ictal offset" },
-  ];
   const projectSaveOptions: Array<{
     key: keyof ProjectSaveSelection;
     title: string;
@@ -7086,15 +7030,16 @@ export default function Home() {
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /><i /></span>
           <div><strong>NEUROTRACE</strong><span>Clinical EEG Studio</span></div>
         </div>
-        <nav className="session-tab-strip" data-tutorial="sessions" role="tablist" aria-label="EEG sessions" onKeyDown={(event) => {
-          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || importBusy) return;
+        <nav className="session-tab-strip" data-tutorial="sessions" data-shortcut-scope="sessionTabs" role="tablist" aria-label="EEG sessions" onKeyDown={(event) => {
+          const action = shortcutAction(event, controlBindings, ["sessionTabs"]);
+          if (!action || importBusy) return;
           event.preventDefault();
           const currentIndex = Math.max(0, sessionTabs.findIndex((tab) => tab.id === activeSessionId));
-          const nextIndex = event.key === "Home"
+          const nextIndex = action === "sessionFirst"
             ? 0
-            : event.key === "End"
+            : action === "sessionLast"
               ? sessionTabs.length - 1
-              : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + sessionTabs.length) % sessionTabs.length;
+              : (currentIndex + (action === "sessionNext" ? 1 : -1) + sessionTabs.length) % sessionTabs.length;
           const nextId = sessionTabs[nextIndex]?.id;
           if (!nextId) return;
           switchSession(nextId);
@@ -7224,6 +7169,7 @@ export default function Home() {
 
           <div
             className="left-split-resize-handle"
+            data-shortcut-scope="queueResize"
             role="separator"
             tabIndex={0}
             aria-label="Resize Session Labels and Instance Queue"
@@ -7243,9 +7189,10 @@ export default function Home() {
               };
             }}
             onKeyDown={(event) => {
-              if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+              const action = shortcutAction(event, controlBindings, ["queueResize"]);
+              if (!action) return;
               event.preventDefault();
-              setSessionLabelsHeight((height) => clamp(height + (event.key === "ArrowDown" ? 10 : -10), 105, 320));
+              setSessionLabelsHeight((height) => clamp(height + (action === "queueGrow" ? 10 : -10), 105, 320));
             }}
           ><span /></div>
 
@@ -7301,7 +7248,7 @@ export default function Home() {
                 step={windowDraftStep}
                 value={windowDraftDisplayValue}
                 onChange={(event) => setWindowDraftValue(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") syncWindowDraft(); }}
+                onKeyDown={(event) => { if (matchesShortcut(event, controlBindings, "windowApply")) { event.preventDefault(); syncWindowDraft(); } }}
               /></label>
               <div className="window-unit-picker">
                 <b>{windowDraftUnit}</b>
@@ -7489,6 +7436,7 @@ export default function Home() {
             </div>
 
             {spectrogramOpen && <SpectrogramPanel
+              controlBindings={controlBindings}
               waveformCanvasRef={canvasRef}
               signals={spectrogramSignals}
               inputError={spectrogramInputPlan.expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES
@@ -7680,7 +7628,7 @@ export default function Home() {
                   event.dataTransfer.setData("application/x-neurotrace-label", label.id);
                   event.dataTransfer.effectAllowed = "copy";
                   setDragGhost({ labelId: label.id, time: cursorTime });
-                }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name}${label.shortcut ? ` · shortcut ${label.shortcut}` : ""}`}>
+                }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name}${`label:${label.id}` in controlBindings ? ` · ${shortcutHint(controlBindings, `label:${label.id}` as ShortcutAction)}` : ""}`}>
                   <i />{PALETTE_BUTTON_NAMES[label.id] ?? label.short}
                 </button>)}</div></div>)}
             </div> : <div className="empty-ephys-palette">{enabledEphysLabelIds.size ? "No enabled labels match the search." : "No ePhys label types enabled."}</div>}
@@ -7899,6 +7847,7 @@ export default function Home() {
       </div>}
 
       <TutorialCenter
+        controlBindings={controlBindings}
         open={showHelp}
         topic={helpTopic}
         hasRecording={hasRecording && activeSessionContentView === "recording"}
@@ -7921,19 +7870,13 @@ export default function Home() {
           <button className="modal-close" onClick={() => setShowSettings(false)} aria-label="Close Settings">×</button>
           <span className="modal-eyebrow">CONTROLS</span>
           <h2>Make the workspace feel natural.</h2>
-          <p>Change the letter shortcuts below. Navigation, zoom, selection, deletion, and Escape remain fixed so the viewer always has a safe recovery path.</p>
-          <section className="settings-section">
-            <div className="settings-heading"><strong>Editable keyboard controls</strong><button onClick={() => setControlBindings(DEFAULT_CONTROLS)}>Restore defaults</button></div>
-            <div className="binding-list">
-              {controlRows.map((row) => <label key={row.key}><span>{row.label}</span><span className="binding-input">{row.modifier && <b>{row.modifier} +</b>}<select aria-label={`${row.label} shortcut`} value={controlBindings[row.key]} onChange={(event) => updateControlBinding(row.key, event.target.value)}>{CONTROL_OPTIONS.map((key) => <option key={key} value={key}>{key.toUpperCase()}</option>)}</select></span></label>)}
-            </div>
-            <small className="binding-note">Choosing a letter already in use swaps the two actions, so every shortcut remains reachable.</small>
-          </section>
+          <p>Find every application shortcut here and change, add, or remove its keys.</p>
+          <ShortcutSettings bindings={controlBindings} onChange={setControlBindings} />
           <section className="settings-section interaction-settings">
             <div className="settings-heading"><strong>Pointer and timing controls</strong></div>
             <label><span>Label snapping</span><select value={snapMode} onChange={(event) => setSnapMode(event.target.value as "1s" | "100ms" | "sample")}><option value="1s">1 second</option><option value="100ms">100 milliseconds</option><option value="sample">Focused channel sample</option></select></label>
             <div className="fixed-control-grid">
-              {[["Click", "Pin instance time"], ["Click + drag", "Select label window"], ["Wheel / trackpad", "Pan in time"], ["Pinch or Ctrl/⌘ +/−", "EEG-only zoom"], ["Ctrl/⌘ Z", "Undo label edit or zoom"], ["Ctrl/⌘ Shift Z", "Redo label edit or zoom"], ["Delete / ⌫", "Delete selected label"], ["Escape", "Clear selection and cursor"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
+              {[["Click", "Pin instance time"], ["Click + drag", "Select label window (or box zoom with Zoom tool)"], ["Wheel / trackpad", "Pan in time; scroll expanded channels vertically"], ["Shift + wheel", "Pan time instead of scrolling channels"], ["Pinch / Ctrl/⌘ + wheel", "EEG-only time zoom"], ["Alt + pointer", "Bypass label snapping"], ["Window +/−", "Step 0.1; Shift: 1; Ctrl/⌘ + Shift: 10"], ["Drag divider", "Resize panels; double-click spectrogram divider to maximize/restore"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
             </div>
           </section>
         </div>
@@ -8094,6 +8037,7 @@ type SpectrogramSignalInput = {
 };
 
 type SpectrogramPanelProps = {
+  controlBindings: ControlBindings;
   waveformCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   signals: SpectrogramSignalInput[];
   inputError: string;
@@ -8127,6 +8071,7 @@ function matlabJet(value: number) {
 }
 
 function SpectrogramPanel({
+  controlBindings,
   waveformCanvasRef,
   signals,
   inputError,
@@ -8575,9 +8520,10 @@ function SpectrogramPanel({
         });
       }}
       onKeyDown={(event) => {
-        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        const action = shortcutAction(event, controlBindings, ["spectrogramResize"]);
+        if (!action) return;
         event.preventDefault();
-        const adjustment = event.key === "ArrowUp" ? 20 : -20;
+        const adjustment = action === "spectrogramGrow" ? 20 : -20;
         setSpectrogramHeight((height) => clamp(
           height + adjustment,
           MIN_SPECTROGRAM_HEIGHT,
@@ -8601,8 +8547,8 @@ function SpectrogramPanel({
     </div>
     <div className="spectrogram-canvas-shell">
       <div className="spectrogram-toolbar" data-tutorial="spectrogram-controls" aria-label="Spectrogram controls">
-        <button type="button" className={tool === "browse" ? "active" : ""} data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); notifyTutorialAction("spectrogram-browse"); }} title="Browse: click to center, hold and drag to pan (B)">B</button>
-        <button type="button" className={tool === "box-zoom" ? "active" : ""} data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => { setTool("box-zoom"); notifyTutorialAction("spectrogram-zoom-tool"); }} title="Box zoom: drag a time-frequency area to fit it to the view (Z)">Z</button>
+        <button type="button" className={tool === "browse" ? "active" : ""} data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); notifyTutorialAction("spectrogram-browse"); }} title={`Browse: click to center, hold and drag to pan · ${shortcutHint(controlBindings, "spectrogramBrowse")}`}>B</button>
+        <button type="button" className={tool === "box-zoom" ? "active" : ""} data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => { setTool("box-zoom"); notifyTutorialAction("spectrogram-zoom-tool"); }} title={`Box zoom: drag a time-frequency area to fit it to the view · ${shortcutHint(controlBindings, "spectrogramZoom")}`}>Z</button>
         <div className="spectrogram-frequency-control" role="group" aria-label="Displayed frequency range">
           <span>Frequency range</span>
           <button
@@ -8642,8 +8588,8 @@ function SpectrogramPanel({
             <option value="theta">θ ratio</option>
           </select>
         </label>
-        <button type="button" onClick={() => { setColorLimitShift((value) => value + 0.1); notifyTutorialAction("spectrogram-adjusted"); }} title="Raise color limits (Down arrow)">C−</button>
-        <button type="button" onClick={() => { setColorLimitShift((value) => value - 0.1); notifyTutorialAction("spectrogram-adjusted"); }} title="Lower color limits (Up arrow)">C+</button>
+        <button type="button" onClick={() => { setColorLimitShift((value) => value + 0.1); notifyTutorialAction("spectrogram-adjusted"); }} title={`Raise color limits · ${shortcutHint(controlBindings, "spectrogramColorDown")}`}>C−</button>
+        <button type="button" onClick={() => { setColorLimitShift((value) => value - 0.1); notifyTutorialAction("spectrogram-adjusted"); }} title={`Lower color limits · ${shortcutHint(controlBindings, "spectrogramColorUp")}`}>C+</button>
         <button type="button" onClick={onHelp} aria-label="Open spectrogram tutorials" title="Spectrogram tutorials">?</button>
       </div>
       <canvas
@@ -8694,25 +8640,24 @@ function SpectrogramPanel({
           if (interaction.tool === "browse") onCommitStart(interaction.originalViewStart);
         }}
         onKeyDown={(event) => {
-          if (event.metaKey || event.ctrlKey || event.altKey) return;
-          const key = event.key.toLowerCase();
-          if (!["arrowleft", "arrowright", "arrowup", "arrowdown", "b", "z", "escape"].includes(key)) return;
-          if (key === "escape") {
+          if (matchesShortcut(event, controlBindings, "clear")) {
             setTool("browse");
             setZoomBox(null);
             return;
           }
+          const action = shortcutAction(event, controlBindings, ["spectrogram"]);
+          if (!action) return;
           event.preventDefault();
           event.stopPropagation();
-          if (key === "arrowleft") onCommitStart(boundedStart(viewStart - viewDuration * 0.15));
-          else if (key === "arrowright") onCommitStart(boundedStart(viewStart + viewDuration * 0.15));
-          else if (key === "arrowup") setColorLimitShift((value) => value - 0.1);
-          else if (key === "arrowdown") setColorLimitShift((value) => value + 0.1);
-          else if (key === "b") { setTool("browse"); setZoomBox(null); }
-          else if (key === "z") setTool("box-zoom");
-          if (key === "b") notifyTutorialAction("spectrogram-browse");
-          else if (key === "z") notifyTutorialAction("spectrogram-zoom-tool");
-          else if (key === "arrowleft" || key === "arrowright") notifyTutorialAction("spectrogram-panned");
+          if (action === "spectrogramLeft") onCommitStart(boundedStart(viewStart - viewDuration * 0.15));
+          else if (action === "spectrogramRight") onCommitStart(boundedStart(viewStart + viewDuration * 0.15));
+          else if (action === "spectrogramColorUp") setColorLimitShift((value) => value - 0.1);
+          else if (action === "spectrogramColorDown") setColorLimitShift((value) => value + 0.1);
+          else if (action === "spectrogramBrowse") { setTool("browse"); setZoomBox(null); }
+          else if (action === "spectrogramZoom") setTool("box-zoom");
+          if (action === "spectrogramBrowse") notifyTutorialAction("spectrogram-browse");
+          else if (action === "spectrogramZoom") notifyTutorialAction("spectrogram-zoom-tool");
+          else if (action === "spectrogramLeft" || action === "spectrogramRight") notifyTutorialAction("spectrogram-panned");
           else notifyTutorialAction("spectrogram-adjusted");
         }}
       />

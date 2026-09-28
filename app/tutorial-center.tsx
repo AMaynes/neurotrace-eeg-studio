@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { subscribeTutorialActions, type TutorialAssistAction } from "./tutorial-events";
+import { DEFAULT_CONTROLS, matchesShortcut, shortcutAction, shortcutHint, shortcutText, type ControlBindings } from "./shortcuts";
 import "./tutorial-center.css";
 import {
   placeTutorialCoach,
@@ -19,6 +20,7 @@ import {
 } from "./tutorials";
 
 type TutorialCenterProps = {
+  controlBindings?: ControlBindings;
   open: boolean;
   topic: TutorialTopic;
   hasRecording: boolean;
@@ -125,7 +127,7 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
   return active ? surface : null;
 }
 
-export function TutorialCenter({ open, topic, hasRecording, canAnnotate, sessionId, onAssist, onTopicChange, onClose, onOpen, onReveal }: TutorialCenterProps) {
+export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic, hasRecording, canAnnotate, sessionId, onAssist, onTopicChange, onClose, onOpen, onReveal }: TutorialCenterProps) {
   const [selectedId, setSelectedId] = useState(tutorialLessons[0].id);
   const [preview, setPreview] = useState<{ lessonId: string; index: number } | null>(null);
   const [tour, setTour] = useState<Tour | null>(null);
@@ -237,13 +239,15 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, session
           <span className="tutorial-session-progress">{completed.size} / {tutorialLessons.length} walkthroughs completed this visit</span>
           {tour && <button className="tutorial-resume" onClick={onClose}>Resume: {activeLesson?.title} →</button>}
         </header>
-        <div className="tutorial-tabs" role="tablist" aria-label="Tutorial topics">
+        <div className="tutorial-tabs" data-shortcut-scope="tutorialTabs" role="tablist" aria-label="Tutorial topics">
           {tutorialTopics.map((item, index) => <button
             key={item.id} id={`tutorial-tab-${item.id}`} role="tab" aria-selected={topic === item.id}
             aria-controls="tutorial-topic-panel" tabIndex={topic === item.id ? 0 : -1}
             onClick={() => onTopicChange(item.id)}
             onKeyDown={(event) => {
-              const next = tutorialTabIndex(event.key, index);
+              const action = shortcutAction(event, controlBindings, ["tutorialTabs"]);
+              const key = ({ topicPrevious: "ArrowLeft", topicNext: "ArrowRight", topicFirst: "Home", topicLast: "End" } as Record<string, string>)[action ?? ""];
+              const next = tutorialTabIndex(key, index);
               if (next === null) return;
               event.preventDefault();
               onTopicChange(tutorialTopics[next].id);
@@ -272,8 +276,8 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, session
             </ol>
             <div className="tutorial-step-preview" aria-live="polite">
               <strong>{previewStep.title}</strong>
-              <p>{previewStep.instruction}</p>
-              {previewStep.tip && <p className="tutorial-tip">{previewStep.tip}</p>}
+              <p>{shortcutText(previewStep.instruction, controlBindings)}</p>
+              {previewStep.tip && <p className="tutorial-tip">{shortcutText(previewStep.tip, controlBindings)}</p>}
             </div>
           </section>
         </div>
@@ -295,13 +299,13 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, session
         className={`tutorial-coach ${embedded ? "tutorial-coach-embedded" : ""} ${coachPosition ? "tutorial-coach-manual" : ""}`}
         style={coachStyle}
         aria-label={`${activeLesson.title} walkthrough`}
-        onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); endTour(); } }}
+        onKeyDown={(event) => { if (matchesShortcut(event, controlBindings, "clear")) { event.preventDefault(); event.stopPropagation(); endTour(); } }}
       >
         <header>
           <button
             className="tutorial-drag-handle"
             aria-label="Move walkthrough panel"
-            title="Drag to move · Arrow keys to nudge · Home to reset position"
+            title={`Drag to move · Nudge: ${["coachLeft", "coachRight", "coachUp", "coachDown"].map((action) => shortcutHint(controlBindings, action as "coachLeft" | "coachRight" | "coachUp" | "coachDown")).join(" / ")} · Reset: ${shortcutHint(controlBindings, "coachReset")}`}
             onPointerDown={(event) => {
               if (event.button !== 0 || !event.isPrimary) return;
               const rect = coachRef.current?.getBoundingClientRect();
@@ -317,13 +321,15 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, session
             onPointerCancel={stopDraggingCoach}
             onLostPointerCapture={stopDraggingCoach}
             onKeyDown={(event) => {
-              if (event.key === "Home") { event.preventDefault(); resetCoachPosition(); return; }
-              const delta = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, [number, number]>)[event.key];
+              const action = shortcutAction(event, controlBindings, ["coach"]);
+              if (!action) return;
+              if (action === "coachReset") { event.preventDefault(); resetCoachPosition(); return; }
+              const delta = ({ coachLeft: [-1, 0], coachRight: [1, 0], coachUp: [0, -1], coachDown: [0, 1] } as Record<string, [number, number]>)[action.replace(/Fast$/, "")];
               const rect = coachRef.current?.getBoundingClientRect();
               if (!delta || !rect) return;
               event.preventDefault();
               event.stopPropagation();
-              const distance = event.shiftKey ? 40 : 10;
+              const distance = action.endsWith("Fast") ? 40 : 10;
               moveCoach(rect.left + delta[0] * distance, rect.top + delta[1] * distance, rect.width);
             }}
           ><span aria-hidden="true">⠿</span><span>{activeStep ? `STEP ${tour.stepIndex + 1} OF ${activeLesson.steps.length}` : "WALKTHROUGH COMPLETE"}</span><small>Drag to move</small></button>
@@ -334,8 +340,8 @@ export function TutorialCenter({ open, topic, hasRecording, canAnnotate, session
         <div className="tutorial-coach-copy" aria-live="polite" aria-atomic="true">
           <span className="tutorial-coach-lesson">{activeLesson.title}</span>
           <h3>{activeStep?.title ?? "You’ve reached the end."}</h3>
-          <p>{surface.ready ? "That area is already open. Select Next to continue." : activeStep?.instruction ?? "Replay whenever you need a refresher, or choose another lesson. This completes the guide, not a save or commit."}</p>
-          {activeStep?.tip && <p className="tutorial-tip">{activeStep.tip}</p>}
+          <p>{surface.ready ? "That area is already open. Select Next to continue." : activeStep ? shortcutText(activeStep.instruction, controlBindings) : "Replay whenever you need a refresher, or choose another lesson. This completes the guide, not a save or commit."}</p>
+          {activeStep?.tip && <p className="tutorial-tip">{shortcutText(activeStep.tip, controlBindings)}</p>}
           {tourBlock && <p className="tutorial-prerequisite">{tourBlock}</p>}
           {activeStep && !tourBlock && !surface.ready && (!surface.rect || surface.fallback) && <p className="tutorial-prerequisite">{embedded && !surface.rect ? `Close ${surface.dialogName} to continue in the workspace. ` : ""}{activeStep.unavailable}</p>}
         </div>

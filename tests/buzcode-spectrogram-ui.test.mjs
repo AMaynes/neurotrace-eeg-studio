@@ -81,7 +81,7 @@ test("lets Escape leave spectrogram focus and return to all enabled channels", a
   const panel = panelResizeSection(page);
   assert.match(page, /event\.key === "Escape"[\s\S]*?setChannelSelectionActive\(false\)/);
   assert.match(page, /const spectrogramChannelIndices = useMemo\(\(\) => channelSelectionActive[\s\S]*?: display\.data\.map/);
-  const localEscape = panel.indexOf('if (key === "escape")');
+  const localEscape = panel.indexOf('if (matchesShortcut(event, controlBindings, "clear"))');
   const stopPropagation = panel.indexOf("event.stopPropagation()", localEscape);
   assert.ok(localEscape >= 0 && stopPropagation > localEscape, "Escape is handled before propagation is stopped");
   assert.match(panel.slice(localEscape, stopPropagation), /return;/, "Escape bubbles to the global selection clearer");

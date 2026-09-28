@@ -6,6 +6,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as catalog from "../app/tutorials.ts";
+import * as shortcuts from "../app/shortcuts.ts";
 import { subscribeTutorialActions } from "../app/tutorial-events.ts";
 
 const componentSource = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
@@ -49,7 +50,7 @@ function harness(overrides = {}) {
     ...overrides,
   };
   const scope = {
-    ...catalog, require: createRequire(import.meta.url), exports: {},
+    ...catalog, ...shortcuts, require: createRequire(import.meta.url), exports: {},
     useState(initial) {
       const index = hookIndex++;
       if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
@@ -84,7 +85,7 @@ function harness(overrides = {}) {
     createPortal: (children, host) => { portalHosts.push(host); return children; },
     window: { innerWidth: 1280, innerHeight: 720 },
     requestAnimationFrame: (callback) => { callback(); return 1; },
-    document: { body, querySelector: () => ({ focus() {}, scrollIntoView() {} }) },
+    document: { body, querySelector: () => ({ focus() {}, scrollIntoView() {} }), getElementById: () => ({ focus() {} }) },
   };
   scope.useLayoutEffect = scope.useEffect;
   const TutorialCenter = new Function(...Object.keys(scope), `${compiled}\nreturn exports.TutorialCenter;`)(...Object.values(scope));
@@ -553,6 +554,22 @@ test("keyboard movement and reset work, including when the coach belongs to an o
   assert.deepEqual(ui.coach().props.style, automatic, "reset restores collision-aware automatic placement inside dialogs");
   assert.equal(ui.focusTargets.at(-1), ".tutorial-drag-handle", "reset does not strand focus on a removed button");
   ui.button("Move walkthrough panel").props.onKeyDown(key); ui.render();
-  ui.button("Move walkthrough panel").props.onKeyDown({ ...key, key: "Home" }); ui.render();
+  ui.button("Move walkthrough panel").props.onKeyDown({ ...key, key: "Home", shiftKey: false }); ui.render();
   assert.deepEqual(ui.coach().props.style, automatic);
+});
+
+test("remapped tutorial topic, move, reset, and close shortcuts work in their own focus contexts", () => {
+  const ui = harness({ controlBindings: { ...shortcuts.DEFAULT_CONTROLS, topicNext: ["j"], coachLeftFast: ["k"], coachReset: ["r"], clear: ["F2"] } });
+  const event = (key) => ({ key, preventDefault() {}, stopPropagation() {} });
+  ui.button("01Get started").props.onKeyDown(event("j")); ui.render();
+  assert.equal(ui.props.topic, "navigate");
+  ui.click("Start walkthrough →");
+  ui.button("Move walkthrough panel").props.onKeyDown(event("k")); ui.render();
+  assert.match(ui.coach().props.className, /tutorial-coach-manual/);
+  ui.button("Move walkthrough panel").props.onKeyDown(event("r")); ui.render();
+  assert.doesNotMatch(ui.coach().props.className, /tutorial-coach-manual/);
+  ui.coach().props.onKeyDown(event("Escape")); ui.render();
+  assert.ok(ui.coach());
+  ui.coach().props.onKeyDown(event("F2")); ui.render();
+  assert.equal(ui.markup(), "");
 });
