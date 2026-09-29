@@ -160,7 +160,9 @@ test("removing unsupported bins leaves retained MATLAB power and Z-score referen
       mean: -40.658957804509065, deviation: 4.378345743024903 },
   ];
   for (const reference of references) {
-    assert.equal(result.frequencies[reference.bin], reference.frequency);
+    // log/pow can differ by an ULP across JS engines/platforms. The frozen
+    // center must agree numerically, not require identical last-bit rounding.
+    close(result.frequencies[reference.bin], reference.frequency, 1e-13);
     close(result.baselineMean[reference.bin], reference.mean, 1e-12);
     close(result.baselineStd[reference.bin], reference.deviation, 1e-12);
     [0, 31, 64].forEach((sample, index) => {
