@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { adaptiveTimeGridInterval, timeGridLineBudget } from "../app/time-grid.ts";
+import { adaptiveTimeGridInterval, formatTimeGridClock, measuredTimeGridInterval, timeGridLineBudget } from "../app/time-grid.ts";
 
 test("candidate-relative views retain one-second ticks through 30 seconds", () => {
   for (const durationSec of [0.001, 1, 10, 29.999, 30]) {
@@ -72,4 +72,42 @@ test("grid line budgets retain safe defaults for invalid canvas measurements", (
   assert.equal(timeGridLineBudget(800, Number.NaN), 24);
   assert.equal(timeGridLineBudget(120, 48), 2);
   assert.equal(timeGridLineBudget(800, 48, { minimumLabelGapPx: 32, maximumGridLines: 8 }), 8);
+});
+
+test("close-up clock labels distinguish fractional ticks without floating-point tails", () => {
+  assert.deepEqual([0, 1, 2, 3, 4].map(index => formatTimeGridClock(13_587 + index * 0.2, 0.2)), [
+    "03:46:27.0", "03:46:27.2", "03:46:27.4", "03:46:27.6", "03:46:27.8",
+  ]);
+  assert.equal(formatTimeGridClock(13_587.25, 0.25), "03:46:27.25");
+  assert.equal(formatTimeGridClock(13_587.005, 0.005), "03:46:27.005");
+  assert.equal(formatTimeGridClock(62.5, 2.5), "00:01:02.5");
+  assert.equal(formatTimeGridClock(13_587, 1), "03:46:27");
+});
+
+test("tick rounding carries across minute/hour boundaries and normalizes zero", () => {
+  assert.equal(formatTimeGridClock(59.999999999, 0.1), "00:01:00.0");
+  assert.equal(formatTimeGridClock(3599.999999999, 0.25), "01:00:00.00");
+  assert.equal(formatTimeGridClock(360_000, 1), "100:00:00");
+  assert.equal(formatTimeGridClock(-0.000000001, 0.1), "00:00:00.0");
+  assert.equal(formatTimeGridClock(-0.25, 0.25), "−00:00:00.25");
+  assert.equal(formatTimeGridClock(Number.NaN, 0.1), "--:--:--");
+});
+
+test("measured grids leave room for fractional clock labels at close and wide zooms", () => {
+  for (const width of [240, 600, 1200, 2000]) {
+    for (const duration of [0.1, 0.5, 2, 5, 20, 40, 60, 3600, 21604]) {
+      const labelWidth = interval => formatTimeGridClock(13_587 + duration, interval).length * 6;
+      const interval = measuredTimeGridInterval(duration, width, labelWidth);
+      assert.ok(interval / duration * width >= labelWidth(interval) + 12,
+        `${duration}s / ${width}px: labels must fit at ${interval}s intervals`);
+      const labels = Array.from({ length: Math.ceil(duration / interval) }, (_, index) =>
+        formatTimeGridClock((Math.ceil(13_587 / interval) + index) * interval, interval));
+      assert.equal(new Set(labels).size, labels.length, "adjacent ticks must not repeat");
+    }
+  }
+});
+
+test("measured grid preserves candidate-relative one-second tick policy", () => {
+  assert.equal(measuredTimeGridInterval(2, 1200, () => 42, { candidateRelative: true }), 1);
+  assert.equal(measuredTimeGridInterval(20, 600, () => 42, { candidateRelative: true }), 1);
 });

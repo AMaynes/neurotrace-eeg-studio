@@ -68,3 +68,49 @@ export function adaptiveTimeGridInterval(
   }
   return 10 * magnitude;
 }
+
+/** Clock ticks retain the fractional precision of their interval, including 2.5 s. */
+export function formatTimeGridClock(timeSec: number, intervalSec: number) {
+  if (!Number.isFinite(timeSec)) return "--:--:--";
+  let decimals = 0;
+  if (Number.isFinite(intervalSec) && intervalSec > 0) {
+    while (decimals < 6) {
+      const scaledInterval = intervalSec * 10 ** decimals;
+      if (Math.abs(scaledInterval - Math.round(scaledInterval)) < 1e-7) break;
+      decimals += 1;
+    }
+  }
+  const unitsPerSecond = 10 ** decimals;
+  // Round once before splitting fields, so fractional ticks carry across minutes/hours.
+  const ticks = Math.round(Math.abs(timeSec) * unitsPerSecond);
+  const wholeSeconds = Math.floor(ticks / unitsPerSecond);
+  const hours = Math.floor(wholeSeconds / 3600);
+  const minutes = Math.floor(wholeSeconds % 3600 / 60);
+  const seconds = wholeSeconds % 60;
+  const fraction = decimals ? `.${String(ticks % unitsPerSecond).padStart(decimals, "0")}` : "";
+  return `${timeSec < 0 && ticks > 0 ? "−" : ""}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}${fraction}`;
+}
+
+/** Account for fractional label width before settling the grid spacing. */
+export function measuredTimeGridInterval(
+  durationSec: number,
+  viewportWidthPx: number,
+  measureLabelWidth: (intervalSec: number) => number,
+  options: AdaptiveTimeGridOptions = {},
+) {
+  let targetGridLines = options.targetGridLines ?? DEFAULT_TARGET_GRID_LINES;
+  let interval = adaptiveTimeGridInterval(durationSec, { ...options, targetGridLines });
+  // Budgets only shrink. A coarser 2.5-decade interval can add a decimal place,
+  // requiring one more measurement; never oscillate between two label formats.
+  for (let pass = 0; pass < DEFAULT_TARGET_GRID_LINES; pass += 1) {
+    targetGridLines = Math.min(targetGridLines, timeGridLineBudget(
+      viewportWidthPx,
+      measureLabelWidth(interval),
+      { maximumGridLines: options.targetGridLines },
+    ));
+    const next = adaptiveTimeGridInterval(durationSec, { ...options, targetGridLines });
+    if (next === interval) return interval;
+    interval = next;
+  }
+  return interval;
+}

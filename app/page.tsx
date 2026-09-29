@@ -91,7 +91,7 @@ import {
 } from "./performance-diagnostics";
 import { sha256Blob } from "./source-integrity";
 import { verifySourceOffThread } from "./source-integrity-worker-client";
-import { adaptiveTimeGridInterval, timeGridLineBudget } from "./time-grid";
+import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
 import { buildChannelRowLayout, channelRowFromFraction, orderElectrodeDisplayRows } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
@@ -1188,7 +1188,9 @@ function confineTraceYValueToRow(y: number, rowTop: number, rowHeight: number) {
 }
 
 function traceYOverflowsRow(y: number, rowTop: number, rowHeight: number) {
-  return !Number.isFinite(y) || y < rowTop || y > rowTop + rowHeight;
+  // Warn whenever the actual inset clamp alters a sample, not only after it
+  // crosses the outer row boundary. Samples exactly on the clamp remain valid.
+  return !Number.isFinite(y) || y !== confineTraceYValueToRow(y, rowTop, rowHeight);
 }
 
 function drawContinuousTrace(
@@ -4078,19 +4080,15 @@ export default function Home() {
       context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
       context.textAlign = "center";
       context.textBaseline = "top";
-      const gridLabelReference = activeCandidateTime !== null
-        ? formatRelativeTime(Math.max(
-            Math.abs(displayStart - activeCandidateTime),
-            Math.abs(displayEnd - activeCandidateTime),
-          )).replace(" s", "")
-        : formatClock(displayEnd);
-      const secondsPerGrid = adaptiveTimeGridInterval(timebase, {
-        candidateRelative: activeCandidateTime !== null,
-        targetGridLines: timeGridLineBudget(
-          width,
-          context.measureText(gridLabelReference).width,
-        ),
-      });
+      const secondsPerGrid = measuredTimeGridInterval(timebase, width, (interval) => {
+        const gridLabelReference = activeCandidateTime !== null
+          ? formatRelativeTime(Math.max(
+              Math.abs(displayStart - activeCandidateTime),
+              Math.abs(displayEnd - activeCandidateTime),
+            )).replace(" s", "")
+          : formatTimeGridClock(displayEnd, interval);
+        return context.measureText(gridLabelReference).width;
+      }, { candidateRelative: activeCandidateTime !== null });
       const gridAnchor = activeCandidateTime ?? 0;
       const firstGridIndex = Math.ceil((displayStart - gridAnchor) / secondsPerGrid);
       for (let gridIndex = firstGridIndex; ; gridIndex += 1) {
@@ -4103,7 +4101,7 @@ export default function Home() {
         context.fillText(
           activeCandidateTime !== null
             ? formatRelativeTime(second - activeCandidateTime).replace(" s", "")
-            : formatClock(second),
+            : formatTimeGridClock(second, secondsPerGrid),
           x,
           5,
         );

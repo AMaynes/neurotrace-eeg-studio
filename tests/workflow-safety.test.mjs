@@ -232,7 +232,8 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
     "foreground detail must not wait for unrelated whole-file verification");
   assert.match(refresh, /onOverview:\s*publishWindowPreview/);
   assert.match(page, /FULL_SESSION_ENVELOPE_REFINEMENT\s*=\s*32/);
-  assert.match(page, /adaptiveTimeGridInterval\(timebase/);
+  assert.match(page, /measuredTimeGridInterval\(timebase, width/);
+  assert.match(page, /formatTimeGridClock\(second, secondsPerGrid\)/);
   assert.match(page, /MAX_INTERACTIVE_TIMELINE_ANNOTATIONS\s*=\s*400/);
   assert.match(page, /clusterTimelineDensity\(/);
   assert.match(page, /timelineUsesDensity\s*\?/);
