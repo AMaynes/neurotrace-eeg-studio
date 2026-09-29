@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { computeMatlabSpectrogram } from "../app/matlab-spectrogram.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("page.tsx", page, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -11,6 +12,10 @@ const transpile = (source) => ts.transpileModule(source, { compilerOptions: { ta
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const rasterSource = ["matlabJet", "rasterizeMatlabSpectrogram"].map((name) => functions.get(name).getText(ast)).join("\n");
 const { rasterize, jet } = new Function("clamp", `${transpile(rasterSource)}\nreturn { rasterize: rasterizeMatlabSpectrogram, jet: matlabJet };`)(clamp);
+const displayHelpers = ["spectrogramDisplayRange", "spectrogramFrequencyTicks", "formatSpectrogramFrequency"]
+  .map((name) => functions.get(name).getText(ast)).join("\n");
+const { displayRange, ticks, formatFrequency } = new Function("clamp", `${transpile(displayHelpers)}
+  return { displayRange: spectrogramDisplayRange, ticks: spectrogramFrequencyTicks, formatFrequency: formatSpectrogramFrequency };`)(clamp);
 const analysisNote = new Function("formatClock", `${transpile(["spectrogramAnalysisRange", "spectrogramAnalysisNote"]
   .map((name) => functions.get(name).getText(ast)).join("\n"))}\nreturn spectrogramAnalysisNote;`)((seconds) => seconds.toFixed(3));
 const panel = functions.get("SpectrogramPanel");
@@ -28,7 +33,7 @@ const rgba = (pixels, index) => [...pixels.slice(index * 4, index * 4 + 4)];
 const mappedColor = (z, limit) => [...jet(Math.round(clamp((z + limit) / (2 * limit), 0, 1) * 255) / 255), 255];
 
 function spectrum(overrides = {}) {
-  return { width: 5, height: 4, dataStart: 10, sampleRate: 1,
+  return { width: 5, height: 4, dataStart: 10, sampleRate: 1000,
     times: Float64Array.from([0, 1, 2, 3, 4]),
     // Deliberately nonuniform interior analysis frequencies.
     frequencies: Float64Array.from([1, 3, 12, 150]),
@@ -36,14 +41,68 @@ function spectrum(overrides = {}) {
     colorLimit: 20, ...overrides };
 }
 
-test("raster uses MATLAB imagesc uniform endpoint rows, not logarithmic-frequency row heights", () => {
+test("raster locates nonuniform analysis bins at actual Hz centers, not uniform image rows", () => {
   const source = spectrum();
-  const pixels = new Uint8ClampedArray(5 * 4 * 4);
-  const halfFrequencyStep = (150 - 1) / 3 / 2;
-  rasterize(pixels, 5, 4, source, 9.5, 5, 1 - halfFrequencyStep, 150 + halfFrequencyStep, 20);
-  for (let y = 0; y < 4; y++) for (let x = 0; x < 5; x++) {
-    assert.deepEqual(rgba(pixels, y * 5 + x), mappedColor(source.zScores[(3 - y) * 5 + x], 20));
+  const pixels = new Uint8ClampedArray(5 * 150 * 4);
+  rasterize(pixels, 5, 150, source, 9.5, 5, .5, 150.5, 20);
+  for (let y = 0; y < 150; y++) for (let x = 0; x < 5; x++) {
+    const frequency = 150 - y;
+    const nearest = [...source.frequencies].reduce((best, value, index) =>
+      Math.abs(value - frequency) <= Math.abs(source.frequencies[best] - frequency) ? index : best, 0);
+    assert.deepEqual(rgba(pixels, y * 5 + x), mappedColor(source.zScores[nearest * 5 + x], 20));
   }
+});
+
+test("a known 10 Hz tone's analysis row renders near 10 Hz, never the old 69 Hz location", () => {
+  const sampleRate = 200;
+  const data = Float64Array.from({ length: 6000 }, (_, i) => Math.sin(2 * Math.PI * 10 * i / sampleRate));
+  const source = computeMatlabSpectrogram({ data: [data], sampleRate, dataStart: 0, baselineTime: 15 });
+  const meanPower = [...source.frequencies].map((_, bin) =>
+    source.power.subarray(bin * source.width, (bin + 1) * source.width).reduce((sum, value) => sum + value, 0) / source.width);
+  const peak = meanPower.indexOf(Math.max(...meanPower));
+  assert.ok(Math.abs(source.frequencies[peak] - 10) < .2);
+  // Mark the independently identified power row. Constant-tone Z-scores alone
+  // do not identify the carrier, since each row is normalized to its baseline.
+  source.zScores.fill(0);
+  source.zScores.fill(1, peak * source.width, (peak + 1) * source.width);
+  const pixels = new Uint8ClampedArray(201 * 4);
+  rasterize(pixels, 1, 201, source, 14.995, .01, -.25, 100.25, 1);
+  assert.deepEqual(rgba(pixels, 180), mappedColor(1, 1), "pixel at 10 Hz uses the 9.90 Hz analysis row");
+  assert.deepEqual(rgba(pixels, 62), mappedColor(0, 1), "pixel at 69 Hz must not use the 10 Hz row");
+  assert.deepEqual(rgba(pixels, 200), [7, 18, 22, 255], "0 Hz is below the supported grid");
+  const cropped = new Uint8ClampedArray(21 * 4);
+  rasterize(cropped, 1, 21, source, 14.995, .01, 4.75, 15.25, 1);
+  assert.deepEqual(rgba(cropped, 10), mappedColor(1, 1), "frequency zoom retains the same 10 Hz row");
+});
+
+test("raster never draws above Nyquist, even with a stale result containing higher centers", () => {
+  const source = spectrum({ sampleRate: 20 });
+  const pixels = new Uint8ClampedArray(150 * 4);
+  rasterize(pixels, 1, 150, source, 9.5, 1, .5, 150.5, 20);
+  for (let y = 0; y < 140; y++) assert.deepEqual(rgba(pixels, y), [7, 18, 22, 255]);
+  assert.deepEqual(rgba(pixels, 147), mappedColor(source.zScores[5], 20), "3 Hz remains available");
+  const empty = spectrum({ height: 0, frequencies: new Float64Array(), zScores: new Float64Array() });
+  rasterize(pixels, 1, 150, empty, 9.5, 1, .5, 150.5, 20);
+  for (let y = 0; y < 150; y++) assert.deepEqual(rgba(pixels, y), [7, 18, 22, 255]);
+});
+
+test("frequency controls cap defaults, recovered ranges, and narrow zooms to the current sample rate", () => {
+  for (const [rate, maximum] of [[1000, 150], [300, 150], [200, 100], [25, 12.5], [2, 1], [0, 0], [NaN, 0]]) {
+    const range = displayRange({ min: 0, max: 150 }, rate);
+    assert.equal(range.max, maximum);
+    assert.equal(range.maximum, maximum);
+    assert.equal(range.min, 0);
+    assert.ok(Number.isFinite(range.minimumSpan));
+  }
+  assert.deepEqual(displayRange({ min: 120, max: 150 }, 200), { min: 99, max: 100, maximum: 100, minimumSpan: 1 });
+  assert.deepEqual(displayRange({ min: 3, max: 5 }, 200), { min: 3, max: 5, maximum: 100, minimumSpan: 1 });
+  assert.deepEqual(displayRange({ min: NaN, max: NaN }, 200), { min: 0, max: 100, maximum: 100, minimumSpan: 1 });
+  assert.deepEqual(ticks(0, 100), [0, 20, 40, 60, 80, 100]);
+  assert.deepEqual(ticks(0, 1), [0, .2, .4, .6, .8, 1]);
+  assert.deepEqual(ticks(0, 0), []);
+  assert.deepEqual(ticks(9.3, 10.3), [9.4, 9.6, 9.8, 10, 10.2]);
+  assert.equal(formatFrequency(12.5), "12.5");
+  assert.equal(formatFrequency(.600000000000001), "0.6");
 });
 
 test("raster preserves absolute time during pan/crop and never stretches absent data to viewport edges", () => {
@@ -62,11 +121,11 @@ test("raster preserves absolute time during pan/crop and never stretches absent 
 test("raster work is bounded by output pixels, not all N by 60 transform values", () => {
   let reads = 0;
   const source = spectrum({ width: 100000, height: 60, sampleRate: 1000,
-    times: { 0: 0, 99999: 99.999 }, frequencies: { 0: 1, 59: 150 },
+    times: { 0: 0, 99999: 99.999 }, frequencies: Float64Array.from({ length: 60 }, (_, i) => 150 ** (i / 59)),
     zScores: new Proxy({}, { get() { reads++; return 0; } }) });
   const width = 320, height = 120;
   rasterize(new Uint8ClampedArray(width * height * 4), width, height, source, 10, 100, 0, 150, 1);
-  assert.equal(reads, width * height);
+  assert.ok(reads <= width * height && reads > .95 * width * height);
   assert.ok(reads < source.width * source.height / 100);
 });
 
@@ -153,7 +212,9 @@ test("production UI uses symmetric current-result color limits and a cached imag
   assert.match(source, /ctx\.drawImage\(raster\.canvas/);
   assert.match(source, /raster\.spectrum !== spectrum \|\| raster\.key !== rasterKey/);
   assert.doesNotMatch(source, /DPSS|Whitening|multitaper|smoothingSeconds|thetaRatio|stableSpectrogramColorLimits|for \(let frame/);
-  assert.match(source, /onFrequencyRangeChange\(\{ min: 0, max: 150 \}\)/);
+  assert.match(source, /onFrequencyRangeChange\(\{ min: 0, max: maximumDisplayHz \}\)/);
+  assert.match(source, /spectrogramDisplayRange\(frequencyRange, sampleRate\)/);
+  assert.doesNotMatch(source, /min: displayMinHz/, "frequency controls cannot reuse an unclamped range from a higher-rate recording");
   assert.match(source, /onZoom\(timeRange, nextFrequencyRange\)/);
   assert.match(source, /shortcutAction\(event, controlBindings, \["spectrogram"\]\)/);
   assert.match(source, /aria-label="Spectrogram calculation warnings"/);

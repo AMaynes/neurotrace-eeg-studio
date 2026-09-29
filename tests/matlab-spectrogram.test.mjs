@@ -99,7 +99,7 @@ test("recording-sized prime and composite transforms match an analytic periodic-
 
 test("fixed logspace bins, unmasked Gaussian DC tail, and MATLAB scale validity are preserved", () => {
   const dc = new Float64Array(16).fill(1);
-  const result = computeMatlabSpectrogram(request(dc, 8));
+  const result = computeMatlabSpectrogram(request(dc, 1000));
   assert.equal(result.frequencies.length, 60);
   assert.equal(result.frequencies[0], 1);
   assert.equal(result.frequencies[59], 150);
@@ -113,7 +113,79 @@ test("fixed logspace bins, unmasked Gaussian DC tail, and MATLAB scale validity 
   assert.equal(upper.validScale, true);
   assert.equal(computeMatlabGaborCoefficients(dc, 8, 2.49).validScale, false);
   assert.equal(computeMatlabGaborCoefficients(dc, 8, 8).validScale, false);
-  assert.ok(result.warnings.some((warning) => /Nyquist/.test(warning)));
+  assert.ok(!result.warnings.some((warning) => /Nyquist/.test(warning)));
+});
+
+test("frequency output preserves original centers but never exceeds the recording's Nyquist limit", () => {
+  const data = Float64Array.from({ length: 65 }, (_, index) => Math.sin(index * .7));
+  const originalCenters = Array.from({ length: 60 }, (_, index) =>
+    index === 59 ? 150 : 10 ** (index * Math.log10(150) / 59));
+  for (const rate of [2, 2.1, 4, 8, 64, 100, 128, 200, 256, 299, 300, 1000]) {
+    const result = computeMatlabSpectrogram(request(data, rate));
+    const expected = originalCenters.filter((frequency) => frequency <= Math.min(150, rate / 2));
+    assert.deepEqual([...result.frequencies], expected, `retained centers for ${rate} Hz sample rate`);
+    assert.equal(result.height, expected.length);
+    assert.equal(result.power.length, result.width * result.height);
+    assert.equal(result.zScores.length, result.width * result.height);
+    assert.ok(result.frequencies.every((frequency) => frequency <= rate / 2));
+    assert.equal(result.warnings.some((warning) => /Nyquist limit are omitted/.test(warning)), rate < 300);
+    assert.ok(!result.warnings.some((warning) => /retained to match/.test(warning)));
+    assert.equal(matlabSpectrogramTransferList(result).reduce((sum, buffer) => sum + buffer.byteLength, 0), result.metrics.outputBytes);
+    assert.ok(Number.isFinite(result.colorLimit));
+  }
+  const edf = computeMatlabSpectrogram(request(data, 200));
+  assert.equal(edf.height, 55);
+  close(edf.frequencies.at(-1), 98.10174794722279);
+  assert.deepEqual([...computeMatlabSpectrogram(request(data, 2)).frequencies], [1]);
+});
+
+test("removing unsupported bins leaves retained MATLAB power and Z-score reference numbers unchanged", () => {
+  const data = Float64Array.from({ length: 65 }, (_, index) =>
+    Math.sin(index * .67) + (index > 35 ? 2 : 1) * Math.cos(index * 1.5) + index / 17);
+  const result = computeMatlabSpectrogram(request(data, 200, { baselineTime: 10.16 }));
+  // Frozen pre-cap reference values, additionally checked against the
+  // independent direct-DFT oracle below. Only the discarded rows change.
+  const references = [
+    { bin: 35, frequency: 19.53896677301786,
+      power: [0.010550384690540569, 0.19035449365181195, 0.018841691055566313],
+      scores: [-1.6040600766645245, 0.686881111301915, -1.1447911633548522],
+      mean: -10.971052851626974, deviation: 5.483749844327542 },
+    { bin: 46, frequency: 49.729434882916706,
+      power: [0.025841572438290286, 0.09770780413434996, 0.07015865345090487],
+      scores: [-1.0319040568398916, 0.5349565230863516, 0.1447457409913469],
+      mean: -12.072780865516776, deviation: 3.6864180767587467 },
+    { bin: 54, frequency: 98.10174794722279,
+      power: [0.0011958791951434844, 0.00030746604147778816, 0.0010290987339829582],
+      scores: [2.6119067749524905, 1.2646167512571063, 2.4629229569012367],
+      mean: -40.658957804509065, deviation: 4.378345743024903 },
+  ];
+  for (const reference of references) {
+    assert.equal(result.frequencies[reference.bin], reference.frequency);
+    close(result.baselineMean[reference.bin], reference.mean, 1e-12);
+    close(result.baselineStd[reference.bin], reference.deviation, 1e-12);
+    [0, 31, 64].forEach((sample, index) => {
+      close(result.power[reference.bin * result.width + sample], reference.power[index], 1e-12);
+      close(result.zScores[reference.bin * result.width + sample], reference.scores[index], 1e-12);
+    });
+  }
+  for (let bin = 0; bin < result.height; bin += 1) {
+    const reference = directGabor(data, 200, result.frequencies[bin]);
+    for (let sample = 0; sample < result.width; sample += 1) {
+      close(result.power[bin * result.width + sample], reference.re[sample] ** 2 + reference.im[sample] ** 2, 3e-11);
+    }
+  }
+});
+
+test("rates below the one-Hz grid fail clearly before any worker or large calculation", async () => {
+  const input = [1, 2, 4, 3, -1, 5, 2, 0];
+  for (const rate of [Number.MIN_VALUE, 0.1, 1, 1.999999999]) {
+    assert.throws(() => validateMatlabSpectrogramRequest(request(input, rate)), /Nyquist limit is below the 1 Hz minimum/);
+    assert.throws(() => computeMatlabSpectrogram(request(input, rate)), /Nyquist limit is below the 1 Hz minimum/);
+    await assert.rejects(computeMatlabSpectrogramOffThread(request(input, rate)), /Nyquist limit is below the 1 Hz minimum/);
+  }
+  for (const rate of [0, -1, NaN, Infinity, -Infinity]) {
+    assert.throws(() => validateMatlabSpectrogramRequest(request(input, rate)), /positive sample rate/);
+  }
 });
 
 test("group averaging is over channel power, followed by exact epsilon log and sample-std baseline", () => {
@@ -281,7 +353,7 @@ test("worker errors, uncloneable inputs, and pre-aborts release resources withou
     input.data[0].slice = originalSlice;
 
     const count = workers.length;
-    await assert.rejects(computeMatlabSpectrogramOffThread(request(new Float64Array(70_000))), /memory budget/);
+    await assert.rejects(computeMatlabSpectrogramOffThread(request(new Float64Array(70_000), 1000)), /memory budget/);
     assert.equal(workers.length, count, "size guard runs before worker creation or input copying");
   } finally {
     if (originalWorker === undefined) delete globalThis.Worker;

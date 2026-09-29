@@ -31,7 +31,7 @@ test("exposes MATLAB wavelet processing with linked navigation and frequency/col
   assert.match(panel, /aria-label="Lower maximum displayed frequency"/);
   assert.match(panel, /aria-label="Raise maximum displayed frequency"/);
   assert.match(panel, /aria-label="Reset displayed frequency range"/);
-  assert.match(panel, /<output aria-live="polite">\{Math\.round\(effectiveDisplayMinHz\)\}–\{Math\.round\(effectiveDisplayMaxHz\)\} Hz<\/output>/);
+  assert.match(panel, /<output aria-live="polite">\{formatSpectrogramFrequency\(effectiveDisplayMinHz\)\}–\{formatSpectrogramFrequency\(effectiveDisplayMaxHz\)\} Hz<\/output>/);
   assert.match(panel, /viewDuration \* 0\.15/);
   assert.match(panel, /effectiveDisplayMaxHz \+ 10/);
   assert.match(panel, /colorLimitShift/);

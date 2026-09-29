@@ -10,6 +10,9 @@
  * Preserve the exact N-point circular transform (including positive even-N
  * Nyquist and the unmasked negative-frequency Gaussian tail). Bluestein's
  * convolution padding is internal: it does not zero-pad the signal's DFT.
+ * Unlike the original viewer, omit analysis centers above the recording's
+ * Nyquist limit. Retained centers and their power/Z-score calculations are
+ * unchanged; the original frequency grid is never respaced.
  */
 
 export const MATLAB_SPECTROGRAM_BINS = 60;
@@ -59,17 +62,23 @@ export function validateMatlabSpectrogramRequest(request: MatlabSpectrogramReque
     throw new RangeError("MATLAB spectrogram requires synchronized group channels with at least 3 samples each.");
   }
   const inputBytes = data.reduce((sum, channel) => sum + channel.byteLength, 0);
-  const outputBytes = samples * MATLAB_SPECTROGRAM_BINS * 16 + samples * 8 + MATLAB_SPECTROGRAM_BINS * 24;
+  const frequencies = frequencyGrid(sampleRate);
+  if (!frequencies.length) {
+    throw new RangeError("Spectrogram unavailable: this recording's Nyquist limit is below the 1 Hz minimum analysis frequency.");
+  }
+  const outputBytes = samples * frequencies.length * 16 + samples * 8 + frequencies.length * 24;
   if (inputBytes > MATLAB_SPECTROGRAM_MAX_INPUT_BYTES || outputBytes > MATLAB_SPECTROGRAM_MAX_OUTPUT_BYTES) {
     throw new RangeError("Exact MATLAB spectrogram exceeds its memory budget. Zoom in or choose a smaller channel group.");
   }
-  return { samples, inputBytes, outputBytes };
+  return { samples, inputBytes, outputBytes, frequencies };
 }
 
-function frequencyGrid() {
+function frequencyGrid(sampleRate: number) {
   const maximumLog = Math.log10(150);
+  const maximumFrequency = Math.min(150, sampleRate / 2);
   return Float64Array.from({ length: MATLAB_SPECTROGRAM_BINS }, (_, index) =>
-    index === MATLAB_SPECTROGRAM_BINS - 1 ? 150 : 10 ** (index * maximumLog / (MATLAB_SPECTROGRAM_BINS - 1)));
+    index === MATLAB_SPECTROGRAM_BINS - 1 ? 150 : 10 ** (index * maximumLog / (MATLAB_SPECTROGRAM_BINS - 1)))
+    .filter((frequency) => frequency <= maximumFrequency);
 }
 
 class Radix2Plan {
@@ -229,9 +238,8 @@ export function matlabPercentile(values: Float64Array, percentile: number) {
 
 export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): MatlabSpectrogramResult {
   const started = performance.now();
-  const { samples, inputBytes, outputBytes } = validateMatlabSpectrogramRequest(request);
+  const { samples, inputBytes, outputBytes, frequencies } = validateMatlabSpectrogramRequest(request);
   const { sampleRate, dataStart, baselineTime } = request;
-  const frequencies = frequencyGrid();
   const times = Float64Array.from({ length: samples }, (_, index) => index / sampleRate);
   const power = new Float64Array(samples * frequencies.length);
   const zScores = new Float64Array(power.length);
@@ -295,7 +303,7 @@ export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): Mat
   const colorLimit = Math.max(1, matlabPercentile(absoluteScores, 98));
   if (!Number.isFinite(colorLimit)) throw new RangeError("Spectrogram color range is not finite.");
   const warnings: string[] = [];
-  if (150 > sampleRate / 2) warnings.push("The MATLAB frequency axis extends to 150 Hz, above this recording's Nyquist frequency; those bins are retained to match its algorithm.");
+  if (frequencies.length < MATLAB_SPECTROGRAM_BINS) warnings.push(`Frequencies above this recording's ${sampleRate / 2} Hz Nyquist limit are omitted. Retained wavelet bins keep their original frequencies.`);
   if (invalidBins) warnings.push(`${invalidBins} frequency bins lie outside awt_freqlist's valid scale interval and remain zero-power, matching MATLAB.`);
   return { power, zScores, frequencies, times, dataStart, sampleRate, width: samples, height: frequencies.length,
     baselineMean, baselineStd, baselineFrameCount, usedBaselineFallback, colorLimit, warnings,

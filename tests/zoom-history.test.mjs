@@ -282,7 +282,7 @@ test("spectrogram box completion commits time and frequency together, including 
       clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
       interactionRef: { current: { pointerId: 1, startX: 20, startY: 34, currentX: 20, currentY: 34, tool: "box-zoom" } },
       SPECTROGRAM_PLOT_LEFT: 0, SPECTROGRAM_PLOT_RIGHT: 0, SPECTROGRAM_PLOT_TOP: 34, SPECTROGRAM_PLOT_BOTTOM: 22, SPECTROGRAM_MINIMUM_DRAG_PX: 4,
-      effectiveDisplayMinHz: 0, displayFrequencySpanHz: 100, maximumDisplayHz: 100,
+      effectiveDisplayMinHz: 0, displayFrequencySpanHz: 100, maximumDisplayHz: 100, minimumDisplayHz: 1,
       viewStart: 30, viewDuration: 20, sessionDuration: 300,
       setZoomBox() {}, notifyTutorialAction() {}, onZoom: (...args) => zooms.push(args),
     };
@@ -292,7 +292,7 @@ test("spectrogram box completion commits time and frequency together, including 
     else {
       assert.equal(zooms.length, 1);
       assert.deepEqual(zooms[0][0], end[0] === 20 ? null : { start: 34, end: 46 });
-      assert.deepEqual(zooms[0][1], end[1] === 34 ? undefined : { min: 24, max: 100 });
+      assert.deepEqual(zooms[0][1], end[1] === 34 ? undefined : { min: (1 - 126 / 166) * 100, max: 100 });
     }
   }
 });

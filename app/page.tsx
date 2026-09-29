@@ -8362,6 +8362,28 @@ function matlabJet(value: number) {
 }
 
 /** Pixel-bounded nearest-neighbor projection matching imagesc's endpoint coordinates. */
+function spectrogramDisplayRange(range: SpectrogramFrequencyRange, sampleRate: number) {
+  const maximum = Number.isFinite(sampleRate) && sampleRate > 0 ? Math.min(150, sampleRate / 2) : 0;
+  const minimumSpan = Math.min(1, maximum);
+  const max = clamp(Number.isFinite(range.max) ? range.max : maximum, minimumSpan, maximum);
+  const min = clamp(Number.isFinite(range.min) ? range.min : 0, 0, Math.max(0, max - minimumSpan));
+  return { min, max, maximum, minimumSpan };
+}
+
+function spectrogramFrequencyTicks(min: number, max: number) {
+  const span = max - min;
+  if (!(span > 0)) return [];
+  const magnitude = 10 ** Math.floor(Math.log10(span / 5));
+  const step = [1, 2, 5, 10].find((factor) => factor * magnitude >= span / 5)! * magnitude;
+  const first = Math.ceil(min / step) * step;
+  return Array.from({ length: Math.max(0, Math.floor((max - first) / step + 1e-9) + 1) },
+    (_, index) => Number((first + index * step).toPrecision(12)));
+}
+
+function formatSpectrogramFrequency(frequency: number) {
+  return Number(frequency.toPrecision(6)).toString();
+}
+
 function rasterizeMatlabSpectrogram(
   pixels: Uint8ClampedArray,
   width: number,
@@ -8379,19 +8401,26 @@ function rasterizeMatlabSpectrogram(
   const timeStep = spectrum.width > 1
     ? (spectrum.times[spectrum.width - 1] - spectrum.times[0]) / (spectrum.width - 1)
     : 1 / spectrum.sampleRate;
-  const firstFrequency = spectrum.frequencies[0];
-  const frequencyStep = spectrum.height > 1
-    ? (spectrum.frequencies[spectrum.height - 1] - firstFrequency) / (spectrum.height - 1)
-    : 1;
-  // MATLAB imagesc uses the first/last frequency as image coordinates. Although
-  // analysis bins are logarithmic, the image's rows are uniformly spaced.
+  const frequencies = spectrum.frequencies;
+  const nyquist = spectrum.sampleRate / 2;
+  let lastBin = Math.min(spectrum.height, frequencies.length) - 1;
+  while (lastBin >= 0 && frequencies[lastBin] > nyquist) lastBin -= 1;
+  const lowerEdge = lastBin >= 0
+    ? Math.max(0, frequencies[0] - (lastBin > 0 ? (frequencies[1] - frequencies[0]) / 2 : .5)) : Infinity;
+  const upperEdge = lastBin >= 0
+    ? Math.min(nyquist, frequencies[lastBin] + (lastBin > 0 ? (frequencies[lastBin] - frequencies[lastBin - 1]) / 2 : .5)) : -Infinity;
+  // Locate each log-spaced bin by its actual Hz center on the linear axis.
+  // Adjacent cells meet halfway between centers; never extend past Nyquist.
+  // Walking downward through the centers costs O(height + bins), not O(N*bins).
+  let bin = lastBin;
   for (let y = 0; y < height; y += 1) {
     const frequency = maximumHz - ((y + .5) / height) * (maximumHz - minimumHz);
-    const bin = Math.round((frequency - firstFrequency) / frequencyStep);
+    while (bin > 0 && frequency < (frequencies[bin - 1] + frequencies[bin]) / 2) bin -= 1;
+    const validFrequency = frequency >= lowerEdge && frequency <= upperEdge;
     for (let x = 0; x < width; x += 1) {
       const time = viewStart + ((x + .5) / width) * viewDuration;
       const sample = Math.round((time - firstTime) / timeStep);
-      const value = bin >= 0 && bin < spectrum.height && sample >= 0 && sample < spectrum.width
+      const value = validFrequency && bin >= 0 && sample >= 0 && sample < spectrum.width
         ? spectrum.zScores[bin * spectrum.width + sample]
         : Number.NaN;
       const color = Number.isFinite(value)
@@ -8470,12 +8499,9 @@ function SpectrogramPanel({
   } | null>(null);
   const [tool, setTool] = useState<SpectrogramTool>("browse");
   const [zoomBox, setZoomBox] = useState<SpectrogramZoomBox | null>(null);
-  const { min: displayMinHz, max: displayMaxHz } = frequencyRange;
   const [colorLimitShift, setColorLimitShift] = useState(0);
-  const maximumDisplayHz = 150;
-  const minimumDisplayHz = Math.min(10, maximumDisplayHz);
-  const effectiveDisplayMaxHz = clamp(displayMaxHz, minimumDisplayHz, maximumDisplayHz);
-  const effectiveDisplayMinHz = clamp(displayMinHz, 0, Math.max(0, effectiveDisplayMaxHz - Math.min(1, effectiveDisplayMaxHz)));
+  const { maximum: maximumDisplayHz, minimumSpan: minimumDisplayHz,
+    min: effectiveDisplayMinHz, max: effectiveDisplayMaxHz } = spectrogramDisplayRange(frequencyRange, sampleRate);
   const displayFrequencySpanHz = Math.max(Number.EPSILON, effectiveDisplayMaxHz - effectiveDisplayMinHz);
 
   useEffect(() => {
@@ -8633,9 +8659,7 @@ function SpectrogramPanel({
         ctx.font = "9px ui-monospace, monospace";
         ctx.lineWidth = 1;
         ctx.textAlign = "right";
-        const frequencyStep = effectiveDisplayMaxHz <= 40 ? 10 : effectiveDisplayMaxHz <= 100 ? 20 : 50;
-        const firstFrequencyLine = Math.ceil(effectiveDisplayMinHz / frequencyStep) * frequencyStep;
-        for (let frequency = firstFrequencyLine; frequency <= effectiveDisplayMaxHz; frequency += frequencyStep) {
+        for (const frequency of spectrogramFrequencyTicks(effectiveDisplayMinHz, effectiveDisplayMaxHz)) {
           const y = plotTop + plotHeight * (1 - (frequency - effectiveDisplayMinHz) / displayFrequencySpanHz);
           ctx.strokeStyle = "rgba(255,255,255,.18)";
           ctx.beginPath(); ctx.moveTo(plotLeft, y); ctx.lineTo(plotLeft + plotWidth, y); ctx.stroke();
@@ -8727,9 +8751,9 @@ function SpectrogramPanel({
       if (box.height >= SPECTROGRAM_MINIMUM_DRAG_PX) {
         const startFrequency = frequencyFromPointer(interaction.startY, event.currentTarget);
         const endFrequency = frequencyFromPointer(interaction.currentY, event.currentTarget);
-        const nextMinimumHz = Math.max(0, Math.floor(Math.min(startFrequency, endFrequency)));
-        const nextMaximumHz = Math.min(maximumDisplayHz, Math.ceil(Math.max(startFrequency, endFrequency)));
-        if (nextMaximumHz - nextMinimumHz >= 1) {
+        const nextMinimumHz = Math.max(0, Math.min(startFrequency, endFrequency));
+        const nextMaximumHz = Math.min(maximumDisplayHz, Math.max(startFrequency, endFrequency));
+        if (nextMaximumHz - nextMinimumHz >= minimumDisplayHz) {
           nextFrequencyRange = { min: nextMinimumHz, max: nextMaximumHz };
         }
       }
@@ -8796,18 +8820,12 @@ function SpectrogramPanel({
         ));
       }}
     />
-    <div className="spectrogram-label" title={`${label} · ${signals.length}-channel raw power average · MATLAB Gabor wavelets · 60 log-spaced analysis bins 1–150 Hz · pre-click log-power Z-score${spectrum ? ` · Analysis: ${spectrogramAnalysisRange(spectrum)} (up to ±15 s around the selected time)` : ""}${spectrum?.warnings.length ? ` · ${spectrum.warnings.join(" · ")}` : ""}`}>
+    <div className="spectrogram-label" title={`${label} · ${signals.length}-channel raw power average · MATLAB Gabor wavelets · ${spectrum ? `${spectrum.height} log-spaced analysis bins ${formatSpectrogramFrequency(spectrum.frequencies[0])}–${formatSpectrogramFrequency(spectrum.frequencies[spectrum.height - 1])} Hz` : "Up to 60 log-spaced analysis bins"} · true-Hz axis limited to Nyquist · pre-click log-power Z-score${spectrum ? ` · Analysis: ${spectrogramAnalysisRange(spectrum)} (up to ±15 s around the selected time)` : ""}${spectrum?.warnings.length ? ` · ${spectrum.warnings.join(" · ")}` : ""}`}>
       <strong>{label}</strong>
       <div className="spectrogram-frequency-axis" aria-label="Frequency (Hz)" style={{ top: SPECTROGRAM_PLOT_TOP, bottom: SPECTROGRAM_PLOT_BOTTOM }}>
         <span className="spectrogram-frequency-title">Frequency (Hz)</span>
-        {(() => {
-          const step = effectiveDisplayMaxHz <= 40 ? 10 : effectiveDisplayMaxHz <= 100 ? 20 : 50;
-          const first = Math.ceil(effectiveDisplayMinHz / step) * step;
-          return Array.from({ length: Math.max(0, Math.floor((effectiveDisplayMaxHz - first) / step) + 1) }, (_, index) => {
-            const frequency = first + index * step;
-            return <span className="spectrogram-frequency-tick" key={frequency} style={{ top: `${100 * (1 - (frequency - effectiveDisplayMinHz) / displayFrequencySpanHz)}%` }}>{frequency}</span>;
-          });
-        })()}
+        {spectrogramFrequencyTicks(effectiveDisplayMinHz, effectiveDisplayMaxHz).map((frequency) =>
+          <span className="spectrogram-frequency-tick" key={frequency} style={{ top: `${100 * (1 - (frequency - effectiveDisplayMinHz) / displayFrequencySpanHz)}%` }}>{formatSpectrogramFrequency(frequency)}</span>)}
       </div>
     </div>
     <div className="spectrogram-canvas-shell">
@@ -8820,15 +8838,15 @@ function SpectrogramPanel({
             type="button"
             aria-label="Lower maximum displayed frequency"
             disabled={effectiveDisplayMaxHz - effectiveDisplayMinHz <= minimumDisplayHz}
-            onClick={() => { onFrequencyRangeChange({ min: displayMinHz, max: Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
+            onClick={() => { onFrequencyRangeChange({ min: effectiveDisplayMinHz, max: Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
             title="Show a narrower, lower-frequency range"
           >−</button>
-          <output aria-live="polite">{Math.round(effectiveDisplayMinHz)}–{Math.round(effectiveDisplayMaxHz)} Hz</output>
+          <output aria-live="polite">{formatSpectrogramFrequency(effectiveDisplayMinHz)}–{formatSpectrogramFrequency(effectiveDisplayMaxHz)} Hz</output>
           <button
             type="button"
             aria-label="Raise maximum displayed frequency"
             disabled={effectiveDisplayMaxHz >= maximumDisplayHz}
-            onClick={() => { onFrequencyRangeChange({ min: displayMinHz, max: Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
+            onClick={() => { onFrequencyRangeChange({ min: effectiveDisplayMinHz, max: Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
             title="Show a wider frequency range"
           >+</button>
           <button
@@ -8836,7 +8854,7 @@ function SpectrogramPanel({
             aria-label="Reset displayed frequency range"
             data-tutorial="spectrogram-reset"
             onClick={() => {
-              onFrequencyRangeChange({ min: 0, max: 150 });
+              onFrequencyRangeChange({ min: 0, max: maximumDisplayHz });
               notifyTutorialAction("spectrogram-adjusted");
             }}
             title="Reset to the default frequency range"
