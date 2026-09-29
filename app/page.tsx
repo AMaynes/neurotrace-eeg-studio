@@ -60,8 +60,9 @@ import {
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
 import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping";
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
-import { DirectoryImportError, directoryRecordingFiles, planDirectoryImport, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
+import { DirectoryImportError, directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
 import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
+import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./import-selection";
 import {
   buildEDFFileWindowOffThread,
   buildRawDatFileWindowOffThread,
@@ -1724,6 +1725,7 @@ export default function Home() {
   const queuedDirectoryOpenRef = useRef<DirectoryOpenRequest | null>(null);
   const directoryConfirmationRef = useRef<DirectoryOpenRequest | null>(null);
   const guidedDirectoryInputRef = useRef<HTMLInputElement | null>(null);
+  const guidedFilesInputRef = useRef<HTMLInputElement | null>(null);
   const directoryImportRunnerRef = useRef<(files: File[], format: DirectoryImportFormat) => Promise<DirectorySessionStatus | undefined>>(async () => undefined);
   const sourceVerificationRef = useRef(false);
   const sourceVerificationAbortRef = useRef<AbortController | null>(null);
@@ -1914,7 +1916,6 @@ export default function Home() {
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
   const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
-  const [importMode, setImportMode] = useState<"recording" | "directory">("recording");
   const [stagedDirectoryPlan, setStagedDirectoryPlan] = useState<DirectoryImportPlan | null>(null);
   const [directoryCatalog, setDirectoryCatalog] = useState<{ id: string; plan: DirectoryImportPlan } | null>(null);
   const [showDirectorySessions, setShowDirectorySessions] = useState(false);
@@ -6002,14 +6003,62 @@ export default function Home() {
     }
   };
 
-  const chooseImportMode = (mode: "recording" | "directory") => {
-    if (importBusyRef.current || mode === importMode) return;
-    setImportMode(mode);
-    if (mode === "directory" && importChoice === "neurotrace") setImportChoice(null);
+  const handleSelectedRecordingFiles = async (files: File[], fromDirectory = false) => {
+    if (importBusyRef.current || (!files.length && !fromDirectory)) return;
     setGuidedImportSelection(EMPTY_GUIDED_IMPORT_SELECTION);
     setStagedDirectoryPlan(null);
     directoryConfirmationRef.current = null;
     setUploadError(null);
+    try {
+      const selection = classifyRecordingSelection(files, fromDirectory);
+      if (selection.kind === "directory") {
+        setPendingDat(null);
+        setImportChoice(selection.plan.format);
+        setStagedDirectoryPlan(selection.plan);
+        setShowImport(true);
+      } else {
+        await handleUploadedFiles(selection.files);
+      }
+    } catch (error) {
+      setUploadError({
+        title: "Selection cannot be loaded",
+        message: error instanceof Error ? error.message : "Choose recording files or a folder containing recordings.",
+        files: error instanceof DirectoryImportError ? error.paths.slice(0, 8) : [],
+      });
+      setShowImport(true);
+    }
+  };
+
+  const stageDetectedImport = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = [...(event.target.files ?? [])];
+    const fromDirectory = Boolean(event.target.webkitdirectory);
+    event.target.value = "";
+    if (!files.length) return;
+    void handleSelectedRecordingFiles(files, fromDirectory);
+  };
+
+  const handleDroppedRecordingFiles = async (transfer: DataTransfer) => {
+    if (importBusyRef.current) return;
+    importBusyRef.current = true;
+    setImportBusy(true);
+    let selection: { files: File[]; directory: boolean } | null = null;
+    try {
+      // The collector snapshots DataTransfer entries synchronously, while the drop is readable.
+      selection = await collectDroppedRecordingFiles(transfer);
+    } catch (error) {
+      setGuidedImportSelection(EMPTY_GUIDED_IMPORT_SELECTION);
+      setStagedDirectoryPlan(null);
+      setUploadError({
+        title: "Dropped files could not be read",
+        message: error instanceof Error ? error.message : "Try the Choose files or Choose folder button.",
+        files: [],
+      });
+      setShowImport(true);
+    } finally {
+      importBusyRef.current = false;
+      setImportBusy(false);
+    }
+    if (selection) await handleSelectedRecordingFiles(selection.files, selection.directory);
   };
 
   const chooseImportType = (choice: ImportChoice) => {
@@ -6039,28 +6088,6 @@ export default function Home() {
     }
     setGuidedImportSelection((current) => ({ ...current, [slot]: file, supportingFiles: [] }));
     setUploadError(null);
-  };
-
-  const stageGuidedDirectory = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = [...(event.target.files ?? [])];
-    event.target.value = "";
-    if (!files.length || !importChoice || importBusyRef.current) return;
-    setGuidedImportSelection(EMPTY_GUIDED_IMPORT_SELECTION);
-    setStagedDirectoryPlan(null);
-    try {
-      if (importChoice === "neurotrace") {
-        throw new Error("Open a .neurotrace project using the file chooser. Directory collections support EDF, standalone MAT, or MAT + DAT.");
-      }
-      const plan = planDirectoryImport(files, importChoice);
-      setStagedDirectoryPlan(plan);
-      setUploadError(null);
-    } catch (error) {
-      setUploadError({
-        title: "Directory cannot be loaded",
-        message: error instanceof Error ? error.message : "Could not discover directory sessions.",
-        files: error instanceof DirectoryImportError ? error.paths.slice(0, 8) : [],
-      });
-    }
   };
 
   const openNeurotraceProject = async (file: File) => {
@@ -6146,7 +6173,7 @@ export default function Home() {
     }
   };
 
-  const guidedImportReady = importMode === "directory" ? Boolean(stagedDirectoryPlan && stagedDirectoryPlan.format === importChoice && stagedDirectoryPlan.recordings.length > 0)
+  const guidedImportReady = stagedDirectoryPlan ? stagedDirectoryPlan.format === importChoice && stagedDirectoryPlan.recordings.length > 0
     : importChoice === "edf" ? Boolean(guidedImportSelection.edf)
     : importChoice === "mat" ? Boolean(guidedImportSelection.mat)
       : importChoice === "mat-dat" ? Boolean(guidedImportSelection.mat && guidedImportSelection.dat)
@@ -7161,11 +7188,11 @@ export default function Home() {
         if (fileDragDepthRef.current === 0) setFileDragActive(false);
       }}
       onDrop={(event) => {
-        if (!event.dataTransfer.files.length) return;
+        if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
         fileDragDepthRef.current = 0;
         setFileDragActive(false);
-        if (!importBusyRef.current) void handleUploadedFiles([...event.dataTransfer.files]);
+        if (!importBusyRef.current) void handleDroppedRecordingFiles(event.dataTransfer);
       }}
     >
       {fileDragActive && <div className="file-drop-overlay" aria-hidden="true"><span>＋</span><strong>Add recordings, companions, or custom definitions</strong><small>Dictionaries, words, equations, filters, labels, and channel groups are accepted</small></div>}
@@ -7840,42 +7867,45 @@ export default function Home() {
         <div id="recording-import-dialog" className="modal import-modal" data-tutorial="import" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN RECORDINGS</span>
-          <h2>{pendingDat ? "Confirm the DAT layout." : "Choose what you’re opening."}</h2>
+          <h2>{pendingDat ? "Confirm the DAT layout." : "Open your recordings."}</h2>
           <p>{pendingDat
             ? "The signal bytes are ready. Confirm the recording details before NeuroTrace opens them."
-            : importMode === "directory"
-              ? "Load a full directory, including subfolders. Choose one recording format for every session; signal data opens only when you select a session."
-              : "Open one recording or switch to Recording directory to load a whole folder of sessions."}</p>
+            : "Choose or drop recording files or a folder. NeuroTrace detects a single recording or a session collection automatically—no mode to select."}</p>
           {!pendingDat && <>
-            <div className="import-mode-picker" role="group" aria-label="Recording import mode">
-              <button type="button" aria-label="Single recording" aria-pressed={importMode === "recording"} disabled={importBusy} onClick={() => chooseImportMode("recording")}>
-                <strong>Single recording</strong><span>One session or a saved project</span>
-              </button>
-              <button type="button" aria-label="Recording directory" aria-pressed={importMode === "directory"} disabled={importBusy} onClick={() => chooseImportMode("directory")}>
-                <strong>Recording directory</strong><span>Multiple sessions · includes subfolders</span>
-              </button>
+            <div className="automatic-import-picker" data-tutorial={!importChoice || stagedDirectoryPlan ? "import-files" : undefined}>
+              <strong>Drop files or a folder anywhere</strong>
+              <div className="automatic-import-actions">
+                <input ref={guidedFilesInputRef} hidden type="file" multiple disabled={importBusy} onChange={stageDetectedImport} />
+                <button type="button" className="button primary" disabled={importBusy} onClick={() => guidedFilesInputRef.current?.click()}>Choose files</button>
+                <input ref={(element) => { guidedDirectoryInputRef.current = element; if (element) element.webkitdirectory = true; }} hidden type="file" multiple disabled={importBusy} onChange={stageDetectedImport} />
+                <button type="button" className="button" disabled={importBusy} onClick={() => guidedDirectoryInputRef.current?.click()}>Choose folder</button>
+              </div>
+              <p>Folders include subfolders. Collections must use one recording format. Files stay on this device.</p>
             </div>
-            <div className="format-cards" data-directory={importMode === "directory"} data-tutorial="import-formats" role="group" aria-label="Recording formats">
-              <button type="button" className={importChoice === "edf" ? "active" : ""} aria-pressed={importChoice === "edf"} disabled={importBusy} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>{importMode === "directory" ? "A directory of .edf recordings" : "One calibrated .edf recording"}</span></button>
-              <button type="button" className={importChoice === "mat" ? "active" : ""} aria-pressed={importChoice === "mat"} disabled={importBusy} onClick={() => chooseImportType("mat")}><strong>MAT</strong><span>{importMode === "directory" ? "A directory of standalone .mat recordings" : "One .mat file containing signal data"}</span></button>
-              <button type="button" className={importChoice === "mat-dat" ? "active" : ""} aria-pressed={importChoice === "mat-dat"} disabled={importBusy} onClick={() => chooseImportType("mat-dat")}><strong>MAT + DAT</strong><span>{importMode === "directory" ? "A directory of matching .mat + .dat pairs" : "One metadata file + one signal file"}</span></button>
-              {importMode === "recording" && <button type="button" className={importChoice === "neurotrace" ? "active" : ""} aria-pressed={importChoice === "neurotrace"} disabled={importBusy} onClick={() => chooseImportType("neurotrace")}><strong>NeuroTrace</strong><span>One portable .neurotrace project</span></button>}
-            </div>
-            {(importChoice || importMode === "directory") && <section className="guided-import" aria-label={importMode === "directory" ? "Directory requirements" : `${importChoice} file requirements`}>
+            {!stagedDirectoryPlan && <>
+              <p className="guided-import-alternative">Or choose a format for step-by-step file selection:</p>
+              <div className="format-cards" data-tutorial="import-formats" role="group" aria-label="Recording formats">
+                <button type="button" className={importChoice === "edf" ? "active" : ""} aria-pressed={importChoice === "edf"} disabled={importBusy} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>Calibrated .edf recordings</span></button>
+                <button type="button" className={importChoice === "mat" ? "active" : ""} aria-pressed={importChoice === "mat"} disabled={importBusy} onClick={() => chooseImportType("mat")}><strong>MAT</strong><span>Standalone .mat signals</span></button>
+                <button type="button" className={importChoice === "mat-dat" ? "active" : ""} aria-pressed={importChoice === "mat-dat"} disabled={importBusy} onClick={() => chooseImportType("mat-dat")}><strong>MAT + DAT</strong><span>Metadata + signal pairs</span></button>
+                <button type="button" className={importChoice === "neurotrace" ? "active" : ""} aria-pressed={importChoice === "neurotrace"} disabled={importBusy} onClick={() => chooseImportType("neurotrace")}><strong>NeuroTrace</strong><span>Portable review project</span></button>
+              </div>
+            </>}
+            {(importChoice || stagedDirectoryPlan) && <section className="guided-import" aria-label={stagedDirectoryPlan ? "Detected session collection" : `${importChoice} file requirements`}>
               <header>
-                <div><strong>{importMode === "directory" ? "Recording directory"
+                <div><strong>{stagedDirectoryPlan ? "Session collection detected"
                   : importChoice === "edf" ? "EDF / EDF+ recording"
                   : importChoice === "mat" ? "Standalone MATLAB recording"
                     : importChoice === "mat-dat" ? "Legacy MATLAB session"
                       : "NeuroTrace project"}</strong>
-                  <span>{importMode === "directory" ? "All sessions must use the selected format. Mixed recording formats and incomplete MAT + DAT pairs are rejected."
+                  <span>{stagedDirectoryPlan ? "The recording format was detected automatically. All sessions must use the same format."
                     : importChoice === "edf" ? "Choose one .edf file. EDF+ uses the same extension."
                     : importChoice === "mat" ? "Choose one MATLAB .mat file that contains the signal matrix."
                       : importChoice === "mat-dat" ? "Both files are required. Click each row to add or replace it."
                         : "Choose one .neurotrace file saved from this app."}</span></div>
-                <b>{importBusy ? "Opening…" : "Required"}</b>
+                <b>{importBusy ? "Opening…" : stagedDirectoryPlan ? "Detected" : "Required"}</b>
               </header>
-              {importMode === "recording" && <div className="import-requirements" data-tutorial="import-files">
+              {!stagedDirectoryPlan && <div className="import-requirements" data-tutorial="import-files">
                 {importChoice === "edf" && <label className={guidedImportSelection.edf ? "complete" : ""}>
                   <input hidden type="file" accept=".edf" disabled={importBusy} onChange={(event) => stageGuidedFile("edf", "edf", event)} />
                   <i aria-hidden="true">{guidedImportSelection.edf ? "✓" : ""}</i>
@@ -7909,14 +7939,7 @@ export default function Home() {
                   <b>{guidedImportSelection.neurotrace ? "Replace" : "Choose"}</b>
                 </label>}
               </div>}
-              {importMode === "directory" && <div className="directory-import-picker" data-tutorial="import-files">
-                <input ref={(element) => { guidedDirectoryInputRef.current = element; if (element) element.webkitdirectory = true; }} hidden type="file" multiple disabled={!importChoice || importBusy} onChange={stageGuidedDirectory} />
-                <button type="button" className="button directory-choose-button" disabled={!importChoice || importChoice === "neurotrace" || importBusy} onClick={() => guidedDirectoryInputRef.current?.click()}>
-                  {stagedDirectoryPlan ? "Choose another directory" : "Choose directory"}
-                </button>
-                <p>{!importChoice ? "Select EDF / EDF+, MAT, or MAT + DAT above to choose a directory." : "Includes all subfolders. Only the session list is loaded now; recordings open on demand."}</p>
-              </div>}
-              {importMode === "directory" && stagedDirectoryPlan && <div className="directory-import-summary" role="status">
+              {stagedDirectoryPlan && <div className="directory-import-summary" role="status">
                 <strong>{stagedDirectoryPlan.recordings.length} sessions found</strong>
                 <p>All recording filenames match {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : "paired MAT + DAT"}. File contents are checked when each session opens.</p>
                 <ul>{stagedDirectoryPlan.recordings.slice(0, 5).map((recording) => <li key={recording.id}>{recording.relativePath}</li>)}</ul>
@@ -7924,8 +7947,8 @@ export default function Home() {
                 <p>Only the session list is loaded now. Signal data opens on demand; nothing is uploaded.</p>
               </div>}
               <footer>
-                <span className="directory-import-local-note">{importMode === "directory" && stagedDirectoryPlan?.supportingFiles.length ? `${stagedDirectoryPlan.supportingFiles.length} companion files found · ` : ""}Files stay on this device.</span>
-                <button type="button" className="button primary" data-tutorial="import-open" disabled={!guidedImportReady || importBusy} onClick={() => void submitGuidedImport()}>{importBusy ? "Opening…" : importMode === "directory" ? stagedDirectoryPlan ? `Load ${stagedDirectoryPlan.recordings.length} sessions` : "Load sessions" : importChoice === "neurotrace" ? "Open project" : "Open recording"}</button>
+                <span className="directory-import-local-note">{stagedDirectoryPlan?.supportingFiles.length ? `${stagedDirectoryPlan.supportingFiles.length} companion files found · ` : ""}Files stay on this device.</span>
+                <button type="button" className="button primary" data-tutorial="import-open" disabled={!guidedImportReady || importBusy} onClick={() => void submitGuidedImport()}>{importBusy ? "Opening…" : stagedDirectoryPlan ? `Load ${stagedDirectoryPlan.recordings.length} sessions` : importChoice === "neurotrace" ? "Open project" : "Open recording"}</button>
               </footer>
             </section>}
           </>}

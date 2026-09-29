@@ -6,6 +6,7 @@ import ts from "typescript";
 import { inspectMatRecording, RawDatSource } from "../app/eeg-core.ts";
 import { mergeSelectedFiles, relativeFilePath } from "../app/bids-companions.ts";
 import { DirectoryImportError, directoryRecordingFiles, planDirectoryImport } from "../app/directory-import.ts";
+import { classifyRecordingSelection } from "../app/import-selection.ts";
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "../app/mat-import.ts";
 import { legacyMatFile, standaloneMatFile } from "./fixtures/legacy-mat.mjs";
 
@@ -61,40 +62,154 @@ function unreadableFile(path) {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const emptySelection = executable(declaration("EMPTY_GUIDED_IMPORT_SELECTION"), "EMPTY_GUIDED_IMPORT_SELECTION", {});
 
-function stageHarness(format = "edf") {
-  const env = { importChoice: format, importBusyRef: { current: false }, DirectoryImportError, planDirectoryImport,
+function stageHarness(format = null) {
+  const calls = [];
+  const env = { importBusyRef: { current: false }, DirectoryImportError, classifyRecordingSelection,
+    directoryConfirmationRef: { current: { stale: true } },
+    handleUploadedFiles: async (files) => { calls.push(files); },
     EMPTY_GUIDED_IMPORT_SELECTION: emptySelection };
+  state(env, "importChoice", format);
   state(env, "guidedImportSelection", { ...emptySelection, edf: unreadableFile("old.edf") });
   state(env, "stagedDirectoryPlan", { stale: true });
   state(env, "uploadError", { stale: true });
+  state(env, "pendingDat", { stale: true });
+  state(env, "showImport", false);
   return {
-    env,
-    stage(files) {
-      const event = { target: { files, value: "directory-input-value" } };
-      handler("stageGuidedDirectory", env)(event);
-      assert.equal(event.target.value, "", "allow choosing the same folder again");
+    env, calls,
+    async stage(files, fromDirectory = true) {
+      await handler("handleSelectedRecordingFiles", env)(files, fromDirectory);
     },
   };
 }
 
-test("directory chooser discovers every nested session without opening or reading any recording", () => {
+test("directory selection auto-detects format and every nested session without opening recording bytes", async () => {
   const h = stageHarness();
   const files = [unreadableFile("root/sub/session10.edf"), unreadableFile("root/session2.edf"), unreadableFile("root/events.tsv")];
-  h.stage(files);
+  await h.stage(files);
   assert.equal(h.env.stagedDirectoryPlan.recordings.length, 2);
   assert.deepEqual(new Set(h.env.stagedDirectoryPlan.recordings.map((item) => item.primary)), new Set(files.slice(0, 2)));
   assert.deepEqual(h.env.stagedDirectoryPlan.supportingFiles, [files[2]]);
   assert.equal(h.env.guidedImportSelection, emptySelection);
   assert.equal(h.env.uploadError, null);
+  assert.equal(h.env.importChoice, "edf");
+  assert.equal(h.env.pendingDat, null);
+  assert.equal(h.env.directoryConfirmationRef.current, null);
+  assert.equal(h.env.showImport, true);
+  assert.deepEqual(h.calls, [], "scanning remains lazy");
 });
 
-test("mixed-directory rejection clears both stale staged plans and stale individual file choices", () => {
+test("mixed-directory rejection clears both stale staged plans and stale individual file choices", async () => {
   const h = stageHarness();
-  h.stage([unreadableFile("root/a.edf"), unreadableFile("root/b.mat")]);
+  await h.stage([unreadableFile("root/a.edf"), unreadableFile("root/b.mat")]);
   assert.equal(h.env.stagedDirectoryPlan, null);
   assert.equal(h.env.guidedImportSelection, emptySelection);
-  assert.match(h.env.uploadError.message, /EDF-only/);
-  assert.deepEqual(h.env.uploadError.files, ["root/b.mat"]);
+  assert.match(h.env.uploadError.message, /mixed|one recording format|same[- ]format/i);
+  assert.ok(h.env.uploadError.files.includes("root/b.mat"));
+  assert.equal(h.env.showImport, true);
+  assert.deepEqual(h.calls, []);
+});
+
+test("detected directory format overrides stale manual format choices", async () => {
+  const h = stageHarness("neurotrace");
+  await h.stage([unreadableFile("root/session.mat"), unreadableFile("root/session.dat")]);
+  assert.equal(h.env.importChoice, "mat-dat");
+  assert.equal(h.env.stagedDirectoryPlan.format, "mat-dat");
+  assert.equal(h.env.uploadError, null);
+  assert.deepEqual(h.calls, []);
+});
+
+test("single files route to the existing importer while clearing stale directory plans", async () => {
+  const h = stageHarness("mat-dat");
+  const files = [new File([new Uint8Array(256)], "session.edf")];
+  await h.stage(files, false);
+  assert.deepEqual(h.calls, [files]);
+  assert.equal(h.env.guidedImportSelection, emptySelection);
+  assert.equal(h.env.stagedDirectoryPlan, null);
+  assert.equal(h.env.directoryConfirmationRef.current, null);
+  assert.equal(h.env.uploadError, null);
+});
+
+test("selecting multiple loose recordings also stages a lazy auto-detected collection", async () => {
+  const h = stageHarness();
+  const files = [new File([new Uint8Array(256)], "a.edf"), new File([new Uint8Array(256)], "b.edf")];
+  await h.stage(files, false);
+  assert.equal(h.env.stagedDirectoryPlan.recordings.length, 2);
+  assert.equal(h.env.importChoice, "edf");
+  assert.deepEqual(h.calls, []);
+});
+
+test("busy imports and cancelled loose-file selections cannot discard a staged selection", async () => {
+  for (const busy of [false, true]) {
+    const h = stageHarness();
+    h.env.importBusyRef.current = busy;
+    h.env.classifyRecordingSelection = () => assert.fail("guard must run before classification");
+    const before = [h.env.guidedImportSelection, h.env.stagedDirectoryPlan, h.env.uploadError, h.env.directoryConfirmationRef.current];
+    await h.stage(busy ? [unreadableFile("root/a.edf")] : [], false);
+    assert.deepEqual([h.env.guidedImportSelection, h.env.stagedDirectoryPlan, h.env.uploadError, h.env.directoryConfirmationRef.current], before);
+    assert.deepEqual(h.calls, []);
+  }
+});
+
+test("ordinary import failures remain actionable without leaving a stale directory plan", async () => {
+  const h = stageHarness();
+  h.env.handleUploadedFiles = async () => { throw new Error("Unreadable recording fixture"); };
+  await h.stage([new File([new Uint8Array(256)], "session.edf")], false);
+  assert.equal(h.env.stagedDirectoryPlan, null);
+  assert.equal(h.env.uploadError.message, "Unreadable recording fixture");
+  assert.equal(h.env.showImport, true);
+});
+
+test("classification failures bound displayed paths instead of dumping an entire large directory", async () => {
+  const h = stageHarness();
+  const paths = Array.from({ length: 100 }, (_, index) => `root/unsupported-${index}.mat`);
+  h.env.classifyRecordingSelection = () => { throw new DirectoryImportError("MIXED_FORMATS", "Mixed recording formats", paths); };
+  await h.stage([unreadableFile("root/source.edf")]);
+  assert.equal(h.env.stagedDirectoryPlan, null);
+  assert.equal(h.env.guidedImportSelection, emptySelection);
+  assert.equal(h.env.uploadError.message, "Mixed recording formats");
+  assert.deepEqual(h.env.uploadError.files, paths.slice(0, 8));
+  assert.deepEqual(h.calls, []);
+});
+
+test("drop routing holds its busy guard through asynchronous discovery and releases it before import", async () => {
+  const h = stageHarness();
+  state(h.env, "importBusy", false);
+  const transfer = {};
+  const files = [unreadableFile("root/source.edf")];
+  let finish;
+  const routed = [];
+  h.env.collectDroppedRecordingFiles = (value) => {
+    assert.equal(value, transfer);
+    assert.equal(h.env.importBusy, true);
+    assert.equal(h.env.importBusyRef.current, true);
+    return new Promise((resolve) => { finish = resolve; });
+  };
+  h.env.handleSelectedRecordingFiles = async (...args) => {
+    assert.equal(h.env.importBusy, false);
+    assert.equal(h.env.importBusyRef.current, false);
+    routed.push(args);
+  };
+  const drop = handler("handleDroppedRecordingFiles", h.env);
+  const pending = drop(transfer);
+  await drop({ competingDrop: true });
+  assert.deepEqual(routed, []);
+  finish({ files, directory: true });
+  await pending;
+  assert.deepEqual(routed, [[files, true]]);
+});
+
+test("failed drop discovery clears stale selections and reports an error without importing partial files", async () => {
+  const h = stageHarness();
+  state(h.env, "importBusy", false);
+  h.env.collectDroppedRecordingFiles = async () => { throw new Error("Unreadable directory entry"); };
+  h.env.handleSelectedRecordingFiles = () => assert.fail("failed traversal cannot import a partial collection");
+  await handler("handleDroppedRecordingFiles", h.env)({});
+  assert.equal(h.env.guidedImportSelection, emptySelection);
+  assert.equal(h.env.stagedDirectoryPlan, null);
+  assert.equal(h.env.uploadError.message, "Unreadable directory entry");
+  assert.equal(h.env.showImport, true);
+  assert.equal(h.env.importBusy, false);
+  assert.equal(h.env.importBusyRef.current, false);
 });
 
 test("loading a directory installs only the catalogue, preserving lazy recording imports", async () => {

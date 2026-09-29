@@ -12,6 +12,7 @@ neurotrace-eeg-studio/
 ├── app/
 │   ├── bids-companions.ts — Catalogs selected files and resolves matching BIDS JSON/TSV metadata, tables, channels, and events.
 │   ├── directory-import.ts — Discovers all same-format sessions without reading signal bytes; validates pairs and scopes companions.
+│   ├── import-selection.ts — Automatically routes files versus collections and enumerates dropped folders without reading waveform bytes.
 │   ├── directory-sessions.tsx / directory-sessions.css — Paginated directory catalog with lazy open/resume/retry actions.
 │   ├── chatgpt-auth.ts — Provides optional ChatGPT-host authentication helpers; unused by the public GitHub build.
 │   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.

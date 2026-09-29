@@ -1,36 +1,17 @@
-.import-mode-picker {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 18px 0 14px;
-}
-
-.import-mode-picker > button {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  padding: 16px;
-  border: 1px solid var(--border-strong);
+.automatic-import-picker {
+  padding: 20px 16px;
+  border: 1px dashed var(--border-strong);
   border-radius: 8px;
   background: var(--panel-2);
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
+  text-align: center;
 }
 
-.import-mode-picker strong { font-size: 13px; }
-.import-mode-picker span { color: var(--muted); font-size: 10px; line-height: 1.45; }
-.import-mode-picker > button:hover,
-.import-mode-picker > button[aria-pressed="true"] { border-color: var(--mint); background: var(--mint-dark); }
-.import-mode-picker > button:focus-visible,
-.directory-choose-button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
-.import-mode-picker > button:disabled { opacity: .45; cursor: wait; }
-.format-cards[data-directory="true"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-
-.directory-import-picker { padding: 16px; }
-.directory-import-picker .directory-choose-button { min-height: 40px; padding: 10px 20px; border-color: var(--mint); color: var(--mint); font-size: 12px; }
-.directory-import-picker > p { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.automatic-import-picker > strong { color: var(--ink); font-size: 13px; }
+.automatic-import-picker > p { margin: 12px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.automatic-import-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.automatic-import-actions .button { min-height: 38px; padding: 8px 18px; font-size: 11px; }
+.automatic-import-actions .button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+.guided-import-alternative { margin: 14px 0 8px; color: var(--muted); font-size: 10px; }
 .directory-import-local-note { color: var(--faint); font-size: 9px; line-height: 1.5; }
 
 .directory-sessions-toggle {
@@ -139,7 +120,6 @@
 .directory-sessions-footer > span { max-width: 330px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 
 @media (max-width: 600px) {
-  .import-mode-picker > button { padding: 12px; }
   .directory-sessions-modal { padding: 20px 16px; }
   .directory-session-row { gap: 8px; }
   .directory-sessions-footer { align-items: flex-start; flex-direction: column; }

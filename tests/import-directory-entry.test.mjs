@@ -1,4 +1,4 @@
-/** Exercise the actual welcome/import JSX so directory entry cannot disappear behind format selection. */
+/** Execute the real welcome/import JSX and handlers: auto-detection must need no mode setting. */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -33,6 +33,11 @@ function evaluate(code, expression, env) {
   }).outputText;
   return new Function("require", "exports", ...Object.keys(env), `${javascript}\nreturn ${expression};`)(require, {}, ...Object.values(env));
 }
+function handler(name, env) {
+  const node = declarations.get(name);
+  assert.ok(node, `find actual ${name} handler`);
+  return evaluate(`const actualHandler = ${node.initializer.getText(syntax)};`, "actualHandler", env);
+}
 function elements(tree, predicate) {
   if (Array.isArray(tree)) return tree.flatMap((child) => elements(child, predicate));
   if (!tree || typeof tree !== "object") return [];
@@ -59,161 +64,143 @@ function harness(options = {}) {
     pendingDat: null, importBusy: false, importBusyRef: { current: false },
     guidedImportReady: false, EMPTY_GUIDED_IMPORT_SELECTION: emptySelection,
     directoryConfirmationRef: { current: null },
-    guidedDirectoryInputRef: { current: null },
+    guidedFilesInputRef: { current: null }, guidedDirectoryInputRef: { current: null },
     chooseImportType: (format) => actions.push(["format", format]),
     stageGuidedFile: (...args) => actions.push(["file", ...args]),
-    stageGuidedDirectory: (event) => actions.push(["directory", event]),
+    stageDetectedImport: (event) => actions.push(["detected", event]),
     submitGuidedImport: () => actions.push(["submit"]),
   };
-  for (const [key, value] of Object.entries({ showImport: false, importMode: "recording", importChoice: null,
+  for (const [key, value] of Object.entries({ showImport: false, importChoice: null,
     guidedImportSelection: emptySelection, stagedDirectoryPlan: null, uploadError: null })) state(env, key, value);
   Object.assign(env, options);
-  function choose(mode) {
-    const node = declarations.get("chooseImportMode");
-    assert.ok(node, "find the actual chooseImportMode handler");
-    evaluate(`const actualHandler = ${node.initializer.getText(syntax)};`, "actualHandler", env)(mode);
-  }
-  env.chooseImportMode = choose;
   return {
-    env, actions, choose,
+    env, actions,
     render: () => evaluate(`const render = () => (${dialog.getText(syntax)});`, "render()", env),
     welcome: () => evaluate(`const render = () => (${welcomeButton.getText(syntax)});`, "render()", env),
   };
 }
 
-test("main welcome action exposes recording and directory choices before any format is selected", () => {
+test("welcome exposes enabled file and folder acquisition without choosing a format or mode", () => {
   const ui = harness();
   ui.welcome().props.onClick();
   assert.equal(ui.env.showImport, true);
   assert.equal(ui.env.importChoice, null);
   const tree = ui.render();
-  const single = button(tree, "Single recording");
-  const directory = button(tree, "Recording directory");
-  assert.equal(single.props["aria-pressed"], true);
-  assert.equal(directory.props["aria-pressed"], false);
+  const files = button(tree, "Choose files");
+  const folder = button(tree, "Choose folder");
+  assert.equal(files.props.disabled, false);
+  assert.equal(folder.props.disabled, false);
+  assert.equal(files.props["aria-pressed"], undefined, "choosers are actions, not mode switches");
+  assert.equal(folder.props["aria-pressed"], undefined);
+  assert.equal(elements(tree, (node) => node.props?.["aria-label"] === "Recording import mode").length, 0);
+  assert.equal(declarations.has("chooseImportMode"), false);
   const all = elements(tree, () => true);
   const formats = elements(tree, (node) => node.props?.["aria-label"] === "Recording formats")[0];
-  assert.ok(formats, "format choices remain visible");
-  assert.ok(all.indexOf(directory) < all.indexOf(formats), "directory choice is visible before format cards");
-  directory.props.onClick();
-  assert.equal(ui.env.importMode, "directory");
+  assert.ok(formats, "manual format guidance remains available");
+  assert.ok(all.indexOf(files) < all.indexOf(formats));
+  assert.ok(all.indexOf(folder) < all.indexOf(formats), "folder acquisition precedes optional format guidance");
 });
 
-test("directory mode is explicit before format selection and does not expose individual-file pickers", () => {
-  const ui = harness({ importMode: "directory" });
+test("file and folder buttons activate their own inputs using the shared auto-detection handler", () => {
+  const ui = harness();
   const tree = ui.render();
-  assert.equal(button(tree, "Recording directory").props["aria-pressed"], true);
-  const chooser = button(tree, "Choose directory");
-  assert.equal(chooser.props.disabled, true, "the same-format rule requires an explicit format first");
-  const formats = elements(tree, (node) => node.props?.["aria-label"] === "Recording formats")[0];
-  assert.equal(elements(formats, (node) => node.type === "button").length, 3);
-  assert.doesNotMatch(text(formats), /NeuroTrace|One portable/);
-  assert.match(text(tree), /subfolders/i);
-  assert.equal(elements(tree, (node) => node.type === "input" && node.props.type === "file" && node.props.accept).length, 0);
+  const pickers = elements(tree, (node) => node.type === "input" && node.props.type === "file");
+  assert.equal(pickers.length, 2);
+  const inputs = pickers.map((picker, index) => {
+    const input = { webkitdirectory: false, click: () => ui.actions.push(["picker-open", index]) };
+    if (typeof picker.props.ref === "function") picker.props.ref(input);
+    else picker.props.ref.current = input;
+    assert.equal(picker.props.multiple, true);
+    return input;
+  });
+  const fileIndex = inputs.indexOf(ui.env.guidedFilesInputRef.current);
+  const folderIndex = inputs.indexOf(ui.env.guidedDirectoryInputRef.current);
+  assert.notEqual(fileIndex, folderIndex);
+  assert.notEqual(fileIndex, -1);
+  assert.notEqual(folderIndex, -1);
+  assert.equal(inputs[fileIndex].webkitdirectory, false);
+  assert.equal(inputs[folderIndex].webkitdirectory, true);
+  button(tree, "Choose files").props.onClick();
+  button(tree, "Choose folder").props.onClick();
+  const fileEvent = { target: { files: [{ name: "one.edf" }] } };
+  const folderEvent = { target: { files: [{ name: "two.edf" }], webkitdirectory: true } };
+  pickers[fileIndex].props.onChange(fileEvent);
+  pickers[folderIndex].props.onChange(folderEvent);
+  assert.deepEqual(ui.actions, [["picker-open", fileIndex], ["picker-open", folderIndex], ["detected", fileEvent], ["detected", folderEvent]]);
 });
 
-for (const format of ["edf", "mat", "mat-dat"]) {
-  test(`${format} directory entry keeps an accessible directory picker and no individual-file rows`, () => {
-    const ui = harness({ importMode: "directory", importChoice: format });
+for (const [format, label] of [["edf", /EDF/], ["mat", /MAT/], ["mat-dat", /MAT\s*\+\s*DAT/]]) {
+  test(`detected ${format} collection displays its format and lazy action without manual file rows`, () => {
+    const ui = harness({ importChoice: format, guidedImportReady: true,
+      stagedDirectoryPlan: { format, recordings: [{ id: "one", relativePath: "root/one" }, { id: "two", relativePath: "root/sub/two" }], supportingFiles: [] } });
     const tree = ui.render();
-    assert.equal(button(tree, "Choose directory").props.disabled, false);
-    const pickers = elements(tree, (node) => node.type === "input" && node.props.type === "file");
-    assert.equal(pickers.length, 1);
-    assert.equal(pickers[0].props.multiple, true);
-    assert.equal(pickers[0].props.accept, undefined);
-    const input = { webkitdirectory: false, click: () => ui.actions.push(["picker-open"]) };
-    pickers[0].props.ref(input);
-    assert.equal(input.webkitdirectory, true);
-    assert.equal(ui.env.guidedDirectoryInputRef.current, input);
-    button(tree, "Choose directory").props.onClick();
-    const event = { target: { files: [] } };
-    pickers[0].props.onChange(event);
-    assert.deepEqual(ui.actions, [["picker-open"], ["directory", event]], "the keyboard-accessible button opens the directory picker and uses its validated handler");
+    assert.match(text(tree), /2\s+sessions found/);
+    assert.match(text(tree), label);
+    assert.equal(elements(tree, (node) => node.props?.["aria-label"] === "Recording formats").length, 0);
     assert.equal(elements(tree, (node) => node.props?.className === "import-requirements").length, 0);
+    assert.equal(button(tree, "Choose files").props.disabled, false);
+    assert.equal(button(tree, "Choose folder").props.disabled, false);
+    const load = button(tree, "Load 2 sessions");
+    assert.equal(load.props.disabled, false);
+    load.props.onClick();
+    assert.deepEqual(ui.actions, [["submit"]]);
   });
 }
-
-test("directory mode still renders the discovered session summary and Load action", () => {
-  const ui = harness({ importMode: "directory", importChoice: "edf", guidedImportReady: true,
-    stagedDirectoryPlan: { format: "edf", recordings: [{ id: "one", relativePath: "root/one.edf" }, { id: "two", relativePath: "root/sub/two.edf" }], supportingFiles: [] } });
-  const tree = ui.render();
-  assert.match(text(tree), /2\s+sessions found/);
-  const load = button(tree, "Load 2 sessions");
-  assert.equal(load.props.disabled, false);
-  load.props.onClick();
-  assert.deepEqual(ui.actions, [["submit"]]);
-});
 
 for (const [format, extensions, action] of [
   ["edf", [".edf"], "Open recording"], ["mat", [".mat"], "Open recording"],
   ["mat-dat", [".mat", ".dat"], "Open recording"], ["neurotrace", [".neurotrace"], "Open project"],
 ]) {
-  test(`single ${format} keeps its ordinary file requirements and primary action`, () => {
-    const ui = harness({ importChoice: format });
-    const tree = ui.render();
-    assert.deepEqual(elements(tree, (node) => node.type === "input" && node.props.type === "file").map((input) => input.props.accept), extensions);
+  test(`optional ${format} guidance retains file requirements and its primary action`, () => {
+    const tree = harness({ importChoice: format }).render();
+    const requirements = elements(tree, (node) => node.props?.className === "import-requirements")[0];
+    assert.ok(requirements);
+    assert.deepEqual(elements(requirements, (node) => node.type === "input" && node.props.type === "file").map((input) => input.props.accept), extensions);
     assert.equal(button(tree, action).props.disabled, true);
-    assert.equal(elements(tree, (node) => node.type === "button" && node.props["aria-label"] === "Choose directory").length, 0);
+    assert.equal(button(tree, "Choose files").props.disabled, false);
+    assert.equal(button(tree, "Choose folder").props.disabled, false);
   });
 }
 
-test("mode switches clear stale files, directory plans, errors, and pending directory confirmation", () => {
-  const stale = { old: true };
-  const ui = harness({ importChoice: "edf", guidedImportSelection: stale, stagedDirectoryPlan: stale, uploadError: stale,
-    directoryConfirmationRef: { current: stale } });
-  ui.choose("directory");
-  assert.equal(ui.env.importMode, "directory");
-  assert.equal(ui.env.importChoice, "edf", "a compatible format remains selected");
-  assert.equal(ui.env.guidedImportSelection, emptySelection);
-  assert.equal(ui.env.stagedDirectoryPlan, null);
-  assert.equal(ui.env.uploadError, null);
-  assert.equal(ui.env.directoryConfirmationRef.current, null);
-  ui.env.stagedDirectoryPlan = stale;
-  ui.choose("recording");
-  assert.equal(ui.env.importMode, "recording");
-  assert.equal(ui.env.stagedDirectoryPlan, null);
+test("busy import disables acquisition buttons and inputs", () => {
+  const tree = harness({ importBusy: true }).render();
+  assert.equal(button(tree, "Choose files").props.disabled, true);
+  assert.equal(button(tree, "Choose folder").props.disabled, true);
+  assert.ok(elements(tree, (node) => node.type === "input" && node.props.type === "file").every((input) => input.props.disabled));
 });
 
-test("switching from a project to directory requires a supported recording format", () => {
-  const ui = harness({ importChoice: "neurotrace" });
-  ui.choose("directory");
-  assert.equal(ui.env.importChoice, null);
-  assert.equal(button(ui.render(), "Choose directory").props.disabled, true);
-});
-
-test("selecting the current mode or changing mode during an import cannot discard pending choices", () => {
-  for (const scenario of [{ mode: "recording", busy: false }, { mode: "directory", busy: true }]) {
-    const stale = { keep: true };
-    const ui = harness({ guidedImportSelection: stale, stagedDirectoryPlan: stale, uploadError: stale,
-      directoryConfirmationRef: { current: stale }, importBusyRef: { current: scenario.busy }, importBusy: scenario.busy });
-    ui.choose(scenario.mode);
-    assert.equal(ui.env.importMode, "recording");
-    assert.equal(ui.env.guidedImportSelection, stale);
-    assert.equal(ui.env.stagedDirectoryPlan, stale);
-    assert.equal(ui.env.uploadError, stale);
-    assert.equal(ui.env.directoryConfirmationRef.current, stale);
+test("actual input handler snapshots files and folder provenance before clearing the chooser", async () => {
+  for (const fromDirectory of [false, true]) {
+    const files = [{ name: "one.edf" }, { name: "two.edf" }];
+    const routed = [];
+    const target = { files, webkitdirectory: fromDirectory, value: "chosen-path" };
+    await handler("stageDetectedImport", { handleSelectedRecordingFiles: (selected, isDirectory) => {
+      assert.equal(target.value, "");
+      assert.notEqual(selected, files, "snapshot the live chooser list");
+      routed.push([selected, isDirectory]);
+    } })({ target });
+    assert.equal(target.value, "");
+    assert.deepEqual(routed, [[files, fromDirectory]]);
   }
 });
 
-test("busy import disables both mode buttons and the directory chooser", () => {
-  const tree = harness({ importMode: "directory", importChoice: "edf", importBusy: true }).render();
-  assert.equal(button(tree, "Single recording").props.disabled, true);
-  assert.equal(button(tree, "Recording directory").props.disabled, true);
-  assert.equal(button(tree, "Choose directory").props.disabled, true);
+test("cancelled chooser does not invoke classification or discard staged selections", async () => {
+  const target = { files: [], value: "old-input-value", webkitdirectory: true };
+  await handler("stageDetectedImport", { handleSelectedRecordingFiles: () => assert.fail("cancelled chooser must not route") })({ target });
+  assert.equal(target.value, "");
 });
 
-test("directory readiness cannot borrow staged single files, and single recording readiness cannot borrow a directory plan", () => {
+test("readiness follows detected plans or required manual files without a mode variable", () => {
   const node = declarations.get("guidedImportReady");
-  assert.ok(node, "find actual guided import readiness expression");
-  const ready = (env) => evaluate(`const result = ${node.initializer.getText(syntax)};`, "result", env);
+  assert.ok(node);
+  const ready = (env) => Boolean(evaluate(`const result = ${node.initializer.getText(syntax)};`, "result", env));
   const file = { name: "session.edf" };
   const plan = { format: "edf", recordings: [{ id: "one" }] };
-  assert.equal(Boolean(ready({ importMode: "directory", importChoice: "edf", stagedDirectoryPlan: null,
-    guidedImportSelection: { ...emptySelection, edf: file } })), false);
-  assert.equal(Boolean(ready({ importMode: "recording", importChoice: "edf", stagedDirectoryPlan: plan,
-    guidedImportSelection: emptySelection })), false);
-  assert.equal(Boolean(ready({ importMode: "directory", importChoice: "edf", stagedDirectoryPlan: plan,
-    guidedImportSelection: emptySelection })), true);
-  assert.equal(Boolean(ready({ importMode: "directory", importChoice: "mat", stagedDirectoryPlan: plan,
-    guidedImportSelection: emptySelection })), false);
+  assert.equal(ready({ importChoice: "edf", stagedDirectoryPlan: plan, guidedImportSelection: emptySelection }), true);
+  assert.equal(ready({ importChoice: "mat", stagedDirectoryPlan: plan, guidedImportSelection: emptySelection }), false);
+  assert.equal(ready({ importChoice: "edf", stagedDirectoryPlan: { ...plan, recordings: [] }, guidedImportSelection: emptySelection }), false);
+  assert.equal(ready({ importChoice: null, stagedDirectoryPlan: null, guidedImportSelection: emptySelection }), false);
+  assert.equal(ready({ importChoice: "edf", stagedDirectoryPlan: null, guidedImportSelection: { ...emptySelection, edf: file } }), true);
+  assert.equal(ready({ importChoice: "mat-dat", stagedDirectoryPlan: null, guidedImportSelection: { ...emptySelection, mat: file } }), false);
+  assert.equal(ready({ importChoice: "mat-dat", stagedDirectoryPlan: null, guidedImportSelection: { ...emptySelection, mat: file, dat: file } }), true);
 });

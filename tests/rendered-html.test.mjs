@@ -404,7 +404,7 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   const importStart = page.indexOf("const importFiles");
   const importEnd = page.indexOf("const confirmDatImport", importStart);
   assert.match(page.slice(importStart, importEnd), /importBusyRef\.current/);
-  assert.match(page, /if \(!importBusyRef\.current\) void handleUploadedFiles\(\[\.\.\.event\.dataTransfer\.files\]\)/);
+  assert.match(page, /if \(!importBusyRef\.current\) void handleDroppedRecordingFiles\(event\.dataTransfer\)/);
 });
 
 test("accepts additive directory companions while retaining actionable damaged-recording errors", async () => {
@@ -435,8 +435,9 @@ test("accepts additive directory companions while retaining actionable damaged-r
   const modal = page.slice(modalStart, modalEnd);
   assert.match(modal, /className="upload-error"[^>]*role="alert"/);
   assert.match(modal, /aria-live="assertive"/);
-  assert.match(modal, /Recording directory/);
-  assert.match(modal, /Choose directory/);
+  assert.match(modal, /Choose files/);
+  assert.match(modal, /Choose folder/);
+  assert.doesNotMatch(modal, /Recording import mode/);
   assert.match(modal, /element\.webkitdirectory\s*=\s*true/);
   assert.match(modal, /chooseImportType\("edf"\)/);
   assert.match(modal, /chooseImportType\("mat"\)/);
@@ -845,7 +846,7 @@ test("saves a selectable one-file project and accepts inert custom definitions",
   assert.match(page, /Choose location &amp; save|Choose location & save/);
   assert.match(page, /Downloads by default/);
   assert.match(page, /importCustomToolFiles\(files\)/);
-  assert.match(page, /handleUploadedFiles\(\[\.\.\.event\.dataTransfer\.files\]\)/);
+  assert.match(page, /handleDroppedRecordingFiles\(event\.dataTransfer\)/);
   for (const kind of ["Dictionaries", "equations", "filters", "labels", "channel groups"]) {
     assert.match(page, new RegExp(kind, "i"));
   }
