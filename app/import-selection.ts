@@ -59,7 +59,7 @@ const KNOWN_FILE_EXTENSIONS = new Set([
 ]);
 
 function dropFailure(detail: string): Error {
-  return new Error(`${detail} Nothing was imported. Try Choose folder for a directory, or Choose files for individual files.`);
+  return new Error(`${detail} Nothing was imported. Click a recording type to choose files, or try dropping the folder again.`);
 }
 
 function assertFallbackFile(file: File): void {

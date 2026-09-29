@@ -60,16 +60,13 @@ function unreadableFile(path) {
   return file;
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-const emptySelection = executable(declaration("EMPTY_GUIDED_IMPORT_SELECTION"), "EMPTY_GUIDED_IMPORT_SELECTION", {});
 
 function stageHarness(format = null) {
   const calls = [];
   const env = { importBusyRef: { current: false }, DirectoryImportError, classifyRecordingSelection,
     directoryConfirmationRef: { current: { stale: true } },
-    handleUploadedFiles: async (files) => { calls.push(files); },
-    EMPTY_GUIDED_IMPORT_SELECTION: emptySelection };
+    handleUploadedFiles: async (files) => { calls.push(files); } };
   state(env, "importChoice", format);
-  state(env, "guidedImportSelection", { ...emptySelection, edf: unreadableFile("old.edf") });
   state(env, "stagedDirectoryPlan", { stale: true });
   state(env, "uploadError", { stale: true });
   state(env, "pendingDat", { stale: true });
@@ -89,7 +86,6 @@ test("directory selection auto-detects format and every nested session without o
   assert.equal(h.env.stagedDirectoryPlan.recordings.length, 2);
   assert.deepEqual(new Set(h.env.stagedDirectoryPlan.recordings.map((item) => item.primary)), new Set(files.slice(0, 2)));
   assert.deepEqual(h.env.stagedDirectoryPlan.supportingFiles, [files[2]]);
-  assert.equal(h.env.guidedImportSelection, emptySelection);
   assert.equal(h.env.uploadError, null);
   assert.equal(h.env.importChoice, "edf");
   assert.equal(h.env.pendingDat, null);
@@ -98,11 +94,10 @@ test("directory selection auto-detects format and every nested session without o
   assert.deepEqual(h.calls, [], "scanning remains lazy");
 });
 
-test("mixed-directory rejection clears both stale staged plans and stale individual file choices", async () => {
+test("mixed-directory rejection clears stale staged plans", async () => {
   const h = stageHarness();
   await h.stage([unreadableFile("root/a.edf"), unreadableFile("root/b.mat")]);
   assert.equal(h.env.stagedDirectoryPlan, null);
-  assert.equal(h.env.guidedImportSelection, emptySelection);
   assert.match(h.env.uploadError.message, /mixed|one recording format|same[- ]format/i);
   assert.ok(h.env.uploadError.files.includes("root/b.mat"));
   assert.equal(h.env.showImport, true);
@@ -123,7 +118,6 @@ test("single files route to the existing importer while clearing stale directory
   const files = [new File([new Uint8Array(256)], "session.edf")];
   await h.stage(files, false);
   assert.deepEqual(h.calls, [files]);
-  assert.equal(h.env.guidedImportSelection, emptySelection);
   assert.equal(h.env.stagedDirectoryPlan, null);
   assert.equal(h.env.directoryConfirmationRef.current, null);
   assert.equal(h.env.uploadError, null);
@@ -143,9 +137,9 @@ test("busy imports and cancelled loose-file selections cannot discard a staged s
     const h = stageHarness();
     h.env.importBusyRef.current = busy;
     h.env.classifyRecordingSelection = () => assert.fail("guard must run before classification");
-    const before = [h.env.guidedImportSelection, h.env.stagedDirectoryPlan, h.env.uploadError, h.env.directoryConfirmationRef.current];
+    const before = [h.env.stagedDirectoryPlan, h.env.uploadError, h.env.directoryConfirmationRef.current];
     await h.stage(busy ? [unreadableFile("root/a.edf")] : [], false);
-    assert.deepEqual([h.env.guidedImportSelection, h.env.stagedDirectoryPlan, h.env.uploadError, h.env.directoryConfirmationRef.current], before);
+    assert.deepEqual([h.env.stagedDirectoryPlan, h.env.uploadError, h.env.directoryConfirmationRef.current], before);
     assert.deepEqual(h.calls, []);
   }
 });
@@ -165,7 +159,6 @@ test("classification failures bound displayed paths instead of dumping an entire
   h.env.classifyRecordingSelection = () => { throw new DirectoryImportError("MIXED_FORMATS", "Mixed recording formats", paths); };
   await h.stage([unreadableFile("root/source.edf")]);
   assert.equal(h.env.stagedDirectoryPlan, null);
-  assert.equal(h.env.guidedImportSelection, emptySelection);
   assert.equal(h.env.uploadError.message, "Mixed recording formats");
   assert.deepEqual(h.env.uploadError.files, paths.slice(0, 8));
   assert.deepEqual(h.calls, []);
@@ -204,7 +197,6 @@ test("failed drop discovery clears stale selections and reports an error without
   h.env.collectDroppedRecordingFiles = async () => { throw new Error("Unreadable directory entry"); };
   h.env.handleSelectedRecordingFiles = () => assert.fail("failed traversal cannot import a partial collection");
   await handler("handleDroppedRecordingFiles", h.env)({});
-  assert.equal(h.env.guidedImportSelection, emptySelection);
   assert.equal(h.env.stagedDirectoryPlan, null);
   assert.equal(h.env.uploadError.message, "Unreadable directory entry");
   assert.equal(h.env.showImport, true);
@@ -216,7 +208,9 @@ test("loading a directory installs only the catalogue, preserving lazy recording
   const plan = planDirectoryImport([unreadableFile("root/a.edf"), unreadableFile("root/b.edf")], "edf");
   const tabs = new Map([["stale-recording", { sessionId: "old" }]]);
   const env = {
-    guidedImportReady: true, importChoice: "edf", stagedDirectoryPlan: plan,
+    // A later MAT picker can be cancelled while this EDF collection stays ready.
+    guidedImportReady: true, importChoice: "mat", stagedDirectoryPlan: plan,
+    importBusyRef: { current: false },
     directoryCatalogIdRef: { current: "old" }, directorySessionTabsRef: { current: tabs },
     directoryConfirmationRef: { current: { stale: true } }, makeId: () => "new-directory",
     handleUploadedFiles: () => assert.fail("cataloguing must not import any recording"),
@@ -235,16 +229,24 @@ test("loading a directory installs only the catalogue, preserving lazy recording
   assert.equal(env.showDirectorySessions, true);
 });
 
-test("ordinary single-file guided import still routes through the existing file importer", async () => {
+test("collection submit cannot run without a staged plan or while another import is busy", async () => {
+  const plan = planDirectoryImport([unreadableFile("root/a.edf")], "edf");
+  for (const [stagedDirectoryPlan, busy] of [[null, false], [plan, true]]) {
+    await handler("submitGuidedImport", {
+      guidedImportReady: true, stagedDirectoryPlan, importBusyRef: { current: busy },
+      makeId: () => assert.fail("guarded submit must not allocate or replace a collection"),
+    })();
+  }
+});
+
+test("selecting a MAT and DAT together routes one session through the existing file importer", async () => {
   const mat = legacyMatFile();
-  const dat = fileAt("synthetic.dat");
-  const calls = [];
-  const env = { guidedImportReady: true, importChoice: "mat-dat", stagedDirectoryPlan: null,
-    guidedImportSelection: { ...emptySelection, mat, dat }, mergeSelectedFiles,
-    handleUploadedFiles: async (files) => calls.push(files) };
-  await handler("submitGuidedImport", env)();
-  assert.equal(calls.length, 1);
-  assert.deepEqual(new Set(calls[0]), new Set([mat, dat]));
+  const dat = new File([new Uint8Array(256)], "synthetic.dat");
+  const h = stageHarness();
+  await h.stage([mat, dat], false);
+  assert.equal(h.calls.length, 1);
+  assert.deepEqual(new Set(h.calls[0]), new Set([mat, dat]));
+  assert.equal(h.env.stagedDirectoryPlan, null);
 });
 
 function openHarness({ hasRecording = true } = {}) {

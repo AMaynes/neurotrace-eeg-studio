@@ -432,11 +432,43 @@ test("completed actions advance once; unrelated clicks, duplicate events, Back, 
   ui.click("Next →"); ui.emit("import-format-chosen");
   assert.match(ui.markup(), /STEP 3 OF 4/);
   ui.emit("import-files-ready"); ui.emit("recording-opened");
+  assert.match(ui.markup(), /STEP 4 OF 4/, "opening a recording does not skip the final inspection guidance");
+  ui.click("Next →");
   assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
   ui.click("All tutorials");
   assert.match(ui.markup(), /1 \/ 11 walkthroughs completed/);
   assert.deepEqual(ui.actions, []);
   ui.dispose();
+});
+
+test("single-recording auto-open advances file selection without needing a separate files-ready event", () => {
+  const ui = harness({ hasRecording: false }); ui.click("Start walkthrough →");
+  ui.emit("import-opened"); ui.emit("import-format-chosen");
+  assert.match(ui.markup(), /STEP 3 OF 4/);
+  ui.emit("recording-opened");
+  assert.match(ui.markup(), /STEP 4 OF 4/);
+  assert.match(ui.markup(), /check the channel names, units, and duration/);
+  assert.match(ui.markup(), /Read this step, then select Next/);
+  ui.emit("recording-opened");
+  assert.match(ui.markup(), /STEP 4 OF 4/, "a repeated load never skips the explicit inspection step");
+  ui.click("Next →");
+  assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
+  assert.deepEqual(ui.actions, []);
+  ui.dispose();
+});
+
+test("load-recording guidance matches the direct picker and folder-drop workflow", () => {
+  const lesson = catalog.tutorialLessons.find((candidate) => candidate.id === "load-recording");
+  assert.match(lesson.steps[1].instruction, /file picker immediately/);
+  assert.match(lesson.steps[1].instruction, /drag it onto the matching format/);
+  assert.match(lesson.steps[2].instruction, /one or multiple files/);
+  assert.match(lesson.steps[2].instruction, /both the MAT and DAT/);
+  assert.match(lesson.steps[2].instruction, /opens automatically/);
+  assert.deepEqual(lesson.steps[2].completeOn, ["import-files-ready", "recording-opened"]);
+  assert.match(lesson.steps[3].instruction, /Load N sessions/);
+  assert.equal(lesson.steps[3].completeOn, undefined, "recording inspection is a reading-only step, not a second load");
+  const copy = lesson.steps.map((step) => step.instruction).join(" ");
+  assert.doesNotMatch(copy, /required row|loader’s Open button|Choose files|Choose folder/);
 });
 
 test("auto-advance pauses in the hub and while prerequisites are unmet, and cleans up after ending", () => {

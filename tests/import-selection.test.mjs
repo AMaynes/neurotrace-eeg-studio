@@ -174,7 +174,7 @@ test("mixed available entries and plain-file fallbacks do not lose either input"
 });
 test("uninspectable directory-like drops give actionable chooser guidance", async () => {
   const directoryLike = new File([], "study");
-  await assert.rejects(collectDroppedRecordingFiles({ files: [directoryLike], items: [] }), /Nothing was imported.*Choose folder/);
+  await assert.rejects(collectDroppedRecordingFiles({ files: [directoryLike], items: [] }), /Nothing was imported.*recording type.*dropping the folder/);
 });
 test("a reader failure rejects the complete drop, never returning the preceding partial batch", async () => {
   let reads = 0;

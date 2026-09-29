@@ -435,19 +435,14 @@ test("accepts additive directory companions while retaining actionable damaged-r
   const modal = page.slice(modalStart, modalEnd);
   assert.match(modal, /className="upload-error"[^>]*role="alert"/);
   assert.match(modal, /aria-live="assertive"/);
-  assert.match(modal, /Choose files/);
-  assert.match(modal, /Choose folder/);
-  assert.doesNotMatch(modal, /Recording import mode/);
-  assert.match(modal, /element\.webkitdirectory\s*=\s*true/);
+  assert.doesNotMatch(modal, /Choose files|Choose folder|Recording import mode/);
+  assert.match(modal, /ref=\{guidedFilesInputRef\}/);
+  assert.doesNotMatch(modal, /webkitdirectory/);
   assert.match(modal, /chooseImportType\("edf"\)/);
   assert.match(modal, /chooseImportType\("mat"\)/);
   assert.match(modal, /chooseImportType\("mat-dat"\)/);
   assert.match(modal, /chooseImportType\("neurotrace"\)/);
-  assert.match(modal, /accept="\.edf"/);
-  assert.match(modal, /accept="\.mat"/);
-  assert.match(modal, /accept="\.dat"/);
-  assert.match(modal, /accept="\.neurotrace"/);
-  assert.match(page, /guidedImportSelection\.mat\s*&&\s*guidedImportSelection\.dat/);
+  assert.doesNotMatch(modal, /import-requirements/);
   assert.match(modal, /disabled=\{!guidedImportReady \|\| importBusy\}/);
   assert.match(page, /analyzeBidsCompanions\(mergedFiles/);
   assert.match(page, /<UploadedFilesPanel bundle=\{companionBundle\} compact/);
@@ -455,8 +450,7 @@ test("accepts additive directory companions while retaining actionable damaged-r
   assert.match(modal, /uploadError\.files\.join/);
   assert.match(modal, /aria-label="Dismiss upload error"/);
   assert.match(page, /event\.target\.value\s*=\s*""/, "the same corrected or recopied file can be selected again");
-  assert.match(styles, /\.format-cards button\.active\s*\{/);
-  assert.match(styles, /\.import-requirements > label\.complete\s*\{/);
+  assert.match(styles, /\.format-cards button:hover\s*\{/);
   assert.match(styles, /\.upload-error\s*\{/);
 });
 
