@@ -185,7 +185,15 @@ export async function buildMatlabDisplayWindow(
     const rate = source.meta.sampleRates[sourceIndex];
     if (!Number.isFinite(rate) || rate <= 0) throw new Error("MATLAB display requires positive finite source rates.");
     const firstSample = Math.floor(startSec * rate);
-    const inputCount = Math.max(0, Math.min(Math.floor(durationSec * rate), Math.floor(source.meta.durationSec * rate) - firstSample));
+    // Duration metadata often comes from sampleCount / rate. Undo only its
+    // round-trip noise at EOF (e.g. 1001 / 1000 * 1000 < 1001). Requested start
+    // and duration deliberately retain MATLAB's literal floor convention.
+    const sourceLength = source.meta.durationSec * rate;
+    const nearestSourceLength = Math.round(sourceLength);
+    const sourceLengthTolerance = Math.min(1e-6, Number.EPSILON * Math.max(1, sourceLength) * 4);
+    const sourceEnd = Math.abs(sourceLength - nearestSourceLength) <= sourceLengthTolerance
+      ? nearestSourceLength : Math.floor(sourceLength);
+    const inputCount = Math.max(0, Math.min(Math.floor(durationSec * rate), sourceEnd - firstSample));
     const factor = matlabDisplayDecimationFactor(inputCount, pixelWidth);
     return { position, sourceIndex, rate, firstSample, inputCount, factor, outputCount: Math.ceil(inputCount / factor) };
   });
@@ -238,6 +246,42 @@ export async function buildMatlabDisplayWindow(
     bucketDurationSec: durationSec / bucketCount,
   } : null);
   const data = rowPlans.map((plan, row) => new Float64Array(envelopes[row] ? bucketCount : plan.outputCount).fill(NaN));
+  const finalize = (): MatlabDisplayWindow => {
+    envelopes.forEach((envelope) => {
+      if (!envelope) return;
+      for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+        if (!Number.isFinite(envelope.minima[bucket]) || !Number.isFinite(envelope.maxima[bucket])) {
+          envelope.minima[bucket] = NaN;
+          envelope.maxima[bucket] = NaN;
+          envelope.gaps[bucket] = 1;
+        }
+      }
+    });
+    return {
+      data, envelopes, labels: template.labels,
+      units: template.primarySourceIndices.map((position) => units[position]),
+      sampleRates: template.primarySourceIndices.map((position) => outputRates[position]),
+      sourceSampleRates: template.primarySourceIndices.map((position) => sourceRates[position]),
+      factors: rowPlans.map((plan) => plan.factor), retainedSampleCounts: rowPlans.map((plan) => plan.outputCount),
+      startSecs: rowPlans.map((plan, row) => envelopes[row] ? startSec : startSec + 1 / plan.rate),
+      sourceStartSampleIndices: rowPlans.map((plan) => plan.firstSample),
+      sourceIndices: template.sourceIndices.map((contributors) => contributors.map((position) => indices[position])),
+      primarySourceIndices: template.primarySourceIndices.map((position) => indices[position]),
+      warnings: [...warnings],
+      flatlineRegions: flatlines?.finish() ?? [],
+      byteLength: data.reduce((sum, values) => sum + values.byteLength, 0)
+        + envelopes.reduce((sum, envelope) => sum + (envelope ? envelope.minima.byteLength + envelope.maxima.byteLength + envelope.gaps.byteLength : 0), 0),
+    };
+  };
+  // A montage with no usable rows cannot show a waveform. In particular, do
+  // not decode/filter six hours just to return an empty result or start a
+  // processing worker for a window containing no whole input samples.
+  const totalSamples = template.labels.length ? plans.reduce((sum, plan) => sum + plan.outputCount, 0) : 0;
+  if (!totalSamples) {
+    options.onProgress?.({ completedSamples: 0, totalSamples: 0, fraction: 1 });
+    checkAborted(options.signal);
+    return finalize();
+  }
   const groups = new Map<string, SourcePlan[]>();
   for (const plan of plans) {
     const key = `${plan.rate}:${plan.inputCount}:${plan.factor}`;
@@ -252,10 +296,9 @@ export async function buildMatlabDisplayWindow(
   }
   const readWindow = options.readWindow ?? ((start, duration, channels, readOptions) => source.getWindow(start, duration, channels, readOptions));
   const client = createMatlabDisplayWorkerClient({ signal: options.signal, fallbackToMainThread: options.fallbackToMainThread ?? false });
-  const totalSamples = plans.reduce((sum, plan) => sum + plan.outputCount, 0);
   let completedSamples = 0;
-  options.onProgress?.({ completedSamples, totalSamples, fraction: totalSamples ? 0 : 1 });
   try {
+    options.onProgress?.({ completedSamples, totalSamples, fraction: 0 });
     for (const group of groups.values()) {
       const plan = group[0];
       const maximumOutputs = Math.max(1, Math.min(
@@ -332,29 +375,5 @@ export async function buildMatlabDisplayWindow(
     client.close();
   }
   checkAborted(options.signal);
-  envelopes.forEach((envelope) => {
-    if (!envelope) return;
-    for (let bucket = 0; bucket < bucketCount; bucket += 1) {
-      if (!Number.isFinite(envelope.minima[bucket]) || !Number.isFinite(envelope.maxima[bucket])) {
-        envelope.minima[bucket] = NaN;
-        envelope.maxima[bucket] = NaN;
-        envelope.gaps[bucket] = 1;
-      }
-    }
-  });
-  return {
-    data, envelopes, labels: template.labels,
-    units: template.primarySourceIndices.map((position) => units[position]),
-    sampleRates: template.primarySourceIndices.map((position) => outputRates[position]),
-    sourceSampleRates: template.primarySourceIndices.map((position) => sourceRates[position]),
-    factors: rowPlans.map((plan) => plan.factor), retainedSampleCounts: rowPlans.map((plan) => plan.outputCount),
-    startSecs: rowPlans.map((plan, row) => envelopes[row] ? startSec : startSec + 1 / plan.rate),
-    sourceStartSampleIndices: rowPlans.map((plan) => plan.firstSample),
-    sourceIndices: template.sourceIndices.map((contributors) => contributors.map((position) => indices[position])),
-    primarySourceIndices: template.primarySourceIndices.map((position) => indices[position]),
-    warnings: [...warnings],
-    flatlineRegions: flatlines?.finish() ?? [],
-    byteLength: data.reduce((sum, values) => sum + values.byteLength, 0)
-      + envelopes.reduce((sum, envelope) => sum + (envelope ? envelope.minima.byteLength + envelope.maxima.byteLength + envelope.gaps.byteLength : 0), 0),
-  };
+  return finalize();
 }

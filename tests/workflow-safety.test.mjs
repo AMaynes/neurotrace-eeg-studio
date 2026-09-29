@@ -190,8 +190,10 @@ test("mixed-rate interaction keeps channel provenance and sample timing", async 
   assert.match(add, /display\.primarySourceIndices\[targetRow\]/);
 
   const movement = section(page, "const moveSelectedAnnotations", "const advanceFromCandidate");
-  assert.match(movement, /anchor\.channelScope/);
-  assert.match(movement, /meta\.sampleRates\[anchor\.channelScope\.primarySourceIndex\]/);
+  assert.match(movement, /annotationTimingSampleRate\(anchor, display, meta, focusedChannel\)/);
+  const timingRate = section(page, "function annotationTimingSampleRate", "function downloadBlob");
+  assert.match(timingRate, /annotation\.timingSampleRateHz/);
+  assert.match(timingRate, /meta\.sampleRates\[annotation\.channelScope\.primarySourceIndex\]/);
 
   const pointer = section(page, "const timeFromPointer", "const onWavePointerDown");
   assert.match(pointer, /visibleStart/);

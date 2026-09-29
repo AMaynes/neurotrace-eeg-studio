@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildMatlabDisplayWindow, createMatlabRawFlatlineDetector } from "../app/matlab-display-window.ts";
 import { filterMatlabDisplayTrace, matlabDisplayDecimationFactor } from "../app/matlab-display-processing.ts";
-import { buildMontage, detectRawSynchronizedFlatlines } from "../app/eeg-core.ts";
+import { buildMontage, detectRawSynchronizedFlatlines, RawDatSource } from "../app/eeg-core.ts";
+import { buildRawDatFileWindow } from "../app/file-window.ts";
 
 function fakeSource({ labels = ["LA1", "LA2", "LA3"], rates = [200, 200, 200], duration = 70 } = {}) {
   const arrays = rates.map((rate, ch) => Float64Array.from({ length: Math.floor(duration * rate) }, (_, i) =>
@@ -159,4 +160,105 @@ test("builder flatline markers use raw samples and MATLAB's plotted +1/fs time s
   const result = await buildMatlabDisplayWindow({ source, startSec: 0.503, durationSec: 4,
     pixelWidth: 1000, channelIndices: [0, 1, 2], montage: "bipolar" }, testOptions);
   assert.deepEqual(result.flatlineRegions, [{ startSec: 1.008, endSec: 2.008 }]);
+});
+
+test("an empty derived montage never reads or filters a whole recording", async () => {
+  const source = fakeSource();
+  const progress = [];
+  const result = await buildMatlabDisplayWindow({ source, startSec: 0, durationSec: 70,
+    pixelWidth: 1000, channelIndices: [0, 1, 2], montage: "average",
+    excludedChannels: new Set([0, 1, 2]),
+  }, { onProgress: (value) => progress.push(value.fraction) });
+  assert.equal(source.reads.length, 0);
+  assert.deepEqual(result.data, []);
+  assert.deepEqual(result.envelopes, []);
+  assert.deepEqual(result.flatlineRegions, []);
+  assert.equal(result.byteLength, 0);
+  assert.ok(result.warnings.some((warning) => /No compatible channels/.test(warning)));
+  assert.equal(progress.at(-1), 1);
+});
+
+test("an EOF or sub-sample window returns empty traces without creating a processing worker", async () => {
+  const source = fakeSource();
+  for (const startSec of [0, 70, 100]) {
+    const result = await buildMatlabDisplayWindow({ source, startSec, durationSec: 0.001,
+      pixelWidth: 1000, channelIndices: [0], montage: "referential" });
+    assert.deepEqual(result.data, [new Float64Array()]);
+    assert.deepEqual(result.retainedSampleCounts, [0]);
+  }
+  assert.equal(source.reads.length, 0);
+});
+
+test("EOF availability must not lose a sample to duration round-trip error", async () => {
+  // 1001 / 1000 * 1000 evaluates to 1000.9999999999999. MATLAB
+  // fread for a longer requested duration still returns all 1001 samples.
+  const source = fakeSource({ labels: ["LA1"], rates: [1000], duration: 2 });
+  source.arrays[0] = source.arrays[0].slice(0, 1001);
+  source.meta.durationSec = 1001 / 1000;
+  const result = await buildMatlabDisplayWindow({ source, startSec: 0, durationSec: 10,
+    pixelWidth: 1000, channelIndices: [0], montage: "referential" }, testOptions);
+  assert.equal(result.retainedSampleCounts[0], 1001);
+  assert.deepEqual(result.data[0], source.arrays[0]);
+});
+
+test("real DAT reader and file-worker decoder agree for adversarial sample-grid and EOF boundaries", async () => {
+  for (const rate of [100, 200, 256, 500, 1000]) {
+    const sampleCount = 1001;
+    const interleaved = Int16Array.from({ length: sampleCount * 2 }, (_, i) => i % 2 ? -i : i);
+    const source = await RawDatSource.create(new File([interleaved], "synthetic-timing.dat"), {
+      sampleRate: rate, channelCount: 2, channelLabels: ["LA1", "LA2"],
+    });
+    for (const first of [0, 29, 101, 997]) {
+      // Do not snap the requested time: the source MATLAB's floor semantics
+      // can intentionally pick first-1 when (first/rate)*rate rounds down.
+      const startSec = (first + 0.000001) / rate;
+      const durationSec = 10 * sampleCount / rate;
+      const request = { source, startSec, durationSec, pixelWidth: 1000,
+        channelIndices: [1, 0], montage: "referential" };
+      const direct = await buildMatlabDisplayWindow(request, testOptions);
+      const decoded = await buildMatlabDisplayWindow(request, {
+        ...testOptions,
+        readWindow: async (start, duration, channels, options) => (await buildRawDatFileWindow({
+          format: "raw-dat", ...source.envelopeWorkerSource,
+          startSec: start, durationSec: duration, channelIndices: channels,
+        }, { signal: options.signal })).window,
+      });
+      assert.deepEqual(decoded.data, direct.data, `Fs ${rate}, sample ${first}`);
+      assert.equal(decoded.retainedSampleCounts[0], sampleCount - first);
+      assert.equal(decoded.sourceStartSampleIndices[0], first);
+      assert.equal(decoded.data[0][0], -(first * 2 + 1));
+      assert.equal(decoded.data[1].at(-1), 2000);
+      assert.equal(decoded.startSecs[0], startSec + 1 / rate);
+    }
+  }
+});
+
+test("chunk partition cannot change envelopes or montage identity across fractional seeks and rates", async () => {
+  for (const rate of [100, 128.5, 200, 1000]) {
+    const source = fakeSource({ rates: [rate, rate, rate], duration: 15 });
+    for (const montage of ["referential", "average", "bipolar"]) {
+      const request = { source, startSec: 0.213579, durationSec: 10.017, pixelWidth: 43.5,
+        channelIndices: [2, 0, 1], montage };
+      const whole = await buildMatlabDisplayWindow(request, { fallbackToMainThread: true, maxChunkDurationSec: 30 });
+      const fragmented = await buildMatlabDisplayWindow(request, {
+        fallbackToMainThread: true, maxChunkDurationSec: 1.1 / rate, maxChunkBytes: 1024,
+      });
+      assert.deepEqual(fragmented, whole, `Fs ${rate}, ${montage}`);
+    }
+  }
+});
+
+test("initial progress failure still releases the processing worker", async () => {
+  const original = globalThis.Worker;
+  let terminated = 0;
+  globalThis.Worker = class { terminate() { terminated++; } };
+  try {
+    await assert.rejects(buildMatlabDisplayWindow({ source: fakeSource(), startSec: 0, durationSec: 70,
+      pixelWidth: 1000, channelIndices: [0], montage: "referential",
+    }, { onProgress() { throw new Error("progress failed"); } }), /progress failed/);
+    assert.equal(terminated, 1);
+  } finally {
+    if (original === undefined) delete globalThis.Worker;
+    else globalThis.Worker = original;
+  }
 });

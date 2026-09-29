@@ -58,6 +58,7 @@ const formatters = evaluate(["formatAmplitude", "formatCursorAmplitude", "format
 
 function display(overrides = {}) {
   return { settingsKey: JSON.stringify(["test-recording", "referential", { enabled: false }, [0]]),
+    viewStart: 10, viewDuration: 1,
     data: [new Float32Array([25])], labels: ["EEG LA1"], units: ["µV"],
     sampleRates: [1], sourceSampleRates: [4], startSecs: [10],
     sourceIndices: [[0]], primarySourceIndices: [0],
@@ -69,7 +70,7 @@ function harness(overrides = {}) {
     ...formatters, formatClock, formatDisplayChannelLabel, readCursorReadout,
     useMemo: (compute) => compute(), display: display(), focusedChannel: 0, cursorTime: 10.25,
     meta: { id: "test-recording" }, montage: "referential", filters: { enabled: false }, selectedChannels: new Set([0]),
-    loadingSignal: false, cursorAmplitude: 999999,
+    loadingSignal: false, cursorAmplitude: 999999, signalViewStart: 10, timebase: 1,
     channelSelectionActive: true, inspectionDragging: false, inspectionRange: null,
     channelRailRowStyle: () => ({}), channelRowLayout: { groupStarts: new Set() },
     setFocusedChannel() {}, setChannelSelectionActive() {}, notifyTutorialAction() {},
@@ -117,6 +118,17 @@ test("actual footer shows the selected exact sample's time and correctly aligned
   }) });
   assert.match(text(unaligned.footer()), /display sample 1 · 00:00:00\.008/);
   assert.doesNotMatch(text(unaligned.footer()), /source sample/);
+});
+
+test("fractional MATLAB plot origins never label plotted seconds as a source-sample timestamp", () => {
+  const ui = harness({ cursorTime: 10801.999, display: display({
+    data: [new Float64Array([11])], envelopes: [null],
+    sampleRates: [200], sourceSampleRates: [200], startSecs: [10801.999],
+    sourceStartSampleIndices: [2160398], timingConvention: "matlab-window",
+  }) });
+  assert.match(text(ui.footer()), /source sample 2,160,398 · 03:00:01\.990/);
+  assert.match(text(ui.info()), /source sample 2,160,398 · 03:00:01\.990/);
+  assert.doesNotMatch(text(ui.footer()), /source sample 2,160,398 · 03:00:01\.999/);
 });
 
 test("actual inspector agrees with the footer about overview range and interval", () => {
@@ -186,6 +198,24 @@ test("changing source, montage, filters, or selected channels invalidates values
     "changing unused filter controls does not falsely invalidate unchanged raw data");
 });
 
+test("rapid window changes invalidate old readouts before the loading effect can run", () => {
+  for (const options of [{ signalViewStart: 10.125 }, { timebase: 3.14159 }]) {
+    const stale = harness(options);
+    assert.equal(stale.env.displayReadoutReady, false);
+    assert.match(text(stale.footer()), /Sample unavailable/);
+    assert.equal(text(stale.row()), "LA1—");
+    const refreshed = harness({ ...options, display: display({
+      viewStart: options.signalViewStart ?? 10, viewDuration: options.timebase ?? 1,
+    }) });
+    assert.equal(refreshed.env.displayReadoutReady, true);
+  }
+  const previewPan = harness({ viewStart: 10.1 });
+  assert.equal(previewPan.env.displayReadoutReady, true,
+    "an uncommitted pan may inspect still-present samples on their original computed grid");
+  const pointer = variables.get("onWavePointerDown").initializer.getText(syntax);
+  assert.match(pointer, /!displayReadoutReady/, "pointer placement also waits for the requested processing grid");
+});
+
 test("progressive overview, refined overview, and exact samples all publish their settings identity", () => {
   assert.equal(publishedDisplays.length, 4, "verify MATLAB and legacy display publication paths");
   for (const object of publishedDisplays) {
@@ -195,6 +225,9 @@ test("progressive overview, refined overview, and exact samples all publish thei
     assert.equal(evaluate(`const result = ${key.initializer.getText(syntax)};`, "result", {
       displaySettingsKey: "settings-at-request-time",
     }), "settings-at-request-time");
+    const duration = object.properties.find((property) => ts.isPropertyAssignment(property)
+      && property.name.getText(syntax) === "viewDuration");
+    assert.equal(duration?.initializer.getText(syntax), "timebase");
   }
 });
 

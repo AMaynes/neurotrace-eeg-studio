@@ -213,6 +213,8 @@ type Annotation = {
   channelScope?: ChannelScope;
   /** Plot-axis seconds stay authoritative; this records their source-grid offset. */
   sourceTimeOffsetSec?: number;
+  /** Preserve the creation grid for later movement, including unscoped mixed-rate labels. */
+  timingSampleRateHz?: number;
   revisions?: Array<{
     revision: number;
     committedAt: string;
@@ -398,6 +400,8 @@ type DisplayWindow = {
   primarySourceIndices: number[];
   warnings: string[];
   viewStart: number;
+  /** Requested duration used to prepare this display, not an inferred sample count. */
+  viewDuration?: number;
   flatlineRegions: Array<{ startSec: number; endSec: number }>;
   /** Only present while drawing a progressively indexed recording overview. */
   indexedThroughSec?: number;
@@ -791,8 +795,12 @@ function normalizeAnnotationGeometry(annotation: Annotation, durationSec: number
     && Number.isFinite(annotation.sourceTimeOffsetSec) && annotation.sourceTimeOffsetSec >= 0
     && annotation.sourceTimeOffsetSec <= Math.max(1, duration)
     ? annotation.sourceTimeOffsetSec : undefined;
+  const timingSampleRateHz = typeof annotation.timingSampleRateHz === "number"
+    && Number.isFinite(annotation.timingSampleRateHz) && annotation.timingSampleRateHz > 0
+    ? annotation.timingSampleRateHz : undefined;
   return { ...annotation, start, end, geometry, track,
-    ...(annotation.sourceTimeOffsetSec !== undefined ? { sourceTimeOffsetSec } : {}) };
+    ...(annotation.sourceTimeOffsetSec !== undefined ? { sourceTimeOffsetSec } : {}),
+    ...(annotation.timingSampleRateHz !== undefined ? { timingSampleRateHz } : {}) };
 }
 
 function annotationOverlapsWindow(annotation: Annotation, start: number, end: number) {
@@ -1410,7 +1418,8 @@ function formatCursorAmplitude(readout: CursorReadout) {
 function formatCursorSample(readout: CursorReadout) {
   if (readout.kind === "range") return `Overview ${formatClock(readout.startSec, true)}–${formatClock(readout.endSec, true)} · zoom in for samples`;
   if (readout.kind === "unavailable") return "Sample unavailable";
-  return `${readout.sourceSampleIndex === null ? "display sample" : "source sample"} ${(readout.sourceSampleIndex ?? readout.displaySampleIndex).toLocaleString()} · ${formatClock(readout.sampleTimeSec, true)}`;
+  const hasSourceTime = readout.sourceSampleIndex !== null && readout.sourceTimeSec !== null;
+  return `${hasSourceTime ? "source sample" : "display sample"} ${(hasSourceTime ? readout.sourceSampleIndex! : readout.displaySampleIndex).toLocaleString()} · ${formatClock(hasSourceTime ? readout.sourceTimeSec! : readout.sampleTimeSec, true)}`;
 }
 
 function formatRelativeTime(value: number) {
@@ -1499,6 +1508,15 @@ function sourceRateForDisplayRow(display: DisplayWindow, meta: RecordingMeta, ro
     ?? meta.sampleRates[display.primarySourceIndices[row]]
     ?? display.sampleRates[row]
     ?? primarySampleRate(meta);
+}
+
+function annotationTimingSampleRate(annotation: Annotation, display: DisplayWindow, meta: RecordingMeta, row: number) {
+  if (Number.isFinite(annotation.timingSampleRateHz) && annotation.timingSampleRateHz! > 0) {
+    return annotation.timingSampleRateHz!;
+  }
+  return annotation.channelScope
+    ? meta.sampleRates[annotation.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
+    : sourceRateForDisplayRow(display, meta, row);
 }
 
 function downloadBlob(name: string, blob: Blob) {
@@ -1912,7 +1930,8 @@ export default function Home() {
   const displaySettingsKey = useMemo(() => JSON.stringify([
     meta.id, montage, filters.enabled ? filters : { enabled: false }, [...selectedChannels].sort((a, b) => a - b),
   ]), [meta.id, montage, filters, selectedChannels]);
-  const displayReadoutReady = !loadingSignal && display.settingsKey === displaySettingsKey;
+  const displayReadoutReady = !loadingSignal && display.settingsKey === displaySettingsKey
+    && display.viewStart === signalViewStart && display.viewDuration === timebase;
   const cursorReadout = useMemo<CursorReadout>(() => !displayReadoutReady
     ? { kind: "unavailable", unit: display.units[focusedChannel] || "a.u.", reason: "no-data" }
     : readCursorReadout(display, focusedChannel, cursorTime), [cursorTime, display, focusedChannel, displayReadoutReady]);
@@ -2711,6 +2730,7 @@ export default function Home() {
       origin: "manual",
       sourceTimeOffsetSec: display.timingConvention === "matlab-window" && (geometry === "point" || geometry === "interval")
         ? snapOrigin - Math.floor(display.viewStart * samplingRate) / samplingRate : 0,
+      timingSampleRateHz: samplingRate,
       reviewer,
       notes: "",
       status: "draft",
@@ -2924,9 +2944,7 @@ export default function Home() {
       return;
     }
     const anchor = movable.find((item) => item.id === selectedAnnotationId) ?? movable[0];
-    const sampleRate = anchor.channelScope
-      ? meta.sampleRates[anchor.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
-      : sourceRateForDisplayRow(display, meta, focusedChannel);
+    const sampleRate = annotationTimingSampleRate(anchor, display, meta, focusedChannel);
     const baseStep = snapMode === "1s" ? 1 : snapMode === "100ms" ? 0.1 : 1 / Math.max(1, sampleRate);
     const requestedDelta = direction * baseStep * (accelerated ? 10 : 1);
     const earliest = Math.min(...movable.map((item) => item.start));
@@ -3224,7 +3242,7 @@ export default function Home() {
           if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
           const nextDisplay: DisplayWindow = { ...prepared, settingsKey: displaySettingsKey,
             traceBaselines: stableTraceBaselines(prepared.data, prepared.labels, prepared.sourceIndices, prepared.units),
-            timingConvention: "matlab-window", viewStart: signalViewStart,
+            timingConvention: "matlab-window", viewStart: signalViewStart, viewDuration: timebase,
             flatlineRegions: mergeNearbyFlatlineRegions(prepared.flatlineRegions, FLATLINE_DISPLAY_MERGE_GAP_SECONDS) };
           displayAppliedRequestIdRef.current = requestId;
           setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(nextDisplay) : nextDisplay);
@@ -3256,7 +3274,7 @@ export default function Home() {
             sourceIndices,
             primarySourceIndices: indices,
             warnings: [],
-            viewStart: signalViewStart,
+            viewStart: signalViewStart, viewDuration: timebase,
             flatlineRegions: mergeNearbyFlatlineRegions(
               detectEnvelopeSynchronizedFlatlines(visible.minima, visible.maxima, visible.gaps,
                 visible.bucketDurationSec, { startSec: visible.startSec, thresholdFraction: .8, minimumDurationSec: .25 }),
@@ -3634,7 +3652,7 @@ export default function Home() {
             sourceIndices,
             primarySourceIndices: indices,
             warnings: [],
-            viewStart: signalViewStart,
+            viewStart: signalViewStart, viewDuration: timebase,
             flatlineRegions,
           };
           setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(nextDisplay) : nextDisplay);
@@ -3993,7 +4011,7 @@ export default function Home() {
           sourceIndices,
           primarySourceIndices,
           warnings: [...montageWarnings, ...montageResult.warnings],
-          viewStart: signalViewStart,
+          viewStart: signalViewStart, viewDuration: timebase,
           flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > signalViewStart && region.startSec < signalViewStart + timebase),
         };
         setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(nextDisplay) : nextDisplay);
@@ -4026,18 +4044,22 @@ export default function Home() {
     return () => abortController.abort();
   }, [displaySettingsKey, overviewDisplayPolicy, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
+  // A waveform refresh creates new display arrays without changing the raw
+  // contact being analyzed. Depend on that contact, not the array identity, so
+  // completing a long waveform read does not restart the same spectrogram.
+  const spectrogramSourceIndex = display.primarySourceIndices[focusedChannel];
   const spectrogramInputPlan = useMemo(() => {
     const anchor = spectrogramAnchor !== null && spectrogramAnchor >= signalViewStart && spectrogramAnchor <= signalViewStart + timebase
       ? spectrogramAnchor : signalViewStart + timebase / 2;
     try {
-      const plan = matlabSpectrogramInputPlan(meta, display.primarySourceIndices[focusedChannel], signalViewStart, timebase, anchor);
+      const plan = matlabSpectrogramInputPlan(meta, spectrogramSourceIndex, signalViewStart, timebase, anchor);
       return { plan, error: "", expectedBytes: plan ? plan.sourceIndices.length * plan.sampleCount * 4 : 0,
         requestKey: JSON.stringify([sessionKey, plan]) };
     } catch (error) {
       return { plan: null, error: error instanceof Error ? error.message : "Invalid spectrogram inputs", expectedBytes: 0,
-        requestKey: JSON.stringify([sessionKey, signalViewStart, timebase, focusedChannel]) };
+        requestKey: JSON.stringify([sessionKey, signalViewStart, timebase, spectrogramSourceIndex]) };
     }
-  }, [display.primarySourceIndices, focusedChannel, meta, sessionKey, signalViewStart, spectrogramAnchor, timebase]);
+  }, [meta, sessionKey, signalViewStart, spectrogramAnchor, spectrogramSourceIndex, timebase]);
 
   // MATLAB analyzes raw group channels, within +/-15 seconds of the clicked
   // sample, cropped to the loaded window. It does not analyze display montages.
@@ -4611,7 +4633,7 @@ export default function Home() {
   const inspectionMode = boxZoomActive;
 
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (event.button !== 0 || loadingSignal || !display.data.length) return;
+    if (event.button !== 0 || !displayReadoutReady || !display.data.length) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const row = channelRowFromClientY(event.clientY, rect);
     if (row === null) return;
@@ -4820,9 +4842,7 @@ export default function Home() {
       if (!drag || !timeline) return;
       const delta = ((event.clientX - drag.originX) / timeline.getBoundingClientRect().width) * timebase;
       if (drag.mode === "move" && drag.originals.length > 1) {
-        const dragSampleRate = drag.original.channelScope
-          ? meta.sampleRates[drag.original.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
-          : sourceRateForDisplayRow(display, meta, focusedChannel);
+        const dragSampleRate = annotationTimingSampleRate(drag.original, display, meta, focusedChannel);
         const snappedDelta = snapTime(drag.original.start + delta, snapMode, dragSampleRate, false, drag.original.sourceTimeOffsetSec ?? 0) - drag.original.start;
         const earliest = Math.min(...drag.originals.map((item) => item.start));
         const latest = Math.max(...drag.originals.map((item) => item.end));
@@ -4840,9 +4860,7 @@ export default function Home() {
       }
       const label = LABEL_BY_ID.get(drag.original.labelId);
       const originalGeometry = annotationGeometry(drag.original);
-      const dragSampleRate = drag.original.channelScope
-        ? meta.sampleRates[drag.original.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
-        : sourceRateForDisplayRow(display, meta, focusedChannel);
+      const dragSampleRate = annotationTimingSampleRate(drag.original, display, meta, focusedChannel);
       let geometry = originalGeometry;
       let track = drag.original.track;
       if (drag.mode === "move" && ["instance", "windowed"].includes(drag.original.track)) {
@@ -7540,7 +7558,7 @@ export default function Home() {
           </div>
 
           {hasRecording && showFilters && <div className="filter-drawer">
-            <div><strong>Display processing</strong><span>Default: MATLAB FIR + automatic 1×/2× sampling. Custom filters below are additional, non-MATLAB behavior. Source samples remain unchanged.</span></div>
+            <div><strong>Display processing</strong><span>Default: MATLAB FIR + automatic 1×/2× sampling. Custom mode uses a separate, non-MATLAB processing pipeline. Source samples remain unchanged.</span></div>
             <label>High-pass <input type="number" min="0" step="0.1" value={filters.highPassHz} onChange={(event) => setFilters((current) => ({ ...current, highPassHz: Number(event.target.value) }))} /> Hz</label>
             <label>Low-pass <input type="number" min="1" step="1" value={filters.lowPassHz} onChange={(event) => setFilters((current) => ({ ...current, lowPassHz: Number(event.target.value) }))} /> Hz</label>
             <label>Notch <select value={filters.notchHz} onChange={(event) => setFilters((current) => ({ ...current, notchHz: Number(event.target.value) as 0 | 50 | 60 }))}><option value="0">Off</option><option value="50">50 Hz</option><option value="60">60 Hz</option></select></label>
@@ -8324,6 +8342,17 @@ const SPECTROGRAM_PLOT_TOP = 34;
 const SPECTROGRAM_PLOT_BOTTOM = 22;
 const SPECTROGRAM_MINIMUM_DRAG_PX = 4;
 
+function spectrogramAnalysisRange(spectrum: MatlabSpectrogramResult) {
+  const start = spectrum.dataStart + (spectrum.times[0] ?? 0);
+  const end = spectrum.dataStart + (spectrum.times[spectrum.width - 1] ?? 0);
+  return `${formatClock(start, true)}–${formatClock(end, true)}`;
+}
+
+function spectrogramAnalysisNote(spectrum: MatlabSpectrogramResult, viewDuration: number) {
+  return viewDuration > 2 * spectrum.width / spectrum.sampleRate
+    ? `Wavelets cover ${spectrogramAnalysisRange(spectrum)} only. Zoom in for detail.` : "";
+}
+
 function matlabJet(value: number) {
   const scaled = 4 * clamp(value, 0, 1);
   const red = clamp(Math.min(scaled - 1.5, -scaled + 4.5), 0, 1);
@@ -8508,7 +8537,9 @@ function SpectrogramPanel({
         });
       },
       (error: unknown) => {
-        const aborted = isAbortFailure(error);
+        // A worker can report a normal load/compute error after its view was
+        // cancelled. It must not overwrite a newer successfully computed view.
+        const aborted = abortController.signal.aborted || isAbortFailure(error);
         operation[aborted ? "cancel" : "fail"]();
         if (!aborted) setSpectrumState({
           signals,
@@ -8589,6 +8620,15 @@ function SpectrogramPanel({
         }
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(raster.canvas, plotLeft, plotTop, plotWidth, plotHeight);
+        const analysisNote = spectrogramAnalysisNote(spectrum, viewDuration);
+        if (analysisNote) {
+          // Preserve the shared absolute-time axis. A local MATLAB analysis
+          // must never be stretched to imply that hours of EEG were analyzed.
+          ctx.fillStyle = "rgba(235,245,243,.85)";
+          ctx.font = "10px ui-monospace, monospace";
+          ctx.textAlign = "left";
+          ctx.fillText(analysisNote, plotLeft + 8, plotTop + 16, Math.max(1, plotWidth - 16));
+        }
 
         ctx.font = "9px ui-monospace, monospace";
         ctx.lineWidth = 1;
@@ -8756,7 +8796,7 @@ function SpectrogramPanel({
         ));
       }}
     />
-    <div className="spectrogram-label" title={`${label} · ${signals.length}-channel raw power average · MATLAB Gabor wavelets · 60 log-spaced analysis bins 1–150 Hz · pre-click log-power Z-score${spectrum?.warnings.length ? ` · ${spectrum.warnings.join(" · ")}` : ""}`}>
+    <div className="spectrogram-label" title={`${label} · ${signals.length}-channel raw power average · MATLAB Gabor wavelets · 60 log-spaced analysis bins 1–150 Hz · pre-click log-power Z-score${spectrum ? ` · Analysis: ${spectrogramAnalysisRange(spectrum)} (up to ±15 s around the selected time)` : ""}${spectrum?.warnings.length ? ` · ${spectrum.warnings.join(" · ")}` : ""}`}>
       <strong>{label}</strong>
       <div className="spectrogram-frequency-axis" aria-label="Frequency (Hz)" style={{ top: SPECTROGRAM_PLOT_TOP, bottom: SPECTROGRAM_PLOT_BOTTOM }}>
         <span className="spectrogram-frequency-title">Frequency (Hz)</span>

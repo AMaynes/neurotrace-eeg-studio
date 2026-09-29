@@ -69,3 +69,33 @@ test("worker deserialization failure rejects pending work instead of leaving a p
     else globalThis.Worker = original;
   }
 });
+
+test("worker failure during the first disk read remains an error, not a canceled view", async () => {
+  const original = globalThis.Worker;
+  const instances = [];
+  globalThis.Worker = class {
+    constructor() { instances.push(this); }
+    postMessage() { assert.fail("a failed worker must not accept more work"); }
+    terminate() { this.terminated = true; }
+  };
+  try {
+    for (const failure of ["load", "deserialize"]) {
+      const client = createMatlabDisplayWorkerClient({ fallbackToMainThread: false });
+      const instance = instances.at(-1);
+      // File reading is asynchronous. Module loading may fail before the
+      // builder submits its first process() request.
+      if (failure === "load") instance.onerror({ message: "module failed to load", preventDefault() {} });
+      else instance.onmessageerror();
+      await assert.rejects(client.process([]), (error) => {
+        assert.notEqual(error.name, "AbortError", "the UI intentionally suppresses canceled views");
+        assert.match(error.message, failure === "load" ? /module failed to load/ : /deserialize/);
+        return true;
+      });
+      assert.equal(instance.terminated, true);
+      client.close();
+    }
+  } finally {
+    if (original === undefined) delete globalThis.Worker;
+    else globalThis.Worker = original;
+  }
+});

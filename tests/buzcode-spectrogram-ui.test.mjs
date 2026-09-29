@@ -54,7 +54,8 @@ test("lets the spectrogram replace the waveform pane without changing the wavefo
   assert.match(page, /SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES/);
   assert.doesNotMatch(page, /spectrogramCanUseExactSamples/);
   assert.match(page, /setExactSpectrogramSignal/);
-  assert.match(page, /matlabSpectrogramInputPlan\(meta, display\.primarySourceIndices\[focusedChannel\], signalViewStart, timebase, anchor\)/);
+  assert.match(page, /const spectrogramSourceIndex = display\.primarySourceIndices\[focusedChannel\]/);
+  assert.match(page, /matlabSpectrogramInputPlan\(meta, spectrogramSourceIndex, signalViewStart, timebase, anchor\)/);
   assert.match(page, /readMatlabSourceWindow\(source, plan\.readStart, plan\.readDuration, plan\.sourceIndices/);
   assert.match(page, /data: exact\?\.data,/);
   assert.doesNotMatch(page, /data: exact\?\.data \?\? display\.data/);
@@ -87,7 +88,8 @@ test("lets Escape clear spectrogram interaction without substituting a different
   const page = await readFile(projectFile("app/page.tsx"), "utf8");
   const panel = panelResizeSection(page);
   assert.match(page, /event\.key === "Escape"[\s\S]*?setChannelSelectionActive\(false\)/);
-  assert.match(page, /matlabSpectrogramInputPlan\(meta, display\.primarySourceIndices\[focusedChannel\]/);
+  assert.match(page, /const spectrogramSourceIndex = display\.primarySourceIndices\[focusedChannel\]/);
+  assert.match(page, /matlabSpectrogramInputPlan\(meta, spectrogramSourceIndex/);
   assert.doesNotMatch(page, /const spectrogramChannelIndices = useMemo/);
   const localEscape = panel.indexOf('if (matchesShortcut(event, controlBindings, "clear"))');
   const stopPropagation = panel.indexOf("event.stopPropagation()", localEscape);

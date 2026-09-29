@@ -9,6 +9,7 @@ const ast = ts.createSourceFile("page.tsx", source, ts.ScriptTarget.Latest, true
 const functions = new Map();
 const variables = new Map();
 let snapDefault;
+let annotationDragEffect;
 function visit(node) {
   if (ts.isFunctionDeclaration(node) && node.name) functions.set(node.name.text, node);
   if (ts.isVariableDeclaration(node)) {
@@ -17,6 +18,8 @@ function visit(node) {
       snapDefault = node.initializer.arguments[0];
     }
   }
+  if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect"
+    && node.arguments[0]?.getText(ast).includes("const applyPreview = () =>")) annotationDragEffect = node.arguments[0];
   ts.forEachChild(node, visit);
 }
 visit(ast);
@@ -30,7 +33,7 @@ const variable = (name, env = {}) => evaluate(`const result = ${variables.get(na
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 const LABELS = variable("LABELS");
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
-const pureNames = ["snapTime", "sampleSnapOrigin", "sourceRateForDisplayRow", "primarySampleRate", "annotationGeometry", "normalizeAnnotationGeometry", "annotationOverlapsWindow", "csvCell", "tsvCell", "sourceMeta", "blankSessionSnapshot", "migrateAnnotationList"];
+const pureNames = ["snapTime", "sampleSnapOrigin", "sourceRateForDisplayRow", "annotationTimingSampleRate", "primarySampleRate", "annotationGeometry", "normalizeAnnotationGeometry", "annotationOverlapsWindow", "csvCell", "tsvCell", "sourceMeta", "blankSessionSnapshot", "migrateAnnotationList"];
 const pure = evaluate(pureNames.map((name) => functions.get(name).getText(ast)).join("\n"),
   `({ ${pureNames.join(",")} })`, { clamp, LABEL_BY_ID, DEFAULT_FILTERS: { enabled: false }, emptyBidsCompanionBundle: () => ({}) });
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-10, `${actual} != ${expected}`);
@@ -250,7 +253,7 @@ test("loading a source or applying a session snapshot clears the previous record
     // the reset it would silently change the next recording's normalization.
     let requestedAnchor;
     const input = variable("spectrogramInputPlan", { useMemo: (fn) => fn(), spectrogramAnchor: env.anchor,
-      signalViewStart: 0, timebase: 20, meta, display: display(), focusedChannel: 0, sessionKey: "next-session",
+      signalViewStart: 0, timebase: 20, meta, spectrogramSourceIndex: 0, sessionKey: "next-session",
       matlabSpectrogramInputPlan: (_meta, _row, _start, _duration, anchor) => {
         requestedAnchor = anchor;
         return { sourceIndices: [0], sampleCount: 20, baselineTime: anchor };
@@ -258,4 +261,96 @@ test("loading a source or applying a session snapshot clears the previous record
     assert.equal(requestedAnchor, 10, "new recording uses its midpoint until explicitly clicked");
     assert.equal(input.plan.baselineTime, 10);
   }
+});
+
+test("finishing a waveform refresh does not reread and recompute an unchanged raw spectrogram", () => {
+  let previousDependencies;
+  let previousPlan;
+  let requests = 0;
+  const useMemo = (create, dependencies) => {
+    if (!previousDependencies || dependencies.some((value, index) => !Object.is(value, previousDependencies[index]))) {
+      previousPlan = create();
+      previousDependencies = dependencies;
+    }
+    return previousPlan;
+  };
+  const base = { useMemo, spectrogramAnchor: 4, signalViewStart: 0, timebase: 20,
+    meta: defaultMeta, sessionKey: "recording", spectrogramSourceIndex: 0,
+    matlabSpectrogramInputPlan: (_meta, sourceIndex) => {
+      requests++;
+      return { sourceIndices: [sourceIndex], sampleCount: 20000, baselineTime: 4 };
+    } };
+  const first = variable("spectrogramInputPlan", base);
+  // A newly published display has new row arrays but the same source contact.
+  const refreshed = variable("spectrogramInputPlan", { ...base, display: display() });
+  assert.equal(requests, 1);
+  assert.equal(refreshed, first, "stable memo identity prevents the read effect and worker from restarting");
+  const differentContact = variable("spectrogramInputPlan", { ...base, spectrogramSourceIndex: 1 });
+  assert.equal(requests, 2);
+  assert.notEqual(differentContact, first);
+  assert.notEqual(differentContact.requestKey, first.requestKey);
+});
+
+test("mixed-rate interval drag, resize, and keyboard moves retain the creation grid after focus changes", () => {
+  const meta = { ...defaultMeta, sampleRates: [1000, 256], channelLabels: ["LA1", "LA2"] };
+  const mixedDisplay = display({ sampleRates: [500, 128], sourceSampleRates: [1000, 256],
+    sourceIndices: [[0], [1]], primarySourceIndices: [0, 1], labels: ["LA1", "LA2"] });
+  const h = annotationHarness({ meta, display: mixedDisplay, snapMode: "sample", focusedChannel: 0 });
+  h.add(LABEL_BY_ID.get("ictal"), .010237, .200237);
+  const original = h.annotations()[0];
+  assert.equal(original.channelScope, undefined, "this is a global interval, not a single-channel spike");
+  assert.equal(original.timingSampleRateHz, 1000);
+  near(original.sourceTimeOffsetSec, .0013);
+  assert.equal(pure.annotationTimingSampleRate(original, mixedDisplay, meta, 1), 1000);
+  for (const mode of ["move", "start", "end"]) {
+    const handlers = new Map();
+    let annotations = [original];
+    const env = { ...pure, clamp, LABEL_BY_ID, meta, display: mixedDisplay, focusedChannel: 1,
+      timebase: 1, snapMode: "sample", document: { elementFromPoint: () => null },
+      window: { addEventListener: (name, handler) => handlers.set(name, handler), removeEventListener() {},
+        requestAnimationFrame: () => 1, cancelAnimationFrame() {} },
+      dragAnnotationRef: { current: { original, originals: [original], mode, id: original.id,
+        originX: 0, moved: false, snapshot: [original] } },
+      timelineRef: { current: { getBoundingClientRect: () => ({ width: 1000 }) } },
+      pendingAnnotationDragRef: { current: null }, dragFrameRef: { current: null },
+      undoRef: { current: [] }, redoRef: { current: [] }, candidatesRef: { current: [] },
+      activeCandidateIndexRef: { current: 0 }, setAnnotationDragPreview() {}, setToast() {},
+      reopenCandidateReviews() {}, setAnnotations: (update) => { annotations = update(annotations); } };
+    evaluate(`const attach = ${annotationDragEffect.getText(ast)};`, "attach()", env);
+    handlers.get("pointermove")({ clientX: 1.6, clientY: 0 });
+    handlers.get("pointerup")();
+    const moved = annotations[0];
+    near(moved.start, mode === "end" ? original.start : original.start + .002);
+    near(moved.end, mode === "start" ? original.end : original.end + .002);
+    near(moved.sourceTimeOffsetSec, original.sourceTimeOffsetSec);
+    assert.equal(moved.timingSampleRateHz, 1000);
+    assert.equal(jsonl([moved], { meta, uniformSampleRate: false })[0].start_sample, null,
+      "remembering a snap grid must not invent a universal sample index for a global mixed-rate label");
+  }
+  const nudge = variable("moveSelectedAnnotations", { ...pure, clamp, meta, display: mixedDisplay,
+    focusedChannel: 1, snapMode: "sample", useCallback: (fn) => fn,
+    selectedAnnotationIds: new Set([original.id]), selectedAnnotationId: original.id,
+    annotationsRef: { current: [original] }, setToast() {}, reopenCandidateReviews() {},
+    commitMutation: (update) => { h.env.moved = update([original])[0]; } });
+  nudge(1);
+  near(h.env.moved.start, original.start + .001);
+  near(h.env.moved.sourceTimeOffsetSec, original.sourceTimeOffsetSec);
+});
+
+test("timing-grid metadata is validated on migration and preserves legacy absence/fallback", () => {
+  const h = annotationHarness();
+  h.add(LABEL_BY_ID.get("ictal"), .01, .2);
+  const annotation = h.annotations()[0];
+  const recovered = pure.migrateAnnotationList(JSON.parse(JSON.stringify([annotation])), 120, 1);
+  assert.equal(recovered[0].timingSampleRateHz, 1000);
+  for (const timingSampleRateHz of [NaN, Infinity, -Infinity, 0, -1, "1000", null, {}]) {
+    const [invalid] = pure.migrateAnnotationList([{ ...annotation, timingSampleRateHz }], 120, 1);
+    assert.equal(invalid.timingSampleRateHz, undefined);
+    assert.equal(pure.annotationTimingSampleRate(invalid, display(), defaultMeta, 0), 1000);
+  }
+  const legacy = { ...annotation };
+  delete legacy.timingSampleRateHz;
+  const [legacyResult] = pure.migrateAnnotationList([legacy], 120, 1);
+  assert.equal(Object.hasOwn(legacyResult, "timingSampleRateHz"), false);
+  assert.equal(pure.annotationTimingSampleRate(legacyResult, display(), defaultMeta, 0), 1000);
 });

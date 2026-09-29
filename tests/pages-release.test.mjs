@@ -78,3 +78,28 @@ test("macOS launcher hosts the static viewer on a chosen loopback port", async (
     "vite preview --config vite.pages.config.ts --host 127.0.0.1 --strictPort",
   );
 });
+
+test("MATLAB processing workers are bundled and resolve under a GitHub Pages project path", async () => {
+  const assetNames = await readdir(new URL("assets/", releaseRoot));
+  const entryNames = assetNames.filter((name) => /^index-.*\.js$/.test(name));
+  const entrySource = (await Promise.all(entryNames.map((name) =>
+    readFile(new URL(`assets/${name}`, releaseRoot), "utf8")))).join("\n");
+  const relativeUrlReferences = [...entrySource.matchAll(/new URL\(\s*["'`]([^"'`]+)["'`]\s*,\s*import\.meta\.url/g)]
+    .map((match) => match[1]);
+  for (const stem of ["matlab-display-worker", "matlab-spectrogram-worker", "file-window-worker"]) {
+    const matches = assetNames.filter((name) => name.startsWith(`${stem}-`) && name.endsWith(".js"));
+    assert.equal(matches.length, 1, `${stem} must be emitted exactly once`);
+    const name = matches[0];
+    const reference = relativeUrlReferences.find((value) => value.endsWith(name));
+    assert.ok(reference === name || reference === `./${name}`, `${stem} is loaded relative to its importing bundle`);
+    // The Pages base is a project subdirectory, not the web origin root.
+    const workerUrl = new URL(reference, "https://amaynes.github.io/neurotrace-eeg-studio/assets/index-test.js");
+    assert.equal(workerUrl.pathname, `/neurotrace-eeg-studio/assets/${name}`);
+    const worker = await readFile(new URL(`assets/${name}`, releaseRoot), "utf8");
+    assert.ok(worker.length > 1024, `${stem} contains its computation, not a missing-asset shell`);
+    assert.match(worker, /\.onmessage\s*=/, `${stem} registers its message handler`);
+    assert.doesNotMatch(worker, /(?:from|import\s*\()\s*["'`][^"'`]+\.tsx?["'`]/,
+      `${stem} must not import uncompiled TypeScript at runtime`);
+    assert.doesNotMatch(worker, /<!doctype|<html/i, `${stem} must be JavaScript, never an HTML fallback`);
+  }
+});

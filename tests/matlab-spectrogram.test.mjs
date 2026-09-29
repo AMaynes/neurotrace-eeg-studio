@@ -72,6 +72,31 @@ test("circular endpoint response and positive even-N Nyquist match the reference
   coefficients.imaginary.forEach((value) => close(value, 0));
 });
 
+test("recording-sized prime and composite transforms match an analytic periodic-tone oracle", () => {
+  // A bin-centered real sinusoid has only two nonzero DFT bins. This oracle
+  // needs no FFT/DFT implementation and exercises the real 30-second sizes.
+  for (const [samples, rate, bin] of [[6000, 200, 337], [6001, 200, 337], [30001, 1000, 611]]) {
+    const toneHz = bin * rate / samples;
+    const frequency = toneHz * 0.91;
+    const scale = 5 / frequency;
+    const phase = 0.73;
+    const amplitude = 17;
+    const dc = 3;
+    const response = (omega) => (4 * Math.PI) ** 0.25 * Math.sqrt(scale)
+      * Math.exp(-0.5 * (scale * omega - 5) ** 2);
+    const positiveGain = response(toneHz);
+    const negativeGain = response(-toneHz);
+    const input = Float64Array.from({ length: samples }, (_, j) => dc + amplitude * Math.cos(2 * Math.PI * bin * j / samples + phase));
+    const result = computeMatlabGaborCoefficients(input, rate, frequency);
+    assert.equal(result.validScale, true);
+    for (let j = 0; j < samples; j += 1) {
+      const angle = 2 * Math.PI * bin * j / samples + phase;
+      close(result.real[j], dc * response(0) + amplitude / 2 * (positiveGain + negativeGain) * Math.cos(angle), 3e-10);
+      close(result.imaginary[j], amplitude / 2 * (positiveGain - negativeGain) * Math.sin(angle), 3e-10);
+    }
+  }
+});
+
 test("fixed logspace bins, unmasked Gaussian DC tail, and MATLAB scale validity are preserved", () => {
   const dc = new Float64Array(16).fill(1);
   const result = computeMatlabSpectrogram(request(dc, 8));
@@ -128,6 +153,19 @@ test("baseline fallback reproduces strict t < t(round(end/2)), including odd and
   const longOrigin = computeMatlabSpectrogram(request(Array.from({ length: 16 }, (_, j) => Math.sin(j)), 1000,
     { dataStart: 14400, baselineTime: 14400.006 }));
   assert.equal(longOrigin.baselineFrameCount, 6, "hour-scale subtraction roundoff must not include the clicked sample");
+});
+
+test("clicked-sample baseline boundaries stay exact across fractional and hour-scale origins", () => {
+  const input = Float64Array.from({ length: 21 }, (_, index) => Math.sin(index / 3) + index / 10);
+  for (const origin of [0.0073, 12345.6789, 86399.997]) for (const rate of [200, 256, 1000]) {
+    for (const clickedIndex of [0, 4, 5, 6, 19, 20]) {
+      const output = computeMatlabSpectrogram(request(input, rate,
+        { dataStart: origin, baselineTime: origin + clickedIndex / rate }));
+      assert.equal(output.usedBaselineFallback, clickedIndex < 5);
+      assert.equal(output.baselineFrameCount, clickedIndex < 5 ? 10 : clickedIndex,
+        `strict pre-click count at ${origin}s, ${rate}Hz, sample ${clickedIndex}`);
+    }
+  }
 });
 
 test("percentile uses midpoint ranks and keeps at least symmetric ±1 limits", () => {
@@ -197,4 +235,56 @@ test("worker client transfers private copies, surfaces errors, and cancels by te
   const workerSource = await readFile(new URL("../app/matlab-spectrogram-worker.ts", import.meta.url), "utf8");
   assert.match(workerSource, /computeMatlabSpectrogram\(data.request\)/);
   assert.match(workerSource, /matlabSpectrogramTransferList\(result\)/);
+});
+
+test("worker errors, uncloneable inputs, and pre-aborts release resources without hanging", async () => {
+  const originalWorker = globalThis.Worker;
+  const workers = [];
+  let failPost = false;
+  class FakeWorker {
+    constructor() { workers.push(this); }
+    terminate() { this.terminated = true; }
+    postMessage(message) {
+      if (failPost) throw new DOMException("transfer failed", "DataCloneError");
+      this.message = message;
+    }
+  }
+  globalThis.Worker = FakeWorker;
+  try {
+    const input = request([1, 2, 4, 1, -2, 5, 3, 1]);
+    const preAborted = new AbortController();
+    preAborted.abort(new Error("obsolete request"));
+    await assert.rejects(computeMatlabSpectrogramOffThread(input, { signal: preAborted.signal }), /obsolete request/);
+    assert.equal(workers.length, 0);
+
+    const loadFailure = computeMatlabSpectrogramOffThread(input);
+    let prevented = false;
+    workers[0].onerror({ message: "worker asset unavailable", preventDefault() { prevented = true; } });
+    await assert.rejects(loadFailure, { name: "WorkerError", message: "worker asset unavailable" });
+    assert.equal(prevented, true);
+    assert.equal(workers[0].terminated, true);
+
+    const unreadable = computeMatlabSpectrogramOffThread(input);
+    workers[1].onmessageerror();
+    await assert.rejects(unreadable, { name: "DataCloneError" });
+    assert.equal(workers[1].terminated, true);
+
+    failPost = true;
+    await assert.rejects(computeMatlabSpectrogramOffThread(input), /transfer failed/);
+    assert.equal(workers[2].terminated, true);
+    failPost = false;
+
+    const originalSlice = input.data[0].slice;
+    input.data[0].slice = () => { throw new Error("copy allocation failed"); };
+    await assert.rejects(computeMatlabSpectrogramOffThread(input), /copy allocation failed/);
+    assert.equal(workers[3].terminated, true);
+    input.data[0].slice = originalSlice;
+
+    const count = workers.length;
+    await assert.rejects(computeMatlabSpectrogramOffThread(request(new Float64Array(70_000))), /memory budget/);
+    assert.equal(workers.length, count, "size guard runs before worker creation or input copying");
+  } finally {
+    if (originalWorker === undefined) delete globalThis.Worker;
+    else globalThis.Worker = originalWorker;
+  }
 });

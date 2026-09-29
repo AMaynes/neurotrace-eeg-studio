@@ -47,6 +47,19 @@ test("spectrogram selects the complete raw source group, including hidden contac
   // values: hiding LA1 or displaying LA3-LA2 cannot change raw group power.
 });
 
+test("raw source grouping does not include already-derived bipolar channel labels", () => {
+  const meta = { channelLabels: ["LA1", "LA1-2", "LA2", "LA3-LA4", " LA3 ", "la4", "eeg LA5", "ECG1"],
+    sampleRates: Array(8).fill(200), durationSec: 60 };
+  assert.deepEqual(matlabSpectrogramInputPlan(meta, 0, 0, 40, 20).sourceIndices, [0, 2, 4]);
+  assert.deepEqual(matlabSpectrogramInputPlan(meta, 1, 0, 40, 20).sourceIndices, [1],
+    "an imported bipolar signal is analyzed alone, never averaged with its raw-contact group");
+  assert.equal(matlabSpectrogramInputPlan(meta, 1, 0, 40, 20).label, "LA1-2");
+  assert.deepEqual(matlabSpectrogramInputPlan(meta, 5, 0, 40, 20).sourceIndices, [5],
+    "MATLAB source-group matching is case-sensitive");
+  assert.deepEqual(matlabSpectrogramInputPlan(meta, 6, 0, 40, 20).sourceIndices, [6]);
+  assert.deepEqual(matlabSpectrogramInputPlan(meta, 7, 0, 40, 20).sourceIndices, [7]);
+});
+
 test("inclusive click crop is bounded by the loaded window, not only the file", () => {
   const meta = metadata();
   compareReference(meta, 0, 100, 80, 140);
@@ -95,9 +108,44 @@ test("EOF clamps source samples but keeps inclusive final sample and rejects emp
   assert.equal(matlabSpectrogramInputPlan(meta, 99, 0, 10, 3), null);
 });
 
+test("EOF metadata round-trip noise does not remove the final source sample", () => {
+  const meta = metadata(1000, 1001 / 1000);
+  assert.ok(meta.durationSec * 1000 < 1001, "fixture exposes binary floating-point round-trip loss");
+  const end = matlabSpectrogramInputPlan(meta, 0, 0, 2, 2);
+  assert.equal(end.sampleCount, 1001);
+  assert.equal(end.baselineTime, 1.001);
+  assert.equal(end.firstSourceSample + end.sampleCount, 1001);
+  const requested = matlabSpectrogramInputPlan(meta, 0, 0, 1.001, 2);
+  assert.equal(requested.sampleCount, 1000, "requested duration still follows MATLAB's literal floor");
+  const seek = matlabSpectrogramInputPlan(metadata(1000, 3), 0, 1.001, 1, 1.5);
+  assert.equal(seek.firstSourceSample, 1000, "requested start also retains the literal floor");
+  const fractional = matlabSpectrogramInputPlan(metadata(1000, 1.00125), 0, 0, 2, 2);
+  assert.equal(fractional.sampleCount, 1001, "a genuinely partial sample is not rounded up");
+});
+
 test("mixed rates inside the raw group fail clearly instead of resampling or dropping channels", () => {
   const meta = metadata();
   meta.sampleRates[2] = 1000;
   assert.throws(() => matlabSpectrogramInputPlan(meta, 0, 0, 40, 20), /equal source sample rates/);
   assert.deepEqual(matlabSpectrogramInputPlan(meta, 1, 0, 40, 20).sourceIndices, [1], "another group's rate does not matter");
+});
+
+test("invalid metadata or window inputs cannot produce negative or NaN source reads", () => {
+  const meta = metadata();
+  for (const rate of [NaN, Infinity, -1, 0]) {
+    assert.equal(matlabSpectrogramInputPlan(metadata(rate), 0, 0, 40, 20), null);
+  }
+  for (const duration of [NaN, Infinity, -1, 0]) {
+    assert.equal(matlabSpectrogramInputPlan(metadata(200, duration), 0, 0, 40, 20), null);
+    assert.equal(matlabSpectrogramInputPlan(meta, 0, 0, duration, 20), null);
+  }
+  for (const start of [NaN, Infinity, -Infinity, -1]) {
+    assert.equal(matlabSpectrogramInputPlan(meta, 0, start, 40, 20), null);
+  }
+  for (const click of [NaN, Infinity, -Infinity]) {
+    assert.equal(matlabSpectrogramInputPlan(meta, 0, 0, 40, click), null);
+  }
+  for (const channel of [NaN, Infinity, -1, 1.5, 99]) {
+    assert.equal(matlabSpectrogramInputPlan(meta, channel, 0, 40, 20), null);
+  }
 });

@@ -11,6 +11,8 @@ const transpile = (source) => ts.transpileModule(source, { compilerOptions: { ta
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const rasterSource = ["matlabJet", "rasterizeMatlabSpectrogram"].map((name) => functions.get(name).getText(ast)).join("\n");
 const { rasterize, jet } = new Function("clamp", `${transpile(rasterSource)}\nreturn { rasterize: rasterizeMatlabSpectrogram, jet: matlabJet };`)(clamp);
+const analysisNote = new Function("formatClock", `${transpile(["spectrogramAnalysisRange", "spectrogramAnalysisNote"]
+  .map((name) => functions.get(name).getText(ast)).join("\n"))}\nreturn spectrogramAnalysisNote;`)((seconds) => seconds.toFixed(3));
 const panel = functions.get("SpectrogramPanel");
 let computeEffect;
 const visit = (node) => {
@@ -68,6 +70,15 @@ test("raster work is bounded by output pixels, not all N by 60 transform values"
   assert.ok(reads < source.width * source.height / 100);
 });
 
+test("an hours-wide view explicitly discloses the local analysis range without stretching its heatmap", () => {
+  const source = spectrum({ width: 6001, sampleRate: 200, dataStart: 100,
+    times: { 0: 0, 6000: 30 } });
+  assert.equal(analysisNote(source, 21604), "Wavelets cover 100.000–130.000 only. Zoom in for detail.");
+  assert.equal(analysisNote(source, 30), "");
+  assert.match(panel.getText(ast), /ctx\.fillText\(analysisNote,/);
+  assert.match(panel.getText(ast), /Analysis: \$\{spectrogramAnalysisRange\(spectrum\)\}/);
+});
+
 function harness(overrides = {}) {
   const requests = [], states = [], metrics = [];
   const inputs = [{ data: new Float64Array([1, 2, 3]), dataStart: 5.125, sampleRate: 200 },
@@ -111,6 +122,26 @@ test("cancelled panel work cannot publish stale spectrum and incompatible group 
   await Promise.resolve();
   assert.equal(invalid.requests.length, 0);
   assert.match(invalid.states[0].error, /synchronized raw channels/);
+});
+
+test("a late ordinary error from a cancelled worker cannot replace a newer completed spectrum", async () => {
+  let rejectOld;
+  const published = [];
+  const old = harness({
+    setSpectrumState: (state) => published.push(state),
+    computeMatlabSpectrogramOffThread: () => new Promise((_resolve, reject) => { rejectOld = reject; }),
+  });
+  const cancelOld = runEffect(old.bindings);
+  cancelOld();
+  const current = harness({ setSpectrumState: (state) => published.push(state), baselineTime: 5.135 });
+  runEffect(current.bindings);
+  await Promise.resolve();
+  assert.equal(published.length, 1);
+  assert.equal(published[0].result, current.result);
+  rejectOld(new Error("Worker load failed after the view changed"));
+  await Promise.resolve();
+  assert.equal(published.length, 1, "the stale error must not erase the new result and leave the panel loading");
+  assert.equal(old.metrics.at(-1)[0], "cancel");
 });
 
 test("production UI uses symmetric current-result color limits and a cached image, without retired processing controls", () => {

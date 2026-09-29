@@ -19,6 +19,7 @@ export function createMatlabDisplayWorkerClient(
   options: { signal?: AbortSignal; fallbackToMainThread?: boolean } = {},
 ): MatlabDisplayWorkerClient {
   let closed = false;
+  let closeReason: unknown;
   let worker: Worker | null = null;
   let constructionError: unknown;
   if (!options.signal?.aborted && typeof Worker !== "undefined") {
@@ -34,14 +35,16 @@ export function createMatlabDisplayWorkerClient(
   }
   let requestId = 0;
   const pending = new Map<number, { resolve: (data: MatlabDisplaySamples[]) => void; reject: (reason: unknown) => void }>();
-  const close = () => {
+  const close = (reason: unknown = abortReason(options.signal)) => {
     if (closed) return;
     closed = true;
-    options.signal?.removeEventListener("abort", close);
+    closeReason = reason;
+    options.signal?.removeEventListener("abort", onAbort);
     worker?.terminate();
-    for (const request of pending.values()) request.reject(abortReason(options.signal));
+    for (const request of pending.values()) request.reject(reason);
     pending.clear();
   };
+  const onAbort = () => close(abortReason(options.signal));
   if (worker) {
     worker.onmessage = (event: MessageEvent<{ id: number; data?: MatlabDisplaySamples[]; error?: string }>) => {
       const request = pending.get(event.data.id);
@@ -53,24 +56,25 @@ export function createMatlabDisplayWorkerClient(
     };
     worker.onerror = (event) => {
       event.preventDefault();
-      for (const request of pending.values()) request.reject(new Error(event.message || "MATLAB display worker failed."));
-      pending.clear();
-      close();
+      close(new Error(event.message || "MATLAB display worker failed."));
     };
     worker.onmessageerror = () => {
-      for (const request of pending.values()) request.reject(new Error("MATLAB display worker could not deserialize its result."));
-      pending.clear();
-      close();
+      close(new Error("MATLAB display worker could not deserialize its result."));
     };
   }
-  options.signal?.addEventListener("abort", close, { once: true });
-  if (options.signal?.aborted) close();
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
   return {
-    close,
+    close: () => close(),
     process(channels) {
-      if (closed || options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+      // Module loading can fail while the first file read is still in flight.
+      // Preserve that failure for a later process() instead of reporting an
+      // AbortError, which the viewer correctly ignores for superseded views.
+      if (closed) return Promise.reject(closeReason);
+      if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
       if (!worker) return Promise.resolve().then(() => {
-        if (closed || options.signal?.aborted) throw abortReason(options.signal);
+        if (closed) throw closeReason;
+        if (options.signal?.aborted) throw abortReason(options.signal);
         return channels.map((channel) => filterMatlabDisplayChunk(channel.data, channel.options));
       });
       const id = ++requestId;
