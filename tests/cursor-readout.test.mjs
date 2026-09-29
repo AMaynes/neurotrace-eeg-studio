@@ -38,16 +38,68 @@ test("exact reads use the sample's real timestamp and source index, not cursor c
   assert.ok(Math.abs(readout.sampleTimeSec - 3.01) < 1e-12);
   assert.equal(readout.displaySampleIndex, 1);
   assert.equal(readout.sourceSampleIndex, 602);
+  assert.equal(readout.sourceTimeSec, 3.01);
 });
 
 test("processed sample indices distinguish the display grid from the source grid", () => {
   const processed = exact([.25, .75], { sampleRates: [100], sourceSampleRates: [200], startSecs: [.005] });
   assert.deepEqual(readCursorReadout(processed, 0, .015), {
-    kind: "sample", value: .75, unit: "µV", sampleTimeSec: .015, displaySampleIndex: 1, sourceSampleIndex: 3,
+    kind: "sample", value: .75, unit: "µV", sampleTimeSec: .015, sourceTimeSec: .015, displaySampleIndex: 1, sourceSampleIndex: 3,
   });
   const unaligned = exact([5, 6], { sampleRates: [128], sourceSampleRates: [200] });
   assert.equal(readCursorReadout(unaligned, 0, 1 / 128).sourceSampleIndex, null);
+  assert.equal(readCursorReadout(unaligned, 0, 1 / 128).sourceTimeSec, null);
   assert.equal(readCursorReadout(exact([1], { sourceSampleRates: [] }), 0, 0).sourceSampleIndex, null);
+});
+
+test("MATLAB plotted timing does not shift true source indices or local decimation phase", () => {
+  // A fractional request starts at .0073, reads source sample 7 at .007,
+  // plots that sample at .0083, then retains source samples 9 and 11.
+  const display = exact([10, 20, 30], {
+    sampleRates: [500], sourceSampleRates: [1000], startSecs: [.0083], sourceStartSampleIndices: [7],
+  });
+  for (const [displayIndex, sourceIndex] of [[0, 7], [1, 9], [2, 11]]) {
+    const plottedTime = .0083 + displayIndex / 500;
+    const result = readCursorReadout(display, 0, plottedTime);
+    assert.equal(result.kind, "sample");
+    assert.equal(result.value, (displayIndex + 1) * 10);
+    assert.equal(result.sampleTimeSec, plottedTime);
+    assert.equal(result.sourceSampleIndex, sourceIndex);
+    assert.equal(result.sourceTimeSec, sourceIndex / 1000);
+    assert.notEqual(result.sampleTimeSec, result.sourceTimeSec);
+  }
+  assert.equal(readCursorReadout(display, 0, .0082).reason, "outside-data");
+  assert.equal(readCursorReadout(display, 0, .0143).reason, "outside-data");
+});
+
+test("explicit unavailable or invalid source origins never fall back to a misleading plotted-time index", () => {
+  for (const sourceStartSampleIndices of [[], [null], [-1], [1.5], [NaN], [Infinity], [Number.MAX_SAFE_INTEGER + 1]]) {
+    const result = readCursorReadout(exact([10], { sourceStartSampleIndices }), 0, 0);
+    assert.equal(result.kind, "sample");
+    assert.equal(result.value, 10);
+    assert.equal(result.sourceSampleIndex, null);
+    assert.equal(result.sourceTimeSec, null);
+  }
+  const unaligned = exact([10, 20], { sampleRates: [128], sourceSampleRates: [200], sourceStartSampleIndices: [1] });
+  assert.equal(readCursorReadout(unaligned, 0, 0).sourceSampleIndex, 1);
+  assert.equal(readCursorReadout(unaligned, 0, 1 / 128).sourceSampleIndex, null);
+  const overflow = exact([10, 20], { sampleRates: [100], sourceSampleRates: [200], sourceStartSampleIndices: [Number.MAX_SAFE_INTEGER] });
+  assert.equal(readCursorReadout(overflow, 0, .01).sourceSampleIndex, null);
+});
+
+test("per-row source origins travel with mixed-rate montage rows and never manufacture an overview sample", () => {
+  const display = {
+    data: [new Float32Array([5, 6]), new Float32Array([8, 9])], envelopes: [null, null],
+    sampleRates: [500, 100], sourceSampleRates: [1000, 200], startSecs: [.0083, .0123],
+    sourceStartSampleIndices: [7, 1], units: ["µV", "counts"],
+  };
+  assert.equal(readCursorReadout(display, 1, .0223).sourceSampleIndex, 3);
+  assert.equal(readCursorReadout(display, 1, .0223).sourceTimeSec, .015);
+  assert.equal(readCursorReadout(display, 0, .0103).sourceSampleIndex, 9);
+  const range = readCursorReadout(overview({ sourceStartSampleIndices: [99] }), 0, .25);
+  assert.equal(range.kind, "range");
+  assert.equal("sourceSampleIndex" in range, false);
+  assert.equal("sourceTimeSec" in range, false);
 });
 
 test("missing, invalid, and outside exact coordinates never copy zero or an edge sample", () => {

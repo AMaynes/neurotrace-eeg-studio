@@ -156,7 +156,7 @@ test("directory modal blocks viewer shortcuts and only dismisses when idle", () 
 
 test("all local handlers honor customized bindings without requiring the original modifiers", () => {
   const changes = [];
-  const spectrogram = localHandler("spectrogram", { controlBindings: { ...DEFAULT_CONTROLS, spectrogramZoom: ["Alt+x"], spectrogramColorUp: ["c"] }, setTool: (v) => changes.push(v), setZoomBox() {}, setColorLimitShift: (fn) => changes.push(fn(0)), notifyTutorialAction() {} });
+  const spectrogram = localHandler("spectrogram", { controlBindings: { ...DEFAULT_CONTROLS, spectrogramZoom: ["Alt+x"], spectrogramColorUp: ["c"] }, clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)), setTool: (v) => changes.push(v), setZoomBox() {}, setColorLimitShift: (fn) => changes.push(fn(0)), notifyTutorialAction() {} });
   spectrogram(key("x", { altKey: true })); spectrogram(key("c")); spectrogram(key("z"));
   assert.deepEqual(changes, ["box-zoom", -0.1]);
   let size = 150;

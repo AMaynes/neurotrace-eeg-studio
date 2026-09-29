@@ -56,6 +56,8 @@ import {
   type RecordingMeta,
   type SignalErrorCode,
   type SignalSource,
+  type SignalSamples,
+  type WindowData,
 } from "./eeg-core";
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
 import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping";
@@ -70,20 +72,11 @@ import {
 import { buildEDFEnvelopeWindowOffThread } from "./edf-envelope-worker-client";
 import type { EDFEnvelopeProgress } from "./edf-envelope";
 import { buildRawDatEnvelopeWindowOffThread } from "./raw-dat-envelope-worker-client";
-import {
-  computeAverageSpectrogramOffThread,
-  computeSpectrogramOffThread,
-} from "./spectrogram-worker-client";
-import {
-  BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ,
-  BUZCODE_DEFAULT_SMOOTHING_SECONDS,
-  BUZCODE_SMOOTHING_OPTIONS,
-  displaySpectrogramPowers,
-  spectrogramReadBounds,
-  stableSpectrogramColorLimits,
-  thetaRatioOverlay,
-  type SpectrogramComputeResult,
-} from "./spectrogram-compute";
+import { computeMatlabSpectrogramOffThread } from "./matlab-spectrogram-worker-client";
+import type { MatlabSpectrogramResult } from "./matlab-spectrogram";
+import { matlabSpectrogramInputPlan } from "./matlab-spectrogram-input";
+import { buildMatlabDisplayWindow, type MatlabDisplayWindow } from "./matlab-display-window";
+import { createMatlabFileReader, type MatlabFileReader } from "./matlab-file-reader";
 import {
   PerformanceDiagnosticsCollector,
   type DiagnosticsOperationHandle,
@@ -200,6 +193,7 @@ type ChannelScope = {
 };
 
 type TraceDisplayMode = "clamped" | "overlap";
+type SnapMode = "none" | "1s" | "100ms" | "sample";
 
 type Annotation = {
   id: string;
@@ -217,6 +211,8 @@ type Annotation = {
   status: AnnotationStatus;
   candidateId?: string;
   channelScope?: ChannelScope;
+  /** Plot-axis seconds stay authoritative; this records their source-grid offset. */
+  sourceTimeOffsetSec?: number;
   revisions?: Array<{
     revision: number;
     committedAt: string;
@@ -239,7 +235,8 @@ type Annotation = {
       montage: MontageMode;
       filters: DisplayFilterSettings;
       gain: number;
-      snapMode: "1s" | "100ms" | "sample";
+      snapMode: SnapMode;
+      timingConvention?: "matlab-window";
       traceDisplayMode: TraceDisplayMode;
       selectedSourceChannels: number[];
     };
@@ -377,13 +374,13 @@ type PerformanceWithMemory = Performance & {
 type DisplayWindow = {
   /** Processing identity prevents old values appearing under newly selected controls. */
   settingsKey?: string;
-  data: Float32Array[];
+  data: SignalSamples[];
   /** Stable per-row centers that do not change as the time viewport moves. */
   traceBaselines: number[];
   /** Exact source extrema retained for clipping and dropout metadata. */
   envelopes: Array<{
-    minima: Float32Array;
-    maxima: Float32Array;
+    minima: SignalSamples;
+    maxima: SignalSamples;
     gaps: Uint8Array;
     variation?: Float32Array;
     startSec: number;
@@ -392,6 +389,8 @@ type DisplayWindow = {
   labels: string[];
   sampleRates: number[];
   sourceSampleRates: number[];
+  sourceStartSampleIndices?: (number | null)[];
+  timingConvention?: "matlab-window";
   /** Absolute time represented by sample zero for each displayed row. */
   startSecs: number[];
   units: string[];
@@ -464,7 +463,7 @@ type SessionWorkspaceSnapshot = {
   cursorTime: number;
   cursorAmplitude: number | null;
   cursorLocked: boolean;
-  snapMode: "1s" | "100ms" | "sample";
+  snapMode: SnapMode;
   spectrogramOpen: boolean;
   expandedChannels: boolean;
   candidates: Candidate[];
@@ -788,7 +787,12 @@ function normalizeAnnotationGeometry(annotation: Annotation, durationSec: number
   const track: TrackId = ["context", "windowed", "instance"].includes(annotation.track)
     ? annotation.track
     : label.track;
-  return { ...annotation, start, end, geometry, track };
+  const sourceTimeOffsetSec = typeof annotation.sourceTimeOffsetSec === "number"
+    && Number.isFinite(annotation.sourceTimeOffsetSec) && annotation.sourceTimeOffsetSec >= 0
+    && annotation.sourceTimeOffsetSec <= Math.max(1, duration)
+    ? annotation.sourceTimeOffsetSec : undefined;
+  return { ...annotation, start, end, geometry, track,
+    ...(annotation.sourceTimeOffsetSec !== undefined ? { sourceTimeOffsetSec } : {}) };
 }
 
 function annotationOverlapsWindow(annotation: Annotation, start: number, end: number) {
@@ -1105,6 +1109,50 @@ const TIMELINE_DENSITY_BINS_PER_TRACK = 256;
 
 const performanceDiagnostics = new PerformanceDiagnosticsCollector();
 
+/** Exact file reads stay off the UI thread in both MATLAB analysis paths. */
+async function readMatlabSourceWindow(source: SignalSource, startSec: number, durationSec: number,
+  channelIndices: readonly number[] | undefined, options: { signal?: AbortSignal } = {}, reader?: MatlabFileReader): Promise<WindowData> {
+  const read = performanceDiagnostics.beginSourceRead({ label: "MATLAB source window", phase: "Reading source samples" });
+  const decode = performanceDiagnostics.beginDecode({ label: "MATLAB source decoding", phase: "Calibrating samples" });
+  let previousBytes = 0;
+  const workerOptions = { ...options, fallbackToMainThread: false,
+    onProgress: (progress: { bytesRead: number; totalBytes: number }) => {
+      read.update({ completedBytes: progress.bytesRead, totalBytes: progress.totalBytes,
+        transientAllocatedBytes: Math.max(0, progress.bytesRead - previousBytes) });
+      previousBytes = progress.bytesRead;
+    } };
+  try {
+    if (reader) {
+      let reportedMetrics = false;
+      const windowData = await reader.readWindow(startSec, durationSec, channelIndices, { ...workerOptions,
+        onComplete: (metrics) => {
+          reportedMetrics = true;
+          read.finish({ completedBytes: metrics.bytesRead, durationMs: metrics.readMs });
+          decode.finish({ completedBytes: metrics.bytesRead, durationMs: metrics.decodeMs });
+        } });
+      if (!reportedMetrics) {
+        read.finish({ completedBytes: 0 });
+        decode.finish({ completedBytes: windowData.data.reduce((sum, data) => sum + data.byteLength, 0) });
+      }
+      return windowData;
+    }
+    const request = { startSec, durationSec, channelIndices };
+    const result = source instanceof EDFSource
+      ? await buildEDFFileWindowOffThread({ ...request, format: "edf", blob: source.sourceBlob, header: source.header }, workerOptions)
+      : source instanceof RawDatSource
+        ? await buildRawDatFileWindowOffThread({ ...request, format: "raw-dat", ...source.envelopeWorkerSource }, workerOptions)
+        : null;
+    const windowData = result?.window ?? await source.getWindow(startSec, durationSec, channelIndices, options);
+    read.finish({ completedBytes: result?.metrics.bytesRead ?? 0, durationMs: result?.metrics.readMs });
+    decode.finish({ completedBytes: windowData.data.reduce((sum, values) => sum + values.byteLength, 0), durationMs: result?.metrics.decodeMs });
+    return windowData;
+  } catch (error) {
+    const finish = isAbortFailure(error) ? "cancel" : "fail";
+    read[finish](); decode[finish]();
+    throw error;
+  }
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -1328,11 +1376,15 @@ function quantizeWindowZoom(value: number) {
   return Number((Math.round(value / WINDOW_ZOOM_STEP_SECONDS) * WINDOW_ZOOM_STEP_SECONDS).toFixed(10));
 }
 
-function snapTime(value: number, mode: "1s" | "100ms" | "sample", sampleRate: number, bypass = false) {
-  if (bypass) return value;
+function snapTime(value: number, mode: SnapMode, sampleRate: number, bypass = false, origin = 0) {
+  if (bypass || mode === "none") return value;
   if (mode === "1s") return Math.round(value);
   if (mode === "100ms") return Math.round(value * 10) / 10;
-  return Math.round(value * sampleRate) / sampleRate;
+  return origin + Math.round((value - origin) * sampleRate) / sampleRate;
+}
+
+function sampleSnapOrigin(display: DisplayWindow, sampleRate: number) {
+  return display.timingConvention === "matlab-window" ? display.viewStart + 1 / sampleRate : 0;
 }
 
 function shortFileName(name: string, max = 26) {
@@ -1553,12 +1605,12 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     cursorTime: 0,
     cursorAmplitude: 0,
     cursorLocked: false,
-    snapMode: "100ms",
+    snapMode: "none",
     spectrogramOpen: false,
     expandedChannels: false,
     waveformVerticalViewport: null,
     channelScrollTop: 0,
-    spectrogramFrequencyRange: { min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ },
+    spectrogramFrequencyRange: { min: 0, max: 150 },
     candidates: [],
     activeCandidate: 0,
     sourceHash: "",
@@ -1756,6 +1808,7 @@ export default function Home() {
   const displayRefreshPendingRef = useRef<(() => Promise<void>) | null>(null);
   const displayRefreshActiveRef = useRef(false);
   const rawWindowCacheRef = useRef<RawWindowCache[]>([]);
+  const matlabWindowCacheRef = useRef<Array<{ source: SignalSource; key: string; value: MatlabDisplayWindow }>>([]);
   const processedWindowCacheRef = useRef<ProcessedWindowCache[]>([]);
   const envelopeWindowCacheRef = useRef<EnvelopeWindowCache[]>([]);
   const recordingOverviewCacheRef = useRef(new RecordingOverviewCache());
@@ -1792,8 +1845,9 @@ export default function Home() {
   const readResourceCacheUsage = useCallback((): ResourceCacheUsage => ({
     rawBytes: rawWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0),
     rawEntries: rawWindowCacheRef.current.length,
-    processedBytes: processedWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0),
-    processedEntries: processedWindowCacheRef.current.length,
+    processedBytes: processedWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0)
+      + matlabWindowCacheRef.current.reduce((sum, entry) => sum + entry.value.byteLength, 0),
+    processedEntries: processedWindowCacheRef.current.length + matlabWindowCacheRef.current.length,
     envelopeBytes: envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0)
       + recordingOverviewCacheRef.current.byteLength,
     envelopeEntries: envelopeWindowCacheRef.current.length + recordingOverviewCacheRef.current.size,
@@ -1831,12 +1885,8 @@ export default function Home() {
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
   const [display, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
   const [exactSpectrogramSignal, setExactSpectrogramSignal] = useState<{
-    sessionKey: string;
-    montage: MontageMode;
-    viewStart: number;
-    duration: number;
+    requestKey: string;
     channels: Array<{
-      displayIndex: number;
       sourceIndex: number;
       dataStart: number;
       data: Float32Array;
@@ -1858,6 +1908,7 @@ export default function Home() {
   const [boxZoomActive, setBoxZoomActive] = useState(false);
   const [waveformVerticalViewport, setWaveformVerticalViewport] = useState<NormalizedVerticalViewport | null>(null);
   const [cursorTime, setCursorTime] = useState(0);
+  const [spectrogramAnchor, setSpectrogramAnchor] = useState<number | null>(null);
   const displaySettingsKey = useMemo(() => JSON.stringify([
     meta.id, montage, filters.enabled ? filters : { enabled: false }, [...selectedChannels].sort((a, b) => a - b),
   ]), [meta.id, montage, filters, selectedChannels]);
@@ -1870,11 +1921,11 @@ export default function Home() {
   const [cursorLocked, setCursorLocked] = useState(false);
   const [activeTool, setActiveTool] = useState<"cursor" | "seizure">("cursor");
   const [markOnset, setMarkOnset] = useState<number | null>(null);
-  const [snapMode, setSnapMode] = useState<"1s" | "100ms" | "sample">("100ms");
+  const [snapMode, setSnapMode] = useState<SnapMode>("none");
   const [playing, setPlaying] = useState(false);
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
   const [expandedChannels, setExpandedChannels] = useState(false);
-  const [spectrogramFrequencyRange, setSpectrogramFrequencyRange] = useState<SpectrogramFrequencyRange>({ min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ });
+  const [spectrogramFrequencyRange, setSpectrogramFrequencyRange] = useState<SpectrogramFrequencyRange>({ min: 0, max: 150 });
   const zoomViewRef = useRef<ZoomView>({ viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: 0, frequencyRange: spectrogramFrequencyRange });
   useLayoutEffect(() => {
     zoomViewRef.current = { viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: channelScrollOffsetRef.current, frequencyRange: spectrogramFrequencyRange };
@@ -2238,6 +2289,7 @@ export default function Home() {
     setFocusedChannel(snapshot.focusedChannel);
     setChannelSelectionActive(false);
     setExactSpectrogramSignal(null);
+    setSpectrogramAnchor(null);
     // Signal caches are global LRUs keyed by source. Retain them across tabs so
     // reopening a session does not discard its expensive full-session index.
     setDisplay(EMPTY_DISPLAY);
@@ -2249,7 +2301,7 @@ export default function Home() {
     setInspectionDragging(false);
     setWaveformVerticalViewport(snapshot.waveformVerticalViewport ?? null);
     pendingZoomScrollRef.current = snapshot.channelScrollTop ?? 0;
-    setSpectrogramFrequencyRange(snapshot.spectrogramFrequencyRange ?? { min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ });
+    setSpectrogramFrequencyRange(snapshot.spectrogramFrequencyRange ?? { min: 0, max: 150 });
     zoomGestureRef.current = {};
     setCursorTime(snapshot.cursorTime);
     setCursorLocked(snapshot.cursorLocked);
@@ -2617,9 +2669,10 @@ export default function Home() {
         : intent === "windowed"
           ? "windowed"
           : label.track;
-    let start = clamp(snapTime(Math.min(time, explicitEnd ?? time), snapMode, samplingRate), 0, meta.durationSec);
+    const snapOrigin = sampleSnapOrigin(display, samplingRate);
+    let start = clamp(snapTime(Math.min(time, explicitEnd ?? time), snapMode, samplingRate, false, snapOrigin), 0, meta.durationSec);
     let end = geometry === "point" ? start : explicitEnd ?? start + label.defaultDuration;
-    end = clamp(snapTime(Math.max(end, start), snapMode, samplingRate), start, meta.durationSec);
+    end = clamp(snapTime(Math.max(end, start), snapMode, samplingRate, false, snapOrigin), start, meta.durationSec);
     if (geometry === "window") {
       const windowStart = Math.floor(start / 30) * 30;
       end = Math.min(meta.durationSec, windowStart + 30);
@@ -2656,6 +2709,8 @@ export default function Home() {
       confidence: label.id === "uncertain" ? 50 : 85,
       reliability: "gray",
       origin: "manual",
+      sourceTimeOffsetSec: display.timingConvention === "matlab-window" && (geometry === "point" || geometry === "interval")
+        ? snapOrigin - Math.floor(display.viewStart * samplingRate) / samplingRate : 0,
       reviewer,
       notes: "",
       status: "draft",
@@ -3002,6 +3057,7 @@ export default function Home() {
           snapMode,
           traceDisplayMode,
           selectedSourceChannels: [...selectedChannels].sort((a, b) => a - b),
+          timingConvention: filters.enabled ? undefined : "matlab-window",
         },
         sourceSnapshot: {
           format: meta.format,
@@ -3075,7 +3131,7 @@ export default function Home() {
     filtersEnabled: filters.enabled,
     montage,
   }) : "none";
-  const overviewRefreshRevision = overviewDisplayPolicy === "final" ? recordingOverviewRevision : 0;
+  const overviewRefreshRevision = filters.enabled && overviewDisplayPolicy === "final" ? recordingOverviewRevision : 0;
   const sessionOverview = useMemo(() => {
     // Index publication and session switching supply immutable state; no disk work here.
     const selected = [...selectedChannels].sort((a, b) => a - b);
@@ -3125,7 +3181,7 @@ export default function Home() {
             : null,
         });
         const stableTraceBaselines = (
-          data: Float32Array[],
+          data: SignalSamples[],
           labels: string[],
           sourceIndices: number[][],
           units: string[],
@@ -3139,6 +3195,44 @@ export default function Home() {
           ]),
           values,
         ));
+        if (!filters.enabled) {
+          const key = JSON.stringify([displaySettingsKey, signalViewStart, timebase, waveformWidth, indices]);
+          let prepared = matlabWindowCacheRef.current.find((entry) => entry.source === source && entry.key === key)?.value;
+          if (!prepared) {
+            const operation = performanceDiagnostics.beginDecode({ label: "MATLAB FIR and montage", phase: "Processing exact window in bounded chunks" });
+            const reader = createMatlabFileReader(source, { signal: abortController.signal });
+            try {
+              prepared = await buildMatlabDisplayWindow({ source, startSec: signalViewStart, durationSec: timebase,
+                pixelWidth: waveformWidth, channelIndices: indices, montage, allChannelLabels: meta.channelLabels,
+                bipolarKind: bipolarMontageKind(meta.channelLabels) }, {
+                signal: abortController.signal, fallbackToMainThread: false, maxChunkDurationSec: 30,
+                readWindow: (start, duration, channels, options) => readMatlabSourceWindow(source, start, duration, channels, options, reader),
+              });
+              operation.finish({ completedBytes: prepared.byteLength });
+            } catch (error) {
+              operation[isAbortFailure(error) ? "cancel" : "fail"]();
+              throw error;
+            } finally {
+              reader.dispose();
+            }
+            if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+            matlabWindowCacheRef.current.push({ source, key, value: prepared });
+            while (matlabWindowCacheRef.current.length > 4 || matlabWindowCacheRef.current.reduce((sum, entry) => sum + entry.value.byteLength, 0) > 48 * 1024 * 1024) {
+              matlabWindowCacheRef.current.shift();
+            }
+          }
+          if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+          const nextDisplay: DisplayWindow = { ...prepared, settingsKey: displaySettingsKey,
+            traceBaselines: stableTraceBaselines(prepared.data, prepared.labels, prepared.sourceIndices, prepared.units),
+            timingConvention: "matlab-window", viewStart: signalViewStart,
+            flatlineRegions: mergeNearbyFlatlineRegions(prepared.flatlineRegions, FLATLINE_DISPLAY_MERGE_GAP_SECONDS) };
+          displayAppliedRequestIdRef.current = requestId;
+          setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(nextDisplay) : nextDisplay);
+          displayPreviewReadyRef.current = true;
+          setFocusedChannel((current) => clamp(current, 0, Math.max(0, nextDisplay.labels.length - 1)));
+          setLoadingSignal(false);
+          return;
+        }
         let previewCoverageEndSec = signalViewStart;
         const showOverviewPreview = (visible: EnvelopeWindowData, status: Pick<DisplayWindow,
           "indexedThroughSec" | "refiningOverview" | "unreadAfterSec">) => {
@@ -3933,37 +4027,27 @@ export default function Home() {
   }, [displaySettingsKey, overviewDisplayPolicy, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
   const spectrogramInputPlan = useMemo(() => {
-    const targetDisplayIndices = channelSelectionActive
-      ? [clamp(focusedChannel, 0, Math.max(0, display.data.length - 1))]
-      : display.data.map((_, index) => index);
-    const requestedChannels = targetDisplayIndices.flatMap((displayIndex) => {
-      const sourceIndex = display.primarySourceIndices[displayIndex];
-      return sourceIndex === undefined ? [] : [{ displayIndex, sourceIndex }];
-    });
-    const sourceIndices = [...new Set(targetDisplayIndices.flatMap((index) => display.sourceIndices[index] ?? []))];
-    const bounds = spectrogramReadBounds(signalViewStart, timebase, meta.durationSec);
-    const expectedBytes = sourceIndices.reduce((sum, sourceIndex) => (
-      sum + Math.ceil((meta.sampleRates[sourceIndex] ?? primarySampleRate(meta)) * bounds.duration) * Float32Array.BYTES_PER_ELEMENT
-    ), 0);
-    return {
-      requestedChannels,
-      sourceIndices,
-      bounds,
-      expectedBytes,
-      requestKey: JSON.stringify([sessionKey, montage, signalViewStart, timebase, requestedChannels, display.labels, display.sourceIndices]),
-    };
-  }, [channelSelectionActive, display.data, display.labels, display.sourceIndices, display.primarySourceIndices, focusedChannel, meta, montage, sessionKey, signalViewStart, timebase]);
+    const anchor = spectrogramAnchor !== null && spectrogramAnchor >= signalViewStart && spectrogramAnchor <= signalViewStart + timebase
+      ? spectrogramAnchor : signalViewStart + timebase / 2;
+    try {
+      const plan = matlabSpectrogramInputPlan(meta, display.primarySourceIndices[focusedChannel], signalViewStart, timebase, anchor);
+      return { plan, error: "", expectedBytes: plan ? plan.sourceIndices.length * plan.sampleCount * 4 : 0,
+        requestKey: JSON.stringify([sessionKey, plan]) };
+    } catch (error) {
+      return { plan: null, error: error instanceof Error ? error.message : "Invalid spectrogram inputs", expectedBytes: 0,
+        requestKey: JSON.stringify([sessionKey, signalViewStart, timebase, focusedChannel]) };
+    }
+  }, [display.primarySourceIndices, focusedChannel, meta, sessionKey, signalViewStart, spectrogramAnchor, timebase]);
 
-  // Spectral input is independent of screen resampling and waveform filters.
-  // Complete recording seconds and smoothing neighbors keep shared frames
-  // identical across pans. Superseded reads cannot publish into a new view.
+  // MATLAB analyzes raw group channels, within +/-15 seconds of the clicked
+  // sample, cropped to the loaded window. It does not analyze display montages.
   useEffect(() => {
     const source = sourceRef.current;
-    const { requestedChannels, sourceIndices, bounds, expectedBytes, requestKey } = spectrogramInputPlan;
+    const { plan, expectedBytes, requestKey } = spectrogramInputPlan;
     if (!spectrogramOpen
       || !hasRecording
       || !source
-      || !requestedChannels.length
+      || !plan
       || expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES) {
       setExactSpectrogramSignal(null);
       return;
@@ -3971,46 +4055,21 @@ export default function Home() {
 
     const abortController = new AbortController();
     setExactSpectrogramSignal(null);
-    void source.getWindow(
-      bounds.start,
-      bounds.duration,
-      sourceIndices,
-      { signal: abortController.signal },
-    )
+    void readMatlabSourceWindow(source, plan.readStart, plan.readDuration, plan.sourceIndices, { signal: abortController.signal })
       .then((windowData) => {
         if (abortController.signal.aborted || sourceRef.current !== source) return;
         setSpectrogramInputError(null);
-        const derived = buildMontage(
-          windowData.data,
-          sourceIndices.map((index) => meta.channelLabels[index]),
-          montage,
-          new Set(),
-          windowData.sampleRates,
-          windowData.channelStartSecs,
-          { allChannelLabels: meta.channelLabels, sourceChannelIndices: sourceIndices,
-            bipolarKind: bipolarMontageKind(meta.channelLabels), channelUnits: windowData.channelUnits },
-        );
-        const channels = requestedChannels.map(({ displayIndex, sourceIndex }) => {
-          const position = derived.primarySourceIndices.findIndex((primary, index) => (
-            sourceIndices[primary] === sourceIndex && derived.labels[index] === display.labels[displayIndex]
-          ));
-          if (position < 0) throw new Error("Exact spectrogram input could not match the displayed montage.");
-          const primary = derived.primarySourceIndices[position];
+        const channels = plan.sourceIndices.map((sourceIndex, position) => {
+          const offset = plan.firstSourceSample - Math.round(windowData.channelStartSecs[position] * plan.sampleRate);
+          if (offset < 0 || windowData.data[position].length < offset + plan.sampleCount) throw new Error("Spectrogram source read did not cover the exact MATLAB sample window.");
           return {
-            displayIndex,
             sourceIndex,
-            dataStart: derived.sampleStartSecs?.[position] ?? windowData.channelStartSecs[primary] ?? windowData.startSec,
-            data: derived.data[position],
-            sampleRate: derived.sampleRates?.[position] ?? windowData.sampleRates[primary],
+            dataStart: plan.dataStart,
+            data: windowData.data[position].slice(offset, offset + plan.sampleCount),
+            sampleRate: plan.sampleRate,
           };
         });
-        setExactSpectrogramSignal({
-          sessionKey,
-          montage,
-          viewStart: signalViewStart,
-          duration: timebase,
-          channels,
-        });
+        setExactSpectrogramSignal({ requestKey, channels });
       })
       .catch((error) => {
         if (!abortController.signal.aborted && !isAbortFailure(error)) {
@@ -4019,7 +4078,7 @@ export default function Home() {
         }
       });
     return () => abortController.abort();
-  }, [display.labels, hasRecording, meta, montage, sessionKey, signalViewStart, spectrogramInputPlan, spectrogramOpen, timebase]);
+  }, [hasRecording, spectrogramInputPlan, spectrogramOpen]);
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
@@ -4484,11 +4543,12 @@ export default function Home() {
     const visibleStart = clamp(viewStart, 0, meta.durationSec);
     const visibleEnd = clamp(viewStart + timebase, visibleStart, meta.durationSec);
     return clamp(
-      snapTime(raw, activeTool === "seizure" ? "sample" : snapMode, sourceRateForDisplayRow(display, meta, row), bypass),
+      snapTime(raw, snapMode, sourceRateForDisplayRow(display, meta, row), bypass,
+        sampleSnapOrigin(display, sourceRateForDisplayRow(display, meta, row))),
       visibleStart,
       visibleEnd,
     );
-  }, [activeTool, display, meta, snapMode, timebase, viewStart]);
+  }, [display, meta, snapMode, timebase, viewStart]);
 
   const inspectionBoxFromPointer = useCallback((
     pointer: WavePointerState,
@@ -4566,6 +4626,7 @@ export default function Home() {
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     setCursorTime(time);
+    setSpectrogramAnchor(time);
     setCursorLocked(true);
     setFocusedChannel(row);
     setChannelSelectionActive(true);
@@ -4762,7 +4823,7 @@ export default function Home() {
         const dragSampleRate = drag.original.channelScope
           ? meta.sampleRates[drag.original.channelScope.primarySourceIndex] ?? primarySampleRate(meta)
           : sourceRateForDisplayRow(display, meta, focusedChannel);
-        const snappedDelta = snapTime(drag.original.start + delta, snapMode, dragSampleRate) - drag.original.start;
+        const snappedDelta = snapTime(drag.original.start + delta, snapMode, dragSampleRate, false, drag.original.sourceTimeOffsetSec ?? 0) - drag.original.start;
         const earliest = Math.min(...drag.originals.map((item) => item.start));
         const latest = Math.max(...drag.originals.map((item) => item.end));
         const sharedDelta = clamp(snappedDelta, -earliest, meta.durationSec - latest);
@@ -4802,12 +4863,12 @@ export default function Home() {
       let start = drag.original.start;
       let end = drag.original.end;
       if (drag.mode === "move") {
-        start = clamp(snapTime(drag.original.start + delta, snapMode, dragSampleRate), 0, Math.max(0, meta.durationSec - duration));
+        start = clamp(snapTime(drag.original.start + delta, snapMode, dragSampleRate, false, drag.original.sourceTimeOffsetSec ?? 0), 0, Math.max(0, meta.durationSec - duration));
         end = geometry === "point" ? start : start + duration;
       } else if (drag.mode === "start") {
-        start = clamp(snapTime(drag.original.start + delta, snapMode, dragSampleRate), 0, end - (geometry === "point" ? 0 : 0.1));
+        start = clamp(snapTime(drag.original.start + delta, snapMode, dragSampleRate, false, drag.original.sourceTimeOffsetSec ?? 0), 0, end - (geometry === "point" ? 0 : 0.1));
       } else {
-        end = clamp(snapTime(drag.original.end + delta, snapMode, dragSampleRate), start + (geometry === "point" ? 0 : 0.1), meta.durationSec);
+        end = clamp(snapTime(drag.original.end + delta, snapMode, dragSampleRate, false, drag.original.sourceTimeOffsetSec ?? 0), start + (geometry === "point" ? 0 : 0.1), meta.durationSec);
       }
       const normalized = normalizeAnnotationGeometry({ ...drag.original, start, end, track, geometry }, meta.durationSec);
       pendingAnnotationDragRef.current = {
@@ -5253,6 +5314,7 @@ export default function Home() {
     setSelectedChannels(new Set(recommendedChannels));
     setChannelSelectionActive(false);
     setExactSpectrogramSignal(null);
+    setSpectrogramAnchor(null);
     // Do not clear cross-session LRUs here; entries are source-keyed and their
     // global byte ceilings evict the least-recently used recording as needed.
     setDisplay(EMPTY_DISPLAY);
@@ -5284,7 +5346,7 @@ export default function Home() {
     redoRef.current = [];
     zoomGestureRef.current = {};
     pendingZoomScrollRef.current = 0;
-    setSpectrogramFrequencyRange({ min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ });
+    setSpectrogramFrequencyRange({ min: 0, max: 150 });
     setShowImport(false);
 
     let lastProgressBucket = -1;
@@ -5730,8 +5792,8 @@ export default function Home() {
         if (typeof cursor.time === "number" && Number.isFinite(cursor.time)) setCursorTime(clamp(cursor.time, 0, durationSec));
         setCursorLocked(cursor.locked === true);
       }
-      if (["1s", "100ms", "sample"].includes(String(workspace.snapMode))) {
-        setSnapMode(workspace.snapMode as "1s" | "100ms" | "sample");
+      if (["none", "1s", "100ms", "sample"].includes(String(workspace.snapMode))) {
+        setSnapMode(workspace.snapMode as SnapMode);
       }
       if (typeof workspace.spectrogramOpen === "boolean") setSpectrogramOpen(workspace.spectrogramOpen);
       if (typeof workspace.expandedChannels === "boolean") setExpandedChannels(workspace.expandedChannels);
@@ -6610,8 +6672,9 @@ export default function Home() {
       return JSON.stringify({
         ...item,
         label: LABEL_BY_ID.get(item.labelId)?.name,
-        start_sample: annotationRate ? Math.round(item.start * annotationRate) : null,
-        end_sample: annotationRate ? Math.round(item.end * annotationRate) : null,
+        start_sample: annotationRate ? Math.max(0, Math.round((item.start - (item.sourceTimeOffsetSec ?? 0)) * annotationRate)) : null,
+        end_sample: annotationRate ? Math.max(0, Math.round((item.end - (item.sourceTimeOffsetSec ?? 0)) * annotationRate)) : null,
+        source_time_offset_sec: item.sourceTimeOffsetSec ?? 0,
         sample_rate_basis_hz: annotationRate ?? null,
         source_content_sha256: rawSourceHash,
         session_interpretation_sha256: sourceHash,
@@ -7151,40 +7214,23 @@ export default function Home() {
   const activeDisplayVisibleBytes = activeDisplayViews.reduce((sum, view) => sum + view.byteLength, 0);
   const activeBackingBuffers = new Set(activeDisplayViews.map((view) => view.buffer));
   const activeDisplayBytes = [...activeBackingBuffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
-  const spectrogramChannelIndices = useMemo(() => channelSelectionActive
-    ? [clamp(focusedChannel, 0, Math.max(0, display.data.length - 1))]
-    : display.data.map((_, index) => index), [channelSelectionActive, display.data, focusedChannel]);
   const matchingExactSpectrogramSignal = exactSpectrogramSignal
-    && exactSpectrogramSignal.sessionKey === sessionKey
-    && exactSpectrogramSignal.montage === montage
-    && Math.abs(exactSpectrogramSignal.viewStart - signalViewStart) < 1e-9
-    && Math.abs(exactSpectrogramSignal.duration - timebase) < 1e-9
-    && exactSpectrogramSignal.channels.length === spectrogramChannelIndices.length
-    && exactSpectrogramSignal.channels.every((channel, index) => (
-      channel.displayIndex === spectrogramChannelIndices[index]
-      && channel.sourceIndex === display.primarySourceIndices[spectrogramChannelIndices[index]]
-    ))
+    && exactSpectrogramSignal.requestKey === spectrogramInputPlan.requestKey
       ? exactSpectrogramSignal
       : null;
   const spectrogramSignals = useMemo<SpectrogramSignalInput[]>(() => {
-    const exactByDisplayIndex = new Map(
-      matchingExactSpectrogramSignal?.channels.map((channel) => [channel.displayIndex, channel]),
-    );
-    return spectrogramChannelIndices.map((displayIndex) => {
-      const sourceIndex = display.primarySourceIndices[displayIndex];
-      const exact = exactByDisplayIndex.get(displayIndex);
+    return (spectrogramInputPlan.plan?.sourceIndices ?? []).map((sourceIndex, position) => {
+      const exact = matchingExactSpectrogramSignal?.channels[position];
       return {
         data: exact?.data,
-        dataStart: exact?.dataStart ?? display.startSecs[displayIndex] ?? display.viewStart,
-        signalKey: `${sessionKey}:${montage}:${display.sourceIndices[displayIndex]?.join(",")}:${sourceIndex ?? -1}:${display.labels[displayIndex] ?? ""}`,
+        dataStart: exact?.dataStart ?? spectrogramInputPlan.plan?.dataStart ?? 0,
+        signalKey: `${spectrogramInputPlan.requestKey}:${sourceIndex}`,
         sampleRate: exact?.sampleRate ?? meta.sampleRates[sourceIndex] ?? primarySampleRate(meta),
         overview: !exact,
       };
     });
-  }, [display, matchingExactSpectrogramSignal, meta, montage, sessionKey, spectrogramChannelIndices]);
-  const spectrogramLabel = channelSelectionActive
-    ? formatDisplayChannelLabel(display.labels[focusedChannel] || "Focused channel")
-    : `All enabled channels (${spectrogramSignals.length})`;
+  }, [matchingExactSpectrogramSignal, meta, spectrogramInputPlan]);
+  const spectrogramLabel = spectrogramInputPlan.plan?.label ?? "Select a waveform channel";
 
   return (
     <main
@@ -7429,7 +7475,7 @@ export default function Home() {
             <span className="toolbar-kicker">Signal tools</span>
             <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} data-tutorial="spectrogram-toggle" aria-label="Spectrogram" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
             <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">{bipolarMontageLabel(meta.channelLabels)}</option></select></label>
-            <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
+            <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
             <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
               <span className="window-control-label">Window</span>
               <label className="window-amount-field"><input
@@ -7494,12 +7540,12 @@ export default function Home() {
           </div>
 
           {hasRecording && showFilters && <div className="filter-drawer">
-            <div><strong>Display filters</strong><span>Raw samples remain unchanged</span></div>
+            <div><strong>Display processing</strong><span>Default: MATLAB FIR + automatic 1×/2× sampling. Custom filters below are additional, non-MATLAB behavior. Source samples remain unchanged.</span></div>
             <label>High-pass <input type="number" min="0" step="0.1" value={filters.highPassHz} onChange={(event) => setFilters((current) => ({ ...current, highPassHz: Number(event.target.value) }))} /> Hz</label>
             <label>Low-pass <input type="number" min="1" step="1" value={filters.lowPassHz} onChange={(event) => setFilters((current) => ({ ...current, lowPassHz: Number(event.target.value) }))} /> Hz</label>
             <label>Notch <select value={filters.notchHz} onChange={(event) => setFilters((current) => ({ ...current, notchHz: Number(event.target.value) as 0 | 50 | 60 }))}><option value="0">Off</option><option value="50">50 Hz</option><option value="60">60 Hz</option></select></label>
-            <label className="switch-label"><input type="checkbox" checked={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.checked }))} /><span /> Enabled</label>
-            <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to raw</button>
+            <label className="switch-label"><input type="checkbox" checked={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.checked }))} /><span /> Custom mode</label>
+            <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to MATLAB</button>
           </div>}
 
           {hasRecording && activeCandidateItem && <section className="candidate-review-bar" aria-label="Source event review" data-review-status={activeCandidateItem.status}>
@@ -7646,9 +7692,10 @@ export default function Home() {
               controlBindings={controlBindings}
               waveformCanvasRef={canvasRef}
               signals={spectrogramSignals}
-              inputError={spectrogramInputPlan.expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES
+              baselineTime={spectrogramInputPlan.plan?.baselineTime ?? 0}
+              inputError={spectrogramInputPlan.error || (spectrogramInputPlan.expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES
                 ? "Zoom in or enable fewer channels to load full-resolution spectrogram data."
-                : spectrogramInputError?.requestKey === spectrogramInputPlan.requestKey ? spectrogramInputError.message : ""}
+                : spectrogramInputError?.requestKey === spectrogramInputPlan.requestKey ? spectrogramInputError.message : "")}
               viewStart={viewStart}
               viewDuration={timebase}
               sessionDuration={meta.durationSec}
@@ -8088,7 +8135,7 @@ export default function Home() {
           <ShortcutSettings bindings={controlBindings} onChange={setControlBindings} />
           <section className="settings-section interaction-settings">
             <div className="settings-heading"><strong>Pointer and timing controls</strong></div>
-            <label><span>Label snapping</span><select value={snapMode} onChange={(event) => setSnapMode(event.target.value as "1s" | "100ms" | "sample")}><option value="1s">1 second</option><option value="100ms">100 milliseconds</option><option value="sample">Focused channel sample</option></select></label>
+            <label><span>Label snapping</span><select value={snapMode} onChange={(event) => setSnapMode(event.target.value as SnapMode)}><option value="none">Off (MATLAB click timing)</option><option value="1s">1 second</option><option value="100ms">100 milliseconds</option><option value="sample">Focused channel sample</option></select></label>
             <div className="fixed-control-grid">
               {[["Click", "Pin instance time"], ["Click + drag", "Select label window (or box zoom with Zoom tool)"], ["Wheel / trackpad", "Pan in time; scroll expanded channels vertically"], ["Shift + wheel", "Pan time instead of scrolling channels"], ["Pinch / Ctrl/⌘ + wheel", "EEG-only time zoom"], ["Alt + pointer", "Bypass label snapping"], ["Window +/−", "Step 0.1; Shift: 1; Ctrl/⌘ + Shift: 10"], ["Drag divider", "Resize panels; double-click spectrogram divider to maximize/restore"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
             </div>
@@ -8198,7 +8245,7 @@ export default function Home() {
             }} disabled={selectedCandidateDecisionLocked}>{selectedAnnotation.status === "committed" ? "Save revision" : "Commit label"}</button><button className="icon-danger" onClick={() => {
               if (deleteAnnotation(selectedAnnotation.id)) setShowAnnotationEditor(false);
             }} disabled={selectedCandidateDecisionLocked} title="Delete annotation" aria-label="Delete annotation">🗑</button></div>
-            <div className="snapshot-note"><span>DISPLAY SNAPSHOT</span><strong>{montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average ref" : "Recorded ref"} · {filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz} Hz notch` : "Raw"}</strong><small>Stored with the exported revision; raw samples remain unchanged.</small></div>
+            <div className="snapshot-note"><span>DISPLAY SNAPSHOT</span><strong>{montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average ref" : "Recorded ref"} · {filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz} Hz notch` : "MATLAB FIR / sampling"}</strong><small>Stored with the exported revision; raw samples remain unchanged.</small></div>
           </div>
         </div>
       </div>}
@@ -8259,6 +8306,7 @@ type SpectrogramPanelProps = {
   viewDuration: number;
   sessionDuration: number;
   cursor: number;
+  baselineTime: number;
   label: string;
   onPreviewStart(start: number): void;
   onCommitStart(start: number): void;
@@ -8281,7 +8329,52 @@ function matlabJet(value: number) {
   const red = clamp(Math.min(scaled - 1.5, -scaled + 4.5), 0, 1);
   const green = clamp(Math.min(scaled - 0.5, -scaled + 3.5), 0, 1);
   const blue = clamp(Math.min(scaled + 0.5, -scaled + 2.5), 0, 1);
-  return `rgb(${Math.round(red * 255)} ${Math.round(green * 255)} ${Math.round(blue * 255)})`;
+  return [Math.round(red * 255), Math.round(green * 255), Math.round(blue * 255)] as const;
+}
+
+/** Pixel-bounded nearest-neighbor projection matching imagesc's endpoint coordinates. */
+function rasterizeMatlabSpectrogram(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  spectrum: MatlabSpectrogramResult,
+  viewStart: number,
+  viewDuration: number,
+  minimumHz: number,
+  maximumHz: number,
+  colorLimit: number,
+) {
+  const palette = Array.from({ length: 256 }, (_, index) => matlabJet(index / 255));
+  const missingColor = [7, 18, 22];
+  const firstTime = spectrum.dataStart + (spectrum.times[0] ?? 0);
+  const timeStep = spectrum.width > 1
+    ? (spectrum.times[spectrum.width - 1] - spectrum.times[0]) / (spectrum.width - 1)
+    : 1 / spectrum.sampleRate;
+  const firstFrequency = spectrum.frequencies[0];
+  const frequencyStep = spectrum.height > 1
+    ? (spectrum.frequencies[spectrum.height - 1] - firstFrequency) / (spectrum.height - 1)
+    : 1;
+  // MATLAB imagesc uses the first/last frequency as image coordinates. Although
+  // analysis bins are logarithmic, the image's rows are uniformly spaced.
+  for (let y = 0; y < height; y += 1) {
+    const frequency = maximumHz - ((y + .5) / height) * (maximumHz - minimumHz);
+    const bin = Math.round((frequency - firstFrequency) / frequencyStep);
+    for (let x = 0; x < width; x += 1) {
+      const time = viewStart + ((x + .5) / width) * viewDuration;
+      const sample = Math.round((time - firstTime) / timeStep);
+      const value = bin >= 0 && bin < spectrum.height && sample >= 0 && sample < spectrum.width
+        ? spectrum.zScores[bin * spectrum.width + sample]
+        : Number.NaN;
+      const color = Number.isFinite(value)
+        ? palette[Math.round(clamp((value + colorLimit) / (2 * colorLimit), 0, 1) * 255)]
+        : missingColor;
+      const offset = (y * width + x) * 4;
+      pixels[offset] = color[0];
+      pixels[offset + 1] = color[1];
+      pixels[offset + 2] = color[2];
+      pixels[offset + 3] = 255;
+    }
+  }
 }
 
 function SpectrogramPanel({
@@ -8293,6 +8386,7 @@ function SpectrogramPanel({
   viewDuration,
   sessionDuration,
   cursor,
+  baselineTime,
   label,
   onPreviewStart,
   onCommitStart,
@@ -8320,24 +8414,20 @@ function SpectrogramPanel({
     observer.observe(panel);
     return () => observer.disconnect();
   }, [waveformCanvasRef]);
-  const colorLimitsRef = useRef(new Map<string, { low: number; high: number }>());
+  const rasterCacheRef = useRef<{ spectrum: MatlabSpectrogramResult; key: string; canvas: HTMLCanvasElement } | null>(null);
   const resizeRef = useRef<{ pointerId: number; startY: number; startHeight: number; maximumHeight: number } | null>(null);
   const [spectrogramHeight, setSpectrogramHeight] = useState(DEFAULT_SPECTROGRAM_HEIGHT);
   const [spectrumState, setSpectrumState] = useState<{
     signals: SpectrogramSignalInput[] | null;
-    dataStart: number;
-    signalKey: string;
-    result: SpectrogramComputeResult | null;
+    baselineTime: number | null;
+    result: MatlabSpectrogramResult | null;
     error: string;
-  }>({ signals: null, dataStart: 0, signalKey: "", result: null, error: "" });
-  const signalKey = signals.map((signal) => signal.signalKey).join("|");
+  }>({ signals: null, baselineTime: null, result: null, error: "" });
   const dataStart = signals[0]?.dataStart ?? viewStart;
   const overview = signals.some((signal) => signal.overview);
-  const sampleRate = signals.find((signal) => signal.sampleRate >= 2)?.sampleRate ?? signals[0]?.sampleRate ?? 0;
-  const spectrumInputMatches = spectrumState.signals === signals;
-  const retainedSpectrumMatchesSignal = spectrumState.signalKey === signalKey;
-  const spectrum = retainedSpectrumMatchesSignal ? spectrumState.result : null;
-  const spectrumDataStart = retainedSpectrumMatchesSignal ? spectrumState.dataStart : dataStart;
+  const sampleRate = signals[0]?.sampleRate ?? 0;
+  const spectrumInputMatches = spectrumState.signals === signals && spectrumState.baselineTime === baselineTime;
+  const spectrum = spectrumInputMatches ? spectrumState.result : null;
   const computeError = spectrumInputMatches ? spectrumState.error : "";
   const previousHeightRef = useRef(DEFAULT_SPECTROGRAM_HEIGHT);
   const interactionRef = useRef<{
@@ -8351,19 +8441,9 @@ function SpectrogramPanel({
   } | null>(null);
   const [tool, setTool] = useState<SpectrogramTool>("browse");
   const [zoomBox, setZoomBox] = useState<SpectrogramZoomBox | null>(null);
-  const [smoothingSeconds, setSmoothingSeconds] = useState(BUZCODE_DEFAULT_SMOOTHING_SECONDS);
   const { min: displayMinHz, max: displayMaxHz } = frequencyRange;
   const [colorLimitShift, setColorLimitShift] = useState(0);
-  const [overlay, setOverlay] = useState<"none" | "theta">("none");
-  const displayedPowers = useMemo(
-    () => spectrum ? displaySpectrogramPowers(spectrum, smoothingSeconds) : null,
-    [smoothingSeconds, spectrum],
-  );
-  const thetaRatio = useMemo(
-    () => spectrum && overlay === "theta" ? thetaRatioOverlay(spectrum, smoothingSeconds) : null,
-    [overlay, smoothingSeconds, spectrum],
-  );
-  const maximumDisplayHz = Math.max(1, Math.floor((spectrum?.maxHz ?? displayMaxHz) / 10) * 10 || spectrum?.maxHz || displayMaxHz);
+  const maximumDisplayHz = 150;
   const minimumDisplayHz = Math.min(10, maximumDisplayHz);
   const effectiveDisplayMaxHz = clamp(displayMaxHz, minimumDisplayHz, maximumDisplayHz);
   const effectiveDisplayMinHz = clamp(displayMinHz, 0, Math.max(0, effectiveDisplayMaxHz - Math.min(1, effectiveDisplayMaxHz)));
@@ -8393,28 +8473,25 @@ function SpectrogramPanel({
   }, []);
 
   useEffect(() => {
-    const computableSignals = signals.filter((signal) => signal.data?.length && signal.sampleRate >= 2);
+    const computableSignals = signals.filter((signal) => signal.data?.length && signal.sampleRate > 0);
     if (overview || !computableSignals.length) return;
     const abortController = new AbortController();
     const inputBytes = computableSignals.reduce((sum, signal) => sum + (signal.data?.byteLength ?? 0), 0);
     const operation = performanceDiagnostics.beginDecode({
-      label: computableSignals.length > 1
-        ? `Buzcode multitaper spectrogram · ${computableSignals.length}-channel power average`
-        : "Buzcode multitaper spectrogram",
+      label: `MATLAB Gabor spectrogram · ${computableSignals.length}-channel power average`,
       totalBytes: inputBytes,
-      phase: "Whitening and computing DPSS spectrum",
+      phase: "Computing Gabor wavelets and pre-click log-power Z-scores",
     });
-    const requests = computableSignals.map((signal) => ({
-      data: signal.data as Float32Array,
-      dataStart: signal.dataStart,
-      sampleRate: signal.sampleRate,
-    }));
-    const pending = requests.length === 1
-      ? computeSpectrogramOffThread(
-        requests[0],
-        { signal: abortController.signal },
-      )
-      : computeAverageSpectrogramOffThread({ signals: requests }, { signal: abortController.signal });
+    const aligned = computableSignals.length === signals.length && computableSignals.every((signal) =>
+      signal.sampleRate === sampleRate && Math.abs(signal.dataStart - dataStart) <= 1e-9);
+    const pending = aligned
+      ? computeMatlabSpectrogramOffThread({
+        data: computableSignals.map((signal) => signal.data!),
+        sampleRate,
+        dataStart,
+        baselineTime,
+      }, { signal: abortController.signal })
+      : Promise.reject(new Error("MATLAB group spectrogram requires synchronized raw channels with equal sample rates."));
     void pending.then(
       (result) => {
         if (abortController.signal.aborted) return;
@@ -8425,8 +8502,7 @@ function SpectrogramPanel({
         });
         setSpectrumState({
           signals,
-          dataStart: result.dataStart,
-          signalKey,
+          baselineTime,
           result,
           error: "",
         });
@@ -8436,8 +8512,7 @@ function SpectrogramPanel({
         operation[aborted ? "cancel" : "fail"]();
         if (!aborted) setSpectrumState({
           signals,
-          dataStart,
-          signalKey,
+          baselineTime,
           result: null,
           error: error instanceof Error ? error.message : "Spectrogram computation failed",
         });
@@ -8447,7 +8522,7 @@ function SpectrogramPanel({
       abortController.abort(new DOMException("Spectrogram view changed", "AbortError"));
       operation.cancel();
     };
-  }, [dataStart, overview, signalKey, signals]);
+  }, [baselineTime, dataStart, overview, sampleRate, signals]);
 
   useLayoutEffect(() => {
     const canvas = ref.current;
@@ -8456,7 +8531,7 @@ function SpectrogramPanel({
       const renderSpan = performanceDiagnostics.beginRender();
       try {
         const rect = canvas.getBoundingClientRect();
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const dpr = boundedCanvasScale(rect.width, rect.height, window.devicePixelRatio || 1);
         canvas.width = Math.floor(rect.width * dpr);
         canvas.height = Math.floor(rect.height * dpr);
         performanceDiagnostics.recordCanvasSurface(
@@ -8481,80 +8556,39 @@ function SpectrogramPanel({
         ctx.fillRect(plotLeft, plotTop, plotWidth, plotHeight);
         const status = inputError || (overview && !spectrum
           ? "Loading full-resolution spectrogram samples…"
-          : sampleRate < 2
-          ? "Spectrogram unavailable below 2 Hz"
-          : computeError || (!spectrum ? "AR whitening · computing five DPSS tapers…" : ""));
+          : !(sampleRate > 0)
+          ? "Spectrogram unavailable without a valid sample rate"
+          : computeError || (!spectrum ? "Computing Gabor wavelets · pre-click baseline…" : ""));
         if (status) {
           ctx.fillStyle = "rgba(235,245,243,.6)";
           ctx.font = "10px ui-monospace, monospace";
           ctx.fillText(status, plotLeft + 8, plotTop + 16);
           return;
         }
-        if (!spectrum || !displayedPowers) return;
-        const powers = displayedPowers;
-        const finitePowers = Array.from(powers).filter(Number.isFinite);
-        if (!finitePowers.length) {
-          ctx.fillStyle = "rgba(235,245,243,.6)";
-          ctx.font = "10px ui-monospace, monospace";
-          ctx.fillText("No sufficiently complete signal frames", plotLeft + 8, plotTop + 16);
-          return;
+        if (!spectrum) return;
+        // Default limits are the current result's symmetric 98th percentile;
+        // manual C controls widen/narrow both sides without changing the data.
+        const colorLimit = Math.max(Number.EPSILON, spectrum.colorLimit * Math.exp(colorLimitShift));
+        const imageWidth = Math.max(1, Math.ceil(plotWidth * dpr));
+        const imageHeight = Math.max(1, Math.ceil(plotHeight * dpr));
+        const rasterKey = [imageWidth, imageHeight, viewStart, viewDuration,
+          effectiveDisplayMinHz, effectiveDisplayMaxHz, colorLimit].join("|");
+        let raster = rasterCacheRef.current;
+        if (!raster || raster.spectrum !== spectrum || raster.key !== rasterKey) {
+          const imageCanvas = raster?.canvas ?? document.createElement("canvas");
+          imageCanvas.width = imageWidth;
+          imageCanvas.height = imageHeight;
+          const imageContext = imageCanvas.getContext("2d");
+          if (!imageContext) return;
+          const image = imageContext.createImageData(imageWidth, imageHeight);
+          rasterizeMatlabSpectrogram(image.data, imageWidth, imageHeight, spectrum,
+            viewStart, viewDuration, effectiveDisplayMinHz, effectiveDisplayMaxHz, colorLimit);
+          imageContext.putImageData(image, 0, 0);
+          raster = { spectrum, key: rasterKey, canvas: imageCanvas };
+          rasterCacheRef.current = raster;
         }
-        const visibleBins = [...spectrum.frequencies].flatMap((frequency, index) => (
-          frequency >= effectiveDisplayMinHz && frequency <= effectiveDisplayMaxHz ? [index] : []
-        ));
-        const limits = stableSpectrogramColorLimits(colorLimitsRef.current, signalKey, powers);
-        if (!limits) {
-          ctx.fillStyle = "rgba(235,245,243,.6)";
-          ctx.font = "10px ui-monospace, monospace";
-          ctx.fillText("No sufficiently complete signal frames", plotLeft + 8, plotTop + 16);
-          return;
-        }
-        const low = limits.low + colorLimitShift;
-        const high = limits.high + colorLimitShift;
-        const plotEnd = plotLeft + plotWidth;
-        const frameGeometry = Array.from({ length: spectrum.frames }, (_, frame) => {
-          const frameDuration = spectrum.durations[frame];
-          const centerTime = spectrumDataStart + spectrum.times[frame];
-          const frameStart = centerTime - frameDuration / 2;
-          const frameEnd = centerTime + frameDuration / 2;
-          const rawLeft = plotLeft + ((frameStart - viewStart) / viewDuration) * plotWidth;
-          const rawRight = plotLeft + ((frameEnd - viewStart) / viewDuration) * plotWidth;
-          if (rawRight <= plotLeft || rawLeft >= plotEnd) return null;
-          const left = Math.max(plotLeft, rawLeft);
-          const right = Math.min(plotEnd, rawRight);
-          return {
-            centerX: plotLeft + ((centerTime - viewStart) / viewDuration) * plotWidth,
-            left,
-            width: Math.max(1, right - left + 1),
-          };
-        });
-        for (const bin of visibleBins) {
-          const centerFrequency = spectrum.frequencies[bin];
-          const lowerFrequency = bin > 0
-            ? (spectrum.frequencies[bin - 1] + centerFrequency) / 2
-            : 0;
-          const upperFrequency = bin < spectrum.bins - 1
-            ? (centerFrequency + spectrum.frequencies[bin + 1]) / 2
-            : effectiveDisplayMaxHz;
-          const yTop = plotTop + plotHeight * (1 - clamp((upperFrequency - effectiveDisplayMinHz) / displayFrequencySpanHz, 0, 1));
-          const yBottom = plotTop + plotHeight * (1 - clamp((lowerFrequency - effectiveDisplayMinHz) / displayFrequencySpanHz, 0, 1));
-          for (let frame = 0; frame < spectrum.frames; frame += 1) {
-            const geometry = frameGeometry[frame];
-            if (!geometry) continue;
-            const power = displayedPowers[bin * spectrum.frames + frame];
-            if (!Number.isFinite(power)) {
-              ctx.fillStyle = "#071216";
-            } else {
-              ctx.fillStyle = matlabJet((power - low) / Math.max(1e-9, high - low));
-            }
-            ctx.fillRect(
-              geometry.left,
-              yTop,
-              geometry.width,
-              Math.max(1, yBottom - yTop + 1),
-            );
-          }
-        }
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(raster.canvas, plotLeft, plotTop, plotWidth, plotHeight);
 
         ctx.font = "9px ui-monospace, monospace";
         ctx.lineWidth = 1;
@@ -8574,29 +8608,6 @@ function SpectrogramPanel({
           ctx.textAlign = ratio === 0 ? "left" : ratio === 1 ? "right" : "center";
           ctx.fillText(formatClock(viewStart + ratio * viewDuration, true), x, height - 6);
         });
-
-        if (thetaRatio) {
-          ctx.strokeStyle = "rgba(255,255,255,.95)";
-          ctx.lineWidth = 2.5;
-          ctx.beginPath();
-          let drawing = false;
-          for (let frame = 0; frame < spectrum.frames; frame += 1) {
-            const ratio = thetaRatio[frame];
-            const geometry = frameGeometry[frame];
-            if (!Number.isFinite(ratio)
-              || !geometry
-              || geometry.centerX < plotLeft
-              || geometry.centerX > plotEnd) {
-              drawing = false;
-              continue;
-            }
-            const overlayFrequency = effectiveDisplayMinHz + displayFrequencySpanHz / 2 + ratio * (displayFrequencySpanHz / 2);
-            const y = plotTop + plotHeight * (1 - (overlayFrequency - effectiveDisplayMinHz) / displayFrequencySpanHz);
-            if (drawing) ctx.lineTo(geometry.centerX, y);
-            else { ctx.moveTo(geometry.centerX, y); drawing = true; }
-          }
-          ctx.stroke();
-        }
 
         if (cursor >= viewStart && cursor <= viewStart + viewDuration) {
           const ratio = clamp((cursor - viewStart) / Math.max(Number.EPSILON, viewDuration), 0, 1);
@@ -8618,7 +8629,7 @@ function SpectrogramPanel({
       observer.disconnect();
       performanceDiagnostics.removeCanvasSurface("spectrogram");
     };
-  }, [colorLimitShift, computeError, cursor, displayedPowers, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, inputError, overview, sampleRate, signalKey, spectrum, spectrumDataStart, thetaRatio, viewDuration, viewStart]);
+  }, [colorLimitShift, computeError, cursor, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, inputError, overview, sampleRate, spectrum, viewDuration, viewStart]);
 
   const plotRatio = (clientX: number, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
@@ -8745,7 +8756,7 @@ function SpectrogramPanel({
         ));
       }}
     />
-    <div className="spectrogram-label" title={`${label} · ${signals.length > 1 ? `POWER AVG · ${signals.length} CH · ` : ""}${sampleRate >= 2 ? "Whitened power · Unfiltered input · NW 3 · K 5 · FFT 3072" : "Unavailable · Sampling < 2 Hz"}`}>
+    <div className="spectrogram-label" title={`${label} · ${signals.length}-channel raw power average · MATLAB Gabor wavelets · 60 log-spaced analysis bins 1–150 Hz · pre-click log-power Z-score${spectrum?.warnings.length ? ` · ${spectrum.warnings.join(" · ")}` : ""}`}>
       <strong>{label}</strong>
       <div className="spectrogram-frequency-axis" aria-label="Frequency (Hz)" style={{ top: SPECTROGRAM_PLOT_TOP, bottom: SPECTROGRAM_PLOT_BOTTOM }}>
         <span className="spectrogram-frequency-title">Frequency (Hz)</span>
@@ -8785,25 +8796,21 @@ function SpectrogramPanel({
             aria-label="Reset displayed frequency range"
             data-tutorial="spectrogram-reset"
             onClick={() => {
-              onFrequencyRangeChange({ min: 0, max: Math.min(maximumDisplayHz, BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ) });
+              onFrequencyRangeChange({ min: 0, max: 150 });
               notifyTutorialAction("spectrogram-adjusted");
             }}
             title="Reset to the default frequency range"
           >↺</button>
         </div>
-        <label>Smooth
-          <select value={smoothingSeconds} onChange={(event) => { setSmoothingSeconds(Number(event.target.value)); notifyTutorialAction("spectrogram-adjusted"); }}>
-            {BUZCODE_SMOOTHING_OPTIONS.map((seconds) => <option value={seconds} key={seconds}>{seconds}s</option>)}
-          </select>
-        </label>
-        <label>Overlay
-          <select value={overlay} onChange={(event) => setOverlay(event.target.value as "none" | "theta")}>
-            <option value="none">None</option>
-            <option value="theta">θ ratio</option>
-          </select>
-        </label>
-        <button type="button" onClick={() => { setColorLimitShift((value) => value + 0.1); notifyTutorialAction("spectrogram-adjusted"); }} title={`Raise color limits · ${shortcutHint(controlBindings, "spectrogramColorDown")}`}>C−</button>
-        <button type="button" onClick={() => { setColorLimitShift((value) => value - 0.1); notifyTutorialAction("spectrogram-adjusted"); }} title={`Lower color limits · ${shortcutHint(controlBindings, "spectrogramColorUp")}`}>C+</button>
+        <span style={{ fontSize: 9, whiteSpace: "nowrap" }} title="Standard deviations from the pre-click log-power baseline">Wavelet Z-score</span>
+        <button type="button" onClick={() => { setColorLimitShift((value) => clamp(value + 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }} title={`Raise color limits · ${shortcutHint(controlBindings, "spectrogramColorDown")}`}>C−</button>
+        <button type="button" onClick={() => { setColorLimitShift((value) => clamp(value - 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }} title={`Lower color limits · ${shortcutHint(controlBindings, "spectrogramColorUp")}`}>C+</button>
+        {!!spectrum?.warnings.length && <details style={{ position: "relative", fontSize: 9, color: "#e9c475" }}>
+          <summary style={{ cursor: "pointer", whiteSpace: "nowrap" }} aria-label="Spectrogram calculation warnings">Warnings ({spectrum.warnings.length})</summary>
+          <div role="status" style={{ position: "absolute", top: 22, right: 0, width: 300, maxHeight: 90, overflowY: "auto", background: "#071216", border: "1px solid #8b7040", padding: 8 }}>
+            {spectrum.warnings.map((warning) => <p key={warning} style={{ margin: "0 0 4px" }}>{warning}</p>)}
+          </div>
+        </details>}
         <button type="button" onClick={onHelp} aria-label="Open spectrogram tutorials" title="Spectrogram tutorials">?</button>
       </div>
       <canvas
@@ -8811,7 +8818,7 @@ function SpectrogramPanel({
         data-tutorial="spectrogram-plot"
         tabIndex={0}
         role="img"
-        aria-label={`${label} multitaper spectrogram. ${tool === "box-zoom" ? "Box zoom selected; drag a time-frequency area to zoom." : "Browse selected; click to center or drag to pan."}`}
+        aria-label={`${label} MATLAB Gabor wavelet Z-score spectrogram. ${tool === "box-zoom" ? "Box zoom selected; drag a time-frequency area to zoom." : "Browse selected; click to center or drag to pan."}`}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           event.preventDefault();
@@ -8865,8 +8872,8 @@ function SpectrogramPanel({
           event.stopPropagation();
           if (action === "spectrogramLeft") onCommitStart(boundedStart(viewStart - viewDuration * 0.15));
           else if (action === "spectrogramRight") onCommitStart(boundedStart(viewStart + viewDuration * 0.15));
-          else if (action === "spectrogramColorUp") setColorLimitShift((value) => value - 0.1);
-          else if (action === "spectrogramColorDown") setColorLimitShift((value) => value + 0.1);
+          else if (action === "spectrogramColorUp") setColorLimitShift((value) => clamp(value - 0.1, -6, 6));
+          else if (action === "spectrogramColorDown") setColorLimitShift((value) => clamp(value + 0.1, -6, 6));
           else if (action === "spectrogramBrowse") { setTool("browse"); setZoomBox(null); }
           else if (action === "spectrogramZoom") setTool("box-zoom");
           if (action === "spectrogramBrowse") notifyTutorialAction("spectrogram-browse");

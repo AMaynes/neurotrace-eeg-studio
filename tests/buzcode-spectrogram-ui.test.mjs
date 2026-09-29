@@ -4,15 +4,16 @@ import test from "node:test";
 
 const projectFile = (path) => new URL(`../${path}`, import.meta.url);
 
-test("exposes TheStateEditor processing controls and linked navigation", async () => {
+test("exposes MATLAB wavelet processing with linked navigation and frequency/color controls", async () => {
   const page = await readFile(projectFile("app/page.tsx"), "utf8");
   const start = page.indexOf("function SpectrogramPanel");
   const end = page.indexOf("type FileStructureNode", start);
   const panel = page.slice(start, end);
-  assert.match(panel, /BUZCODE_DEFAULT_SMOOTHING_SECONDS/);
-  assert.match(panel, /BUZCODE_SMOOTHING_OPTIONS\.map/);
-  assert.match(panel, /thetaRatioOverlay/);
-  assert.match(panel, /matlabJet/);
+  assert.match(panel, /computeMatlabSpectrogramOffThread/);
+  assert.match(panel, /baselineTime/);
+  assert.match(panel, /rasterizeMatlabSpectrogram/);
+  assert.match(panel, /Wavelet Z-score/);
+  assert.doesNotMatch(panel, /BUZCODE_DEFAULT_SMOOTHING_SECONDS|BUZCODE_SMOOTHING_OPTIONS|thetaRatioOverlay|DPSS|Whitening/);
   assert.doesNotMatch(panel, /Frequency resize mode|>F<|>FREQ</);
   const browseButton = panel.indexOf('aria-label="Browse spectrogram"');
   const boxZoomButton = panel.indexOf('aria-label="Box zoom spectrogram"');
@@ -53,12 +54,14 @@ test("lets the spectrogram replace the waveform pane without changing the wavefo
   assert.match(page, /SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES/);
   assert.doesNotMatch(page, /spectrogramCanUseExactSamples/);
   assert.match(page, /setExactSpectrogramSignal/);
-  assert.match(page, /spectrogramReadBounds\(signalViewStart, timebase, meta.durationSec\)/);
-  assert.match(page, /channelSelectionActive[\s\S]*?display\.data\.map\(\(_, index\) => index\)/);
+  assert.match(page, /matlabSpectrogramInputPlan\(meta, display\.primarySourceIndices\[focusedChannel\], signalViewStart, timebase, anchor\)/);
+  assert.match(page, /readMatlabSourceWindow\(source, plan\.readStart, plan\.readDuration, plan\.sourceIndices/);
   assert.match(page, /data: exact\?\.data,/);
   assert.doesNotMatch(page, /data: exact\?\.data \?\? display\.data/);
-  assert.match(page, /`All enabled channels \(\$\{spectrogramSignals\.length\}\)`/);
-  assert.match(panelResizeSection(page), /computeAverageSpectrogramOffThread/);
+  assert.match(page, /const spectrogramLabel = spectrogramInputPlan\.plan\?\.label/);
+  assert.match(page, /baselineTime=\{spectrogramInputPlan\.plan\?\.baselineTime/);
+  assert.match(panelResizeSection(page), /computeMatlabSpectrogramOffThread/);
+  assert.doesNotMatch(panelResizeSection(page), /computeAverageSpectrogramOffThread/);
   assert.match(page, /viewer\.clientHeight - fixedSiblingHeight/);
   assert.doesNotMatch(page, /viewer\.clientHeight - waveformMinimumHeight/);
   assert.match(css, /\.signal-and-tracks\.with-spectrogram \.waveform-wrap\s*\{\s*min-height:\s*0;/);
@@ -69,18 +72,23 @@ test("keeps spectrogram bins aligned with continuous horizontal panning", async 
   const page = await readFile(projectFile("app/page.tsx"), "utf8");
   const panel = panelResizeSection(page);
 
-  assert.match(page, /signals=\{spectrogramSignals\}/, "the panel receives the selected or all-channel signal set");
-  assert.match(panel, /retainedSpectrumMatchesSignal/, "the previous result stays visible while its replacement is computing");
-  assert.match(panel, /centerTime\s*=\s*spectrumDataStart\s*\+\s*spectrum\.times\[frame\]/, "each frame keeps its absolute recording time");
-  assert.match(panel, /rawLeft\s*=\s*plotLeft\s*\+\s*\(\(frameStart\s*-\s*viewStart\)\s*\/\s*viewDuration\)/, "panning reprojects cached frames into the live viewport");
-  assert.doesNotMatch(panel, /frame\s*\/\s*spectrum\.frames/, "cached frames are not stretched back across every new viewport");
+  assert.match(page, /signals=\{spectrogramSignals\}/, "the panel receives exact raw group inputs");
+  assert.match(panel, /spectrumState\.signals === signals && spectrumState\.baselineTime === baselineTime/,
+    "a previous window or baseline is never shown as the new result");
+  const raster = page.slice(page.indexOf("function rasterizeMatlabSpectrogram"), page.indexOf("function SpectrogramPanel"));
+  assert.match(raster, /firstTime = spectrum\.dataStart \+ \(spectrum\.times\[0\] \?\? 0\)/);
+  assert.match(raster, /time = viewStart \+ \(\(x \+ \.5\) \/ width\) \* viewDuration/);
+  assert.match(raster, /sample = Math\.round\(\(time - firstTime\) \/ timeStep\)/);
+  assert.match(raster, /sample >= 0 && sample < spectrum\.width/,
+    "outside the cropped analysis interval stays blank rather than copying boundary samples");
 });
 
-test("lets Escape leave spectrogram focus and return to all enabled channels", async () => {
+test("lets Escape clear spectrogram interaction without substituting a different analysis recipe", async () => {
   const page = await readFile(projectFile("app/page.tsx"), "utf8");
   const panel = panelResizeSection(page);
   assert.match(page, /event\.key === "Escape"[\s\S]*?setChannelSelectionActive\(false\)/);
-  assert.match(page, /const spectrogramChannelIndices = useMemo\(\(\) => channelSelectionActive[\s\S]*?: display\.data\.map/);
+  assert.match(page, /matlabSpectrogramInputPlan\(meta, display\.primarySourceIndices\[focusedChannel\]/);
+  assert.doesNotMatch(page, /const spectrogramChannelIndices = useMemo/);
   const localEscape = panel.indexOf('if (matchesShortcut(event, controlBindings, "clear"))');
   const stopPropagation = panel.indexOf("event.stopPropagation()", localEscape);
   assert.ok(localEscape >= 0 && stopPropagation > localEscape, "Escape is handled before propagation is stopped");

@@ -187,7 +187,7 @@ test("changing source, montage, filters, or selected channels invalidates values
 });
 
 test("progressive overview, refined overview, and exact samples all publish their settings identity", () => {
-  assert.equal(publishedDisplays.length, 3, "verify each display publication path");
+  assert.equal(publishedDisplays.length, 4, "verify MATLAB and legacy display publication paths");
   for (const object of publishedDisplays) {
     const key = object.properties.find((property) => ts.isPropertyAssignment(property)
       && property.name.getText(syntax) === "settingsKey");

@@ -10,6 +10,9 @@ export interface CursorDisplayData {
   } | null)[];
   sampleRates: readonly number[];
   sourceSampleRates: readonly number[];
+  /** Actual source index of each row's first sample, independent of plotted time. */
+  sourceStartSampleIndices?: readonly (number | null)[];
+  /** Plotting origins; MATLAB window-relative timing may differ from source time. */
   startSecs: readonly number[];
   units: readonly string[];
   unreadAfterSec?: number;
@@ -20,10 +23,13 @@ export type CursorReadout =
     kind: "sample";
     value: number;
     unit: string;
+    /** Timestamp on the plotted axis, including any MATLAB window-origin convention. */
     sampleTimeSec: number;
+    /** Actual source timestamp, or null when the displayed sample has no exact source index. */
+    sourceTimeSec: number | null;
     /** Index in this displayed row, whose first sample can start after time zero. */
     displaySampleIndex: number;
-    /** Time-aligned source index; this does not imply an unfiltered/raw value. */
+    /** Exact source-grid index; this does not imply an unfiltered/raw value. */
     sourceSampleIndex: number | null;
   }
   | {
@@ -51,7 +57,9 @@ function positionOnGrid(timeSec: number, startSec: number, rate: number) {
 }
 
 /**
- * Exact rows return the nearest available sample and its actual timestamp.
+ * Exact rows return the nearest available sample and its plotted timestamp.
+ * Explicit source origins preserve source provenance when plotting uses the
+ * MATLAB window-relative convention instead of the zero-origin source grid.
  * Envelope rows return the bucket's extrema and half-open time interval: their
  * representative/averaged `data` values are never claimed as source samples.
  * Missing samples and out-of-range coordinates must not turn into zeroes or
@@ -108,11 +116,22 @@ export function readCursorReadout(display: CursorDisplayData, row: number, timeS
   if (!Number.isFinite(value)) return unavailable("missing-data");
   const sampleTimeSec = startSec + displaySampleIndex / sampleRate;
   const sourceRate = display.sourceSampleRates[row];
-  const sourcePosition = sourceRate > 0 && Number.isFinite(sourceRate)
-    ? positionOnGrid(sampleTimeSec, 0, sourceRate)
-    : Number.NaN;
+  let sourcePosition = Number.NaN;
+  if (sourceRate > 0 && Number.isFinite(sourceRate)) {
+    if (display.sourceStartSampleIndices === undefined) {
+      // Backward-compatible source-grid display without a separate plot origin.
+      sourcePosition = positionOnGrid(sampleTimeSec, 0, sourceRate);
+    } else {
+      const firstSourceIndex = display.sourceStartSampleIndices[row];
+      if (typeof firstSourceIndex === "number" && Number.isSafeInteger(firstSourceIndex) && firstSourceIndex >= 0) {
+        sourcePosition = firstSourceIndex + displaySampleIndex * (sourceRate / sampleRate);
+      }
+    }
+  }
   const sourceSampleIndex = Number.isSafeInteger(sourcePosition) && sourcePosition >= 0
     ? sourcePosition
     : null;
-  return { kind: "sample", value, unit, sampleTimeSec, displaySampleIndex, sourceSampleIndex };
+  const sourceTime = sourceSampleIndex === null ? Number.NaN : sourceSampleIndex / sourceRate;
+  const sourceTimeSec = Number.isFinite(sourceTime) ? sourceTime : null;
+  return { kind: "sample", value, unit, sampleTimeSec, sourceTimeSec, displaySampleIndex, sourceSampleIndex };
 }

@@ -47,11 +47,12 @@ export function channelRowFromFraction(layout: ChannelRowLayout, fraction: numbe
 
 type ElectrodeDisplayRows = {
   labels: string[];
-  data: Float32Array[];
+  data: (Float32Array | Float64Array)[];
   traceBaselines: number[];
   envelopes: unknown[];
   sampleRates: number[];
   sourceSampleRates: number[];
+  sourceStartSampleIndices?: (number | null)[];
   startSecs: number[];
   units: string[];
   sourceIndices: number[][];
@@ -73,6 +74,7 @@ export function orderElectrodeDisplayRows<T extends ElectrodeDisplayRows>(displa
     envelopes: reorder(display.envelopes),
     sampleRates: reorder(display.sampleRates),
     sourceSampleRates: reorder(display.sourceSampleRates),
+    ...(display.sourceStartSampleIndices ? { sourceStartSampleIndices: reorder(display.sourceStartSampleIndices) } : {}),
     startSecs: reorder(display.startSecs),
     units: reorder(display.units),
     sourceIndices: reorder(display.sourceIndices),

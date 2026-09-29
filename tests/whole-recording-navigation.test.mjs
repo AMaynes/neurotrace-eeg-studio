@@ -10,7 +10,7 @@ import {
   recordingOverviewPlan,
 } from "../app/recording-overview.ts";
 
-test("157-channel hour index serves whole-file zooms and newly enabled channels without rereading", async () => {
+test("157-channel raw session-map index supports whole-file projections and channel changes without rereading", async () => {
   const sampleRate = 10;
   const channelCount = 157;
   const samples = Int16Array.from({ length: 3600 * sampleRate * channelCount },
@@ -66,7 +66,7 @@ test("157-channel hour index serves whole-file zooms and newly enabled channels 
     const detail = recordingOverviewDisplayWindow(entry, 100, 20, channels);
     assert.ok(detail.data[0].length < full.data[0].length);
   }
-  assert.equal(readBytes, sourceReadBytes, "zooming out and changing enabled channels perform no source reads");
+  assert.equal(readBytes, sourceReadBytes, "raw session-map projections perform no extra source reads; exact waveform FIR is separate");
   for (const prefix of prefixes) {
     for (const field of ["data", "minima", "maxima", "gaps", "variation"]) {
       assert.deepEqual(prefix[field][156], result.window[field][156].slice(0, prefix.data[0].length));
@@ -74,15 +74,18 @@ test("157-channel hour index serves whole-file zooms and newly enabled channels 
   }
 });
 
-test("existing zoom controls use protected overviews without new buttons, modes, or filter overrides", async () => {
+test("existing zoom controls retain raw session-map indexing while default waveform uses exact MATLAB processing", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(page, /wholeFileOverviewMode|setWholeFileOverviewMode|aria-label="Whole file"/);
   assert.match(page, /recordingOverviewDisplayPolicy\(\{/);
-  assert.match(page, /const overviewRefreshRevision\s*=\s*overviewDisplayPolicy\s*===\s*"final"\s*\?\s*recordingOverviewRevision\s*:\s*0/,
-    "index progress must not cancel detailed reads that cannot use the coarse index");
+  assert.match(page, /const overviewRefreshRevision\s*=\s*filters.enabled\s*&&\s*overviewDisplayPolicy\s*===\s*"final"\s*\?\s*recordingOverviewRevision\s*:\s*0/,
+    "raw index progress must not cancel exact MATLAB waveform processing");
   const refresh = page.slice(page.indexOf("const refreshWindow ="), page.indexOf("const spectrogramInputPlan"));
-  assert.ok(refresh.indexOf("recordingOverviewDisplayWindow") < refresh.indexOf("sourceVerificationRef.current"),
-    "already indexed data stays navigable while the remainder is verified");
+  assert.ok(refresh.indexOf("buildMatlabDisplayWindow") < refresh.indexOf("recordingOverviewDisplayWindow"),
+    "default waveform must be filtered from source samples, never from a cached raw envelope");
+  assert.match(refresh, /buildMatlabDisplayWindow\(\{\s*source,\s*startSec:\s*signalViewStart,\s*durationSec:\s*timebase/,
+    "full selected time range is retained, including hours-long requests");
+  assert.match(refresh, /fallbackToMainThread:\s*false,\s*maxChunkDurationSec:\s*30/);
   assert.match(page, /if \(verificationAbortController\.signal\.aborted\) return;\s*if \(recordingOverviewCacheRef\.current\.put/);
   assert.match(page, /fullOverviewPlan\?\.channelIndices\s*\?\?\s*\[\]/);
   assert.match(page, /onOverview:\s*publishRecordingOverview/);

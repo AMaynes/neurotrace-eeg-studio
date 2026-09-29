@@ -208,7 +208,7 @@ test("mixed-rate interaction keeps channel provenance and sample timing", async 
 test("large-window memory and missing-data rendering stay bounded and explicit", async () => {
   const [page, spectrogramCore] = await Promise.all([
     pageSource(),
-    readFile(new URL("../app/spectrogram-compute.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/matlab-spectrogram.ts", import.meta.url), "utf8"),
   ]);
   const refresh = section(page, "const refreshWindow", "const timer = window.setInterval");
   assert.match(page, /displayAbortRef\.current\?\.abort\(\)/);
@@ -271,13 +271,13 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(baseline, /reservoir sampling/i);
 
   const spectrum = section(page, "function SpectrogramPanel", "function FileStructurePanel");
-  assert.match(spectrum, /computeSpectrogramOffThread/);
+  assert.match(spectrum, /computeMatlabSpectrogramOffThread/);
   assert.match(spectrum, /if\s*\(overview\s*\|\|/);
   assert.match(spectrum, /Loading full-resolution spectrogram samples/);
-  assert.match(spectrogramCore, /finiteSamples\s*\/\s*effectiveLength\s*<\s*0\.75/);
-  assert.match(spectrogramCore, /if\s*\(!Number\.isFinite\(sourceValue\)\)\s*continue/);
-  assert.match(spectrum, /Array\.from\(powers\)\.filter\(Number\.isFinite\)/);
-  assert.match(spectrum, /No sufficiently complete signal frames/);
+  assert.match(spectrogramCore, /channel\.some\(\(value\) => !Number\.isFinite\(value\)\)/);
+  assert.match(spectrogramCore, /cannot compute through missing\/non-finite samples/);
+  assert.match(spectrogramCore, /MATLAB_SPECTROGRAM_MAX_OUTPUT_BYTES/);
+  assert.match(spectrum, /computeError \|\|/);
 
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
   const clippingRibbon = section(page, "function drawSampleClippingRibbon", "function expectedEDFRecordBytes");

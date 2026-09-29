@@ -3613,8 +3613,10 @@ export function applyDisplayFilters(
 
 export type MontageMode = "referential" | "average" | "average-reference" | "bipolar";
 
-export interface MontageResult {
-  data: Float32Array[];
+export type SignalSamples = Float32Array | Float64Array;
+
+export interface MontageResult<T extends SignalSamples = Float32Array> {
+  data: T[];
   labels: string[];
   /** Optional compatibility field; callers may retain source window rates. */
   sampleRates?: number[];
@@ -3714,8 +3716,8 @@ export function orderAnatomicalChannelIndices(
   return [...left, ...right, ...other].map((channel) => channel.sourceIndex);
 }
 
-export function buildMontage(
-  data: readonly Float32Array[],
+export function buildMontage<T extends SignalSamples>(
+  data: readonly T[],
   labels: readonly string[],
   mode: MontageMode,
   excludedChannels: ExcludedChannelSet = new Set<number | string>(),
@@ -3727,7 +3729,7 @@ export function buildMontage(
     allChannelLabels?: readonly string[];
     sourceChannelIndices?: readonly number[];
   } = {},
-): MontageResult {
+): MontageResult<T> {
   if (mode !== "referential" && mode !== "average" && mode !== "average-reference" && mode !== "bipolar") {
     throw new Error(`Unsupported montage mode: ${String(mode)}.`);
   }
@@ -3763,6 +3765,11 @@ export function buildMontage(
     .map((_, index) => index)
     .filter((index) => !channelIsExcluded(index, labels[index], excludedChannels));
   const warnings: string[] = [];
+
+  // MATLAB casts the source to double before filtering/reference arithmetic.
+  // Preserve that precision; legacy Float32 callers retain their existing type.
+  const allocate = (length: number) => (data.some((channel) => channel instanceof Float64Array)
+    ? new Float64Array(length) : new Float32Array(length)) as T;
 
   if (mode === "referential") {
     const allIndices = data.map((_, index) => index);
@@ -3828,7 +3835,7 @@ export function buildMontage(
       else average[sample] = Number.NaN;
     }
     const output = referenceIndices.map((index) => {
-      const channel = new Float32Array(sampleCount);
+      const channel = allocate(sampleCount);
       for (let sample = 0; sample < sampleCount; sample += 1) {
         channel[sample] = Number.isFinite(data[index][sample]) && Number.isFinite(average[sample])
           ? data[index][sample] - average[sample]
@@ -3894,7 +3901,7 @@ export function buildMontage(
     return [{ ...pair, first, second }];
   });
   const validSet = new Set(validIndices);
-  const outputData: Float32Array[] = [];
+  const outputData: T[] = [];
   const outputLabels: string[] = [];
   const sourceIndices: number[][] = [];
   const primarySourceIndices: number[] = [];
@@ -3928,7 +3935,7 @@ export function buildMontage(
       if (firstData.length !== secondData.length) {
         warnings.push(`${pair.label} was clipped to the shorter equal-rate window.`);
       }
-      const derived = new Float32Array(sampleCount);
+      const derived = allocate(sampleCount);
       for (let sample = 0; sample < sampleCount; sample += 1) {
         // Scalp labels use positive-minus-negative input. The legacy anatomical
         // convention deliberately remains following-contact minus current-contact.

@@ -12,6 +12,7 @@ function displayRows(labels) {
     envelopes: labels.map((_, index) => ({ minima: new Float32Array([index]) })),
     sampleRates: labels.map((_, index) => 100 + index),
     sourceSampleRates: labels.map((_, index) => 1000 + index),
+    sourceStartSampleIndices: labels.map((_, index) => 1234 + index),
     startSecs: labels.map((_, index) => index / 1000),
     units: labels.map((_, index) => `unit${index}`),
     sourceIndices: labels.map((_, index) => [index]),
@@ -44,7 +45,7 @@ test("display-only sorting keeps every waveform and metadata field attached to i
   const sorted = orderElectrodeDisplayRows(original);
   assert.deepEqual(sorted.labels, ["LA1", "LA3", "RB2", "RB10", "Events"]);
   for (const [row, sourceIndex] of sorted.primarySourceIndices.entries()) {
-    for (const field of ["labels", "data", "traceBaselines", "envelopes", "sampleRates", "sourceSampleRates", "startSecs", "units", "sourceIndices"]) {
+    for (const field of ["labels", "data", "traceBaselines", "envelopes", "sampleRates", "sourceSampleRates", "sourceStartSampleIndices", "startSecs", "units", "sourceIndices"]) {
       assert.equal(sorted[field][row], original[field][sourceIndex], `${field} must follow the same channel`);
     }
   }
@@ -103,10 +104,10 @@ test("CAR and bipolar views share electrode gaps; ordinary layouts have no group
   assert.equal(buildChannelRowLayout([], true).totalUnits, 1);
 });
 
-test("viewer sorts all three trace paths after derivation and uses thick dividers with fractional grid tracks", async () => {
+test("viewer sorts MATLAB and legacy trace paths after derivation and uses thick dividers with fractional grid tracks", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.equal(page.match(/setDisplay\(matlabAnatomicalLayout \? orderElectrodeDisplayRows\(nextDisplay\) : nextDisplay\)/g)?.length, 3);
+  assert.equal(page.match(/setDisplay\(matlabAnatomicalLayout \? orderElectrodeDisplayRows\(nextDisplay\) : nextDisplay\)/g)?.length, 4);
   assert.match(page, /const indices = matlabAnatomicalLayout && montage !== "referential"/);
   assert.match(page, /gridTemplateRows: channelRowLayout\.gridTemplateRows/);
   assert.match(page, /gridRow: `\$\{channelRowLayout\.rowGridLines\[channel\]\}/);
