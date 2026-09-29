@@ -6,7 +6,7 @@ import ts from "typescript";
 import { inspectMatRecording, RawDatSource } from "../app/eeg-core.ts";
 import { mergeSelectedFiles, relativeFilePath } from "../app/bids-companions.ts";
 import { DirectoryImportError, directoryRecordingFiles, planDirectoryImport } from "../app/directory-import.ts";
-import { classifyRecordingSelection } from "../app/import-selection.ts";
+import { classifyRecordingSelection, collectDroppedRecordingFiles } from "../app/import-selection.ts";
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "../app/mat-import.ts";
 import { legacyMatFile, standaloneMatFile } from "./fixtures/legacy-mat.mjs";
 
@@ -165,30 +165,97 @@ test("classification failures bound displayed paths instead of dumping an entire
 });
 
 test("drop routing holds its busy guard through asynchronous discovery and releases it before import", async () => {
+  for (const allowDirectories of [false, true]) {
+    const h = stageHarness();
+    state(h.env, "importBusy", false);
+    const transfer = {};
+    const files = [unreadableFile("root/source.edf")];
+    let finish;
+    const routed = [];
+    h.env.collectDroppedRecordingFiles = (value, options) => {
+      assert.equal(value, transfer);
+      assert.deepEqual(options, { allowDirectories });
+      assert.equal(h.env.importBusy, true);
+      assert.equal(h.env.importBusyRef.current, true);
+      return new Promise((resolve) => { finish = resolve; });
+    };
+    h.env.handleSelectedRecordingFiles = async (...args) => {
+      assert.equal(h.env.importBusy, false);
+      assert.equal(h.env.importBusyRef.current, false);
+      routed.push(args);
+    };
+    const drop = handler("handleDroppedRecordingFiles", h.env);
+    const pending = drop(transfer, allowDirectories);
+    await drop({ competingDrop: true }, allowDirectories);
+    assert.deepEqual(routed, []);
+    finish({ files, directory: true });
+    await pending;
+    assert.deepEqual(routed, [[files, true]]);
+  }
+});
+
+function transferWithEntries(entries) {
+  return { files: [], items: entries.map((entry) => ({ kind: "file", webkitGetAsEntry: () => entry, getAsFile: () => null })) };
+}
+function droppedFileEntry(file, onRead = () => {}) {
+  return { name: file.name, isFile: true, isDirectory: false, file: (resolve) => { onRead(); resolve(file); } };
+}
+function droppedDirectoryEntry(name, children, onRead = () => {}) {
+  return { name, isFile: false, isDirectory: true, createReader: () => {
+    onRead();
+    let delivered = false;
+    return { readEntries: (resolve) => { resolve(delivered ? [] : children); delivered = true; } };
+  } };
+}
+
+test("ordinary workspace drops still route a single recording or matched MAT/DAT pair without directory opt-in", async () => {
+  for (const files of [
+    [new File([new Uint8Array(256)], "signal.edf")],
+    [legacyMatFile({ name: "signal.mat" }), new File([new Uint8Array(256)], "signal.dat")],
+  ]) {
+    const h = stageHarness();
+    state(h.env, "importBusy", false);
+    h.env.collectDroppedRecordingFiles = collectDroppedRecordingFiles;
+    h.env.handleSelectedRecordingFiles = handler("handleSelectedRecordingFiles", h.env);
+    await handler("handleDroppedRecordingFiles", h.env)(transferWithEntries(files.map((file) => droppedFileEntry(file))));
+    assert.deepEqual(h.calls, [files]);
+    assert.equal(h.env.uploadError, null);
+    assert.equal(h.env.importBusyRef.current, false);
+  }
+});
+
+test("workspace folder drops reject the entire selection before directory traversal or partial file reads", async () => {
   const h = stageHarness();
   state(h.env, "importBusy", false);
-  const transfer = {};
-  const files = [unreadableFile("root/source.edf")];
-  let finish;
-  const routed = [];
-  h.env.collectDroppedRecordingFiles = (value) => {
-    assert.equal(value, transfer);
-    assert.equal(h.env.importBusy, true);
-    assert.equal(h.env.importBusyRef.current, true);
-    return new Promise((resolve) => { finish = resolve; });
-  };
-  h.env.handleSelectedRecordingFiles = async (...args) => {
-    assert.equal(h.env.importBusy, false);
-    assert.equal(h.env.importBusyRef.current, false);
-    routed.push(args);
-  };
-  const drop = handler("handleDroppedRecordingFiles", h.env);
-  const pending = drop(transfer);
-  await drop({ competingDrop: true });
-  assert.deepEqual(routed, []);
-  finish({ files, directory: true });
-  await pending;
-  assert.deepEqual(routed, [[files, true]]);
+  h.env.collectDroppedRecordingFiles = collectDroppedRecordingFiles;
+  h.env.handleSelectedRecordingFiles = () => assert.fail("a rejected folder must not import even the loose files beside it");
+  const read = () => assert.fail("the folder opt-in gate must run before any dropped entry is read");
+  const transfer = transferWithEntries([
+    droppedFileEntry(new File([new Uint8Array(256)], "loose.edf"), read),
+    droppedDirectoryEntry("recordings", [], read),
+  ]);
+  await handler("handleDroppedRecordingFiles", h.env)(transfer);
+  assert.equal(h.env.stagedDirectoryPlan, null);
+  assert.match(h.env.uploadError.message, /folder|director/i);
+  assert.equal(h.env.showImport, true);
+  assert.equal(h.env.importBusyRef.current, false);
+  assert.deepEqual(h.calls, []);
+});
+
+test("explicit dialog folder opt-in collects nested recordings lazily without reading waveform bytes", async () => {
+  const h = stageHarness();
+  state(h.env, "importBusy", false);
+  h.env.collectDroppedRecordingFiles = collectDroppedRecordingFiles;
+  h.env.handleSelectedRecordingFiles = handler("handleSelectedRecordingFiles", h.env);
+  const file = new File([new Uint8Array(256)], "signal.edf");
+  for (const method of ["arrayBuffer", "text", "slice", "stream"]) file[method] = () => assert.fail("folder discovery must not decode or copy signals");
+  const transfer = transferWithEntries([droppedDirectoryEntry("recordings", [droppedDirectoryEntry("day1", [droppedFileEntry(file)])])]);
+  await handler("handleDroppedRecordingFiles", h.env)(transfer, true);
+  assert.equal(h.env.stagedDirectoryPlan.recordings.length, 1);
+  assert.equal(h.env.stagedDirectoryPlan.recordings[0].primary, file);
+  assert.equal(file.webkitRelativePath, "recordings/day1/signal.edf");
+  assert.equal(h.env.uploadError, null);
+  assert.deepEqual(h.calls, [], "folder ingestion only creates the session list");
 });
 
 test("failed drop discovery clears stale selections and reports an error without importing partial files", async () => {

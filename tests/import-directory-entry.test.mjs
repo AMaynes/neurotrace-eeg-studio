@@ -10,6 +10,7 @@ const syntax = ts.createSourceFile("page.tsx", page, ts.ScriptTarget.Latest, tru
 const declarations = new Map();
 let dialog;
 let welcomeButton;
+let workspace;
 function attribute(node, name) {
   const item = node.openingElement.attributes.properties.find((property) => ts.isJsxAttribute(property) && property.name.getText(syntax) === name);
   return item?.initializer && ts.isStringLiteral(item.initializer) ? item.initializer.text : null;
@@ -17,6 +18,7 @@ function attribute(node, name) {
 function collect(node) {
   if (ts.isVariableDeclaration(node) && node.name && ts.isIdentifier(node.name)) declarations.set(node.name.text, node);
   if (ts.isJsxElement(node)) {
+    if (node.openingElement.tagName.getText(syntax) === "main") workspace = node;
     if (attribute(node, "id") === "recording-import-dialog") dialog = node;
     if (attribute(node, "className") === "empty-load-prompt") welcomeButton = node;
   }
@@ -37,6 +39,11 @@ function handler(name, env) {
   const node = declarations.get(name);
   assert.ok(node, `find actual ${name} handler`);
   return evaluate(`const actualHandler = ${node.initializer.getText(syntax)};`, "actualHandler", env);
+}
+function jsxHandler(node, name, env) {
+  const attribute = node.openingElement.attributes.properties.find((property) => ts.isJsxAttribute(property) && property.name.getText(syntax) === name);
+  assert.ok(attribute?.initializer && ts.isJsxExpression(attribute.initializer), `find actual ${name} JSX callback`);
+  return evaluate(`const actualHandler = ${attribute.initializer.expression.getText(syntax)};`, "actualHandler", env);
 }
 function elements(tree, predicate) {
   if (Array.isArray(tree)) return tree.flatMap((child) => elements(child, predicate));
@@ -85,17 +92,22 @@ function state(env, key, initial) {
 function harness(options = {}) {
   const actions = [];
   const env = {
+    useCallback: (callback) => callback,
     pendingDat: null, importBusy: false, importBusyRef: { current: false },
     guidedImportReady: false,
     directoryConfirmationRef: { current: null },
     guidedFilesInputRef: { current: null },
     guidedDirectoryInputRef: { current: null },
+    fileDragDepthRef: { current: 0 },
+    handleDroppedRecordingFiles: (...args) => actions.push(["dropped", ...args]),
     stageDetectedImport: (event) => actions.push(["detected", event]),
     submitGuidedImport: () => actions.push(["submit"]),
   };
-  for (const [key, value] of Object.entries({ showImport: false, importChoice: null,
+  for (const [key, value] of Object.entries({ showImport: false, importChoice: null, importPickerKind: null, fileDragActive: false,
     stagedDirectoryPlan: null, uploadError: null })) state(env, key, value);
   Object.assign(env, options);
+  env.setShowImportOpen = (open) => { env.showImport = open; };
+  env.setShowImport = (open) => handler("setShowImport", env)(open);
   env.chooseImportType = (format) => handler("chooseImportType", env)(format);
   env.openImportPicker = (mode) => handler("openImportPicker", env)(mode);
   return {
@@ -184,6 +196,7 @@ for (const [format, label, accept] of [["edf", "EDF / EDF+", ".edf"], ["mat", "M
       const ui = harness({ importChoice: format });
       let calls = 0;
       const input = { accept: "old-filter", multiple: false, value: "old-selection", click: () => {
+        assert.equal(ui.env.importPickerKind, mode, "drop mode is updated by the explicit picker action before Explorer opens");
         assert.equal(input.accept, mode === "files" ? accept : "", "file filter or unrestricted directory filter is applied before activation");
         assert.equal(input.multiple, true);
         assert.equal(input.value, "", "reset the input so the same selection can be chosen again");
@@ -236,10 +249,115 @@ test("busy import disables format cards, both inputs, and file/folder actions", 
   }
 });
 
-test("folder drag-and-drop remains available alongside native file and folder pickers", () => {
+test("home drop instructions describe files and reserve folder drops for the explicit folder choice", () => {
   const ui = harness();
-  assert.match(text(ui.render()), /drop[^.]*folder/i);
-  assert.match(text(ui.welcome()), /drop[^.]*folder/i);
+  assert.match(text(ui.welcome()), /drop[^.]*files/i);
+  assert.doesNotMatch(text(ui.welcome()), /drop[^.]*folder/i);
+  assert.doesNotMatch(text(ui.render()), /drop files or a folder anywhere/i);
+});
+
+function dropEvent(types = ["Files"]) {
+  const calls = { prevented: 0, stopped: 0 };
+  return { calls, dataTransfer: { types },
+    preventDefault: () => { calls.prevented += 1; }, stopPropagation: () => { calls.stopped += 1; } };
+}
+
+test("workspace drops never opt into directory traversal, even after choosing Folder in the dialog", () => {
+  for (const importPickerKind of [null, "files", "directory"]) {
+    const ui = harness({ importChoice: "edf", importPickerKind });
+    const event = dropEvent();
+    jsxHandler(workspace, "onDrop", ui.env)(event);
+    assert.equal(event.calls.prevented, 1);
+    assert.equal(ui.actions.length, 1);
+    assert.equal(ui.actions[0][0], "dropped");
+    assert.equal(ui.actions[0][1], event.dataTransfer);
+    assert.equal(ui.actions[0][2] ?? false, false, "only the dedicated dialog is a folder drop target");
+  }
+});
+
+test("dialog drops allow folders only after both a type and Folder are selected", () => {
+  for (const [importChoice, importPickerKind, pendingDat, allowed] of [
+    [null, null, null, false], ["edf", null, null, false], ["edf", "files", null, false],
+    ["edf", "directory", null, true], ["mat-dat", "directory", null, true],
+    [null, "directory", null, false], ["mat-dat", "directory", { name: "signal.dat" }, false],
+  ]) {
+    const ui = harness({ importChoice, importPickerKind, pendingDat });
+    const event = dropEvent();
+    jsxHandler(dialog, "onDrop", ui.env)(event);
+    assert.equal(event.calls.prevented, 1);
+    assert.equal(event.calls.stopped, 1, "a dialog drop cannot also reach the workspace importer");
+    assert.deepEqual(ui.actions, [["dropped", event.dataTransfer, allowed]]);
+  }
+});
+
+test("file drop handlers ignore label and text drags and do not start competing imports", () => {
+  for (const surface of [workspace, dialog]) {
+    const ui = harness({ importChoice: "edf", importPickerKind: "directory" });
+    const labelEvent = dropEvent(["application/neurotrace-label", "text/plain"]);
+    jsxHandler(surface, "onDrop", ui.env)(labelEvent);
+    assert.deepEqual(labelEvent.calls, { prevented: 0, stopped: 0 });
+    assert.deepEqual(ui.actions, []);
+    ui.env.importBusyRef.current = true;
+    jsxHandler(surface, "onDrop", ui.env)(dropEvent());
+    assert.deepEqual(ui.actions, []);
+  }
+});
+
+test("Folder activation gates dialog drops until Files, a different type, or dialog close resets it", () => {
+  const ui = harness({ importChoice: "edf", showImport: true });
+  const input = { click: () => {} };
+  ui.env.guidedFilesInputRef.current = input;
+  ui.env.guidedDirectoryInputRef.current = input;
+  const allowsFolderDrop = () => {
+    ui.actions.length = 0;
+    jsxHandler(dialog, "onDrop", ui.env)(dropEvent());
+    return ui.actions[0]?.[2];
+  };
+  ui.env.openImportPicker("directory");
+  assert.equal(ui.env.importPickerKind, "directory");
+  assert.equal(allowsFolderDrop(), true);
+  ui.env.openImportPicker("files");
+  assert.equal(ui.env.importPickerKind, "files");
+  assert.equal(allowsFolderDrop(), false);
+  ui.env.openImportPicker("directory");
+  ui.env.chooseImportType("mat");
+  assert.equal(ui.env.importPickerKind, null);
+  assert.equal(allowsFolderDrop(), false);
+  ui.env.openImportPicker("directory");
+  button(ui.render(), "Close").props.onClick();
+  assert.equal(ui.env.showImport, false);
+  assert.equal(ui.env.importPickerKind, null);
+  ui.welcome().props.onClick();
+  assert.equal(ui.env.showImport, true);
+  assert.equal(allowsFolderDrop(), false, "reopening the dialog cannot inherit previous folder-drop permission");
+});
+
+test("a missing native picker cannot enable folder dropping", () => {
+  const ui = harness({ importChoice: "edf" });
+  ui.env.openImportPicker("directory");
+  assert.equal(ui.env.importPickerKind, null);
+});
+
+test("backdrop and Escape close paths reset the explicit folder-drop choice", () => {
+  const backdrop = dialog.parent;
+  const ui = harness({ showImport: true, importChoice: "edf", importPickerKind: "directory" });
+  const target = {};
+  jsxHandler(backdrop, "onMouseDown", ui.env)({ target, currentTarget: target });
+  assert.equal(ui.env.showImport, false);
+  assert.equal(ui.env.importPickerKind, null);
+
+  let escapeBranch;
+  function findEscape(node) {
+    if (ts.isIfStatement(node) && node.expression.getText(syntax) === "showImport && !importBusy") escapeBranch = node;
+    ts.forEachChild(node, findEscape);
+  }
+  findEscape(syntax);
+  assert.ok(escapeBranch, "the modal Escape chain includes the recording importer");
+  ui.env.showImport = true;
+  ui.env.importPickerKind = "directory";
+  evaluate(`if (${escapeBranch.expression.getText(syntax)}) ${escapeBranch.thenStatement.getText(syntax)}`, "undefined", ui.env);
+  assert.equal(ui.env.showImport, false);
+  assert.equal(ui.env.importPickerKind, null);
 });
 
 test("actual input handler snapshots files and folder provenance before clearing the chooser", async () => {

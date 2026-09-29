@@ -130,11 +130,57 @@ test("dropped plain files retain identity and are not given fabricated relative 
   assert.equal(Boolean(result.files[0].webkitRelativePath), false);
   assert.equal(result.directory, false);
 });
+test("multiple loose recordings and MAT + DAT pairs remain available without folder permission", async () => {
+  for (const names of [["a.edf", "b.edf"], ["one.mat", "one.dat", "one_events.tsv"]]) {
+    const files = names.map((name) => fileAt(name));
+    const result = await collectDroppedRecordingFiles(dropEntries(files.map(fileEntry)));
+    assert.deepEqual(result, { files, directory: false });
+    const selection = classifyRecordingSelection(result.files, result.directory);
+    if (names[0].endsWith("edf")) {
+      assert.equal(selection.kind, "directory");
+      assert.equal(selection.plan.recordings.length, 2);
+    } else assert.deepEqual(selection, { kind: "files", files });
+  }
+});
+test("folder roots reject by default before any file callback or directory traversal", async () => {
+  const forbiddenFile = { name: "one.edf", isFile: true, isDirectory: false,
+    file() { assert.fail("a rejected selection must not request loose files"); } };
+  const forbiddenFolder = { name: "study", isFile: false, isDirectory: true,
+    createReader() { assert.fail("a rejected selection must not enumerate a folder"); } };
+  for (const entries of [[forbiddenFolder], [forbiddenFile, forbiddenFolder], [forbiddenFolder, forbiddenFile]]) {
+    await assert.rejects(collectDroppedRecordingFiles(dropEntries(entries)), /Nothing was imported.*inside Load recording.*recording type, then Folder/);
+    await assert.rejects(collectDroppedRecordingFiles(dropEntries(entries), { allowDirectories: false }), /Folder drops/);
+  }
+});
+test("relative-path fallbacks reject before any root traversal, including mixed drops", async () => {
+  const nested = fileAt("study/one.edf", true);
+  const loose = fileAt("two.edf");
+  const forbidden = { name: "two.edf", isFile: true, isDirectory: false,
+    file() { assert.fail("relative-path input must be detected before requesting another file"); } };
+  const transfers = [
+    { files: [nested], items: [] },
+    { files: [loose, nested], items: [] },
+    { files: [nested], items: dropEntries([forbidden]).items },
+    { files: [], items: [...dropEntries([forbidden]).items, { kind: "file", getAsFile: () => nested }] },
+  ];
+  for (const transfer of transfers) {
+    await assert.rejects(collectDroppedRecordingFiles(transfer), /Folder drops.*inside Load recording/);
+  }
+});
+test("relative paths exposed only by file callbacks cannot bypass the folder restriction", async () => {
+  const nested = fileAt("study/one.edf", true);
+  const transfer = dropEntries([fileEntry(fileAt("loose.edf")), fileEntry(nested)]);
+  await assert.rejects(collectDroppedRecordingFiles(transfer), /Nothing was imported.*Folder drops/);
+});
+test("the Folder workflow accepts relative-path fallback files without reading bytes", async () => {
+  const files = [fileAt("study/one.mat", true), fileAt("study/one.dat", true)];
+  assert.deepEqual(await collectDroppedRecordingFiles({ files, items: [] }, { allowDirectories: true }), { files, directory: true });
+});
 test("nested dropped directory preserves same-name files and pair paths without copying bytes", async () => {
   const first = fileAt("same.edf");
   const second = fileAt("same.edf");
   const root = folderEntry("study", [folderEntry("day1", [fileEntry(first)]), folderEntry("day2", [fileEntry(second)])]);
-  const result = await collectDroppedRecordingFiles(dropEntries([root]));
+  const result = await collectDroppedRecordingFiles(dropEntries([root]), { allowDirectories: true });
   assert.deepEqual(result.files, [first, second]);
   assert.equal(result.directory, true);
   assert.deepEqual(result.files.map((file) => file.webkitRelativePath), ["study/day1/same.edf", "study/day2/same.edf"]);
@@ -143,7 +189,7 @@ test("nested dropped directory preserves same-name files and pair paths without 
 test("directory readers are drained across batches beyond 100 entries", async () => {
   const entries = Array.from({ length: 251 }, (_, index) => fileEntry(fileAt(`session${index}.edf`)));
   const root = folderEntry("study", entries);
-  const result = await collectDroppedRecordingFiles(dropEntries([root]));
+  const result = await collectDroppedRecordingFiles(dropEntries([root]), { allowDirectories: true });
   assert.equal(result.files.length, 251);
   assert.equal(root.reads, 4, "three nonempty batches followed by an empty completion batch");
 });
@@ -165,7 +211,7 @@ test("all drop entries are captured synchronously before traversal awaits", asyn
   assert.deepEqual((await promise).files, files);
 });
 test("empty dropped folders remain identifiable and fail classification clearly", async () => {
-  const result = await collectDroppedRecordingFiles(dropEntries([folderEntry("empty", [])]));
+  const result = await collectDroppedRecordingFiles(dropEntries([folderEntry("empty", [])]), { allowDirectories: true });
   assert.deepEqual(result, { files: [], directory: true });
   expectError(result.files, result.directory, "EMPTY_DIRECTORY");
 });
@@ -181,14 +227,14 @@ test("mixed available entries and plain-file fallbacks do not lose either input"
   const plain = fileAt("b.edf");
   const transfer = dropEntries([folderEntry("study", [fileEntry(nested)])]);
   transfer.items.push({ kind: "file", getAsFile: () => plain });
-  const result = await collectDroppedRecordingFiles(transfer);
+  const result = await collectDroppedRecordingFiles(transfer, { allowDirectories: true });
   assert.deepEqual(result.files, [nested, plain]);
   assert.equal(plain.webkitRelativePath, undefined);
   assert.equal(result.directory, true);
 });
 test("uninspectable directory-like drops give actionable chooser guidance", async () => {
   const directoryLike = new File([], "study");
-  await assert.rejects(collectDroppedRecordingFiles({ files: [directoryLike], items: [] }), /Nothing was imported.*recording type.*Files or Folder.*dropping the folder/);
+  await assert.rejects(collectDroppedRecordingFiles({ files: [directoryLike], items: [] }), /Nothing was imported.*Load recording.*recording type.*Files or Folder.*only after choosing Folder/);
 });
 test("a reader failure rejects the complete drop, never returning the preceding partial batch", async () => {
   let reads = 0;
@@ -196,25 +242,25 @@ test("a reader failure rejects the complete drop, never returning the preceding 
     name: "study", isFile: false, isDirectory: true,
     createReader() { return { readEntries(success, failure) { reads += 1; if (reads === 1) success([fileEntry(fileAt("a.edf"))]); else failure(new Error("denied")); } }; },
   };
-  await assert.rejects(collectDroppedRecordingFiles(dropEntries([root])), /could not be fully read.*Nothing was imported/);
+  await assert.rejects(collectDroppedRecordingFiles(dropEntries([root]), { allowDirectories: true }), /could not be fully read.*Nothing was imported/);
   assert.equal(reads, 2);
 });
 test("file callback failure rejects traversal without a partial result", async () => {
   const broken = { name: "b.edf", isFile: true, isDirectory: false, file(_success, failure) { failure(new Error("denied")); } };
-  await assert.rejects(collectDroppedRecordingFiles(dropEntries([folderEntry("study", [fileEntry(fileAt("a.edf")), broken])])), /file.*could not be read.*Nothing was imported/);
+  await assert.rejects(collectDroppedRecordingFiles(dropEntries([folderEntry("study", [fileEntry(fileAt("a.edf")), broken])]), { allowDirectories: true }), /file.*could not be read.*Nothing was imported/);
 });
 test("entry acquisition errors fail before any traversal", async () => {
   await assert.rejects(collectDroppedRecordingFiles({ files: [], items: [{ kind: "file", webkitGetAsEntry() { throw new Error("blocked"); } }] }), /could not inspect/);
 });
 test("invalid relative entry names and excessive nesting reject safely", async () => {
-  await assert.rejects(collectDroppedRecordingFiles(dropEntries([folderEntry("../study", [])])), /invalid relative path/);
+  await assert.rejects(collectDroppedRecordingFiles(dropEntries([folderEntry("../study", [])]), { allowDirectories: true }), /invalid relative path/);
   let root = fileEntry(fileAt("a.edf"));
   for (let index = 0; index < 200; index += 1) root = folderEntry(`level${index}`, [root]);
-  await assert.rejects(collectDroppedRecordingFiles(dropEntries([root])), /200 path segments/);
+  await assert.rejects(collectDroppedRecordingFiles(dropEntries([root]), { allowDirectories: true }), /200 path segments/);
 });
 test("failure to preserve relative paths rejects rather than flattening a directory", async () => {
   const locked = Object.preventExtensions(fileAt("a.edf"));
-  await assert.rejects(collectDroppedRecordingFiles(dropEntries([folderEntry("study", [fileEntry(locked)])])), /could not preserve.*paths/);
+  await assert.rejects(collectDroppedRecordingFiles(dropEntries([folderEntry("study", [fileEntry(locked)])]), { allowDirectories: true }), /could not preserve.*paths/);
 });
 test("oversized fallback selections are rejected before any file reads", async () => {
   const file = fileAt("a.edf");
@@ -226,5 +272,5 @@ test("an endless reader cannot bypass the entry limit", async () => {
     name: "study", isFile: false, isDirectory: true,
     createReader() { return { readEntries(success) { success(Array(1000).fill(emptyFolder)); } }; },
   };
-  await assert.rejects(collectDroppedRecordingFiles(dropEntries([root])), /maximum 100,000/);
+  await assert.rejects(collectDroppedRecordingFiles(dropEntries([root]), { allowDirectories: true }), /maximum 100,000/);
 });

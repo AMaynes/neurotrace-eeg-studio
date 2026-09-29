@@ -1900,7 +1900,12 @@ export default function Home() {
   const [showPatientInfo, setShowPatientInfo] = useState(false);
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
   const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
-  const [showImport, setShowImport] = useState(false);
+  const [showImport, setShowImportOpen] = useState(false);
+  const [importPickerKind, setImportPickerKind] = useState<"files" | "directory" | null>(null);
+  const setShowImport = useCallback((open: boolean) => {
+    setShowImportOpen(open);
+    if (!open) setImportPickerKind(null);
+  }, []);
   const [stagedDirectoryPlan, setStagedDirectoryPlan] = useState<DirectoryImportPlan | null>(null);
   const [directoryCatalog, setDirectoryCatalog] = useState<{ id: string; plan: DirectoryImportPlan } | null>(null);
   const [showDirectorySessions, setShowDirectorySessions] = useState(false);
@@ -2276,7 +2281,7 @@ export default function Home() {
     pendingProjectImportRef.current = null;
     undoRef.current = snapshot.undo;
     redoRef.current = snapshot.redo;
-  }, [commitViewStart]);
+  }, [commitViewStart, setShowImport]);
 
   const switchSession = useCallback((id: string) => {
     if (importBusy || queuedDirectoryOpenRef.current || id === activeSessionId) return;
@@ -5628,7 +5633,7 @@ export default function Home() {
       if (previousSnapshot && activeSessionIdRef.current === targetSessionId) applySessionSnapshot(previousSnapshot);
       throw error;
     }
-  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, setShowImport, storeActiveSession]);
 
   const applyImportedProjectState = useCallback((project: ImportedNeurotraceProject) => {
     const durationSec = sourceRef.current.meta.durationSec;
@@ -6027,19 +6032,19 @@ export default function Home() {
     void handleSelectedRecordingFiles(files, fromDirectory);
   };
 
-  const handleDroppedRecordingFiles = async (transfer: DataTransfer) => {
+  const handleDroppedRecordingFiles = async (transfer: DataTransfer, allowDirectories = false) => {
     if (importBusyRef.current) return;
     importBusyRef.current = true;
     setImportBusy(true);
     let selection: { files: File[]; directory: boolean } | null = null;
     try {
       // The collector snapshots DataTransfer entries synchronously, while the drop is readable.
-      selection = await collectDroppedRecordingFiles(transfer);
+      selection = await collectDroppedRecordingFiles(transfer, { allowDirectories });
     } catch (error) {
       setStagedDirectoryPlan(null);
       setUploadError({
         title: "Dropped files could not be read",
-        message: error instanceof Error ? error.message : "Choose a recording type, then Files or Folder, or try dropping the folder again.",
+        message: error instanceof Error ? error.message : "Drop individual files, or choose a recording type and Folder to drop a folder inside this dialog.",
         files: [],
       });
       setShowImport(true);
@@ -6053,12 +6058,14 @@ export default function Home() {
   const chooseImportType = (choice: ImportChoice) => {
     if (importBusyRef.current) return;
     setImportChoice(choice);
+    setImportPickerKind(null);
   };
 
   const openImportPicker = (kind: "files" | "directory") => {
     if (importBusyRef.current || !importChoice) return;
     const input = kind === "directory" ? guidedDirectoryInputRef.current : guidedFilesInputRef.current;
     if (!input) return;
+    setImportPickerKind(kind);
     // Configure and open within this click, retaining the browser's user activation.
     // Do not clear an existing collection until replacement files are actually selected.
     input.accept = kind === "directory" ? "" : importChoice === "mat-dat" ? ".mat,.dat" : `.${importChoice}`;
@@ -6909,7 +6916,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, hasRecording, importBusy, instanceQueueEntries, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, hasRecording, importBusy, instanceQueueEntries, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -7700,7 +7707,7 @@ export default function Home() {
               <span className="empty-load-mark" aria-hidden="true">＋</span>
               <strong>Load a recording to begin</strong>
               <span>Open a single recording or a full directory of EDF / EDF+, MATLAB, or MAT + DAT sessions.</span>
-              <small>Choose a recording type, then Files or Folder. You can also drop files and folders anywhere.</small>
+              <small>Drop individual files, including MAT + DAT pairs. For folders, choose a recording type, then Folder.</small>
             </button>
           </div>}
           </>}
@@ -7854,7 +7861,16 @@ export default function Home() {
       />}
 
       {showImport && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !importBusy) setShowImport(false); }}>
-        <div id="recording-import-dialog" className="modal import-modal" data-tutorial="import" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
+        <div id="recording-import-dialog" className="modal import-modal" data-tutorial="import" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}
+          onDrop={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            event.stopPropagation();
+            fileDragDepthRef.current = 0;
+            setFileDragActive(false);
+            if (!importBusyRef.current) void handleDroppedRecordingFiles(event.dataTransfer, Boolean(importChoice && importPickerKind === "directory" && !pendingDat));
+          }}
+        >
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN RECORDINGS</span>
           <h2>{pendingDat ? "Confirm the DAT layout." : "Choose a recording type."}</h2>
@@ -7879,8 +7895,10 @@ export default function Home() {
               <p>{importChoice === "mat-dat" ? "Select both matching files for each MAT + DAT pair, or choose their folder." : "Select one or multiple files, or choose a folder to include its subfolders."}</p>
             </section>}
             <div className="recording-import-drop-hint">
-              <strong>Or drop files or a folder anywhere</strong>
-              <p>Folders include subfolders. Collections must use one recording format. Files stay on this device.</p>
+              <strong>{importChoice && importPickerKind === "directory" ? "Or drop a folder here" : "Or drop individual files here"}</strong>
+              <p>{importChoice && importPickerKind === "directory"
+                ? "Folder drops are accepted inside this dialog only and include subfolders. All sessions must use one recording format."
+                : "MAT + DAT pairs are accepted together. For folder drops, choose a recording type, then Folder."} Files stay on this device.</p>
             </div>
             {stagedDirectoryPlan && <section className="guided-import" aria-label="Detected session collection">
               <header>

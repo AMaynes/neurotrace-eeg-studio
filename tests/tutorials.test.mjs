@@ -466,11 +466,14 @@ test("load-recording guidance chooses a format before opening the files or folde
   assert.match(lesson.steps[2].instruction, /both the MAT and DAT/);
   assert.match(lesson.steps[2].instruction, /click Folder to select a directory, including its subfolders/);
   assert.match(lesson.steps[2].instruction, /opens automatically/);
+  assert.match(lesson.steps[2].tip, /individual files onto the homepage or workspace/);
+  assert.match(lesson.steps[2].tip, /folder drop, choose a format, click Folder, cancel the directory picker, then drop inside the loader dialog/);
   assert.deepEqual(lesson.steps[2].completeOn, ["import-files-ready", "recording-opened"]);
   assert.match(lesson.steps[3].instruction, /Load N sessions/);
   assert.equal(lesson.steps[3].completeOn, undefined, "recording inspection is a reading-only step, not a second load");
   const copy = lesson.steps.map((step) => step.instruction).join(" ");
   assert.doesNotMatch(copy, /required row|loader’s Open button|file picker immediately|no file-versus-folder setting/);
+  assert.doesNotMatch(lesson.steps[2].tip, /files or folders into the workspace/);
 });
 
 test("auto-advance pauses in the hub and while prerequisites are unmet, and cleans up after ending", () => {

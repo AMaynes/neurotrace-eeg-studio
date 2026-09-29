@@ -59,7 +59,11 @@ const KNOWN_FILE_EXTENSIONS = new Set([
 ]);
 
 function dropFailure(detail: string): Error {
-  return new Error(`${detail} Nothing was imported. Choose a recording type, then Files or Folder, or try dropping the folder again.`);
+  return new Error(`${detail} Nothing was imported. Open Load recording, choose a recording type, then Files or Folder. Folder drops are accepted only after choosing Folder.`);
+}
+
+function directoryDropFailure(): Error {
+  return new Error("Nothing was imported. Folder drops are only available inside Load recording after choosing a recording type, then Folder.");
 }
 
 function assertFallbackFile(file: File): void {
@@ -70,10 +74,15 @@ function assertFallbackFile(file: File): void {
 
 /**
  * Snapshot drag entries while the drop data store is readable, then enumerate
- * all directory-reader batches. Preserve File objects; never copy signal bytes.
+ * all directory-reader batches when explicitly allowed by the Folder workflow.
+ * Preserve File objects; never copy signal bytes.
  * Traversal is all-or-nothing so failures cannot open an incomplete collection.
  */
-export async function collectDroppedRecordingFiles(dataTransfer: DataTransfer): Promise<{ files: File[]; directory: boolean }> {
+export async function collectDroppedRecordingFiles(
+  dataTransfer: DataTransfer,
+  options: { allowDirectories?: boolean } = {},
+): Promise<{ files: File[]; directory: boolean }> {
+  const allowDirectories = options.allowDirectories === true;
   const fallbackFiles = [...dataTransfer.files];
   const fileItems = [...dataTransfer.items].filter((item) => item.kind === "file");
   if (fallbackFiles.length > MAX_DROPPED_ENTRIES || fileItems.length > MAX_DROPPED_ENTRIES) {
@@ -89,6 +98,12 @@ export async function collectDroppedRecordingFiles(dataTransfer: DataTransfer): 
     }
     return { entry, file: entry ? null : item.getAsFile() ?? fallbackFiles[index] ?? null };
   });
+  // Check the complete selection before calling even the first file callback:
+  // a loose file alongside a folder must not start a partial import.
+  if (!allowDirectories && (fallbackFiles.some((file) => Boolean(file.webkitRelativePath))
+    || roots.some(({ entry, file }) => entry?.isDirectory || Boolean(file?.webkitRelativePath)))) {
+    throw directoryDropFailure();
+  }
   if (!roots.length) {
     fallbackFiles.forEach(assertFallbackFile);
     return { files: fallbackFiles, directory: fallbackFiles.some((file) => Boolean(file.webkitRelativePath)) };
@@ -112,6 +127,9 @@ export async function collectDroppedRecordingFiles(dataTransfer: DataTransfer): 
       } catch {
         throw dropFailure("A file in the dropped selection could not be read.");
       }
+      // Some browsers expose an entry as a file but preserve its directory
+      // provenance only on the callback result. Do not let that bypass policy.
+      if (!allowDirectories && file.webkitRelativePath) throw directoryDropFailure();
       if (ancestors.length) {
         const path = segments.join("/");
         try {
