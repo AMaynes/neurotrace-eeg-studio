@@ -7873,7 +7873,7 @@ export default function Home() {
             {importChoice && <section className="recording-import-actions" data-tutorial="import-files" aria-label="Choose files or folder">
               <strong>{importChoice === "edf" ? "EDF / EDF+" : importChoice === "mat" ? "MAT" : importChoice === "mat-dat" ? "MAT + DAT" : "NeuroTrace"}</strong>
               <div>
-                <button type="button" className="button primary" disabled={importBusy} onClick={() => openImportPicker("files")}>Files</button>
+                <button type="button" className="button" disabled={importBusy} onClick={() => openImportPicker("files")}>Files</button>
                 <button type="button" className="button" disabled={importBusy} onClick={() => openImportPicker("directory")}>Folder</button>
               </div>
               <p>{importChoice === "mat-dat" ? "Select both matching files for each MAT + DAT pair, or choose their folder." : "Select one or multiple files, or choose a folder to include its subfolders."}</p>

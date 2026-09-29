@@ -15,6 +15,7 @@
 .recording-import-actions > strong { color: var(--ink); font-size: 12px; }
 .recording-import-actions > div { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .recording-import-actions .button { min-height: 38px; min-width: 96px; font-size: 12px; }
+.recording-import-actions .button:not(:disabled):is(:hover, :focus-visible) { background: var(--mint); border-color: var(--mint); color: #071914; box-shadow: 0 5px 18px rgba(87, 223, 183, .12); }
 .recording-import-actions .button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
 .recording-import-actions > p { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .directory-import-local-note { color: var(--faint); font-size: 9px; line-height: 1.5; }

@@ -123,6 +123,24 @@ test("welcome requires a recording type before exposing file or folder selection
   assert.equal(elements(tree, (node) => node.props?.className === "import-requirements").length, 0);
 });
 
+test("file and folder actions share neutral styling and highlight green only on enabled hover or keyboard focus", async () => {
+  const choices = pickerButtons(harness({ importChoice: "edf" }));
+  const files = choices.get("files");
+  const folder = choices.get("directory");
+  assert.equal(files.props.className, folder.props.className, "neither picker choice is permanently highlighted");
+  for (const action of [files, folder]) {
+    assert.doesNotMatch(action.props.className, /\bprimary\b/);
+    assert.equal(action.props["aria-pressed"], undefined, "picker actions are not persistent selected states");
+  }
+  const css = await readFile(new URL("../app/directory-sessions.css", import.meta.url), "utf8");
+  const highlight = css.match(/\.recording-import-actions\s+\.button:not\(:disabled\):is\(:hover,\s*:focus-visible\)\s*\{([^}]+)\}/)?.[1];
+  assert.ok(highlight, "both enabled choices share their hover and keyboard-focus highlight rule");
+  assert.match(highlight, /background:\s*var\(--mint\)/);
+  assert.match(highlight, /border-color:\s*var\(--mint\)/);
+  assert.match(highlight, /color:\s*#[0-9a-f]{3,8}\b/i, "green highlight uses explicit contrasting text");
+  assert.match(highlight, /box-shadow:/);
+});
+
 test("the import dialog has separate hidden file and recursive-directory pickers wired to auto-detection", () => {
   const ui = harness();
   const tree = ui.render();
