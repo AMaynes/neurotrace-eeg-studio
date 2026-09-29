@@ -435,7 +435,8 @@ test("accepts additive directory companions while retaining actionable damaged-r
   const modal = page.slice(modalStart, modalEnd);
   assert.match(modal, /className="upload-error"[^>]*role="alert"/);
   assert.match(modal, /aria-live="assertive"/);
-  assert.match(modal, /Scan a directory instead/);
+  assert.match(modal, /Recording directory/);
+  assert.match(modal, /Choose directory/);
   assert.match(modal, /element\.webkitdirectory\s*=\s*true/);
   assert.match(modal, /chooseImportType\("edf"\)/);
   assert.match(modal, /chooseImportType\("mat"\)/);
