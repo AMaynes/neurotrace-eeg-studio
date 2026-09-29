@@ -60,6 +60,8 @@ import {
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
 import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping";
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
+import { DirectoryImportError, directoryRecordingFiles, planDirectoryImport, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
+import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
 import {
   buildEDFFileWindowOffThread,
   buildRawDatFileWindowOffThread,
@@ -302,6 +304,14 @@ type GuidedImportSelection = {
   dat: File | null;
   neurotrace: File | null;
   supportingFiles: File[];
+};
+
+type DirectoryOpenRequest = {
+  catalogId: string;
+  recordingId: string;
+  sessionId: string;
+  format: DirectoryImportFormat;
+  files: File[];
 };
 
 type ProjectSaveSelection = {
@@ -1709,6 +1719,11 @@ export default function Home() {
   const sessionSnapshotsRef = useRef<Map<string, SessionWorkspaceSnapshot>>(new Map());
   const activeSessionIdRef = useRef("initial-session");
   const importBusyRef = useRef(false);
+  const directoryCatalogIdRef = useRef<string | null>(null);
+  const directorySessionTabsRef = useRef(new Map<string, { sessionId: string; files: File[] }>());
+  const queuedDirectoryOpenRef = useRef<DirectoryOpenRequest | null>(null);
+  const directoryConfirmationRef = useRef<DirectoryOpenRequest | null>(null);
+  const directoryImportRunnerRef = useRef<(files: File[], format: DirectoryImportFormat) => Promise<DirectorySessionStatus | undefined>>(async () => undefined);
   const sourceVerificationRef = useRef(false);
   const sourceVerificationAbortRef = useRef<AbortController | null>(null);
   const flushSessionRef = useRef<() => void>(() => {});
@@ -1898,6 +1913,11 @@ export default function Home() {
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
   const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [stagedDirectoryPlan, setStagedDirectoryPlan] = useState<DirectoryImportPlan | null>(null);
+  const [directoryCatalog, setDirectoryCatalog] = useState<{ id: string; plan: DirectoryImportPlan } | null>(null);
+  const [showDirectorySessions, setShowDirectorySessions] = useState(false);
+  const [directoryStatuses, setDirectoryStatuses] = useState<Record<string, DirectorySessionStatus>>({});
+  const [queuedDirectoryOpen, setQueuedDirectoryOpen] = useState<DirectoryOpenRequest | null>(null);
   const [importChoice, setImportChoice] = useState<ImportChoice | null>(null);
   const [guidedImportSelection, setGuidedImportSelection] = useState<GuidedImportSelection>(EMPTY_GUIDED_IMPORT_SELECTION);
   const [showProjectSave, setShowProjectSave] = useState(false);
@@ -2265,13 +2285,15 @@ export default function Home() {
     setCommitAdvanceAfter(false);
     setImportChoice(null);
     setGuidedImportSelection(EMPTY_GUIDED_IMPORT_SELECTION);
+    setStagedDirectoryPlan(null);
+    directoryConfirmationRef.current = null;
     pendingProjectImportRef.current = null;
     undoRef.current = snapshot.undo;
     redoRef.current = snapshot.redo;
   }, [commitViewStart]);
 
   const switchSession = useCallback((id: string) => {
-    if (importBusy || id === activeSessionId) return;
+    if (importBusy || queuedDirectoryOpenRef.current || id === activeSessionId) return;
     storeActiveSession();
     const snapshot = sessionSnapshotsRef.current.get(id);
     if (!snapshot) return;
@@ -2281,7 +2303,7 @@ export default function Home() {
   }, [activeSessionId, applySessionSnapshot, importBusy, storeActiveSession]);
 
   const createBlankSession = useCallback(() => {
-    if (importBusy) return;
+    if (importBusy || queuedDirectoryOpenRef.current) return;
     storeActiveSession();
     const id = makeId("session");
     const nextNumber = sessionTabs.length + 1;
@@ -2294,13 +2316,21 @@ export default function Home() {
   }, [applySessionSnapshot, demoSource, importBusy, sessionTabs.length, storeActiveSession]);
 
   const closeSession = useCallback((id: string) => {
-    if (importBusy) return;
+    if (importBusy || queuedDirectoryOpenRef.current) return;
     if (id === activeSessionId) storeActiveSession();
     const closingSnapshot = sessionSnapshotsRef.current.get(id);
     if (closingSnapshot?.hasRecording && closingSnapshot.recoveryStatus === "error") {
       setToast("This session could not be saved locally — export it before closing the tab");
       return;
     }
+    const closedDirectoryIds = [...directorySessionTabsRef.current]
+      .filter(([, entry]) => entry.sessionId === id).map(([key]) => key);
+    closedDirectoryIds.forEach((key) => directorySessionTabsRef.current.delete(key));
+    if (closedDirectoryIds.length) setDirectoryStatuses((current) => {
+      const next = { ...current };
+      closedDirectoryIds.forEach((key) => { delete next[key]; });
+      return next;
+    });
     const closingIndex = sessionTabs.findIndex((tab) => tab.id === id);
     let remaining = sessionTabs.filter((tab) => tab.id !== id);
     sessionSnapshotsRef.current.delete(id);
@@ -5171,8 +5201,14 @@ export default function Home() {
     file: File,
     interpretation?: Record<string, unknown>,
     importContext?: SourceImportContext,
+    keepSeparateSession = false,
   ) => {
     const targetSessionId = activeSessionId;
+    if (keepSeparateSession) {
+      // Separate recovery state as well as tabs for identical bytes at distinct
+      // session paths. This key is stable when the same directory is reselected.
+      interpretation = { ...interpretation, directory_session_path: relativeFilePath(file) };
+    }
     const nextMeta = sourceMeta(source);
     storeActiveSession();
     cancelPendingViewFrames();
@@ -5437,7 +5473,9 @@ export default function Home() {
       ensureVerificationActive();
       legacyRecoveryKey = legacyHash.slice(0, 32);
     }
-    const duplicateEntry = [...sessionSnapshotsRef.current.entries()].find(([id, snapshot]) =>
+    // Directory entries represent distinct session paths, even if their sample
+    // bytes are identical. Do not merge another entry's companions or labels.
+    const duplicateEntry = !keepSeparateSession && [...sessionSnapshotsRef.current.entries()].find(([id, snapshot]) =>
       id !== targetSessionId && snapshot.hasRecording && snapshot.sourceHash === interpretationHash);
     if (duplicateEntry) {
       const [duplicateId, duplicateSnapshot] = duplicateEntry;
@@ -5568,6 +5606,15 @@ export default function Home() {
       sourceVerificationAbortRef.current = null;
     }
     setVerifyingSource(false);
+    const replacedDirectoryIds = [...directorySessionTabsRef.current]
+      .filter(([, entry]) => entry.sessionId === targetSessionId && !entry.files.includes(file))
+      .map(([key]) => key);
+    replacedDirectoryIds.forEach((key) => directorySessionTabsRef.current.delete(key));
+    if (replacedDirectoryIds.length) setDirectoryStatuses((current) => {
+      const next = { ...current };
+      replacedDirectoryIds.forEach((key) => { delete next[key]; });
+      return next;
+    });
     setSessionTabs((current) => current.map((tab) => tab.id === targetSessionId
       ? { ...tab, title: shortFileName(nextMeta.name.replace(/\.[^.]+$/, ""), 22), hasRecording: true, recoveryStatus: "saved" }
       : tab));
@@ -5683,14 +5730,14 @@ export default function Home() {
     }
   }, [commitViewStart]);
 
-  const importFiles = async (files: File[]) => {
+  const importFiles = async (files: File[], expectedFormat?: DirectoryImportFormat): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
     setShowImport(true);
     const selectionError = validateUploadSelection(files);
     setUploadError(selectionError);
     if (selectionError) {
       setToast(selectionError.title);
-      return;
+      return { state: "error", message: selectionError.message };
     }
     importBusyRef.current = true;
     setImportBusy(true);
@@ -5732,10 +5779,13 @@ export default function Home() {
 
       // Keep a pending MAT/DAT available when its companion is added in a later
       // selection, without borrowing files from another already-open recording.
-      const continuingFiles = pendingFilesForSelection(pendingImportFiles, [incomingPrimary]);
-      const stagedFiles = hasRecording ? continuingFiles : mergeSelectedFiles(uploadedFileInputs, continuingFiles);
+      const continuingFiles = expectedFormat ? [] : pendingFilesForSelection(pendingImportFiles, [incomingPrimary]);
+      const stagedFiles = expectedFormat || hasRecording ? continuingFiles : mergeSelectedFiles(uploadedFileInputs, continuingFiles);
       const allFiles = mergeSelectedFiles(stagedFiles, files);
       const extension = recordingExtension(incomingPrimary);
+      if (expectedFormat && ((expectedFormat === "edf") !== (extension === "edf"))) {
+        throw new MatDatImportError("Directory format mismatch", "This recording does not match the selected directory format. Select a directory containing only one recording format.");
+      }
       setPendingDat(null);
       setPendingLegacyMatFile(null);
       setPendingLegacyMeta(null);
@@ -5743,7 +5793,7 @@ export default function Home() {
       if (extension === "edf") {
         const source = await EDFSource.create(incomingPrimary, { parseAnnotations: false });
         const importContext = await prepareSourceImportContext(source, incomingPrimary, allFiles);
-        const opened = await loadSource(source, incomingPrimary, undefined, importContext);
+        const opened = await loadSource(source, incomingPrimary, undefined, importContext, Boolean(expectedFormat));
         if (!opened) return;
         setPendingImportFiles([]);
         const hasAnnotationChannels = source.header.signals.some((signal) => signal.isAnnotation);
@@ -5786,11 +5836,20 @@ export default function Home() {
         );
         // Counts and format only: do not send patient metadata or file paths to logs.
         console.info("[NeuroTrace import]", resolved.diagnostics);
+        if (expectedFormat && ((expectedFormat === "mat" && resolved.kind !== "standalone-mat")
+          || (expectedFormat === "mat-dat" && resolved.kind !== "legacy-dat"))) {
+          // Filename discovery cannot distinguish a signal MAT from metadata.
+          // Reject a content mismatch before installing any source or mapping.
+          if (resolved.kind === "standalone-mat") resolved.source.dispose?.();
+          throw new MatDatImportError("Directory format mismatch", expectedFormat === "mat"
+            ? "This MAT is legacy metadata, not a standalone recording. Use a MAT + DAT directory with a matching pair for every session."
+            : "This pair is not a readable legacy MAT + DAT session. Every MAT must contain session metadata for its matching DAT; standalone signal MAT files belong in a MAT-only directory.");
+        }
         if (resolved.kind === "standalone-mat") {
           const importContext = await prepareSourceImportContext(resolved.source, resolved.file, allFiles);
-          const opened = await loadSource(resolved.source, resolved.file, undefined, importContext);
+          const opened = await loadSource(resolved.source, resolved.file, undefined, importContext, Boolean(expectedFormat));
           if (opened) setPendingImportFiles([]);
-          return;
+          return opened ? { state: "loaded" } : { state: "error", message: "The recording could not be opened." };
         }
         const dat = resolved.file;
         const mat = resolved.kind === "legacy-dat" ? resolved.mat : null;
@@ -5826,20 +5885,89 @@ export default function Home() {
           setToast(`Legacy MAT + DAT mapped — ${reviewableEvents} seizure-keyword event${reviewableEvents === 1 ? "" : "s"} ready for review`);
         }
         else if (!mat) setToast("Raw DAT detected — confirm channel mapping");
+        return { state: "confirmation" };
       }
+      return { state: "loaded" };
     } catch (error) {
       const uploadFailure = uploadErrorFrom(error, files);
       setUploadError(uploadFailure);
       setToast(uploadFailure.title);
       setShowImport(true);
+      return { state: "error", message: uploadFailure.message };
     } finally {
       importBusyRef.current = false;
       setImportBusy(false);
     }
   };
 
+  const updateDirectoryStatus = useCallback((request: DirectoryOpenRequest, status: DirectorySessionStatus) => {
+    if (directoryCatalogIdRef.current !== request.catalogId) return;
+    setDirectoryStatuses((current) => ({ ...current, [request.recordingId]: status }));
+  }, []);
+
+  // Wait for the selected tab's render before calling its import closure.
+  // Calling immediately after setActiveSessionId would load into the old tab.
+  useLayoutEffect(() => {
+    directoryImportRunnerRef.current = importFiles;
+  });
+
+  useEffect(() => {
+    const request = queuedDirectoryOpen;
+    if (!request || request.sessionId !== activeSessionId || queuedDirectoryOpenRef.current !== request) return;
+    queuedDirectoryOpenRef.current = null;
+    setQueuedDirectoryOpen(null);
+    if (directoryCatalogIdRef.current !== request.catalogId) return;
+    updateDirectoryStatus(request, { state: "opening" });
+    void directoryImportRunnerRef.current(request.files, request.format).then((status) => {
+      const result = status ?? { state: "error" as const, message: "Opening was interrupted. Try again." };
+      updateDirectoryStatus(request, result);
+      directoryConfirmationRef.current = result.state === "confirmation" ? request : null;
+    }).catch((error: unknown) => {
+      updateDirectoryStatus(request, { state: "error", message: error instanceof Error ? error.message : "Could not open recording." });
+      directoryConfirmationRef.current = null;
+    });
+  }, [activeSessionId, queuedDirectoryOpen, updateDirectoryStatus]);
+
+  const openDirectoryRecording = (recording: DirectoryRecording) => {
+    if (!directoryCatalog || importBusyRef.current || queuedDirectoryOpenRef.current) return;
+    const existing = directorySessionTabsRef.current.get(recording.id);
+    const existingTab = existing && sessionTabs.find((tab) => tab.id === existing.sessionId);
+    const snapshot = existing && sessionSnapshotsRef.current.get(existing.sessionId);
+    const existingPrimary = existing?.sessionId === activeSessionId ? primaryFile : snapshot?.primaryFile;
+    const existingLoaded = existing?.sessionId === activeSessionId ? hasRecording : snapshot?.hasRecording;
+    if (existingTab && existingLoaded && existingPrimary && recording.files.includes(existingPrimary)) {
+      switchSession(existingTab.id);
+      setShowDirectorySessions(false);
+      return;
+    }
+    storeActiveSession();
+    // Reuse an empty target on retry, but never replace an unrelated recording.
+    const sessionId = existingTab && !existingLoaded ? existingTab.id
+      : !hasRecording ? activeSessionId : makeId("session");
+    const blank = blankSessionSnapshot(demoSource, sessionId);
+    sessionSnapshotsRef.current.set(sessionId, blank);
+    if (!sessionTabs.some((tab) => tab.id === sessionId)) {
+      setSessionTabs((current) => [...current, {
+        id: sessionId, title: shortFileName(recording.label, 22), hasRecording: false,
+        recoveryStatus: "saved", contentView: "recording",
+      }]);
+    }
+    setActiveSessionId(sessionId);
+    applySessionSnapshot(blank);
+    directorySessionTabsRef.current.set(recording.id, { sessionId, files: recording.files });
+    const request: DirectoryOpenRequest = {
+      catalogId: directoryCatalog.id, recordingId: recording.id, sessionId,
+      format: directoryCatalog.plan.format,
+      files: directoryRecordingFiles(directoryCatalog.plan, recording),
+    };
+    queuedDirectoryOpenRef.current = request;
+    setQueuedDirectoryOpen(request);
+    setShowDirectorySessions(false);
+  };
+
   const handleUploadedFiles = async (files: File[]) => {
     if (!files.length || importBusyRef.current) return;
+    directoryConfirmationRef.current = null;
     const projectFile = files.find((file) => recordingExtension(file) === "neurotrace");
     if (projectFile) {
       await openNeurotraceProject(projectFile);
@@ -5875,6 +6003,8 @@ export default function Home() {
   const chooseImportType = (choice: ImportChoice) => {
     setImportChoice(choice);
     setGuidedImportSelection(EMPTY_GUIDED_IMPORT_SELECTION);
+    setStagedDirectoryPlan(null);
+    directoryConfirmationRef.current = null;
     setUploadError(null);
   };
 
@@ -5886,6 +6016,7 @@ export default function Home() {
     const files = [...(event.target.files ?? [])];
     event.target.value = "";
     const file = files.find((candidate) => recordingExtension(candidate) === expectedExtension) ?? null;
+    setStagedDirectoryPlan(null);
     if (!file) {
       setUploadError({
         title: `Choose a .${expectedExtension} file`,
@@ -5899,43 +6030,25 @@ export default function Home() {
   };
 
   const stageGuidedDirectory = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = [...(event.target.files ?? [])]
-      .sort((left, right) => relativeFilePath(left).localeCompare(relativeFilePath(right), undefined, { numeric: true }));
+    const files = [...(event.target.files ?? [])];
     event.target.value = "";
-    const edf = files.find((file) => recordingExtension(file) === "edf") ?? null;
-    const mat = files.find((file) => recordingExtension(file) === "mat") ?? null;
-    const dat = files.find((file) => recordingExtension(file) === "dat") ?? null;
-    const neurotrace = files.find((file) => recordingExtension(file) === "neurotrace") ?? null;
-    const requiredFiles = importChoice === "edf" ? [edf]
-      : importChoice === "mat" ? [mat]
-        : importChoice === "mat-dat" ? [mat, dat]
-          : [neurotrace];
-    if (requiredFiles.some((file) => !file)) {
-      const requirement = importChoice === "edf" ? "one EDF / EDF+ file"
-        : importChoice === "mat" ? "one MAT file"
-          : importChoice === "mat-dat" ? "both a MAT file and a DAT file"
-            : "one .neurotrace project";
+    if (!files.length || !importChoice || importBusyRef.current) return;
+    setGuidedImportSelection(EMPTY_GUIDED_IMPORT_SELECTION);
+    setStagedDirectoryPlan(null);
+    try {
+      if (importChoice === "neurotrace") {
+        throw new Error("Open a .neurotrace project using the file chooser. Directory collections support EDF, standalone MAT, or MAT + DAT.");
+      }
+      const plan = planDirectoryImport(files, importChoice);
+      setStagedDirectoryPlan(plan);
+      setUploadError(null);
+    } catch (error) {
       setUploadError({
-        title: "Required file not found",
-        message: `That directory must contain ${requirement}.`,
-        files: [],
+        title: "Directory cannot be loaded",
+        message: error instanceof Error ? error.message : "Could not discover directory sessions.",
+        files: error instanceof DirectoryImportError ? error.paths.slice(0, 8) : [],
       });
-      return;
     }
-    const chosenRecordings = new Set(requiredFiles.filter((file): file is File => file !== null));
-    setGuidedImportSelection({
-      edf: importChoice === "edf" ? edf : null,
-      mat: importChoice === "mat" || importChoice === "mat-dat" ? mat : null,
-      dat: importChoice === "mat-dat" ? dat : null,
-      neurotrace: importChoice === "neurotrace" ? neurotrace : null,
-      supportingFiles: files.filter((file) => {
-        const extension = recordingExtension(file);
-        if (chosenRecordings.has(file) || extension === "neurotrace") return false;
-        if (!SUPPORTED_RECORDING_EXTENSIONS.has(extension)) return true;
-        return importChoice === "mat-dat" && (extension === "mat" || extension === "dat");
-      }),
-    });
-    setUploadError(null);
   };
 
   const openNeurotraceProject = async (file: File) => {
@@ -6021,7 +6134,8 @@ export default function Home() {
     }
   };
 
-  const guidedImportReady = importChoice === "edf" ? Boolean(guidedImportSelection.edf)
+  const guidedImportReady = stagedDirectoryPlan ? stagedDirectoryPlan.format === importChoice && stagedDirectoryPlan.recordings.length > 0
+    : importChoice === "edf" ? Boolean(guidedImportSelection.edf)
     : importChoice === "mat" ? Boolean(guidedImportSelection.mat)
       : importChoice === "mat-dat" ? Boolean(guidedImportSelection.mat && guidedImportSelection.dat)
         : importChoice === "neurotrace" ? Boolean(guidedImportSelection.neurotrace)
@@ -6039,6 +6153,19 @@ export default function Home() {
 
   const submitGuidedImport = async () => {
     if (!guidedImportReady || !importChoice) return;
+    if (stagedDirectoryPlan) {
+      const id = makeId("directory");
+      directoryCatalogIdRef.current = id;
+      directorySessionTabsRef.current.clear();
+      directoryConfirmationRef.current = null;
+      setDirectoryStatuses({});
+      setDirectoryCatalog({ id, plan: stagedDirectoryPlan });
+      setStagedDirectoryPlan(null);
+      setShowImport(false);
+      setShowDirectorySessions(true);
+      setToast(`${stagedDirectoryPlan.recordings.length} directory sessions ready — open any recording when needed`);
+      return;
+    }
     if (importChoice === "neurotrace" && guidedImportSelection.neurotrace) {
       await openNeurotraceProject(guidedImportSelection.neurotrace);
       return;
@@ -6055,6 +6182,7 @@ export default function Home() {
 
   const confirmDatImport = async () => {
     if (!pendingDat || importBusyRef.current) return;
+    const directoryRequest = directoryConfirmationRef.current;
     if (datChannelNames.error) {
       setUploadError({ title: "DAT channel names need correction", message: datChannelNames.error, files: [pendingDat.name] });
       return;
@@ -6166,8 +6294,10 @@ export default function Home() {
           ? pendingImportFiles
           : [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null),
       );
-      const opened = await loadSource(source, pendingDat, interpretation, importContext);
+      const opened = await loadSource(source, pendingDat, interpretation, importContext, Boolean(directoryRequest));
       if (!opened) return;
+      if (directoryRequest) updateDirectoryStatus(directoryRequest, { state: "loaded" });
+      directoryConfirmationRef.current = null;
       if (pendingLegacyMeta?.events.length && datMapping.channelCount >= 100) {
         const importedCandidates = pendingLegacyMeta.events
           .map((event, sourceIndex) => ({ event, sourceIndex }))
@@ -6222,6 +6352,7 @@ export default function Home() {
     } catch (error) {
       pendingProjectImportRef.current = null;
       const uploadFailure = uploadErrorFrom(error, [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null));
+      if (directoryRequest) updateDirectoryStatus(directoryRequest, { state: "error", message: uploadFailure.message });
       setUploadError(uploadFailure);
       setToast(uploadFailure.title);
       setShowImport(true);
@@ -6572,7 +6703,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const modalOpen = showEphysLabelPicker || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+    const modalOpen = showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -6612,7 +6743,7 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
+  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -6628,7 +6759,7 @@ export default function Home() {
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
       const editingTarget = target?.closest("input, textarea, select, [contenteditable='true']");
       if (target?.closest(".spectrogram-panel") && !clearShortcut && !historyShortcut) return;
-      const modalOpen = showEphysLabelPicker || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+      const modalOpen = showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
       if (modalOpen && zoomShortcut && !editingTarget && !target?.closest("[data-shortcut-scope]")) {
         event.preventDefault();
         event.stopPropagation();
@@ -6650,6 +6781,7 @@ export default function Home() {
         else if (queueDetailEntry) setQueueDetailTarget(null);
         else if (showProjectSave && !projectSaveBusy) setShowProjectSave(false);
         else if (showImport && !importBusy) setShowImport(false);
+        else if (showDirectorySessions && !importBusy) setShowDirectorySessions(false);
         return;
       }
       if (modalOpen) return;
@@ -6748,7 +6880,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, hasRecording, importBusy, instanceQueueEntries, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setViewStartSafe, showAnnotationEditor, showChannels, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, hasRecording, importBusy, instanceQueueEntries, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -6889,7 +7021,7 @@ export default function Home() {
 
   /** Explicit, synchronous view actions only. Never choose files, labels, or save contents. */
   const assistTutorial = (action: TutorialAssistAction): boolean => {
-    const modalOpen = showEphysLabelPicker || showSettings || showChannels || showImport || showProjectSave
+    const modalOpen = showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
       || showSessionMap || showPatientInfo || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
     if (modalOpen) return (action === "open-import" && showImport) || (action === "open-save" && showProjectSave)
       || (action === "open-channels" && showChannels) || (action === "open-label-picker" && showEphysLabelPicker);
@@ -7074,6 +7206,13 @@ export default function Home() {
             })}
           </div>
           <button className="add-session-tab" disabled={importBusy} aria-label="Add blank session" title="Add blank session" onClick={createBlankSession}>+</button>
+          {directoryCatalog && <button
+            className="directory-sessions-toggle"
+            disabled={importBusy || Boolean(queuedDirectoryOpen)}
+            aria-label={`Open directory sessions (${directoryCatalog.plan.recordings.length})`}
+            aria-haspopup="dialog" aria-expanded={showDirectorySessions} aria-controls="directory-sessions-dialog"
+            onClick={() => { setShowImport(false); setShowDirectorySessions(true); }}
+          >Directory <span>{directoryCatalog.plan.recordings.length}</span></button>}
         </nav>
         <div className="top-actions utility-actions">
           <button
@@ -7666,6 +7805,25 @@ export default function Home() {
         </div>
       </div>}
 
+      {showDirectorySessions && directoryCatalog && <DirectorySessions
+        key={directoryCatalog.id}
+        plan={directoryCatalog.plan}
+        busy={importBusy || Boolean(queuedDirectoryOpen)}
+        statuses={directoryStatuses}
+        onOpen={openDirectoryRecording}
+        onClose={() => setShowDirectorySessions(false)}
+        onClear={() => {
+          if (importBusyRef.current || queuedDirectoryOpenRef.current) return;
+          directoryCatalogIdRef.current = null;
+          directorySessionTabsRef.current.clear();
+          directoryConfirmationRef.current = null;
+          setDirectoryCatalog(null);
+          setDirectoryStatuses({});
+          setShowDirectorySessions(false);
+          setToast("Directory list removed; open sessions and files on disk are unchanged");
+        }}
+      />}
+
       {showImport && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !importBusy) setShowImport(false); }}>
         <div id="recording-import-dialog" className="modal import-modal" data-tutorial="import" role="dialog" aria-modal="true" aria-label="Load recording" tabIndex={-1}>
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
@@ -7693,7 +7851,7 @@ export default function Home() {
                         : "Choose one .neurotrace file saved from this app."}</span></div>
                 <b>{importBusy ? "Opening…" : "Required"}</b>
               </header>
-              <div className="import-requirements" data-tutorial="import-files">
+              {!stagedDirectoryPlan && <div className="import-requirements" data-tutorial="import-files">
                 {importChoice === "edf" && <label className={guidedImportSelection.edf ? "complete" : ""}>
                   <input hidden type="file" accept=".edf" disabled={importBusy} onChange={(event) => stageGuidedFile("edf", "edf", event)} />
                   <i aria-hidden="true">{guidedImportSelection.edf ? "✓" : ""}</i>
@@ -7726,14 +7884,22 @@ export default function Home() {
                   <span><strong>NeuroTrace project</strong><small>{guidedImportSelection.neurotrace?.name ?? "Click to choose one .neurotrace file"}</small></span>
                   <b>{guidedImportSelection.neurotrace ? "Replace" : "Choose"}</b>
                 </label>}
-              </div>
+              </div>}
+              {stagedDirectoryPlan && <div className="directory-import-summary" role="status" data-tutorial="import-files">
+                <strong>{stagedDirectoryPlan.recordings.length} sessions found</strong>
+                <p>All recording filenames match {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : "paired MAT + DAT"}. File contents are checked when each session opens.</p>
+                <ul>{stagedDirectoryPlan.recordings.slice(0, 5).map((recording) => <li key={recording.id}>{recording.relativePath}</li>)}</ul>
+                {stagedDirectoryPlan.recordings.length > 5 && <small>And {stagedDirectoryPlan.recordings.length - 5} more sessions.</small>}
+                <p>Only the session list is loaded now. Signal data opens on demand; nothing is uploaded.</p>
+              </div>}
               <footer>
-                <label className="directory-scan-button">
+                {importChoice !== "neurotrace" && <label className="directory-scan-button">
                   <input ref={(element) => { if (element) element.webkitdirectory = true; }} hidden type="file" multiple disabled={importBusy} onChange={stageGuidedDirectory} />
                   <span>Scan a directory instead</span>
-                  {guidedImportSelection.supportingFiles.length > 0 && <small>{guidedImportSelection.supportingFiles.length} companion file{guidedImportSelection.supportingFiles.length === 1 ? "" : "s"} found</small>}
-                </label>
-                <button type="button" className="button primary" data-tutorial="import-open" disabled={!guidedImportReady || importBusy} onClick={() => void submitGuidedImport()}>{importBusy ? "Opening…" : importChoice === "neurotrace" ? "Open project" : "Open recording"}</button>
+                  <small>Includes subfolders · one recording format only</small>
+                  {stagedDirectoryPlan && stagedDirectoryPlan.supportingFiles.length > 0 && <small>{stagedDirectoryPlan.supportingFiles.length} companion files found</small>}
+                </label>}
+                <button type="button" className="button primary" data-tutorial="import-open" disabled={!guidedImportReady || importBusy} onClick={() => void submitGuidedImport()}>{importBusy ? "Opening…" : stagedDirectoryPlan ? `Load ${stagedDirectoryPlan.recordings.length} sessions` : importChoice === "neurotrace" ? "Open project" : "Open recording"}</button>
               </footer>
             </section>}
           </>}

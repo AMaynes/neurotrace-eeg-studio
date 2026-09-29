@@ -84,14 +84,14 @@ function globalHarness(overrides = {}) {
   const canvas = { closest: () => null };
   const scope = {
     ...shortcuts, controlBindings: DEFAULT_CONTROLS, canvasRef: { current: canvas }, hasRecording: true,
-    showEphysLabelPicker: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
+    showDirectorySessions: false, showEphysLabelPicker: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
     showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
-    queueDetailEntry: null, confirmCommit: [], cursorLocked: false, cursorTime: 10, markOnset: null,
+    queueDetailEntry: null, confirmCommit: [], cursorLocked: false, cursorTime: 10, markOnset: null, importBusy: false, projectSaveBusy: false,
     selectedAnnotationIds: new Set(), selectedAnnotation: null, activeCandidateItem: null,
     dragAnnotationRef: {}, pendingAnnotationDragRef: {}, annotationSelectionRef: {},
     instanceQueueEntries: [], activeQueueIndex: 0, timebase: 10, LABEL_BY_ID: new Map([["ictal", { id: "ictal" }]]),
   };
-  for (const name of ["undo", "redo", "zoomTimeWindow", "moveSelectedAnnotations", "commitSelected", "placePaletteLabel", "setViewStartSafe", "notifyTutorialAction", "setToast", "setShowSettings", "setShowHelp", "setAnnotationDragPreview", "setAnnotationSelectionBox", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setSelection", "setInspectionRange", "setMarkOnset", "setCursorLocked", "setChannelSelectionActive", "setDragGhost", "setShowSessionContextPicker", "setActiveTool", "setBoxZoomActive"]) scope[name] = (...args) => calls.push([name, ...args]);
+  for (const name of ["undo", "redo", "zoomTimeWindow", "moveSelectedAnnotations", "commitSelected", "placePaletteLabel", "setViewStartSafe", "notifyTutorialAction", "setToast", "setShowSettings", "setShowHelp", "setShowDirectorySessions", "setAnnotationDragPreview", "setAnnotationSelectionBox", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setSelection", "setInspectionRange", "setMarkOnset", "setCursorLocked", "setChannelSelectionActive", "setDragGhost", "setShowSessionContextPicker", "setActiveTool", "setBoxZoomActive"]) scope[name] = (...args) => calls.push([name, ...args]);
   Object.assign(scope, overrides);
   const expression = nodes.find((node) => ts.isVariableDeclaration(node) && node.name.getText(syntax) === "onKey").initializer.getText(syntax);
   const handler = compileHandler(expression, scope);
@@ -134,6 +134,24 @@ test("global dispatch respects native fields, local scopes, recorder, modifiers,
   ui.press("Enter"); assert.deepEqual(ui.calls, [["commitSelected"]]);
   const modal = globalHarness({ showHelp: true, controlBindings: { ...DEFAULT_CONTROLS, zoomIn: ["j"], topicNext: ["j"] } });
   assert.equal(modal.press("j", { target: { closest: (selector) => selector === "[data-shortcut-scope]" ? {} : null } }).prevented, undefined, "a viewer binding cannot steal a tutorial tab key inside its dialog");
+});
+
+test("directory modal blocks viewer shortcuts and only dismisses when idle", () => {
+  const ui = globalHarness({ showDirectorySessions: true });
+  for (const [value, options] of [["ArrowRight"], ["s"], ["Enter"], ["z", { ctrlKey: true }]]) ui.press(value, options);
+  const zoom = ui.press("=", { ctrlKey: true });
+  assert.equal(zoom.prevented, true, "the modal also suppresses the browser zoom fallback");
+  assert.deepEqual(ui.calls, [], "no navigation, annotation or history actions reach the viewer");
+  ui.press("Escape");
+  assert.deepEqual(ui.calls, [["setShowDirectorySessions", false]]);
+  const busy = globalHarness({ showDirectorySessions: true, importBusy: true });
+  busy.press("Escape");
+  assert.deepEqual(busy.calls, [], "an opening recording cannot be dismissed mid-transition");
+  const remapped = globalHarness({ showDirectorySessions: true, controlBindings: { ...DEFAULT_CONTROLS, clear: ["F2"] } });
+  remapped.press("Escape");
+  assert.deepEqual(remapped.calls, []);
+  remapped.press("F2");
+  assert.deepEqual(remapped.calls, [["setShowDirectorySessions", false]]);
 });
 
 test("all local handlers honor customized bindings without requiring the original modifiers", () => {

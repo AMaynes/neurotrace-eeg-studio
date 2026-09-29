@@ -11,6 +11,8 @@ neurotrace-eeg-studio/
 │   └── hosting.json — Retains the legacy Sites project identifier and optional logical storage bindings.
 ├── app/
 │   ├── bids-companions.ts — Catalogs selected files and resolves matching BIDS JSON/TSV metadata, tables, channels, and events.
+│   ├── directory-import.ts — Discovers all same-format sessions without reading signal bytes; validates pairs and scopes companions.
+│   ├── directory-sessions.tsx / directory-sessions.css — Paginated directory catalog with lazy open/resume/retry actions.
 │   ├── chatgpt-auth.ts — Provides optional ChatGPT-host authentication helpers; unused by the public GitHub build.
 │   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.
 │   ├── globals.css — Defines the shared NeuroTrace visual system and responsive workspace layout.
@@ -42,6 +44,7 @@ neurotrace-eeg-studio/
 │   └── og.png — Provides the NeuroTrace social-preview image.
 ├── tests/
 │   ├── bids-companions.test.mjs — Verifies BIDS inheritance, TSV decoding, event/channel discovery, and additive file selection.
+│   ├── directory-*.test.mjs — Verify directory planning, metadata isolation, paginated catalog controls, and actual import/tab handlers using synthetic recordings.
 │   ├── eeg-integrity.test.mjs — Verifies EDF+ annotation decoding and montage safety.
 │   ├── neurotrace-project.test.mjs — Verifies project archives, manifests, binary preservation, and custom-definition safety.
 │   ├── pages-release.test.mjs — Verifies the static Pages artifact and relative runtime assets.

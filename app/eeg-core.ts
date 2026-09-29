@@ -99,6 +99,8 @@ export interface EnvelopeReadOptions extends SignalReadOptions {
 
 export interface SignalSource {
   readonly meta: RecordingMeta;
+  /** Release an unopened/rejected worker-backed source. */
+  dispose?(): void;
   getWindow(
     startSec: number,
     durationSec: number,
@@ -1976,6 +1978,10 @@ export class Mat73Source implements SignalSource {
   readonly matrixName: string;
   private readonly client: Mat73WorkerClient;
   private readonly sampleCount: number;
+
+  dispose(): void {
+    this.client.close();
+  }
 
   private constructor(
     file: File,
