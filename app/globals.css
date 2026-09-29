@@ -72,6 +72,7 @@ textarea:focus-visible {
 ::-webkit-scrollbar-thumb { background: #29414a; border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
 
 .neuro-app {
+  --topbar-height: 58px;
   width: 100vw;
   height: 100dvh;
   min-height: 650px;
@@ -101,7 +102,7 @@ textarea:focus-visible {
 .file-drop-overlay > small { color: #78958e; font-size: 9px; }
 
 .topbar {
-  height: 58px;
+  height: var(--topbar-height);
   display: flex;
   align-items: center;
   gap: 24px;
@@ -188,8 +189,8 @@ textarea:focus-visible {
 .workspace-grid {
   display: grid;
   grid-template-columns: 220px minmax(600px, 1fr) 294px;
-  height: calc(100dvh - 58px);
-  min-height: 592px;
+  height: calc(100dvh - var(--topbar-height));
+  min-height: calc(650px - var(--topbar-height));
   transition: grid-template-columns .2s ease;
 }
 
@@ -1036,7 +1037,7 @@ textarea:focus-visible {
   .workspace-grid.right-collapsed { grid-template-columns: 190px minmax(0, 1fr) 0; }
   .workspace-grid.left-collapsed,
   .workspace-grid.left-collapsed.right-collapsed { grid-template-columns: 0 minmax(0, 1fr) 0; }
-  .right-sidebar { position: fixed; z-index: 50; right: 0; top: 58px; bottom: 0; width: 294px; box-shadow: -18px 0 50px rgba(0, 0, 0, .35); }
+  .right-sidebar { position: fixed; z-index: 50; right: 0; top: var(--topbar-height); bottom: 0; width: 294px; box-shadow: -18px 0 50px rgba(0, 0, 0, .35); }
   .right-collapsed .right-sidebar { display: none; }
   .toolbar-select span,
   .gain-control > span { display: none; }
@@ -1100,16 +1101,40 @@ textarea:focus-visible {
 
 .session-tabs {
   min-width: 0;
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
+  display: grid;
+  grid-template-rows: 0 40px;
+  grid-auto-columns: 154px;
+  align-items: end;
+  column-gap: 3px;
   overflow-x: auto;
   scrollbar-width: none;
 }
 
 .session-tabs::-webkit-scrollbar { display: none; }
 
+.neuro-app.with-directory-tabs { --topbar-height: 82px; }
+.with-directory-tabs .session-tabs { grid-template-rows: 25px 40px; row-gap: 3px; }
+.session-tabs .directory-tab-header {
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 25px;
+  height: 25px;
+  border-radius: 5px 5px 2px 2px;
+  justify-content: flex-start;
+  text-align: left;
+  overflow: hidden;
+  background: #0e211f;
+  border-color: #2d514b;
+}
+.directory-tab-header.active { border-color: #4a8b7d; color: #c6e9df; }
+.directory-tab-header svg { flex: none; }
+.directory-tab-header .directory-tab-name { color: inherit; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.directory-tab-header .directory-tab-count { flex: none; margin-left: auto; }
+.directory-tab-header:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
+
 .session-tab-shell {
+  grid-row: 2;
   width: 154px;
   min-width: 104px;
   flex: 0 0 auto;
@@ -2687,7 +2712,7 @@ textarea:focus-visible {
     position: fixed;
     z-index: 50;
     right: 0;
-    top: 58px;
+    top: var(--topbar-height);
     bottom: 0;
     width: var(--label-pane);
     box-shadow: -18px 0 50px rgba(0, 0, 0, .35);
@@ -2710,7 +2735,7 @@ textarea:focus-visible {
   .right-sidebar {
     position: fixed;
     z-index: 50;
-    top: 58px;
+    top: var(--topbar-height);
     bottom: 0;
     display: flex;
     box-shadow: 18px 0 50px rgba(0, 0, 0, .4);

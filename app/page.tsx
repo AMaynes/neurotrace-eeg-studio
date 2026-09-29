@@ -64,6 +64,7 @@ import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
 import { DirectoryImportError, directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
 import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
+import { directoryTabHeaders } from "./directory-tab-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./import-selection";
 import {
   buildEDFFileWindowOffThread,
@@ -310,6 +311,12 @@ type DirectoryOpenRequest = {
   files: File[];
 };
 
+type DirectoryCatalog = { id: string; plan: DirectoryImportPlan };
+type DirectoryCatalogWorkspace = {
+  sessions: Map<string, { sessionId: string; files: File[] }>;
+  statuses: Record<string, DirectorySessionStatus>;
+};
+
 type ProjectSaveSelection = {
   review: boolean;
   workspace: boolean;
@@ -346,7 +353,25 @@ type SessionTab = {
   hasRecording: boolean;
   recoveryStatus: "saved" | "error";
   contentView: "recording" | "structure";
+  directoryId?: string;
 };
+
+/** Keep source groups contiguous in the actual keyboard-navigation order. */
+function groupDirectorySessionTabs(tabs: SessionTab[]): SessionTab[] {
+  const groups = new Map<string, SessionTab[]>();
+  for (const tab of tabs) {
+    if (!tab.directoryId) continue;
+    const group = groups.get(tab.directoryId) ?? [];
+    group.push(tab);
+    groups.set(tab.directoryId, group);
+  }
+  return tabs.flatMap((tab) => {
+    if (!tab.directoryId) return [tab];
+    const group = groups.get(tab.directoryId) ?? [];
+    groups.delete(tab.directoryId);
+    return group;
+  });
+}
 
 type ResourceCacheUsage = {
   rawBytes: number;
@@ -1780,6 +1805,7 @@ export default function Home() {
   const importBusyRef = useRef(false);
   const directoryCatalogIdRef = useRef<string | null>(null);
   const directorySessionTabsRef = useRef(new Map<string, { sessionId: string; files: File[] }>());
+  const directoryCatalogWorkspacesRef = useRef(new Map<string, DirectoryCatalogWorkspace>());
   const queuedDirectoryOpenRef = useRef<DirectoryOpenRequest | null>(null);
   const directoryConfirmationRef = useRef<DirectoryOpenRequest | null>(null);
   const guidedFilesInputRef = useRef<HTMLInputElement | null>(null);
@@ -1988,10 +2014,16 @@ export default function Home() {
     if (!open) setImportPickerKind(null);
   }, []);
   const [stagedDirectoryPlan, setStagedDirectoryPlan] = useState<DirectoryImportPlan | null>(null);
-  const [directoryCatalog, setDirectoryCatalog] = useState<{ id: string; plan: DirectoryImportPlan } | null>(null);
+  const [directoryCatalog, setDirectoryCatalog] = useState<DirectoryCatalog | null>(null);
+  const [directoryCatalogs, setDirectoryCatalogs] = useState<DirectoryCatalog[]>([]);
   const [showDirectorySessions, setShowDirectorySessions] = useState(false);
   const [directoryStatuses, setDirectoryStatuses] = useState<Record<string, DirectorySessionStatus>>({});
   const [queuedDirectoryOpen, setQueuedDirectoryOpen] = useState<DirectoryOpenRequest | null>(null);
+  const directoryHeaders = useMemo(() => directoryTabHeaders(sessionTabs, directoryCatalogs), [sessionTabs, directoryCatalogs]);
+  useEffect(() => {
+    document.querySelector<HTMLElement>(`[data-session-tab="${activeSessionId}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeSessionId, sessionTabs]);
   const [importChoice, setImportChoice] = useState<ImportChoice | null>(null);
   const [showProjectSave, setShowProjectSave] = useState(false);
   const [projectSaveBusy, setProjectSaveBusy] = useState(false);
@@ -2190,6 +2222,64 @@ export default function Home() {
       localStorage.setItem("neurotrace:controls", JSON.stringify(controlBindings));
     } catch { /* local preferences are optional */ }
   }, [controlBindings]);
+
+  const openDirectoryCatalog = useCallback((id: string) => {
+    if (importBusyRef.current || queuedDirectoryOpenRef.current) return;
+    const catalog = directoryCatalogs.find((entry) => entry.id === id);
+    const workspace = directoryCatalogWorkspacesRef.current.get(id);
+    if (!catalog || !workspace) return;
+    directoryCatalogIdRef.current = id;
+    directorySessionTabsRef.current = workspace.sessions;
+    setDirectoryCatalog(catalog);
+    setDirectoryStatuses(workspace.statuses);
+    setShowImport(false);
+    setShowDirectorySessions(true);
+  }, [directoryCatalogs, setShowImport]);
+
+  const clearDirectoryCatalog = () => {
+    if (importBusyRef.current || queuedDirectoryOpenRef.current) return;
+    const id = directoryCatalogIdRef.current;
+    if (!id) return;
+    directoryCatalogWorkspacesRef.current.delete(id);
+    directoryCatalogIdRef.current = null;
+    directorySessionTabsRef.current = new Map();
+    if (directoryConfirmationRef.current?.catalogId === id) directoryConfirmationRef.current = null;
+    setDirectoryCatalogs((current) => current.filter((catalog) => catalog.id !== id));
+    setSessionTabs((current) => current.map((tab) => tab.directoryId === id ? { ...tab, directoryId: undefined } : tab));
+    setDirectoryCatalog(null);
+    setDirectoryStatuses({});
+    setShowDirectorySessions(false);
+    setToast("Directory list removed; open sessions and files on disk are unchanged");
+  };
+
+  // Closing or replacing an old directory's tab must also update its retained
+  // catalog, even when a different directory is currently selected.
+  const detachDirectorySession = useCallback((sessionId: string, nextFile?: File) => {
+    let removed = false;
+    let retained = false;
+    for (const [catalogId, workspace] of directoryCatalogWorkspacesRef.current) {
+      const removedIds: string[] = [];
+      for (const [recordingId, entry] of workspace.sessions) {
+        if (entry.sessionId !== sessionId) continue;
+        if (nextFile && entry.files.includes(nextFile)) {
+          retained = true;
+          continue;
+        }
+        workspace.sessions.delete(recordingId);
+        removedIds.push(recordingId);
+      }
+      if (!removedIds.length) continue;
+      removed = true;
+      const statuses = { ...workspace.statuses };
+      removedIds.forEach((id) => { delete statuses[id]; });
+      directoryCatalogWorkspacesRef.current.set(catalogId, { ...workspace, statuses });
+      if (directoryCatalogIdRef.current === catalogId) setDirectoryStatuses(statuses);
+    }
+    if (removed && !retained) {
+      setSessionTabs((current) => groupDirectorySessionTabs(current.map((tab) => tab.id === sessionId
+        ? { ...tab, directoryId: undefined } : tab)));
+    }
+  }, []);
 
   const storeActiveSession = useCallback(() => {
     const snapshot: SessionWorkspaceSnapshot = {
@@ -2396,14 +2486,7 @@ export default function Home() {
       setToast("This session could not be saved locally — export it before closing the tab");
       return;
     }
-    const closedDirectoryIds = [...directorySessionTabsRef.current]
-      .filter(([, entry]) => entry.sessionId === id).map(([key]) => key);
-    closedDirectoryIds.forEach((key) => directorySessionTabsRef.current.delete(key));
-    if (closedDirectoryIds.length) setDirectoryStatuses((current) => {
-      const next = { ...current };
-      closedDirectoryIds.forEach((key) => { delete next[key]; });
-      return next;
-    });
+    detachDirectorySession(id);
     const closingIndex = sessionTabs.findIndex((tab) => tab.id === id);
     let remaining = sessionTabs.filter((tab) => tab.id !== id);
     sessionSnapshotsRef.current.delete(id);
@@ -2424,7 +2507,7 @@ export default function Home() {
     setActiveSessionId(target.id);
     applySessionSnapshot(snapshot);
     setToast(snapshot.hasRecording ? "Session restored" : "Blank session ready — load a recording");
-  }, [activeSessionId, applySessionSnapshot, demoSource, importBusy, sessionTabs, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, demoSource, detachDirectorySession, importBusy, sessionTabs, storeActiveSession]);
 
   const toggleSessionContentView = useCallback((id: string) => {
     if (importBusy) return;
@@ -5698,15 +5781,7 @@ export default function Home() {
       sourceVerificationAbortRef.current = null;
     }
     setVerifyingSource(false);
-    const replacedDirectoryIds = [...directorySessionTabsRef.current]
-      .filter(([, entry]) => entry.sessionId === targetSessionId && !entry.files.includes(file))
-      .map(([key]) => key);
-    replacedDirectoryIds.forEach((key) => directorySessionTabsRef.current.delete(key));
-    if (replacedDirectoryIds.length) setDirectoryStatuses((current) => {
-      const next = { ...current };
-      replacedDirectoryIds.forEach((key) => { delete next[key]; });
-      return next;
-    });
+    detachDirectorySession(targetSessionId, file);
     setSessionTabs((current) => current.map((tab) => tab.id === targetSessionId
       ? { ...tab, title: shortFileName(nextMeta.name.replace(/\.[^.]+$/, ""), 22), hasRecording: true, recoveryStatus: "saved" }
       : tab));
@@ -5732,7 +5807,7 @@ export default function Home() {
       if (previousSnapshot && activeSessionIdRef.current === targetSessionId) applySessionSnapshot(previousSnapshot);
       throw error;
     }
-  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, setShowImport, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, detachDirectorySession, setShowImport, storeActiveSession]);
 
   const applyImportedProjectState = useCallback((project: ImportedNeurotraceProject) => {
     const durationSec = sourceRef.current.meta.durationSec;
@@ -5993,8 +6068,11 @@ export default function Home() {
   };
 
   const updateDirectoryStatus = useCallback((request: DirectoryOpenRequest, status: DirectorySessionStatus) => {
-    if (directoryCatalogIdRef.current !== request.catalogId) return;
-    setDirectoryStatuses((current) => ({ ...current, [request.recordingId]: status }));
+    const workspace = directoryCatalogWorkspacesRef.current.get(request.catalogId);
+    if (!workspace) return;
+    const statuses = { ...workspace.statuses, [request.recordingId]: status };
+    directoryCatalogWorkspacesRef.current.set(request.catalogId, { ...workspace, statuses });
+    if (directoryCatalogIdRef.current === request.catalogId) setDirectoryStatuses(statuses);
   }, []);
 
   useEffect(() => {
@@ -6032,12 +6110,16 @@ export default function Home() {
       : !hasRecording ? activeSessionId : makeId("session");
     const blank = blankSessionSnapshot(demoSource, sessionId);
     sessionSnapshotsRef.current.set(sessionId, blank);
-    if (!sessionTabs.some((tab) => tab.id === sessionId)) {
-      setSessionTabs((current) => [...current, {
+    detachDirectorySession(sessionId);
+    setSessionTabs((current) => {
+      const target = {
         id: sessionId, title: shortFileName(recording.label, 22), hasRecording: false,
-        recoveryStatus: "saved", contentView: "recording",
-      }]);
-    }
+        recoveryStatus: "saved" as const, contentView: "recording" as const, directoryId: directoryCatalog.id,
+      };
+      return groupDirectorySessionTabs(current.some((tab) => tab.id === sessionId)
+        ? current.map((tab) => tab.id === sessionId ? target : tab)
+        : [...current, target]);
+    });
     setActiveSessionId(sessionId);
     applySessionSnapshot(blank);
     directorySessionTabsRef.current.set(recording.id, { sessionId, files: recording.files });
@@ -6301,13 +6383,17 @@ export default function Home() {
   });
 
   const submitGuidedImport = async () => {
-    if (!guidedImportReady || !stagedDirectoryPlan || importBusyRef.current) return;
+    if (!guidedImportReady || !stagedDirectoryPlan || importBusyRef.current || queuedDirectoryOpenRef.current) return;
     const id = makeId("directory");
+    const catalog = { id, plan: stagedDirectoryPlan };
+    const workspace: DirectoryCatalogWorkspace = { sessions: new Map(), statuses: {} };
+    directoryCatalogWorkspacesRef.current.set(id, workspace);
     directoryCatalogIdRef.current = id;
-    directorySessionTabsRef.current.clear();
+    directorySessionTabsRef.current = workspace.sessions;
     directoryConfirmationRef.current = null;
-    setDirectoryStatuses({});
-    setDirectoryCatalog({ id, plan: stagedDirectoryPlan });
+    setDirectoryStatuses(workspace.statuses);
+    setDirectoryCatalogs((current) => [...current, catalog]);
+    setDirectoryCatalog(catalog);
     setStagedDirectoryPlan(null);
     setShowImport(false);
     setShowDirectorySessions(true);
@@ -7252,7 +7338,7 @@ export default function Home() {
 
   return (
     <main
-      className={`neuro-app ${fileDragActive ? "file-drag-active" : ""}`}
+      className={`neuro-app ${fileDragActive ? "file-drag-active" : ""} ${directoryCatalogs.length ? "with-directory-tabs" : ""}`}
       onDragEnter={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;
         fileDragDepthRef.current += 1;
@@ -7296,10 +7382,24 @@ export default function Home() {
           window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-session-tab="${nextId}"]`)?.focus());
         }}>
           <div className="session-tabs">
-            {sessionTabs.map((tab) => {
+            {directoryHeaders.map((group) => <button
+              key={group.key}
+              id={`directory-header-${group.key}`}
+              className={`directory-sessions-toggle directory-tab-header ${group.sessionIds.includes(activeSessionId) ? "active" : ""}`}
+              style={{ gridColumn: `${group.column} / span ${group.span}` }}
+              data-directory-id={group.catalogId}
+              disabled={importBusy || Boolean(queuedDirectoryOpen)}
+              aria-label={`Open directory sessions from ${group.label} (${group.total})`}
+              aria-haspopup="dialog"
+              aria-expanded={showDirectorySessions && directoryCatalog?.id === group.catalogId}
+              aria-controls="directory-sessions-dialog"
+              title={`${group.label} · ${group.sessionIds.length} open · ${group.total} recordings · Open directory sessions`}
+              onClick={() => openDirectoryCatalog(group.catalogId)}
+            ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M1.5 4.5V3h5l1.5 2h6.5v8H1.5z" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg><span className="directory-tab-name">{group.label}</span><span className="directory-tab-count">{group.total}</span></button>)}
+            {sessionTabs.map((tab, index) => {
               const tabRecovery = tab.id === activeSessionId ? recoveryStatus : tab.recoveryStatus;
               const tabHasRecording = tab.id === activeSessionId ? hasRecording : tab.hasRecording;
-              return <div className="session-tab-shell" key={tab.id}>
+              return <div className="session-tab-shell" key={tab.id} style={{ gridColumn: index + 1 }} data-directory-id={tab.directoryId}>
                 <button
                   role="tab"
                   aria-selected={tab.id === activeSessionId}
@@ -7324,13 +7424,6 @@ export default function Home() {
             })}
           </div>
           <button className="add-session-tab" disabled={importBusy} aria-label="Add blank session" title="Add blank session" onClick={createBlankSession}>+</button>
-          {directoryCatalog && <button
-            className="directory-sessions-toggle"
-            disabled={importBusy || Boolean(queuedDirectoryOpen)}
-            aria-label={`Open directory sessions (${directoryCatalog.plan.recordings.length})`}
-            aria-haspopup="dialog" aria-expanded={showDirectorySessions} aria-controls="directory-sessions-dialog"
-            onClick={() => { setShowImport(false); setShowDirectorySessions(true); }}
-          >Directory <span>{directoryCatalog.plan.recordings.length}</span></button>}
         </nav>
         <div className="top-actions utility-actions">
           <button
@@ -7945,16 +8038,7 @@ export default function Home() {
         statuses={directoryStatuses}
         onOpen={openDirectoryRecording}
         onClose={() => setShowDirectorySessions(false)}
-        onClear={() => {
-          if (importBusyRef.current || queuedDirectoryOpenRef.current) return;
-          directoryCatalogIdRef.current = null;
-          directorySessionTabsRef.current.clear();
-          directoryConfirmationRef.current = null;
-          setDirectoryCatalog(null);
-          setDirectoryStatuses({});
-          setShowDirectorySessions(false);
-          setToast("Directory list removed; open sessions and files on disk are unchanged");
-        }}
+        onClear={clearDirectoryCatalog}
       />}
 
       {showImport && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !importBusy) setShowImport(false); }}>

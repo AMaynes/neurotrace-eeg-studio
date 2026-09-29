@@ -274,21 +274,26 @@ test("failed drop discovery clears stale selections and reports an error without
 test("loading a directory installs only the catalogue, preserving lazy recording imports", async () => {
   const plan = planDirectoryImport([unreadableFile("root/a.edf"), unreadableFile("root/b.edf")], "edf");
   const tabs = new Map([["stale-recording", { sessionId: "old" }]]);
+  const previous = { sessions: tabs, statuses: { "stale-recording": { state: "loaded" } } };
   const env = {
     // A later MAT picker can be cancelled while this EDF collection stays ready.
     guidedImportReady: true, importChoice: "mat", stagedDirectoryPlan: plan,
-    importBusyRef: { current: false },
+    importBusyRef: { current: false }, queuedDirectoryOpenRef: { current: null },
     directoryCatalogIdRef: { current: "old" }, directorySessionTabsRef: { current: tabs },
+    directoryCatalogWorkspacesRef: { current: new Map([["old", previous]]) },
     directoryConfirmationRef: { current: { stale: true } }, makeId: () => "new-directory",
     handleUploadedFiles: () => assert.fail("cataloguing must not import any recording"),
   };
   for (const [key, value] of Object.entries({ directoryStatuses: { stale: true }, directoryCatalog: null,
-    showImport: true, showDirectorySessions: false, toast: "", stagedDirectoryPlan: plan })) state(env, key, value);
+    directoryCatalogs: [{ id: "old", plan }], showImport: true, showDirectorySessions: false, toast: "", stagedDirectoryPlan: plan })) state(env, key, value);
   await handler("submitGuidedImport", env)();
   assert.equal(env.directoryCatalog.plan, plan);
   assert.equal(env.directoryCatalog.id, "new-directory");
   assert.equal(env.directoryCatalogIdRef.current, "new-directory");
-  assert.equal(tabs.size, 0);
+  assert.equal(tabs.size, 1, "previous directory mappings remain available");
+  assert.equal(env.directorySessionTabsRef.current.size, 0);
+  assert.equal(env.directoryCatalogWorkspacesRef.current.get("old"), previous);
+  assert.deepEqual(env.directoryCatalogs.map((catalog) => catalog.id), ["old", "new-directory"]);
   assert.equal(env.directoryConfirmationRef.current, null);
   assert.deepEqual(env.directoryStatuses, {});
   assert.equal(env.stagedDirectoryPlan, null);
@@ -323,6 +328,8 @@ function openHarness({ hasRecording = true } = {}) {
   const env = {
     directoryCatalog: { id: "catalog", plan }, importBusyRef: { current: false }, queuedDirectoryOpenRef: { current: null },
     directorySessionTabsRef: { current: new Map() }, sessionSnapshotsRef: { current: new Map([["prior-tab", prior]]) },
+    directoryCatalogIdRef: { current: "catalog" }, directoryConfirmationRef: { current: null },
+    directoryCatalogWorkspacesRef: { current: new Map() }, useCallback: (callback) => callback,
     primaryFile: prior.primaryFile, hasRecording, demoSource: {}, directoryRecordingFiles,
     makeId: () => "new-tab", shortFileName: (name) => name,
     blankSessionSnapshot: (_source, id) => ({ id, primaryFile: null, hasRecording: false, annotations: [] }),
@@ -333,7 +340,15 @@ function openHarness({ hasRecording = true } = {}) {
   state(env, "sessionTabs", [{ id: "prior-tab", hasRecording }]);
   state(env, "activeSessionId", "prior-tab");
   state(env, "queuedDirectoryOpen", null);
+  state(env, "directoryCatalogs", [env.directoryCatalog]);
+  state(env, "directoryCatalog", env.directoryCatalog);
+  state(env, "directoryStatuses", {});
+  state(env, "showImport", false);
+  state(env, "toast", "");
   state(env, "showDirectorySessions", true);
+  env.directoryCatalogWorkspacesRef.current.set("catalog", { sessions: env.directorySessionTabsRef.current, statuses: env.directoryStatuses });
+  env.groupDirectorySessionTabs = handler("groupDirectorySessionTabs", {});
+  env.detachDirectorySession = handler("detachDirectorySession", env);
   return { env, prior, plan, calls, open: (recording = plan.recordings[0]) => handler("openDirectoryRecording", env)(recording) };
 }
 
@@ -371,6 +386,7 @@ test("directory opening reuses an empty active tab and prevents repeated or busy
   const h = openHarness({ hasRecording: false });
   h.open();
   assert.equal(h.env.sessionTabs.length, 1);
+  assert.equal(h.env.sessionTabs[0].directoryId, "catalog", "a reused blank tab gains directory ownership");
   assert.equal(h.env.queuedDirectoryOpen.sessionId, "prior-tab");
   const firstRequest = h.env.queuedDirectoryOpen;
   h.open(h.plan.recordings[1]);
@@ -381,6 +397,160 @@ test("directory opening reuses an empty active tab and prevents repeated or busy
   busy.open();
   assert.equal(busy.calls.stored, 0);
   assert.equal(busy.env.queuedDirectoryOpen, null);
+});
+
+test("directory opens keep related tabs contiguous without grouping unrelated sessions", () => {
+  const h = openHarness();
+  h.open();
+  h.env.sessionTabs.push({ id: "standalone", hasRecording: true });
+  h.env.hasRecording = true;
+  h.env.primaryFile = h.plan.recordings[0].primary;
+  h.env.queuedDirectoryOpenRef.current = null;
+  h.env.makeId = () => "second-directory-tab";
+  h.open(h.plan.recordings[1]);
+  assert.deepEqual(h.env.sessionTabs.map((tab) => tab.id), ["prior-tab", "new-tab", "second-directory-tab", "standalone"]);
+  assert.deepEqual(h.env.sessionTabs.map((tab) => tab.directoryId), [undefined, "catalog", "catalog", undefined]);
+  assert.equal(h.env.activeSessionId, "second-directory-tab");
+});
+
+test("different catalogs retain independent mappings and statuses even for identical relative filenames", async () => {
+  const h = openHarness();
+  h.open();
+  h.env.queuedDirectoryOpenRef.current = null;
+  handler("updateDirectoryStatus", h.env)({ catalogId: "catalog", recordingId: h.plan.recordings[0].id }, { state: "loaded" });
+  const oldWorkspace = h.env.directoryCatalogWorkspacesRef.current.get("catalog");
+  const secondPlan = planDirectoryImport([unreadableFile("root/a.edf"), unreadableFile("root/c.edf")], "edf");
+  h.env.guidedImportReady = true;
+  h.env.makeId = () => "second-catalog";
+  state(h.env, "stagedDirectoryPlan", secondPlan);
+  await handler("submitGuidedImport", h.env)();
+  const newWorkspace = h.env.directoryCatalogWorkspacesRef.current.get("second-catalog");
+  assert.equal(oldWorkspace.sessions.get(h.plan.recordings[0].id).sessionId, "new-tab");
+  assert.equal(newWorkspace.sessions.size, 0);
+  assert.deepEqual(h.env.directoryStatuses, {});
+  assert.equal(h.env.sessionTabs.find((tab) => tab.id === "new-tab").directoryId, "catalog");
+  newWorkspace.sessions.set(secondPlan.recordings[0].id, { sessionId: "separate-tab", files: secondPlan.recordings[0].files });
+  handler("updateDirectoryStatus", h.env)({ catalogId: "second-catalog", recordingId: secondPlan.recordings[0].id }, { state: "error", message: "Independent failure" });
+  handler("openDirectoryCatalog", h.env)("catalog");
+  assert.equal(h.env.directoryCatalog.plan, h.plan);
+  assert.equal(h.env.directorySessionTabsRef.current, oldWorkspace.sessions);
+  assert.deepEqual(h.env.directoryStatuses[h.plan.recordings[0].id], { state: "loaded" });
+  handler("openDirectoryCatalog", h.env)("second-catalog");
+  assert.equal(h.env.directoryCatalog.plan, secondPlan);
+  assert.equal(h.env.directorySessionTabsRef.current, newWorkspace.sessions);
+  assert.equal(h.env.directoryStatuses[secondPlan.recordings[0].id].state, "error");
+  assert.equal(oldWorkspace.sessions.get(h.plan.recordings[0].id).sessionId, "new-tab");
+});
+
+test("catalog buttons cannot switch during an import or queued open, and unknown catalogs are ignored", () => {
+  for (const guard of ["busy", "queued", "unknown"]) {
+    const h = openHarness();
+    h.env.showDirectorySessions = false;
+    h.env.importBusyRef.current = guard === "busy";
+    h.env.queuedDirectoryOpenRef.current = guard === "queued" ? {} : null;
+    handler("openDirectoryCatalog", h.env)(guard === "unknown" ? "missing" : "catalog");
+    assert.equal(h.env.showDirectorySessions, false);
+    assert.equal(h.env.directoryCatalogIdRef.current, "catalog");
+  }
+});
+
+test("clearing one directory detaches only its tabs and leaves other catalogs reachable", () => {
+  const h = openHarness();
+  h.open();
+  h.env.queuedDirectoryOpenRef.current = null;
+  const other = { id: "other-catalog", plan: h.plan };
+  const otherWorkspace = { sessions: new Map([["other", { sessionId: "other-tab", files: [] }]]), statuses: { other: { state: "loaded" } } };
+  h.env.directoryCatalogs.push(other);
+  h.env.directoryCatalogWorkspacesRef.current.set(other.id, otherWorkspace);
+  h.env.sessionTabs.push({ id: "other-tab", directoryId: other.id, hasRecording: true });
+  const beforeIds = h.env.sessionTabs.map((tab) => tab.id);
+  handler("clearDirectoryCatalog", h.env)();
+  assert.deepEqual(h.env.sessionTabs.map((tab) => tab.id), beforeIds, "clearing does not close sessions");
+  assert.equal(h.env.sessionTabs.find((tab) => tab.id === "new-tab").directoryId, undefined);
+  assert.equal(h.env.sessionTabs.find((tab) => tab.id === "other-tab").directoryId, other.id);
+  assert.deepEqual(h.env.directoryCatalogs, [other]);
+  assert.equal(h.env.directoryCatalogWorkspacesRef.current.has("catalog"), false);
+  assert.equal(h.env.directoryCatalogWorkspacesRef.current.get(other.id), otherWorkspace);
+  handler("openDirectoryCatalog", h.env)(other.id);
+  assert.equal(h.env.directoryCatalog, other);
+  assert.equal(h.env.directorySessionTabsRef.current, otherWorkspace.sessions);
+});
+
+test("closing an older-directory tab prunes its retained map without removing the catalog", () => {
+  const h = openHarness();
+  h.open();
+  h.env.queuedDirectoryOpenRef.current = null;
+  const workspace = h.env.directoryCatalogWorkspacesRef.current.get("catalog");
+  workspace.statuses = { [h.plan.recordings[0].id]: { state: "loaded" } };
+  h.env.directoryCatalogIdRef.current = "other-catalog";
+  h.env.directorySessionTabsRef.current = new Map();
+  h.env.activeSessionId = "prior-tab";
+  h.env.importBusy = false;
+  handler("closeSession", h.env)("new-tab");
+  assert.equal(workspace.sessions.size, 0);
+  assert.deepEqual(h.env.directoryCatalogWorkspacesRef.current.get("catalog").statuses, {});
+  assert.deepEqual(h.env.sessionTabs.map((tab) => tab.id), ["prior-tab"]);
+  assert.equal(h.env.directoryCatalogs.length, 1, "empty directory remains available to reopen");
+  handler("openDirectoryCatalog", h.env)("catalog");
+  h.env.makeId = () => "reopened-tab";
+  h.open();
+  assert.equal(h.env.activeSessionId, "reopened-tab");
+  assert.equal(h.env.directorySessionTabsRef.current.get(h.plan.recordings[0].id).sessionId, "reopened-tab");
+});
+
+test("successful standalone replacement detaches old catalog provenance but the original file keeps it", () => {
+  const h = openHarness();
+  h.open();
+  const workspace = h.env.directoryCatalogWorkspacesRef.current.get("catalog");
+  h.env.directoryCatalogIdRef.current = "other-catalog";
+  h.env.detachDirectorySession("new-tab", h.plan.recordings[0].primary);
+  assert.equal(workspace.sessions.size, 1);
+  assert.equal(h.env.sessionTabs.find((tab) => tab.id === "new-tab").directoryId, "catalog");
+  h.env.detachDirectorySession("new-tab", unreadableFile("standalone.edf"));
+  assert.equal(workspace.sessions.size, 0);
+  assert.equal(h.env.sessionTabs.find((tab) => tab.id === "new-tab").directoryId, undefined);
+  const load = declaration("loadSource");
+  assert.ok(load.indexOf("detachDirectorySession(targetSessionId, file)") > load.indexOf("The active session changed"),
+    "provenance changes only after source verification and active-session checks succeed");
+});
+
+test("retrying a different entry in an empty directory tab removes the old pending association", () => {
+  const h = openHarness({ hasRecording: false });
+  h.open();
+  h.env.queuedDirectoryOpenRef.current = null;
+  handler("updateDirectoryStatus", h.env)({ catalogId: "catalog", recordingId: h.plan.recordings[0].id }, { state: "error" });
+  h.open(h.plan.recordings[1]);
+  assert.equal(h.env.directorySessionTabsRef.current.size, 1);
+  assert.equal(h.env.directorySessionTabsRef.current.has(h.plan.recordings[0].id), false);
+  assert.equal(h.env.directorySessionTabsRef.current.get(h.plan.recordings[1].id).sessionId, "prior-tab");
+  assert.equal(h.env.directoryStatuses[h.plan.recordings[0].id], undefined);
+});
+
+test("browsing another directory preserves pending DAT confirmation and routes its eventual status to the owning catalog", () => {
+  const h = openHarness();
+  const request = { catalogId: "catalog", recordingId: h.plan.recordings[0].id, sessionId: "prior-tab" };
+  h.env.directoryConfirmationRef.current = request;
+  h.env.directoryCatalogs.push({ id: "other", plan: h.plan });
+  h.env.directoryCatalogWorkspacesRef.current.set("other", { sessions: new Map(), statuses: {} });
+  handler("openDirectoryCatalog", h.env)("other");
+  assert.equal(h.env.directoryConfirmationRef.current, request);
+  handler("updateDirectoryStatus", h.env)(request, { state: "loaded" });
+  assert.deepEqual(h.env.directoryStatuses, {}, "selected list does not receive another catalog's status");
+  assert.deepEqual(h.env.directoryCatalogWorkspacesRef.current.get("catalog").statuses[request.recordingId], { state: "loaded" });
+  handler("clearDirectoryCatalog", h.env)();
+  assert.equal(h.env.directoryConfirmationRef.current, request, "clearing a different catalog does not orphan pending confirmation");
+});
+
+test("clearing directory lists is blocked while an import or queued open is in progress", () => {
+  for (const queued of [false, true]) {
+    const h = openHarness();
+    h.env.importBusyRef.current = !queued;
+    h.env.queuedDirectoryOpenRef.current = queued ? {} : null;
+    handler("clearDirectoryCatalog", h.env)();
+    assert.equal(h.env.directoryCatalogIdRef.current, "catalog");
+    assert.equal(h.env.directoryCatalogs.length, 1);
+    assert.equal(h.env.directoryCatalogWorkspacesRef.current.has("catalog"), true);
+  }
 });
 
 test("reopening a loaded project directory entry reuses the embedded recording's tab", () => {
@@ -415,6 +585,7 @@ function queueHarness({ status = { state: "loaded" }, reject = false } = {}) {
   const calls = [];
   const env = { activeSessionId: "old-tab", queuedDirectoryOpen: request, queuedDirectoryOpenRef: { current: request },
     directoryCatalogIdRef: { current: "catalog" }, directoryConfirmationRef: { current: null },
+    directoryCatalogWorkspacesRef: { current: new Map([["catalog", { sessions: new Map(), statuses: {} }]]) },
     useCallback: (callback) => callback,
     directoryImportRunnerRef: { current: async (...args) => { calls.push(args); if (reject) throw new Error("synthetic failure"); return status; } },
   };
