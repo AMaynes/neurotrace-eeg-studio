@@ -100,8 +100,12 @@ import {
   RECORDING_OVERVIEW_CACHE_BYTES,
   recordingOverviewDisplayWindow,
   recordingOverviewPlan,
+  type RecordingOverviewEntry,
 } from "./recording-overview";
 import { recordingOverviewDisplayPolicy } from "./overview-display-policy";
+import { bipolarMontageKind, bipolarMontageLabel } from "./bipolar-montage";
+import { readCursorReadout, type CursorReadout } from "./cursor-readout";
+import { buildSessionOverview } from "./session-overview";
 import { TutorialCenter } from "./tutorial-center";
 import { ShortcutSettings } from "./shortcut-settings";
 import { DEFAULT_CONTROLS, normalizeControlBindings, matchesShortcut, shortcutAction, shortcutHint, type ControlBindings, type ShortcutAction } from "./shortcuts";
@@ -371,6 +375,8 @@ type PerformanceWithMemory = Performance & {
 };
 
 type DisplayWindow = {
+  /** Processing identity prevents old values appearing under newly selected controls. */
+  settingsKey?: string;
   data: Float32Array[];
   /** Stable per-row centers that do not change as the time viewport moves. */
   traceBaselines: number[];
@@ -456,7 +462,7 @@ type SessionWorkspaceSnapshot = {
   selectedAnnotationId: string | null;
   selection: { start: number; end: number } | null;
   cursorTime: number;
-  cursorAmplitude: number;
+  cursorAmplitude: number | null;
   cursorLocked: boolean;
   snapMode: "1s" | "100ms" | "sample";
   spectrogramOpen: boolean;
@@ -1002,12 +1008,13 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
     throw new Error("Project event position is invalid");
   }
   if (project.reviewer !== undefined && typeof project.reviewer !== "string") throw new Error("Project reviewer is invalid");
-  if (project.matlabExportIdentity !== undefined && (
+  // EDF autosaves explicitly store null because they have no MATLAB identity.
+  if (project.matlabExportIdentity !== undefined && project.matlabExportIdentity !== null && (
     !project.matlabExportIdentity
     || typeof project.matlabExportIdentity !== "object"
     || Array.isArray(project.matlabExportIdentity)
   )) throw new Error("Project MATLAB export identity is invalid");
-  const rawMatlabExportIdentity = project.matlabExportIdentity as Record<string, unknown> | undefined;
+  const rawMatlabExportIdentity = project.matlabExportIdentity as Record<string, unknown> | null | undefined;
   if (rawMatlabExportIdentity && ["patientId", "matPath", "dataDirectory", "datFile"].some((key) =>
     rawMatlabExportIdentity[key] !== undefined && typeof rawMatlabExportIdentity[key] !== "string")) {
     throw new Error("Project MATLAB export identity fields are invalid");
@@ -1341,6 +1348,17 @@ function formatAmplitude(value: number, unit = "µV") {
   return `${value.toFixed(digits)} ${unit || "a.u."}`;
 }
 
+function formatCursorAmplitude(readout: CursorReadout) {
+  if (readout.kind === "range") return `Range ${formatAmplitude(readout.minimum, readout.unit)} – ${formatAmplitude(readout.maximum, readout.unit)}`;
+  return readout.kind === "sample" ? formatAmplitude(readout.value, readout.unit) : "—";
+}
+
+function formatCursorSample(readout: CursorReadout) {
+  if (readout.kind === "range") return `Overview ${formatClock(readout.startSec, true)}–${formatClock(readout.endSec, true)} · zoom in for samples`;
+  if (readout.kind === "unavailable") return "Sample unavailable";
+  return `${readout.sourceSampleIndex === null ? "display sample" : "source sample"} ${(readout.sourceSampleIndex ?? readout.displaySampleIndex).toLocaleString()} · ${formatClock(readout.sampleTimeSec, true)}`;
+}
+
 function formatRelativeTime(value: number) {
   if (!Number.isFinite(value)) return "—";
   if (Math.abs(value) < .0005) return "0.000 s";
@@ -1427,23 +1445,6 @@ function sourceRateForDisplayRow(display: DisplayWindow, meta: RecordingMeta, ro
     ?? meta.sampleRates[display.primarySourceIndices[row]]
     ?? display.sampleRates[row]
     ?? primarySampleRate(meta);
-}
-
-function sampleIndexForDisplayRow(display: DisplayWindow, row: number, timeSec: number) {
-  const values = display.data[row];
-  if (!values?.length) return 0;
-  const envelope = display.envelopes[row];
-  if (envelope && envelope.bucketDurationSec > 0) {
-    return clamp(
-      Math.floor((timeSec - envelope.startSec) / envelope.bucketDurationSec),
-      0,
-      values.length - 1,
-    );
-  }
-  const sampleRate = display.sampleRates[row];
-  const startSec = display.startSecs[row] ?? display.viewStart;
-  if (!(sampleRate > 0) || !Number.isFinite(sampleRate)) return 0;
-  return clamp(Math.round((timeSec - startSec) * sampleRate), 0, values.length - 1);
 }
 
 function downloadBlob(name: string, blob: Blob) {
@@ -1757,11 +1758,11 @@ export default function Home() {
   const envelopeWindowCacheRef = useRef<EnvelopeWindowCache[]>([]);
   const recordingOverviewCacheRef = useRef(new RecordingOverviewCache());
   const [recordingOverviewRevision, setRecordingOverviewRevision] = useState(0);
+  const [activeRecordingOverview, setActiveRecordingOverview] = useState<RecordingOverviewEntry>();
   const cursorFrameRef = useRef<number | null>(null);
   const pendingCursorRef = useRef<{
     time: number;
     row: number;
-    amplitude: number;
     selection?: { start: number; end: number };
     inspectionBox?: InspectionBox;
   } | null>(null);
@@ -1855,7 +1856,15 @@ export default function Home() {
   const [boxZoomActive, setBoxZoomActive] = useState(false);
   const [waveformVerticalViewport, setWaveformVerticalViewport] = useState<NormalizedVerticalViewport | null>(null);
   const [cursorTime, setCursorTime] = useState(0);
-  const [cursorAmplitude, setCursorAmplitude] = useState(0);
+  const displaySettingsKey = useMemo(() => JSON.stringify([
+    meta.id, montage, filters.enabled ? filters : { enabled: false }, [...selectedChannels].sort((a, b) => a - b),
+  ]), [meta.id, montage, filters, selectedChannels]);
+  const displayReadoutReady = !loadingSignal && display.settingsKey === displaySettingsKey;
+  const cursorReadout = useMemo<CursorReadout>(() => !displayReadoutReady
+    ? { kind: "unavailable", unit: display.units[focusedChannel] || "a.u.", reason: "no-data" }
+    : readCursorReadout(display, focusedChannel, cursorTime), [cursorTime, display, focusedChannel, displayReadoutReady]);
+  // Legacy snapshots retain this optional scalar, never a bucket average.
+  const cursorAmplitude = cursorReadout.kind === "sample" ? cursorReadout.value : null;
   const [cursorLocked, setCursorLocked] = useState(false);
   const [activeTool, setActiveTool] = useState<"cursor" | "seizure">("cursor");
   const [markOnset, setMarkOnset] = useState<number | null>(null);
@@ -2206,6 +2215,7 @@ export default function Home() {
     pendingCursorRef.current = null;
     contextResizeRef.current = null;
     sourceRef.current = snapshot.source;
+    setActiveRecordingOverview(recordingOverviewCacheRef.current.get(snapshot.source));
     setHasRecording(snapshot.hasRecording);
     setPrimaryFile(snapshot.primaryFile);
     setUploadedFileInputs(snapshot.uploadedFileInputs);
@@ -2240,7 +2250,6 @@ export default function Home() {
     setSpectrogramFrequencyRange(snapshot.spectrogramFrequencyRange ?? { min: 0, max: BUZCODE_DEFAULT_DISPLAY_FREQUENCY_HZ });
     zoomGestureRef.current = {};
     setCursorTime(snapshot.cursorTime);
-    setCursorAmplitude(snapshot.cursorAmplitude);
     setCursorLocked(snapshot.cursorLocked);
     setSnapMode(snapshot.snapMode);
     setSpectrogramOpen(snapshot.spectrogramOpen);
@@ -3065,6 +3074,19 @@ export default function Home() {
     montage,
   }) : "none";
   const overviewRefreshRevision = overviewDisplayPolicy === "final" ? recordingOverviewRevision : 0;
+  const sessionOverview = useMemo(() => {
+    // Index publication and session switching supply immutable state; no disk work here.
+    const selected = [...selectedChannels].sort((a, b) => a - b);
+    const recommended = new Set(meta.recommendedDisplayChannels ?? []);
+    const channelIndex = selected.find((index) => recommended.has(index)) ?? selected[0];
+    const entry = activeRecordingOverview ? { ...activeRecordingOverview, window: {
+      ...activeRecordingOverview.window,
+      channelLabels: activeRecordingOverview.window.channelIndices.map((index) => meta.channelLabels[index]),
+    } } : undefined;
+    return buildSessionOverview(hasRecording ? entry : undefined, {
+      durationSec: meta.durationSec, channelIndex: channelIndex ?? -1, barCount: 110, loading: verifyingSource,
+    });
+  }, [activeRecordingOverview, hasRecording, meta, selectedChannels, verifyingSource]);
 
   useEffect(() => {
     displayAbortRef.current?.abort();
@@ -3075,7 +3097,7 @@ export default function Home() {
     const selectedIndices = [...selectedChannels].sort((a, b) => a - b);
     // Preserve legacy montage inputs/pairs, but never hide selected auxiliary
     // channels in recorded-reference mode. Sorting happens on complete display rows.
-    const indices = matlabAnatomicalLayout && montage !== "referential"
+    const indices = matlabAnatomicalLayout && montage !== "referential" && bipolarMontageKind(meta.channelLabels) === "anatomical"
       ? orderAnatomicalChannelIndices(meta.channelLabels, selectedIndices)
       : selectedIndices;
     const channelKey = indices.join(",");
@@ -3122,6 +3144,7 @@ export default function Home() {
           const sourceIndices = indices.map((index) => [index]);
           const labels = indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`);
           const nextDisplay: DisplayWindow = {
+            settingsKey: displaySettingsKey,
             data: visible.data,
             traceBaselines: stableTraceBaselines(visible.data, labels, sourceIndices, visible.channelUnits),
             envelopes: visible.data.map((_, position) => ({
@@ -3503,6 +3526,7 @@ export default function Home() {
           const sourceIndices = indices.map((index) => [index]);
           displayAppliedRequestIdRef.current = requestId;
           const nextDisplay: DisplayWindow = {
+            settingsKey: displaySettingsKey,
             data,
             traceBaselines: stableTraceBaselines(data, labels, sourceIndices, visibleEnvelope.channelUnits),
             envelopes,
@@ -3841,6 +3865,8 @@ export default function Home() {
             excludedDisplayPositions,
             processed.sampleRates,
             croppedStartSecs,
+            { allChannelLabels: meta.channelLabels, sourceChannelIndices: indices,
+              bipolarKind: bipolarMontageKind(meta.channelLabels), channelUnits: rawWindow.channelUnits },
           );
           montageOperation.finish({ completedBytes: montageBytes });
         } catch (error) {
@@ -3859,6 +3885,7 @@ export default function Home() {
         });
         displayAppliedRequestIdRef.current = requestId;
         const nextDisplay: DisplayWindow = {
+          settingsKey: displaySettingsKey,
           data: montageResult.data,
           traceBaselines: stableTraceBaselines(montageResult.data, montageResult.labels, sourceIndices, units),
           envelopes: montageResult.data.map(() => null),
@@ -3901,7 +3928,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [overviewDisplayPolicy, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
+  }, [displaySettingsKey, overviewDisplayPolicy, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
   const spectrogramInputPlan = useMemo(() => {
     const targetDisplayIndices = channelSelectionActive
@@ -3958,6 +3985,8 @@ export default function Home() {
           new Set(),
           windowData.sampleRates,
           windowData.channelStartSecs,
+          { allChannelLabels: meta.channelLabels, sourceChannelIndices: sourceIndices,
+            bipolarKind: bipolarMontageKind(meta.channelLabels), channelUnits: windowData.channelUnits },
         );
         const channels = requestedChannels.map(({ displayIndex, sourceIndex }) => {
           const position = derived.primarySourceIndices.findIndex((primary, index) => (
@@ -4529,8 +4558,6 @@ export default function Home() {
     const row = channelRowFromClientY(event.clientY, rect);
     if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
-    const values = display.data[row];
-    const sample = sampleIndexForDisplayRow(display, row, time);
     pointerRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -4544,7 +4571,6 @@ export default function Home() {
     setCursorLocked(true);
     setFocusedChannel(row);
     setChannelSelectionActive(true);
-    setCursorAmplitude(values?.[sample] ?? 0);
     if (inspectionMode) {
       setSelection(null);
       setInspectionDragging(true);
@@ -4563,8 +4589,6 @@ export default function Home() {
     const row = channelRowFromClientY(pointerY, rect);
     if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
-    const values = display.data[row];
-    const sample = sampleIndexForDisplayRow(display, row, time);
     if (Math.abs(event.clientX - pointerRef.current.startX) > 3
       || (inspectionMode && Math.abs(pointerY - pointerRef.current.startY) > 3)) {
       pointerRef.current.moved = true;
@@ -4572,7 +4596,6 @@ export default function Home() {
     pendingCursorRef.current = {
       time,
       row,
-      amplitude: values?.[sample] ?? 0,
       selection: pointerRef.current.moved
         ? { start: Math.min(pointerRef.current.startTime, time), end: Math.max(pointerRef.current.startTime, time) }
         : undefined,
@@ -4588,7 +4611,6 @@ export default function Home() {
       setCursorTime(pending.time);
       setFocusedChannel(pending.row);
       setChannelSelectionActive(true);
-      setCursorAmplitude(pending.amplitude);
       if (pending.inspectionBox) setInspectionRange(pending.inspectionBox);
       else if (pending.selection && !inspectionMode) setSelection(pending.selection);
     });
@@ -4615,13 +4637,10 @@ export default function Home() {
     }
     const row = hitRow ?? clamp(focusedChannel, 0, Math.max(0, display.data.length - 1));
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
-    const values = display.data[row];
-    const sample = sampleIndexForDisplayRow(display, row, time);
     setCursorTime(time);
     setCursorLocked(true);
     setFocusedChannel(row);
     setChannelSelectionActive(true);
-    setCursorAmplitude(values?.[sample] ?? 0);
     if (inspectionMode) {
       const range = inspectionBoxFromPointer(pointer, row, time, pointerY, rect);
       setSelection(null);
@@ -5223,6 +5242,7 @@ export default function Home() {
     displayPreviewReadyRef.current = false;
     setVerifyingSource(true);
     sourceRef.current = source;
+    setActiveRecordingOverview(recordingOverviewCacheRef.current.get(source));
     setHasRecording(true);
     setPrimaryFile(importContext?.primaryFile ?? file);
     setUploadedFileInputs(importContext?.uploadedFileInputs ?? [file]);
@@ -5339,6 +5359,7 @@ export default function Home() {
         if (verificationAbortController.signal.aborted) return;
         if (recordingOverviewCacheRef.current.put(source, window, { complete })
           && sourceRef.current === source) {
+          setActiveRecordingOverview(recordingOverviewCacheRef.current.get(source));
           setRecordingOverviewRevision((revision) => revision + 1);
         }
       };
@@ -5709,7 +5730,6 @@ export default function Home() {
       if (workspace.cursor && typeof workspace.cursor === "object" && !Array.isArray(workspace.cursor)) {
         const cursor = workspace.cursor as Record<string, unknown>;
         if (typeof cursor.time === "number" && Number.isFinite(cursor.time)) setCursorTime(clamp(cursor.time, 0, durationSec));
-        if (typeof cursor.amplitude === "number" && Number.isFinite(cursor.amplitude)) setCursorAmplitude(cursor.amplitude);
         setCursorLocked(cursor.locked === true);
       }
       if (["1s", "100ms", "sample"].includes(String(workspace.snapMode))) {
@@ -7410,7 +7430,7 @@ export default function Home() {
             </div>
             <span className="toolbar-kicker">Signal tools</span>
             <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} data-tutorial="spectrogram-toggle" aria-label="Spectrogram" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
-            <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">Anatomical bipolar</option></select></label>
+            <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">{bipolarMontageLabel(meta.channelLabels)}</option></select></label>
             <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "Raw"}</i></button>
             <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
               <span className="window-control-label">Window</span>
@@ -7510,18 +7530,30 @@ export default function Home() {
 
           {hasRecording ? <>
           <div className="overview-block" data-tutorial="overview">
-            <div className="overview-label"><span>FULL SESSION</span><strong>{formatClock(viewStart)} — {formatClock(viewStart + timebase)}</strong></div>
-            <div className="overview-track" ref={overviewRef} onPointerDown={(event) => {
+            <div className="overview-label"><span>FULL SESSION{sessionOverview.channelLabel ? ` · ${formatDisplayChannelLabel(sessionOverview.channelLabel)} · RAW RANGE` : ""}</span><strong>{formatClock(viewStart)} — {formatClock(viewStart + timebase)}</strong></div>
+            <div className="overview-track" ref={overviewRef} title={sessionOverview.description} aria-label={sessionOverview.description} onPointerDown={(event) => {
               const rect = event.currentTarget.getBoundingClientRect();
               jumpTo(((event.clientX - rect.left) / rect.width) * meta.durationSec);
               notifyTutorialAction("overview-jumped");
             }}>
-              <div className="overview-wave" aria-hidden="true">{Array.from({ length: 110 }, (_, index) => <i key={index} style={{ height: `${18 + ((index * 37) % 33) + (index > 13 && index < 19 ? 30 : 0)}%` }} />)}</div>
+              <div className="overview-wave" aria-hidden="true">{sessionOverview.bars.map((bar, index) => <i key={index} className={`overview-bin ${bar.state}`} style={{ left: `${100 * bar.startSec / meta.durationSec}%`, width: `${100 * (bar.endSec - bar.startSec) / meta.durationSec}%`, height: bar.heightFraction === null ? "100%" : `${bar.heightFraction * 100}%` }} />)}</div>
+              {sessionOverview.status !== "ready" && <span className="overview-status">{sessionOverview.status === "partial" ? sessionOverview.complete ? "Missing overview data shaded" : `Overview ${Math.floor(sessionOverview.coverageFraction * 100)}% · unindexed areas shaded` : sessionOverview.status === "loading" ? "Building recording overview…" : "Recording overview unavailable"}</span>}
               {labelsVisible && annotations.filter((item) => item.labelId === "ictal").map((item) => <span key={item.id} className="overview-event" style={{ left: `${(item.start / meta.durationSec) * 100}%`, width: `${Math.max(0.2, ((item.end - item.start) / meta.durationSec) * 100)}%` }} />)}
               <div className="overview-viewport" style={{ left: `${overviewLeft}%`, width: `${Math.max(overviewWidth, 0.55)}%` }}><i /><i /></div>
             </div>
             <div className="overview-time"><span>00:00</span><span>{formatClock(meta.durationSec / 2)}</span><span>{formatClock(meta.durationSec)}</span></div>
           </div>
+
+          {display.data.length > 0 && display.warnings.length > 0 && <details className="display-warnings">
+            <summary title={display.warnings[0]}>
+              <span className="display-warning-status" role="status" aria-live="polite" aria-atomic="true">
+                <strong>{display.warnings.length} display {display.warnings.length === 1 ? "warning" : "warnings"}</strong>
+                <span className="display-warning-preview">{display.warnings[0]}</span>
+              </span>
+              <span className="display-warning-details-hint">Details</span>
+            </summary>
+            <ul aria-label="Display warning details">{display.warnings.map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}</ul>
+          </details>}
 
           <div ref={viewerRef} className={`signal-and-tracks ${spectrogramOpen ? "with-spectrogram" : ""}`}>
             <div
@@ -7553,17 +7585,19 @@ export default function Home() {
                     && !inspectionDragging
                     && !inspectionRange?.dragged
                     && focusedChannel === index;
+                  const rowReadout = readCursorReadout(display, index, cursorTime);
                   return <button
                     key={`${label}-${index}`}
                     className={`${focused ? "focused" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
                     style={rowStyle}
                     aria-pressed={focused}
+                    title={!displayReadoutReady ? "Signal readout unavailable" : formatCursorAmplitude(rowReadout)}
                     onClick={() => {
                       setFocusedChannel(index);
                       setChannelSelectionActive(true);
                       notifyTutorialAction("channel-focused");
                     }}
-                  ><strong>{formatDisplayChannelLabel(label)}</strong><span>{formatAmplitude(display.data[index]?.[Math.floor(display.data[index].length / 2)] ?? 0, display.units[index] || "a.u.")}</span></button>;
+                  ><strong>{formatDisplayChannelLabel(label)}</strong><span>{!displayReadoutReady ? "—" : rowReadout.kind === "range" ? "Overview range" : formatCursorAmplitude(rowReadout)}</span></button>;
                 })}
               </div>
               <div className="canvas-column">
@@ -7687,7 +7721,7 @@ export default function Home() {
           </div>
 
           <footer className="command-strip">
-            <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{formatDisplayChannelLabel(display.labels[focusedChannel] ?? "—")}</span><span>{formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}</span><span>source sample {Math.round(cursorTime * sourceRateForDisplayRow(display, meta, focusedChannel)).toLocaleString()}</span></div>
+            <div className="cursor-readout"><span className="crosshair-mini">⌖</span><strong>{formatClock(cursorTime, true)}</strong><span>{formatDisplayChannelLabel(display.labels[focusedChannel] ?? "—")}</span><span>{formatCursorAmplitude(cursorReadout)}</span><span>{formatCursorSample(cursorReadout)}</span></div>
             <div className="command-status" role="status" aria-live="polite" aria-atomic="true"><span className="status-dot" /><span className="command-status-text">{toast}</span>{verifyingSource && <button className="verification-cancel" onClick={cancelSourceVerification}>Cancel load</button>}</div>
             {selectedAnnotationIds.size > 0 && <div className="annotation-command-actions">
               {selectedAnnotationIds.size === 1 && selectedAnnotation
@@ -7755,7 +7789,7 @@ export default function Home() {
             annotations={annotations}
             focusedChannel={focusedChannel}
             cursorTime={cursorTime}
-            cursorAmplitude={cursorAmplitude}
+            cursorReadout={cursorReadout}
             inspectionRange={inspectionRange}
             selection={selection}
             channelSelectionActive={channelSelectionActive}
@@ -9030,7 +9064,7 @@ function GeneralInfoPanel({
   annotations,
   focusedChannel,
   cursorTime,
-  cursorAmplitude,
+  cursorReadout,
   inspectionRange,
   selection,
   channelSelectionActive,
@@ -9045,7 +9079,7 @@ function GeneralInfoPanel({
   annotations: Annotation[];
   focusedChannel: number;
   cursorTime: number;
-  cursorAmplitude: number;
+  cursorReadout: CursorReadout;
   inspectionRange: InspectionBox | null;
   selection: { start: number; end: number } | null;
   channelSelectionActive: boolean;
@@ -9078,7 +9112,7 @@ function GeneralInfoPanel({
     }
     return annotation.start <= rangeEnd && annotation.end >= rangeStart;
   }).sort((left, right) => Math.abs(left.start - rangeStart) - Math.abs(right.start - rangeStart)).slice(0, 6) : [];
-  const montageLabel = montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : "Anatomical bipolar";
+  const montageLabel = montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels);
 
   return <section className="general-info-panel" aria-label="General waveform information">
     <header className="general-info-heading">
@@ -9091,7 +9125,7 @@ function GeneralInfoPanel({
       <section className="general-info-focus-card">
         <span>{isArea ? "SELECTED AREA" : "CLICKED POINT"}</span>
         <strong>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : formatClock(rangeStart, true)}</strong>
-        <small>{isArea ? `${formatClock(rangeStart, true)}–${formatClock(rangeEnd, true)} · ${selectedChannelLabels.length} channel${selectedChannelLabels.length === 1 ? "" : "s"}` : `${displayLabel} · ${formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}`}</small>
+        <small>{isArea ? `${formatClock(rangeStart, true)}–${formatClock(rangeEnd, true)} · ${selectedChannelLabels.length} channel${selectedChannelLabels.length === 1 ? "" : "s"}` : `${displayLabel} · ${formatCursorAmplitude(cursorReadout)}`}</small>
       </section>
 
       <section className="general-info-section">
@@ -9101,8 +9135,8 @@ function GeneralInfoPanel({
           <div><dt>End</dt><dd>{isArea ? formatClock(rangeEnd, true) : "Same point"}</dd></div>
           <div><dt>Duration</dt><dd>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : "Instant"}</dd></div>
           <div><dt>Channel span</dt><dd>{selectedChannelLabels.length === 1 ? selectedChannelLabels[0] : `${selectedChannelLabels[0]}–${selectedChannelLabels[selectedChannelLabels.length - 1]} (${selectedChannelLabels.length})`}</dd></div>
-          <div><dt>Pointer amplitude</dt><dd>{formatAmplitude(cursorAmplitude, display.units[focusedChannel] || "a.u.")}</dd></div>
-          <div><dt>Source sample</dt><dd>{Math.round(cursorTime * sampleRate).toLocaleString()}</dd></div>
+          <div><dt>{cursorReadout.kind === "range" ? "Overview amplitude range" : "Pointer amplitude"}</dt><dd>{formatCursorAmplitude(cursorReadout)}</dd></div>
+          <div><dt>{cursorReadout.kind === "range" ? "Bucket interval" : "Sample"}</dt><dd>{formatCursorSample(cursorReadout)}</dd></div>
         </dl>
       </section>
 

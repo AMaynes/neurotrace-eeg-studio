@@ -20,6 +20,7 @@
 import { Mat73WorkerClient } from "./mat73-worker-client.ts";
 import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
 import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
+import { ANATOMICAL_EXCLUDED_GROUPS, bipolarMontageKind, scalpBipolarPairs, type BipolarMontageKind, type BipolarPair } from "./bipolar-montage.ts";
 
 export type RecordingFormat =
   | "demo"
@@ -3638,10 +3639,7 @@ function channelIsExcluded(index: number, label: string, excludedChannels: Exclu
   return false;
 }
 
-const MATLAB_EXCLUDED_CHANNEL_GROUPS = new Set([
-  "DC", "MARK", "E", "C", "EX", "F", "REF", "GND", "ECG", "EKG", "EMG",
-  "EOG", "TRIG", "SYNC", "AUX", "STI",
-]);
+const MATLAB_EXCLUDED_CHANNEL_GROUPS = ANATOMICAL_EXCLUDED_GROUPS;
 
 interface MatlabAnatomicalChannel {
   sourceIndex: number;
@@ -3723,6 +3721,12 @@ export function buildMontage(
   excludedChannels: ExcludedChannelSet = new Set<number | string>(),
   sampleRates?: readonly number[],
   sampleStartSecs?: readonly number[],
+  options: {
+    bipolarKind?: BipolarMontageKind;
+    channelUnits?: readonly string[];
+    allChannelLabels?: readonly string[];
+    sourceChannelIndices?: readonly number[];
+  } = {},
 ): MontageResult {
   if (mode !== "referential" && mode !== "average" && mode !== "average-reference" && mode !== "bipolar") {
     throw new Error(`Unsupported montage mode: ${String(mode)}.`);
@@ -3741,6 +3745,19 @@ export function buildMontage(
   }
   if (sampleStartSecs?.some((startSec) => !Number.isFinite(startSec))) {
     throw new Error("Montage sample start times must be finite.");
+  }
+  if (options.channelUnits && options.channelUnits.length !== data.length) {
+    throw new Error(`Montage received ${data.length} signals but ${options.channelUnits.length} units.`);
+  }
+  if (Boolean(options.allChannelLabels) !== Boolean(options.sourceChannelIndices)) {
+    throw new Error("Montage full channel labels and source channel indices must be supplied together.");
+  }
+  if (options.sourceChannelIndices && (options.sourceChannelIndices.length !== data.length
+    || new Set(options.sourceChannelIndices).size !== data.length
+    || options.sourceChannelIndices.some((index, position) => !Number.isSafeInteger(index)
+      || index < 0 || index >= options.allChannelLabels!.length
+      || options.allChannelLabels![index] !== labels[position]))) {
+    throw new Error("Montage source channel indices must uniquely identify the supplied channel labels.");
   }
   const validIndices = data
     .map((_, index) => index)
@@ -3833,60 +3850,101 @@ export function buildMontage(
     };
   }
 
-  const orderedIndices = orderAnatomicalChannelIndices(labels, validIndices);
+  const allLabels = options.allChannelLabels ?? labels;
+  const kind = options.bipolarKind ?? bipolarMontageKind(allLabels);
+  if (kind === "mixed" || kind === "unavailable") {
+    warnings.push(kind === "mixed"
+      ? "Bipolar view is unavailable for mixed scalp and anatomical channel names; use recorded reference or an explicitly defined montage."
+      : "No recognized scalp or anatomical electrode names were available for bipolar derivation.");
+    return { data: [], labels: [], sampleRates: sampleRates ? [] : undefined,
+      sampleStartSecs: sampleStartSecs ? [] : undefined, sourceIndices: [], primarySourceIndices: [], mode, warnings };
+  }
+  // Build anatomical neighbors before excluding inputs, so exclusion can omit a
+  // pair but cannot silently create a new derivation across the omitted contact.
+  const orderedIndices = orderAnatomicalChannelIndices(allLabels);
   const groups = new Map<string, MatlabAnatomicalChannel[]>();
   for (const index of orderedIndices) {
-    const contact = parseMatlabAnatomicalChannel(labels[index], index);
+    const contact = parseMatlabAnatomicalChannel(allLabels[index], index);
     if (!contact) continue;
     const group = groups.get(contact.group) ?? [];
     group.push(contact);
     groups.set(contact.group, group);
   }
+  let pairs: BipolarPair[];
+  if (kind === "scalp") {
+    const plan = scalpBipolarPairs(allLabels);
+    pairs = plan.pairs;
+    warnings.push(...plan.warnings);
+  } else {
+    pairs = [...groups.values()].flatMap((contacts) => contacts.slice(1).map((second, index) => ({
+      first: contacts[index].sourceIndex,
+      second: second.sourceIndex,
+      label: `${contacts[index].group}${contacts[index].contactText}-${second.contactText}`,
+    })));
+  }
+  const sourceIndicesInWindow = options.sourceChannelIndices ?? labels.map((_, index) => index);
+  const localPosition = new Map(sourceIndicesInWindow.map((sourceIndex, index) => [sourceIndex, index]));
+  pairs = pairs.flatMap((pair) => {
+    const first = localPosition.get(pair.first);
+    const second = localPosition.get(pair.second);
+    if (first === undefined || second === undefined) {
+      warnings.push(`${pair.label} was omitted because one of its source channels is not selected.`);
+      return [];
+    }
+    return [{ ...pair, first, second }];
+  });
+  const validSet = new Set(validIndices);
   const outputData: Float32Array[] = [];
   const outputLabels: string[] = [];
   const sourceIndices: number[][] = [];
   const primarySourceIndices: number[] = [];
   const outputSampleStartSecs: number[] = [];
-  for (const contacts of groups.values()) {
-    for (let index = 0; index < contacts.length - 1; index += 1) {
-      const first = contacts[index];
-      const second = contacts[index + 1];
-      const firstData = data[first.sourceIndex];
-      const secondData = data[second.sourceIndex];
-      const firstRate = sampleRates?.[first.sourceIndex];
-      const secondRate = sampleRates?.[second.sourceIndex];
-      if (firstRate !== undefined && secondRate !== undefined && Math.abs(firstRate - secondRate) > 1e-9) {
-        warnings.push(`${first.actualLabel}–${second.actualLabel} was omitted because ${firstRate} Hz and ${secondRate} Hz channels cannot be subtracted without resampling.`);
+  for (const pair of pairs) {
+      if (!validSet.has(pair.first) || !validSet.has(pair.second)) {
+        warnings.push(`${pair.label} was omitted because one of its source channels is excluded.`);
         continue;
       }
-      const firstStartSec = sampleStartSecs?.[first.sourceIndex];
-      const secondStartSec = sampleStartSecs?.[second.sourceIndex];
+      const firstData = data[pair.first];
+      const secondData = data[pair.second];
+      const firstRate = sampleRates?.[pair.first];
+      const secondRate = sampleRates?.[pair.second];
+      if (options.channelUnits && options.channelUnits[pair.first] !== options.channelUnits[pair.second]) {
+        warnings.push(`${pair.label} was omitted because channels with different units cannot be subtracted.`);
+        continue;
+      }
+      if (firstRate !== undefined && secondRate !== undefined && Math.abs(firstRate - secondRate) > 1e-9) {
+        warnings.push(`${pair.label} was omitted because ${firstRate} Hz and ${secondRate} Hz channels cannot be subtracted without resampling.`);
+        continue;
+      }
+      const firstStartSec = sampleStartSecs?.[pair.first];
+      const secondStartSec = sampleStartSecs?.[pair.second];
       if (firstStartSec !== undefined
         && secondStartSec !== undefined
         && Math.abs(firstStartSec - secondStartSec) > 1e-9) {
-        warnings.push(`${first.actualLabel}–${second.actualLabel} was omitted because their sample start times (${firstStartSec} s and ${secondStartSec} s) are not aligned.`);
+        warnings.push(`${pair.label} was omitted because their sample start times (${firstStartSec} s and ${secondStartSec} s) are not aligned.`);
         continue;
       }
       const sampleCount = Math.min(firstData.length, secondData.length);
       if (firstData.length !== secondData.length) {
-        warnings.push(`${first.actualLabel}–${second.actualLabel} was clipped to the shorter equal-rate window.`);
+        warnings.push(`${pair.label} was clipped to the shorter equal-rate window.`);
       }
       const derived = new Float32Array(sampleCount);
       for (let sample = 0; sample < sampleCount; sample += 1) {
-        // MATLAB reviewer convention: the following contact minus the current contact.
+        // Scalp labels use positive-minus-negative input. The legacy anatomical
+        // convention deliberately remains following-contact minus current-contact.
         derived[sample] = Number.isFinite(firstData[sample]) && Number.isFinite(secondData[sample])
-          ? secondData[sample] - firstData[sample]
+          ? kind === "scalp" ? firstData[sample] - secondData[sample] : secondData[sample] - firstData[sample]
           : Number.NaN;
       }
       outputData.push(derived);
-      outputLabels.push(`${first.group}${first.contactText}-${second.contactText}`);
-      sourceIndices.push([first.sourceIndex, second.sourceIndex]);
-      primarySourceIndices.push(second.sourceIndex);
-      if (secondStartSec !== undefined) outputSampleStartSecs.push(secondStartSec);
-    }
+      outputLabels.push(pair.label);
+      sourceIndices.push([pair.first, pair.second]);
+      primarySourceIndices.push(kind === "scalp" ? pair.first : pair.second);
+      const outputStartSec = kind === "scalp" ? firstStartSec : secondStartSec;
+      if (outputStartSec !== undefined) outputSampleStartSecs.push(outputStartSec);
   }
-  if (outputData.length === 0) {
-    const fallbackIndices = groups.size ? orderedIndices.filter((index) =>
+  if (outputData.length === 0 && kind === "anatomical") {
+    const fallbackIndices = groups.size ? validIndices.filter((index) =>
       parseMatlabAnatomicalChannel(labels[index], index) !== null) : validIndices;
     warnings.push("No MATLAB-style bipolar pairs were available; showing the recorded reference.");
     return {

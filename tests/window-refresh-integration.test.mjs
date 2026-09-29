@@ -37,7 +37,7 @@ const constants = [
   "MIN_TIME_WINDOW_SECONDS", "FLATLINE_DISPLAY_MERGE_GAP_SECONDS",
 ];
 const helpers = ["clamp", "isAbortFailure", "reusableEnvelopeBucketCount", "envelopeWindowByteLength", "makeEnvelopeCacheEntry"];
-const policy = ["overviewPlanForView", "overviewDisplayPolicy", "overviewRefreshRevision"];
+const policy = ["displaySettingsKey", "overviewPlanForView", "overviewDisplayPolicy", "overviewRefreshRevision"];
 const extracted = [
   ...constants.map((name) => `const ${declarations.get(name).getText(syntax)};`),
   ...helpers.map((name) => declarations.get(name).getText(syntax)),
@@ -165,12 +165,18 @@ test("5/15-minute views begin their own detail worker during full-file verificat
     const prefix = h.calls[0].prefix();
     assert.equal(h.loading.at(-1), false, "the first exact prefix removes the blocking loader");
     assert.equal(h.displays.at(-1).refiningOverview, true);
+    assert.deepEqual(JSON.parse(h.displays.at(-1).settingsKey), [
+      h.source.meta.id, "referential", { enabled: false }, [0, 1],
+    ], "the actual request settings identity accompanies progressive data");
     assert.equal(h.displays.at(-1).unreadAfterSec, prefix.startSec + prefix.durationSec);
     h.calls[0].finish();
     await tick();
     assert.equal(h.displays.at(-1).refiningOverview, undefined);
     assert.equal(h.displays.at(-1).unreadAfterSec, undefined);
     assert.equal(h.displays.at(-1).data[0][0], 30);
+    assert.deepEqual(JSON.parse(h.displays.at(-1).settingsKey), [
+      h.source.meta.id, "referential", { enabled: false }, [0, 1],
+    ], "refined data retains the settings identity used to read it");
     assert.deepEqual(h.toasts, []);
     h.dispose();
   }

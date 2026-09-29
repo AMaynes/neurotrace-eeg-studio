@@ -979,8 +979,9 @@ test("referential montage retains explicitly excluded inputs while derived monta
   assert.match(partiallyAlignedAverage.warnings.join("\n"), /excluded.*incompatible.*LA2/i);
 
   const bipolar = buildMontage(data, labels, "bipolar", excluded, [1000, 1000, 1000], starts);
-  assert.deepEqual(bipolar.labels, ["LA1-3"]);
-  assert.deepEqual(Array.from(bipolar.data[0]), [4, 4], "MATLAB pairs adjacent retained entries in ChannelMat order");
+  assert.deepEqual(bipolar.labels, ["LA1", "LA3"]);
+  assert.match(bipolar.warnings.join(" "), /source channels is excluded/);
+  assert.ok(!bipolar.labels.includes("LA1-3"), "excluding a contact must not silently change its neighbors into a new pair");
 
   const misalignedBipolar = buildMontage(
     data.slice(0, 2),

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { readCursorReadout } from "../app/cursor-readout.ts";
 
 const pageUrl = new URL("../app/page.tsx", import.meta.url);
 
@@ -295,7 +296,23 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   const hitTesting = section(page, "const channelRowFromClientY", "const timeFromPointer");
   assert.match(hitTesting, /waveformScrollRef\.current\?\.scrollTop/);
   assert.match(hitTesting, /channelRowLayout\.totalUnits\s*\*\s*60/);
-  assert.match(page, /const envelope\s*=\s*display\.envelopes\[row\][\s\S]*?Math\.floor/);
+  assert.match(page, /readCursorReadout\(display, focusedChannel, cursorTime\)/,
+    "cursor inspection delegates to the shared time-aware reader");
+  const cursorDisplay = {
+    data: [new Float32Array([25, 45])], sampleRates: [1], sourceSampleRates: [200],
+    startSecs: [10], units: ["µV"], envelopes: [{ startSec: 10, bucketDurationSec: 1,
+      minima: new Float32Array([0, 40]), maxima: new Float32Array([100, 50]), gaps: new Uint8Array(2) }],
+  };
+  assert.deepEqual(readCursorReadout(cursorDisplay, 0, 10.9), {
+    kind: "range", minimum: 0, maximum: 100, unit: "µV", startSec: 10, endSec: 11, bucketIndex: 0,
+  }, "an envelope hit uses the containing time bucket, not the rounded next bucket or its average");
+  assert.equal(readCursorReadout(cursorDisplay, 0, 11).bucketIndex, 1,
+    "the exact boundary belongs to the next bucket");
+  assert.equal(readCursorReadout(cursorDisplay, 0, 12).kind, "unavailable",
+    "out-of-window cursors cannot read a clamped edge sample");
+  cursorDisplay.envelopes[0].gaps[1] = 1;
+  assert.equal(readCursorReadout(cursorDisplay, 0, 11.5).kind, "unavailable",
+    "missing source data cannot yield an apparently measured cursor amplitude");
 });
 
 test("finite clipped waveform samples remain connected when zoom rebuilds the trace", async () => {

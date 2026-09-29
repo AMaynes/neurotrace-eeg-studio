@@ -545,6 +545,10 @@ textarea:focus-visible {
 .overview-track { height: 30px; position: relative; overflow: hidden; border: 1px solid #1e343c; border-radius: 3px; background: #071217; cursor: crosshair; }
 .overview-wave { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; padding: 2px; opacity: .55; }
 .overview-wave i { flex: 1; min-width: 1px; background: #5e8993; border-radius: 1px; }
+.overview-wave .overview-bin { position: absolute; top: 50%; transform: translateY(-50%); border-right: 2px solid transparent; background-clip: padding-box; }
+.overview-wave .overview-bin.ready { min-height: 1px; }
+.overview-wave .overview-bin:is(.unread, .gap, .partial) { background: repeating-linear-gradient(135deg, #23383e 0 2px, transparent 2px 5px); }
+.overview-status { position: absolute; z-index: 2; left: 7px; top: 6px; max-width: calc(100% - 14px); padding: 1px 5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: #071217d9; color: #8da4aa; font-size: 9px; pointer-events: none; }
 .overview-event { position: absolute; top: 3px; bottom: 3px; min-width: 2px; background: var(--coral); opacity: .75; }
 .overview-viewport { position: absolute; top: 0; bottom: 0; min-width: 6px; border: 1px solid var(--mint); background: rgba(87, 223, 183, .1); box-shadow: 0 0 12px rgba(87, 223, 183, .12); }
 .overview-viewport i { position: absolute; top: 7px; width: 2px; height: 14px; background: var(--mint); }
@@ -1049,6 +1053,20 @@ textarea:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Signal limitations remain visible without covering any waveform rows. */
+.display-warnings { flex: 0 0 auto; min-width: 0; padding: 5px 12px; border-bottom: 1px solid #625334; background: #201e16; color: #dbc58e; font-size: 10px; }
+.display-warnings summary { display: flex; align-items: center; gap: 7px; min-width: 0; cursor: pointer; list-style: none; }
+.display-warnings summary::-webkit-details-marker { display: none; }
+.display-warnings summary::before { content: "▸"; flex: none; }
+.display-warnings[open] summary::before { transform: rotate(90deg); }
+.display-warnings summary:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; border-radius: 2px; }
+.display-warning-status { display: flex; align-items: baseline; gap: 9px; flex: 1; min-width: 0; }
+.display-warning-status strong, .display-warning-details-hint { flex: none; }
+.display-warning-preview { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.display-warning-details-hint { text-decoration: underline; text-underline-offset: 2px; }
+.display-warnings ul { max-height: 100px; overflow-y: auto; overscroll-behavior: contain; margin: 7px 0 2px; padding-left: 22px; line-height: 1.5; }
+.display-warnings li + li { margin-top: 3px; }
 
 /* Session-first clinical workspace */
 .neuro-app {
