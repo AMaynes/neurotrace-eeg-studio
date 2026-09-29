@@ -60,6 +60,33 @@ test("standalone MAT collection includes every MAT and shares metadata companion
   assert.deepEqual(plan.recordings.map((entry) => entry.files), [[first], [second]]);
 });
 
+test("a folder with one saved project is catalogued without inspecting the archive", () => {
+  const project = fileAt("study/review.neurotrace");
+  const plan = planDirectoryImport([project], "neurotrace");
+  assert.equal(plan.format, "neurotrace");
+  assert.equal(plan.recordings.length, 1);
+  assert.equal(plan.recordings[0].primary, project);
+  assert.equal(plan.recordings[0].relativePath, "study/review.neurotrace");
+  assert.deepEqual(directoryRecordingFiles(plan, plan.recordings[0]), [project]);
+  assert.ok(!("verified" in plan.recordings[0]), "filename discovery cannot verify archive contents or embedded recordings");
+});
+
+test("nested projects preserve identity and exclude every external companion on opening", () => {
+  const first = fileAt("study/session-2/review.neurotrace");
+  const second = fileAt("study/session-10/review.NEUROTRACE");
+  const metadata = fileAt("study/metadata.json");
+  const events = fileAt("study/session-2/review_events.tsv");
+  const custom = fileAt("study/session-2/labels.txt");
+  const plan = planDirectoryImport([second, metadata, events, first, custom], "neurotrace");
+  assert.deepEqual(plan.recordings.map((entry) => entry.primary), [first, second]);
+  assert.notEqual(plan.recordings[0].id, plan.recordings[1].id);
+  assert.deepEqual(new Set(plan.supportingFiles), new Set([metadata, events, custom]));
+  for (const recording of plan.recordings) {
+    assert.deepEqual(directoryRecordingFiles(plan, recording), [recording.primary]);
+    assert.deepEqual(recording.files, [recording.primary], "opening must not mutate the project entry");
+  }
+});
+
 test("pairs MAT and DAT by case-insensitive relative folder and exact basename", () => {
   const firstMat = fileAt("study/session-1/EEG.MAT");
   const firstDat = fileAt("study/session-1/eeg.dat");
@@ -105,6 +132,10 @@ test("rejects mixed recording families anywhere in a directory", () => {
     ["mat", ["one.mat", "nested/two.edf"]],
     ["mat", ["one.mat", "nested/one.dat"]],
     ["mat-dat", ["one.mat", "one.dat", "nested/two.edf"]],
+    ["neurotrace", ["one.neurotrace", "nested/two.edf"]],
+    ["neurotrace", ["one.neurotrace", "nested/two.mat"]],
+    ["neurotrace", ["one.neurotrace", "nested/two.dat"]],
+    ["neurotrace", ["one.neurotrace", "nested/two.bdf"]],
   ];
   for (const [format, paths] of cases) {
     const failure = expectError(paths.map(fileAt), format, "MIXED_FORMATS");

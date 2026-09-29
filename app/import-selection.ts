@@ -34,11 +34,11 @@ export function classifyRecordingSelection(files: readonly File[], fromDirectory
   const sessionCount = edf + Math.max(mat, dat) + projects + otherRecordings;
   if (!sessionCount || (!directory && sessionCount <= 1)) return { kind: "files", files: [...files] };
 
-  const format: DirectoryImportFormat | null = edf ? "edf" : dat ? "mat-dat" : mat ? "mat" : null;
+  const format: DirectoryImportFormat | null = edf ? "edf" : dat ? "mat-dat" : mat ? "mat" : projects ? "neurotrace" : null;
   if (!format) {
     const paths = files.filter((file) => extensionOf(file) === "neurotrace" || OTHER_RECORDING_EXTENSIONS.has(extensionOf(file)))
       .map((file) => file.webkitRelativePath || file.name);
-    throw new DirectoryImportError("MIXED_FORMATS", "Recording collections support EDF, standalone MAT, or matching MAT + DAT pairs only. Open a .neurotrace project individually; other recording formats are not supported.", paths);
+    throw new DirectoryImportError("MIXED_FORMATS", "Collections support EDF, standalone MAT, matching MAT + DAT pairs, or NeuroTrace projects. Choose a supported type, then Files or Folder. Every session in a collection must use the same format.", paths);
   }
   return { kind: "directory", plan: planDirectoryImport(files, format) };
 }
@@ -59,7 +59,7 @@ const KNOWN_FILE_EXTENSIONS = new Set([
 ]);
 
 function dropFailure(detail: string): Error {
-  return new Error(`${detail} Nothing was imported. Click a recording type to choose files, or try dropping the folder again.`);
+  return new Error(`${detail} Nothing was imported. Choose a recording type, then Files or Folder, or try dropping the folder again.`);
 }
 
 function assertFallbackFile(file: File): void {

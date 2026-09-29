@@ -19,7 +19,7 @@ type DirectorySessionsProps = {
 };
 
 const PAGE_SIZE = 50;
-const FORMAT_NAMES = { edf: "EDF / EDF+", mat: "Standalone MAT", "mat-dat": "MAT + DAT" };
+const FORMAT_NAMES = { edf: "EDF / EDF+", mat: "Standalone MAT", "mat-dat": "MAT + DAT", neurotrace: "NeuroTrace project" };
 const STATUS_LABELS = {
   opening: "Opening…",
   confirmation: "Layout confirmation needed",
@@ -74,7 +74,9 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
         <span aria-live="polite">{(first + 1).toLocaleString()}–{Math.min(first + PAGE_SIZE, plan.recordings.length).toLocaleString()} of {plan.recordings.length.toLocaleString()} · Page {page + 1} of {pageCount}</span>
         <button type="button" className="button secondary" disabled={page === pageCount - 1} aria-label="Next sessions" onClick={() => setRequestedPage(page + 1)}>Next</button>
       </nav>}
-      <p className="directory-sessions-note">The directory is checked for matching file types and complete pairs. Recording contents are verified when opened; MAT + DAT sessions still require layout confirmation. Directory review state is separate from individual-file imports.</p>
+      <p className="directory-sessions-note">{plan.format === "neurotrace"
+        ? "Projects open from their saved contents. Nearby files are not added to a project. Projects saved without recording data require the matching original recording to be opened separately."
+        : "The directory is checked for matching file types and complete pairs. Recording contents are verified when opened; MAT + DAT sessions still require layout confirmation. Directory review state is separate from individual-file imports."}</p>
       <footer className="directory-sessions-footer">
         <span>Clearing this list does not delete files or close sessions already open.</span>
         <button type="button" className="button secondary" disabled={busy} onClick={onClear}>Clear directory list</button>

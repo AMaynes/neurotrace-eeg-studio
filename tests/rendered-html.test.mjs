@@ -435,9 +435,13 @@ test("accepts additive directory companions while retaining actionable damaged-r
   const modal = page.slice(modalStart, modalEnd);
   assert.match(modal, /className="upload-error"[^>]*role="alert"/);
   assert.match(modal, /aria-live="assertive"/);
-  assert.doesNotMatch(modal, /Choose files|Choose folder|Recording import mode/);
+  assert.doesNotMatch(modal, /Recording import mode/);
   assert.match(modal, /ref=\{guidedFilesInputRef\}/);
-  assert.doesNotMatch(modal, /webkitdirectory/);
+  assert.match(modal, /guidedDirectoryInputRef\.current = (?:element|input)/);
+  assert.match(modal, /webkitdirectory = true/);
+  assert.match(modal, /openImportPicker\("files"\)/);
+  assert.match(modal, /openImportPicker\("directory"\)/);
+  assert.match(modal, /aria-pressed=\{importChoice === "edf"\}/);
   assert.match(modal, /chooseImportType\("edf"\)/);
   assert.match(modal, /chooseImportType\("mat"\)/);
   assert.match(modal, /chooseImportType\("mat-dat"\)/);

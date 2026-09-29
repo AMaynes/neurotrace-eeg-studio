@@ -1710,6 +1710,7 @@ export default function Home() {
   const queuedDirectoryOpenRef = useRef<DirectoryOpenRequest | null>(null);
   const directoryConfirmationRef = useRef<DirectoryOpenRequest | null>(null);
   const guidedFilesInputRef = useRef<HTMLInputElement | null>(null);
+  const guidedDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const directoryImportRunnerRef = useRef<(files: File[], format: DirectoryImportFormat) => Promise<DirectorySessionStatus | undefined>>(async () => undefined);
   const sourceVerificationRef = useRef(false);
   const sourceVerificationAbortRef = useRef<AbortController | null>(null);
@@ -5460,7 +5461,9 @@ export default function Home() {
     }
     // Directory entries represent distinct session paths, even if their sample
     // bytes are identical. Do not merge another entry's companions or labels.
-    const duplicateEntry = !keepSeparateSession && [...sessionSnapshotsRef.current.entries()].find(([id, snapshot]) =>
+    // Embedded projects must finish loading into this tab before their saved
+    // review is applied; a duplicate-tab redirect would interrupt that restore.
+    const duplicateEntry = !keepSeparateSession && !pendingProjectImportRef.current && [...sessionSnapshotsRef.current.entries()].find(([id, snapshot]) =>
       id !== targetSessionId && snapshot.hasRecording && snapshot.sourceHash === interpretationHash);
     if (duplicateEntry) {
       const [duplicateId, duplicateSnapshot] = duplicateEntry;
@@ -5715,7 +5718,7 @@ export default function Home() {
     }
   }, [commitViewStart]);
 
-  const importFiles = async (files: File[], expectedFormat?: DirectoryImportFormat): Promise<DirectorySessionStatus | undefined> => {
+  const importFiles = async (files: File[], expectedFormat?: DirectoryImportFormat, keepSeparateSession = false): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
     setShowImport(true);
     const selectionError = validateUploadSelection(files);
@@ -5724,6 +5727,7 @@ export default function Home() {
       setToast(selectionError.title);
       return { state: "error", message: selectionError.message };
     }
+    if (expectedFormat === "neurotrace") return openNeurotraceProject(files[0], true);
     importBusyRef.current = true;
     setImportBusy(true);
     try {
@@ -5778,7 +5782,7 @@ export default function Home() {
       if (extension === "edf") {
         const source = await EDFSource.create(incomingPrimary, { parseAnnotations: false });
         const importContext = await prepareSourceImportContext(source, incomingPrimary, allFiles);
-        const opened = await loadSource(source, incomingPrimary, undefined, importContext, Boolean(expectedFormat));
+        const opened = await loadSource(source, incomingPrimary, undefined, importContext, Boolean(expectedFormat) || keepSeparateSession);
         if (!opened) return;
         setPendingImportFiles([]);
         const hasAnnotationChannels = source.header.signals.some((signal) => signal.isAnnotation);
@@ -5832,7 +5836,7 @@ export default function Home() {
         }
         if (resolved.kind === "standalone-mat") {
           const importContext = await prepareSourceImportContext(resolved.source, resolved.file, allFiles);
-          const opened = await loadSource(resolved.source, resolved.file, undefined, importContext, Boolean(expectedFormat));
+          const opened = await loadSource(resolved.source, resolved.file, undefined, importContext, Boolean(expectedFormat) || keepSeparateSession);
           if (opened) setPendingImportFiles([]);
           return opened ? { state: "loaded" } : { state: "error", message: "The recording could not be opened." };
         }
@@ -5890,12 +5894,6 @@ export default function Home() {
     setDirectoryStatuses((current) => ({ ...current, [request.recordingId]: status }));
   }, []);
 
-  // Wait for the selected tab's render before calling its import closure.
-  // Calling immediately after setActiveSessionId would load into the old tab.
-  useLayoutEffect(() => {
-    directoryImportRunnerRef.current = importFiles;
-  });
-
   useEffect(() => {
     const request = queuedDirectoryOpen;
     if (!request || request.sessionId !== activeSessionId || queuedDirectoryOpenRef.current !== request) return;
@@ -5920,7 +5918,7 @@ export default function Home() {
     const snapshot = existing && sessionSnapshotsRef.current.get(existing.sessionId);
     const existingPrimary = existing?.sessionId === activeSessionId ? primaryFile : snapshot?.primaryFile;
     const existingLoaded = existing?.sessionId === activeSessionId ? hasRecording : snapshot?.hasRecording;
-    if (existingTab && existingLoaded && existingPrimary && recording.files.includes(existingPrimary)) {
+    if (existingTab && existingLoaded && existingPrimary && existing.files.includes(existingPrimary)) {
       switchSession(existingTab.id);
       setShowDirectorySessions(false);
       return;
@@ -5950,24 +5948,34 @@ export default function Home() {
     setShowDirectorySessions(false);
   };
 
-  const handleUploadedFiles = async (files: File[]) => {
+  const handleUploadedFiles = async (files: File[], keepSeparateSession = false): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
     directoryConfirmationRef.current = null;
     const projectFile = files.find((file) => recordingExtension(file) === "neurotrace");
     if (projectFile) {
-      await openNeurotraceProject(projectFile);
-      return;
+      return openNeurotraceProject(projectFile, keepSeparateSession);
     }
     if (!projectFileImportRef.current
       && files.some((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))) {
       pendingProjectImportRef.current = null;
     }
-    const customImport = await importCustomToolFiles(files);
+    // Hold the same guard during asynchronous companion/custom-tool reads as
+    // during waveform opening. The source importer takes over synchronously.
+    importBusyRef.current = true;
+    setImportBusy(true);
+    let customImport: Awaited<ReturnType<typeof importCustomToolFiles>>;
+    try {
+      customImport = await importCustomToolFiles(files);
+    } finally {
+      importBusyRef.current = false;
+      setImportBusy(false);
+    }
     if (customImport.assets.length) {
       setCustomTools((current) => mergeCustomToolAssets(current, customImport.assets));
     }
+    let result: DirectorySessionStatus | undefined;
     if (customImport.remainingFiles.length) {
-      await importFiles(customImport.remainingFiles);
+      result = await importFiles(customImport.remainingFiles, undefined, keepSeparateSession);
       if (customImport.assets.length) {
         setToast((current) => `${current} · ${customImport.assets.length} custom tool${customImport.assets.length === 1 ? "" : "s"} imported`);
       }
@@ -5983,6 +5991,7 @@ export default function Home() {
       });
       setShowImport(true);
     }
+    return result;
   };
 
   const handleSelectedRecordingFiles = async (files: File[], fromDirectory = false) => {
@@ -6030,7 +6039,7 @@ export default function Home() {
       setStagedDirectoryPlan(null);
       setUploadError({
         title: "Dropped files could not be read",
-        message: error instanceof Error ? error.message : "Click a recording type to choose files, or try dropping the folder again.",
+        message: error instanceof Error ? error.message : "Choose a recording type, then Files or Folder, or try dropping the folder again.",
         files: [],
       });
       setShowImport(true);
@@ -6043,18 +6052,22 @@ export default function Home() {
 
   const chooseImportType = (choice: ImportChoice) => {
     if (importBusyRef.current) return;
-    const input = guidedFilesInputRef.current;
-    if (!input) return;
     setImportChoice(choice);
+  };
+
+  const openImportPicker = (kind: "files" | "directory") => {
+    if (importBusyRef.current || !importChoice) return;
+    const input = kind === "directory" ? guidedDirectoryInputRef.current : guidedFilesInputRef.current;
+    if (!input) return;
     // Configure and open within this click, retaining the browser's user activation.
     // Do not clear an existing collection until replacement files are actually selected.
-    input.accept = choice === "mat-dat" ? ".mat,.dat" : `.${choice}`;
+    input.accept = kind === "directory" ? "" : importChoice === "mat-dat" ? ".mat,.dat" : `.${importChoice}`;
     input.multiple = true;
     input.value = "";
     input.click();
   };
 
-  const openNeurotraceProject = async (file: File) => {
+  const openNeurotraceProject = async (file: File, keepSeparateSession = false): Promise<DirectorySessionStatus | undefined> => {
     if (importBusyRef.current) return;
     importBusyRef.current = true;
     setImportBusy(true);
@@ -6068,18 +6081,18 @@ export default function Home() {
       setToast("NeuroTrace project could not be opened");
       importBusyRef.current = false;
       setImportBusy(false);
-      return;
+      return { state: "error", message };
     }
     importBusyRef.current = false;
     setImportBusy(false);
-    if (!project.recordingFile && !hasRecording) {
+    if (!project.recordingFile && (!hasRecording || keepSeparateSession)) {
       setUploadError({
         title: "Recording was not included",
         message: "This project references a recording but does not contain its bytes. Open the original recording first, then open this project again.",
         files: [file.name],
       });
       setToast("NeuroTrace project needs its original recording");
-      return;
+      return { state: "error", message: "This project does not include its recording. Open the original recording first, then open the project using Files." };
     }
 
     if (!project.recordingFile) {
@@ -6091,7 +6104,7 @@ export default function Home() {
           files: [file.name],
         });
         setToast("NeuroTrace project does not match the open recording");
-        return;
+        return { state: "error", message: "The project does not match the open recording." };
       }
       try {
         if (project.supportingFiles.length || project.customToolFiles.length) {
@@ -6105,39 +6118,72 @@ export default function Home() {
         applyImportedProjectState(project);
         setShowImport(false);
         setToast(`Restored ${project.manifest.title} onto the open recording`);
+        return { state: "loaded" };
       } catch (error) {
         pendingProjectImportRef.current = null;
         const message = error instanceof Error ? error.message : "Saved review state could not be restored.";
         setUploadError({ title: "Project could not be restored", message, files: [file.name] });
         setShowImport(true);
+        return { state: "error", message };
       }
-      return;
     }
 
+    if (keepSeparateSession) {
+      // Scope embedded signals to their archive, so two projects containing
+      // identical waveform bytes retain independent review/recovery identities.
+      Object.defineProperty(project.recordingFile, "webkitRelativePath", {
+        value: `${file.webkitRelativePath || file.name}/${project.recordingFile.name}`, configurable: true,
+      });
+      for (const entry of directorySessionTabsRef.current.values()) {
+        if (entry.sessionId === activeSessionId && entry.files.includes(file)) {
+          entry.files = [...entry.files, project.recordingFile];
+        }
+      }
+    }
     pendingProjectImportRef.current = project;
     const files = [project.recordingFile, ...project.supportingFiles, ...project.customToolFiles];
     projectFileImportRef.current = true;
+    let result: DirectorySessionStatus | undefined;
     try {
-      await handleUploadedFiles(files);
+      result = await handleUploadedFiles(files, keepSeparateSession);
+    } catch (error) {
+      pendingProjectImportRef.current = null;
+      const message = error instanceof Error ? error.message : "The project recording could not be opened.";
+      setUploadError({ title: "Project recording could not be opened", message, files: [file.name] });
+      setShowImport(true);
+      return { state: "error", message };
     } finally {
       projectFileImportRef.current = false;
     }
-    if (recordingExtension(project.recordingFile) !== "dat") {
+    if (result?.state === "confirmation") return result;
+    if (result?.state !== "loaded") {
+      pendingProjectImportRef.current = null;
+      return result ?? { state: "error", message: "The project recording could not be opened." };
+    }
+    if (result.state === "loaded") {
       try {
         applyImportedProjectState(project);
         pendingProjectImportRef.current = null;
         setShowImport(false);
         setToast(`Opened ${project.manifest.title} from ${file.name}`);
+        return result;
       } catch (error) {
         pendingProjectImportRef.current = null;
         const message = error instanceof Error ? error.message : "Saved review state could not be restored.";
         setUploadError({ title: "Project recording opened with warnings", message, files: [file.name] });
         setShowImport(true);
+        return { state: "error", message };
       }
     }
   };
 
   const guidedImportReady = Boolean(stagedDirectoryPlan?.recordings.length);
+
+  // Wait for the selected tab's render before calling its import closure.
+  // Calling immediately after setActiveSessionId would load into the old tab.
+  useLayoutEffect(() => {
+    directoryImportRunnerRef.current = importFiles;
+  });
 
   useTutorialMilestones({
     scope: activeSessionId, stateKey: sessionKey, recording: hasRecording ? meta.id : null,
@@ -7654,7 +7700,7 @@ export default function Home() {
               <span className="empty-load-mark" aria-hidden="true">＋</span>
               <strong>Load a recording to begin</strong>
               <span>Open a single recording or a full directory of EDF / EDF+, MATLAB, or MAT + DAT sessions.</span>
-              <small>Click a recording type to choose files, or drop files and folders anywhere.</small>
+              <small>Choose a recording type, then Files or Folder. You can also drop files and folders anywhere.</small>
             </button>
           </div>}
           </>}
@@ -7814,16 +7860,25 @@ export default function Home() {
           <h2>{pendingDat ? "Confirm the DAT layout." : "Choose a recording type."}</h2>
           <p>{pendingDat
             ? "The signal bytes are ready. Confirm the recording details before NeuroTrace opens them."
-            : "Click a type to choose one or multiple files. Single recordings and session collections are detected automatically."}</p>
+            : "Choose a recording type, then Files or Folder to open the file explorer."}</p>
           {!pendingDat && <>
             <input ref={guidedFilesInputRef} hidden type="file" multiple disabled={importBusy} onChange={stageDetectedImport} />
+            <input ref={(element) => { guidedDirectoryInputRef.current = element; if (element) element.webkitdirectory = true; }} hidden type="file" multiple disabled={importBusy} onChange={stageDetectedImport} />
             <div className="format-cards" data-tutorial="import-formats" role="group" aria-label="Recording formats">
-              <button type="button" aria-label="EDF / EDF+" disabled={importBusy} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>One or more .edf recordings</span></button>
-              <button type="button" aria-label="MAT" disabled={importBusy} onClick={() => chooseImportType("mat")}><strong>MAT</strong><span>One or more .mat recordings</span></button>
-              <button type="button" aria-label="MAT + DAT" disabled={importBusy} onClick={() => chooseImportType("mat-dat")}><strong>MAT + DAT</strong><span>Select matching .mat + .dat files</span></button>
-              <button type="button" aria-label="NeuroTrace" disabled={importBusy} onClick={() => chooseImportType("neurotrace")}><strong>NeuroTrace</strong><span>Open a saved review project</span></button>
+              <button type="button" aria-label="EDF / EDF+" aria-pressed={importChoice === "edf"} disabled={importBusy} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>Calibrated .edf recordings</span></button>
+              <button type="button" aria-label="MAT" aria-pressed={importChoice === "mat"} disabled={importBusy} onClick={() => chooseImportType("mat")}><strong>MAT</strong><span>Standalone .mat recordings</span></button>
+              <button type="button" aria-label="MAT + DAT" aria-pressed={importChoice === "mat-dat"} disabled={importBusy} onClick={() => chooseImportType("mat-dat")}><strong>MAT + DAT</strong><span>Matching .mat + .dat pairs</span></button>
+              <button type="button" aria-label="NeuroTrace" aria-pressed={importChoice === "neurotrace"} disabled={importBusy} onClick={() => chooseImportType("neurotrace")}><strong>NeuroTrace</strong><span>Saved review projects</span></button>
             </div>
-            <div className="recording-import-drop-hint" data-tutorial="import-files">
+            {importChoice && <section className="recording-import-actions" data-tutorial="import-files" aria-label="Choose files or folder">
+              <strong>{importChoice === "edf" ? "EDF / EDF+" : importChoice === "mat" ? "MAT" : importChoice === "mat-dat" ? "MAT + DAT" : "NeuroTrace"}</strong>
+              <div>
+                <button type="button" className="button primary" disabled={importBusy} onClick={() => openImportPicker("files")}>Files</button>
+                <button type="button" className="button" disabled={importBusy} onClick={() => openImportPicker("directory")}>Folder</button>
+              </div>
+              <p>{importChoice === "mat-dat" ? "Select both matching files for each MAT + DAT pair, or choose their folder." : "Select one or multiple files, or choose a folder to include its subfolders."}</p>
+            </section>}
+            <div className="recording-import-drop-hint">
               <strong>Or drop files or a folder anywhere</strong>
               <p>Folders include subfolders. Collections must use one recording format. Files stay on this device.</p>
             </div>
@@ -7835,7 +7890,7 @@ export default function Home() {
               </header>
               <div className="directory-import-summary" role="status">
                 <strong>{stagedDirectoryPlan.recordings.length} sessions found</strong>
-                <p>All recording filenames match {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : "paired MAT + DAT"}. File contents are checked when each session opens.</p>
+                <p>All recording filenames match {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : stagedDirectoryPlan.format === "neurotrace" ? "NeuroTrace projects" : "paired MAT + DAT"}. File contents are checked when each session opens.</p>
                 <ul>{stagedDirectoryPlan.recordings.slice(0, 5).map((recording) => <li key={recording.id}>{recording.relativePath}</li>)}</ul>
                 {stagedDirectoryPlan.recordings.length > 5 && <small>And {stagedDirectoryPlan.recordings.length - 5} more sessions.</small>}
                 <p>Only the session list is loaded now. Signal data opens on demand; nothing is uploaded.</p>

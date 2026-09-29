@@ -1,4 +1,4 @@
-/** Execute the real welcome/import JSX: a format card must open the picker in the same gesture. */
+/** Execute the real welcome/import JSX: choose a format, then a file or directory picker. */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -60,6 +60,24 @@ function formatButton(tree, label) {
   assert.ok(found, `find ${label} format card`);
   return found;
 }
+function pickerButtons(ui) {
+  const choices = [];
+  const isAction = (node) => node.type === "button" && node.props.onClick;
+  const realButtons = elements(ui.render(), isAction);
+  const realOpen = ui.env.openImportPicker;
+  ui.env.openImportPicker = (mode) => choices.push(mode);
+  const found = new Map();
+  for (const [index, node] of elements(ui.render(), isAction).entries()) {
+    // Only inspect the dedicated picker actions; avoid firing format cards or close/submit actions.
+    if (!node.props.onClick.toString().includes("openImportPicker")) continue;
+    const before = choices.length;
+    node.props.onClick();
+    assert.equal(choices.length, before + 1);
+    found.set(choices.at(-1), realButtons[index]);
+  }
+  ui.env.openImportPicker = realOpen;
+  return found;
+}
 function state(env, key, initial) {
   env[key] = initial;
   env[`set${key[0].toUpperCase()}${key.slice(1)}`] = (value) => { env[key] = typeof value === "function" ? value(env[key]) : value; };
@@ -71,6 +89,7 @@ function harness(options = {}) {
     guidedImportReady: false,
     directoryConfirmationRef: { current: null },
     guidedFilesInputRef: { current: null },
+    guidedDirectoryInputRef: { current: null },
     stageDetectedImport: (event) => actions.push(["detected", event]),
     submitGuidedImport: () => actions.push(["submit"]),
   };
@@ -78,6 +97,7 @@ function harness(options = {}) {
     stagedDirectoryPlan: null, uploadError: null })) state(env, key, value);
   Object.assign(env, options);
   env.chooseImportType = (format) => handler("chooseImportType", env)(format);
+  env.openImportPicker = (mode) => handler("openImportPicker", env)(mode);
   return {
     env, actions,
     render: () => evaluate(`const render = () => (${dialog.getText(syntax)});`, "render()", env),
@@ -85,7 +105,7 @@ function harness(options = {}) {
   };
 }
 
-test("welcome exposes format cards directly without browse buttons, mode switches, or extra file rows", () => {
+test("welcome requires a recording type before exposing file or folder selection", () => {
   const ui = harness();
   ui.welcome().props.onClick();
   assert.equal(ui.env.showImport, true);
@@ -95,49 +115,75 @@ test("welcome exposes format cards directly without browse buttons, mode switche
   assert.equal(declarations.has("chooseImportMode"), false);
   for (const label of ["EDF / EDF+", "MAT", "MAT + DAT", "NeuroTrace"]) {
     assert.equal(formatButton(tree, label).props.disabled, false);
-    assert.equal(formatButton(tree, label).props["aria-pressed"], undefined, "formats are picker actions, not mode toggles");
+    assert.equal(formatButton(tree, label).props["aria-pressed"], false, "no format is selected initially");
   }
-  const obsoleteActions = new Set(["Choose files", "Choose folder", "Single recording", "Recording directory"]);
+  assert.equal(pickerButtons(ui).size, 0, "file and folder actions are revealed only after selecting a type");
+  const obsoleteActions = new Set(["Single recording", "Recording directory"]);
   assert.equal(elements(tree, (node) => node.type === "button" && (obsoleteActions.has(node.props["aria-label"]) || obsoleteActions.has(text(node).trim()))).length, 0);
   assert.equal(elements(tree, (node) => node.props?.className === "import-requirements").length, 0);
 });
 
-test("the import dialog has one ordinary multi-file picker wired to auto-detection", () => {
+test("the import dialog has separate hidden file and recursive-directory pickers wired to auto-detection", () => {
   const ui = harness();
   const tree = ui.render();
   const pickers = elements(tree, (node) => node.type === "input" && node.props.type === "file");
-  assert.equal(pickers.length, 1);
-  assert.equal(pickers[0].props.multiple, true);
-  assert.equal(pickers[0].props.hidden, true);
-  assert.equal(pickers[0].props.ref, ui.env.guidedFilesInputRef);
-  assert.equal(pickers[0].props.webkitdirectory, undefined);
+  assert.equal(pickers.length, 2);
+  assert.ok(pickers.every((input) => input.props.multiple && input.props.hidden));
+  const files = pickers.find((input) => input.props.ref === ui.env.guidedFilesInputRef);
+  const folder = pickers.find((input) => input !== files);
+  assert.ok(files, "ordinary file input uses its own ref");
+  assert.equal(files.props.webkitdirectory, undefined);
+  const directoryElement = {};
+  folder.props.ref(directoryElement);
+  assert.equal(ui.env.guidedDirectoryInputRef.current, directoryElement);
+  assert.equal(directoryElement.webkitdirectory, true, "folder chooser selects the folder itself recursively");
   const fileEvent = { target: { files: [{ name: "one.edf" }] } };
-  pickers[0].props.onChange(fileEvent);
-  assert.deepEqual(ui.actions, [["detected", fileEvent]]);
+  const directoryEvent = { target: { files: [{ name: "nested.edf" }], webkitdirectory: true } };
+  files.props.onChange(fileEvent);
+  folder.props.onChange(directoryEvent);
+  assert.deepEqual(ui.actions, [["detected", fileEvent], ["detected", directoryEvent]]);
+  assert.doesNotThrow(() => folder.props.ref(null), "directory input can unmount cleanly");
+  assert.equal(ui.env.guidedDirectoryInputRef.current, null);
 });
 
-for (const [label, accept] of [["EDF / EDF+", ".edf"], ["MAT", ".mat"], ["MAT + DAT", ".mat,.dat"], ["NeuroTrace", ".neurotrace"]]) {
-  test(`${label} card synchronously opens a multi-file picker with the matching file filter`, () => {
+for (const [format, label, accept] of [["edf", "EDF / EDF+", ".edf"], ["mat", "MAT", ".mat"], ["mat-dat", "MAT + DAT", ".mat,.dat"], ["neurotrace", "NeuroTrace", ".neurotrace"]]) {
+  test(`${label} card selects its format without opening Explorer and reveals both picker choices`, () => {
     const ui = harness();
-    let calls = 0;
-    const input = { accept: "old-filter", multiple: false, value: "old-selection", click: () => {
-      assert.equal(input.accept, accept, "filter is set before native picker activation");
-      assert.equal(input.multiple, true);
-      assert.equal(input.value, "", "reset the input so the same files can be selected again");
-      calls += 1;
-    } };
-    ui.env.guidedFilesInputRef.current = input;
-    const result = formatButton(ui.render(), label).props.onClick();
-    assert.equal(calls, 1, "picker opens immediately in the card click's user gesture");
-    assert.equal(result instanceof Promise, false, "no deferred render or async boundary before opening");
+    const unexpectedPicker = { click: () => assert.fail("choosing a format must not skip the file/folder choice") };
+    ui.env.guidedFilesInputRef.current = unexpectedPicker;
+    ui.env.guidedDirectoryInputRef.current = unexpectedPicker;
+    formatButton(ui.render(), label).props.onClick();
+    assert.equal(ui.env.importChoice, format);
     const after = ui.render();
-    assert.equal(elements(after, (node) => node.type === "input" && node.props.type === "file").length, 1);
+    assert.equal(formatButton(after, label).props["aria-pressed"], true);
+    assert.equal(elements(after, (node) => node.type === "button" && node.props["aria-pressed"] === true).length, 1);
+    assert.deepEqual(new Set(pickerButtons(ui).keys()), new Set(["files", "directory"]));
     assert.equal(elements(after, (node) => node.props?.className === "import-requirements").length, 0);
-    assert.doesNotMatch(text(after), /Open recording|Open project/, "a format click does not add another selection or submit step");
   });
+
+  for (const mode of ["files", "directory"]) {
+    test(`${label} ${mode} action opens only its native picker synchronously`, () => {
+      const ui = harness({ importChoice: format });
+      let calls = 0;
+      const input = { accept: "old-filter", multiple: false, value: "old-selection", click: () => {
+        assert.equal(input.accept, mode === "files" ? accept : "", "file filter or unrestricted directory filter is applied before activation");
+        assert.equal(input.multiple, true);
+        assert.equal(input.value, "", "reset the input so the same selection can be chosen again");
+        calls += 1;
+      } };
+      const otherInput = { click: () => assert.fail("do not open the other picker") };
+      ui.env.guidedFilesInputRef.current = mode === "files" ? input : otherInput;
+      ui.env.guidedDirectoryInputRef.current = mode === "directory" ? input : otherInput;
+      const choices = pickerButtons(ui);
+      assert.equal(choices.get(mode).props.disabled, false);
+      const result = choices.get(mode).props.onClick();
+      assert.equal(calls, 1, "native picker opens within the button click's user gesture");
+      assert.equal(result instanceof Promise, false, "no async boundary before native picker activation");
+    });
+  }
 }
 
-for (const [format, label] of [["edf", /EDF/], ["mat", /MAT/], ["mat-dat", /MAT\s*\+\s*DAT/]]) {
+for (const [format, label] of [["edf", /EDF/], ["mat", /MAT/], ["mat-dat", /MAT\s*\+\s*DAT/], ["neurotrace", /NeuroTrace/]]) {
   test(`detected ${format} collection displays its format and lazy action without manual file rows`, () => {
     const ui = harness({ importChoice: format, guidedImportReady: true,
       stagedDirectoryPlan: { format, recordings: [{ id: "one", relativePath: "root/one" }, { id: "two", relativePath: "root/sub/two" }], supportingFiles: [] } });
@@ -153,9 +199,10 @@ for (const [format, label] of [["edf", /EDF/], ["mat", /MAT/], ["mat-dat", /MAT\
   });
 }
 
-test("busy import disables format cards and input and guards programmatic picker activation", () => {
+test("busy import disables format cards, both inputs, and file/folder actions", () => {
   const ui = harness({ importBusy: true, importBusyRef: { current: true } });
   ui.env.guidedFilesInputRef.current = { click: () => assert.fail("busy import must not open a competing picker") };
+  ui.env.guidedDirectoryInputRef.current = ui.env.guidedFilesInputRef.current;
   const tree = ui.render();
   for (const label of ["EDF / EDF+", "MAT", "MAT + DAT", "NeuroTrace"]) {
     const card = formatButton(tree, label);
@@ -164,13 +211,17 @@ test("busy import disables format cards and input and guards programmatic picker
   }
   assert.ok(elements(tree, (node) => node.type === "input" && node.props.type === "file").every((input) => input.props.disabled));
   assert.equal(ui.env.importChoice, null);
+  ui.env.importChoice = "edf";
+  for (const mode of ["files", "directory"]) {
+    assert.equal(pickerButtons(ui).get(mode).props.disabled, true);
+    assert.doesNotThrow(() => ui.env.openImportPicker(mode));
+  }
 });
 
-test("folder help describes dropping a folder, not selecting one through the ordinary file picker", () => {
+test("folder drag-and-drop remains available alongside native file and folder pickers", () => {
   const ui = harness();
   assert.match(text(ui.render()), /drop[^.]*folder/i);
   assert.match(text(ui.welcome()), /drop[^.]*folder/i);
-  assert.doesNotMatch(text(ui.render()), /choose[^.]*files or a folder|choose folder|choose a directory/i);
 });
 
 test("actual input handler snapshots files and folder provenance before clearing the chooser", async () => {
@@ -205,25 +256,39 @@ test("directory readiness depends on a nonempty detected plan, not the last clic
   assert.equal(ready({ importChoice: null, stagedDirectoryPlan: null }), false);
 });
 
-test("cancelling a different format picker preserves an existing collection and its Load action", () => {
-  const plan = { format: "edf", recordings: [{ id: "one", relativePath: "root/one.edf" }], supportingFiles: [] };
-  const error = { title: "Earlier warning", message: "Preserve until another selection is accepted", files: [] };
-  const ui = harness({ importChoice: "edf", stagedDirectoryPlan: plan, uploadError: error });
-  let opened = 0;
-  ui.env.guidedFilesInputRef.current = { click: () => { opened += 1; } };
-  formatButton(ui.render(), "MAT").props.onClick();
-  assert.equal(opened, 1);
-  const cancelled = { target: { files: [], value: "" } };
-  handler("stageDetectedImport", { handleSelectedRecordingFiles: () => assert.fail("cancel must not route") })(cancelled);
-  assert.equal(ui.env.stagedDirectoryPlan, plan);
-  assert.equal(ui.env.uploadError, error);
-  const node = declarations.get("guidedImportReady");
-  ui.env.guidedImportReady = evaluate(`const result = ${node.initializer.getText(syntax)};`, "result", ui.env);
-  assert.equal(button(ui.render(), "Load 1 sessions").props.disabled, false);
+test("changing format and cancelling either picker preserves the staged collection and its Load action", () => {
+  for (const mode of ["files", "directory"]) {
+    const plan = { format: "edf", recordings: [{ id: "one", relativePath: "root/one.edf" }], supportingFiles: [] };
+    const error = { title: "Earlier warning", message: "Preserve until another selection is accepted", files: [] };
+    const ui = harness({ importChoice: "edf", stagedDirectoryPlan: plan, uploadError: error });
+    let opened = 0;
+    ui.env.guidedFilesInputRef.current = { click: () => { opened += 1; } };
+    ui.env.guidedDirectoryInputRef.current = ui.env.guidedFilesInputRef.current;
+    formatButton(ui.render(), "MAT").props.onClick();
+    assert.equal(opened, 0);
+    ui.env.openImportPicker(mode);
+    assert.equal(opened, 1);
+    const cancelled = { target: { files: [], value: "", webkitdirectory: mode === "directory" } };
+    handler("stageDetectedImport", { handleSelectedRecordingFiles: () => assert.fail("cancel must not route") })(cancelled);
+    assert.equal(ui.env.stagedDirectoryPlan, plan);
+    assert.equal(ui.env.uploadError, error);
+    const node = declarations.get("guidedImportReady");
+    ui.env.guidedImportReady = evaluate(`const result = ${node.initializer.getText(syntax)};`, "result", ui.env);
+    assert.equal(button(ui.render(), "Load 1 sessions").props.disabled, false);
+  }
 });
 
-test("format actions safely do nothing before the shared input is mounted", () => {
+test("format selection works before inputs mount and picker actions safely ignore missing refs", () => {
   const ui = harness();
   assert.doesNotThrow(() => formatButton(ui.render(), "MAT + DAT").props.onClick());
+  assert.equal(ui.env.importChoice, "mat-dat");
+  for (const mode of ["files", "directory"]) assert.doesNotThrow(() => ui.env.openImportPicker(mode));
+});
+
+test("programmatic file/folder actions cannot bypass choosing a recording type", () => {
+  const ui = harness();
+  ui.env.guidedFilesInputRef.current = { click: () => assert.fail("choose a format before activating a picker") };
+  ui.env.guidedDirectoryInputRef.current = ui.env.guidedFilesInputRef.current;
+  for (const mode of ["files", "directory"]) ui.env.openImportPicker(mode);
   assert.equal(ui.env.importChoice, null);
 });

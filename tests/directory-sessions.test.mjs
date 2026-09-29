@@ -118,3 +118,17 @@ test("switching to a smaller catalog clamps its page to a valid range", () => {
   assert.equal(ui.rows(tree)[0].props["data-recording-id"], "session-0");
   assert.equal(elements(tree, (node) => node.props?.["aria-label"] === "Directory pages").length, 0);
 });
+
+test("project catalogs identify archives and explain missing embedded recordings without reading them", () => {
+  const ui = harness(1);
+  const project = ui.props.plan.recordings[0];
+  project.relativePath = "folder/review.neurotrace";
+  ui.props.plan.format = "neurotrace";
+  const tree = ui.render();
+  assert.ok(elements(tree, (node) => node.type === "strong" && node.props.children === "NeuroTrace project").length);
+  const note = elements(tree, (node) => node.props?.className === "directory-sessions-note")[0];
+  assert.match(note.props.children, /Nearby files are not added/);
+  assert.match(note.props.children, /without recording data require the matching original recording/);
+  ui.button(tree, "Open folder/review.neurotrace").props.onClick();
+  assert.deepEqual(ui.actions, [["open", project.id]]);
+});

@@ -457,18 +457,20 @@ test("single-recording auto-open advances file selection without needing a separ
   ui.dispose();
 });
 
-test("load-recording guidance matches the direct picker and folder-drop workflow", () => {
+test("load-recording guidance chooses a format before opening the files or folder picker", () => {
   const lesson = catalog.tutorialLessons.find((candidate) => candidate.id === "load-recording");
-  assert.match(lesson.steps[1].instruction, /file picker immediately/);
-  assert.match(lesson.steps[1].instruction, /drag it onto the matching format/);
+  assert.match(lesson.steps[1].instruction, /reveals Files and Folder choices/);
+  assert.equal(lesson.steps[2].target, "import-files");
+  assert.match(lesson.steps[2].instruction, /Click Files to open the file picker/);
   assert.match(lesson.steps[2].instruction, /one or multiple files/);
   assert.match(lesson.steps[2].instruction, /both the MAT and DAT/);
+  assert.match(lesson.steps[2].instruction, /click Folder to select a directory, including its subfolders/);
   assert.match(lesson.steps[2].instruction, /opens automatically/);
   assert.deepEqual(lesson.steps[2].completeOn, ["import-files-ready", "recording-opened"]);
   assert.match(lesson.steps[3].instruction, /Load N sessions/);
   assert.equal(lesson.steps[3].completeOn, undefined, "recording inspection is a reading-only step, not a second load");
   const copy = lesson.steps.map((step) => step.instruction).join(" ");
-  assert.doesNotMatch(copy, /required row|loader’s Open button|Choose files|Choose folder/);
+  assert.doesNotMatch(copy, /required row|loader’s Open button|file picker immediately|no file-versus-folder setting/);
 });
 
 test("auto-advance pauses in the hub and while prerequisites are unmet, and cleans up after ending", () => {

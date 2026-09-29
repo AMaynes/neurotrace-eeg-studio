@@ -1,10 +1,10 @@
 /**
- * Filename-only discovery for a directory of recordings. This module never
- * reads waveform bytes or treats a MAT extension as verified MAT contents;
- * each entry must still pass the normal source loader when it is opened.
+ * Filename-only discovery for a directory of recordings or saved projects.
+ * This module never reads waveform/archive bytes or treats an extension as
+ * verified contents; each entry must pass its normal loader when opened.
  */
 
-export type DirectoryImportFormat = "edf" | "mat" | "mat-dat";
+export type DirectoryImportFormat = "edf" | "mat" | "mat-dat" | "neurotrace";
 
 export interface DirectoryRecording {
   /** Case-insensitive relative path identity, not a content fingerprint. */
@@ -55,6 +55,7 @@ const FORMAT_LABELS: Record<DirectoryImportFormat, string> = {
   edf: "EDF-only",
   mat: "standalone MAT-only",
   "mat-dat": "paired MAT + DAT",
+  neurotrace: "NeuroTrace",
 };
 
 // Recognizable non-selected waveform/project files are not harmless metadata.
@@ -129,14 +130,14 @@ export function planDirectoryImport(files: readonly File[], format: DirectoryImp
     const paths = incompatible.map((entry) => entry.path);
     throw new DirectoryImportError(
       "MIXED_FORMATS",
-      `This directory must contain ${FORMAT_LABELS[format]} recordings only. Incompatible recording files: ${describePaths(paths)}. Choose a same-format directory; metadata companions such as JSON and TSV are allowed.`,
+      `This directory must contain ${FORMAT_LABELS[format]} ${format === "neurotrace" ? "projects" : "recordings"} only. Incompatible recording files: ${describePaths(paths)}. Choose a same-format directory; metadata companions such as JSON and TSV are allowed.`,
       paths,
     );
   }
 
   const sources = entries.filter((entry) => allowed.has(entry.extension));
   if (!sources.length) {
-    throw new DirectoryImportError("NO_RECORDINGS", `No ${FORMAT_LABELS[format]} recordings were found in the selected directory.`);
+    throw new DirectoryImportError("NO_RECORDINGS", `No ${FORMAT_LABELS[format]} ${format === "neurotrace" ? "projects" : "recordings"} were found in the selected directory.`);
   }
 
   let recordings: DirectoryRecording[];
@@ -212,6 +213,9 @@ function nameParts(path: string): { name: string; stem: string; extension: strin
  * Omitted files remain in the catalog; no association or data is guessed.
  */
 export function directoryRecordingFiles(plan: DirectoryImportPlan, recording: DirectoryRecording): File[] {
+  // A project defines its own recording, companions, and review state. Nearby
+  // files must never alter that saved content or supply a guessed recording.
+  if (plan.format === "neurotrace") return [recording.primary];
   const recordingFolder = directoryOf(recording.relativePath);
   const recordingName = nameParts(recording.relativePath);
   const sameFolderStems = new Map<string, string>();

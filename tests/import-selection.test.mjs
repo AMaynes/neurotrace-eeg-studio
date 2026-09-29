@@ -56,8 +56,8 @@ test("an explicit folder selection is recognized even without relative paths", (
   assert.equal(result.kind, "directory");
   assert.equal(result.plan.format, "mat");
 });
-test("flat multiple EDF or MAT sessions automatically become collections", () => {
-  for (const format of ["edf", "mat"]) {
+test("flat multiple EDF, MAT, or NeuroTrace sessions automatically become collections", () => {
+  for (const format of ["edf", "mat", "neurotrace"]) {
     const result = classifyRecordingSelection([fileAt(`a.${format}`), fileAt(`b.${format}`), fileAt("notes.txt")]);
     assert.equal(result.kind, "directory");
     assert.equal(result.plan.format, format);
@@ -84,10 +84,24 @@ test("DAT-only collections require MAT partners but single DAT is preserved", ()
 test("folder pairs require matching basename in the same directory", () => {
   expectError([fileAt("study/day1/a.mat", true), fileAt("study/day2/a.dat", true)], false, "MISSING_PAIR");
 });
-test("project collections and mixed project recording input reject rather than opening one project", () => {
-  expectError([fileAt("a.neurotrace"), fileAt("b.neurotrace")], false, "MIXED_FORMATS");
-  expectError([fileAt("a.neurotrace"), fileAt("b.edf")], false, "MIXED_FORMATS");
-  expectError([fileAt("study/a.neurotrace", true)], false, "MIXED_FORMATS");
+test("project folders infer NeuroTrace without reading any archive bytes", () => {
+  const single = fileAt("study/a.neurotrace", true);
+  const one = classifyRecordingSelection([single]);
+  assert.equal(one.kind, "directory");
+  assert.equal(one.plan.format, "neurotrace");
+  assert.equal(one.plan.recordings[0].primary, single);
+  const nested = fileAt("study/session-2/a.NEUROTRACE", true);
+  const several = classifyRecordingSelection([nested, single, fileAt("study/metadata.json", true)]);
+  assert.equal(several.plan.format, "neurotrace");
+  assert.deepEqual(several.plan.recordings.map((entry) => entry.primary), [single, nested]);
+  assert.equal(classifyRecordingSelection([fileAt("a.neurotrace")], true).plan.format, "neurotrace");
+});
+test("projects mixed with any recording family reject before opening a subset", () => {
+  for (const extension of ["edf", "mat", "dat", "bdf"]) {
+    expectError([fileAt("a.neurotrace"), fileAt(`b.${extension}`)], false, "MIXED_FORMATS");
+    expectError([fileAt("study/a.neurotrace", true), fileAt(`study/nested/b.${extension}`, true)], true, "MIXED_FORMATS");
+  }
+  expectError([fileAt("a.neurotrace"), fileAt("b.mat"), fileAt("b.dat")], false, "MIXED_FORMATS");
 });
 test("recognizable unsupported recordings are not treated as harmless collection companions", () => {
   expectError([fileAt("a.edf"), fileAt("b.bdf")], false, "MIXED_FORMATS");
@@ -174,7 +188,7 @@ test("mixed available entries and plain-file fallbacks do not lose either input"
 });
 test("uninspectable directory-like drops give actionable chooser guidance", async () => {
   const directoryLike = new File([], "study");
-  await assert.rejects(collectDroppedRecordingFiles({ files: [directoryLike], items: [] }), /Nothing was imported.*recording type.*dropping the folder/);
+  await assert.rejects(collectDroppedRecordingFiles({ files: [directoryLike], items: [] }), /Nothing was imported.*recording type.*Files or Folder.*dropping the folder/);
 });
 test("a reader failure rejects the complete drop, never returning the preceding partial batch", async () => {
   let reads = 0;
