@@ -8316,9 +8316,7 @@ export default function Home() {
       {showSettings && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowSettings(false); }}>
         <div className="modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1}>
           <button className="modal-close" onClick={() => setShowSettings(false)} aria-label="Close Settings">×</button>
-          <span className="modal-eyebrow">CONTROLS</span>
-          <h2>Make the workspace feel natural.</h2>
-          <p>Find every application shortcut here and change, add, or remove its keys.</p>
+          <h2>Settings</h2>
           <section className="settings-section bias-locks-settings">
             <div><strong id="bias-locks-label">Bias Locks</strong><p id="bias-locks-description">Disable the directory Previous button to prevent backward navigation. Next stays available.</p></div>
             <button type="button" role="switch" className="bias-locks-toggle" aria-checked={biasLocks}

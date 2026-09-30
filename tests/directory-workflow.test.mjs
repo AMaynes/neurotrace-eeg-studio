@@ -727,6 +727,12 @@ test("Bias Locks is an accessible enable/disable setting with a browser-local de
   assert.match(page, /\{biasLocks \? "Enabled" : "Disabled"\}/);
 });
 
+test("Settings uses only a plain heading without an introductory slogan", () => {
+  const settings = page.slice(page.indexOf('className="modal settings-modal"'), page.indexOf('<ShortcutSettings'));
+  assert.match(settings, /<h2>Settings<\/h2>/);
+  assert.doesNotMatch(settings, /modal-eyebrow|Make the workspace|Find every application shortcut/);
+});
+
 test("Bias Locks toggles persist both values without preventing changes when storage is blocked", () => {
   for (const storageBlocked of [false, true]) {
     const saved = [];
