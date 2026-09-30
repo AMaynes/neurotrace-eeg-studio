@@ -604,6 +604,7 @@ function navigationHarness() {
   prior.recoveryStatus = "saved";
   env.primaryFile = prior.primaryFile;
   env.pendingDat = null;
+  env.biasLocks = false;
   env.importBusy = false;
   env.adjacentDirectoryRecording = adjacentDirectoryRecording;
   env.sessionTabs[0] = { id: "prior-tab", hasRecording: true, directoryId: "catalog", directoryRecordingId: plan.recordings[0].id };
@@ -693,6 +694,54 @@ test("navigating to an already-open neighbor closes outgoing tab and reuses the 
   assert.deepEqual(h.env.sessionTabs.map((tab) => tab.id), ["neighbor"]);
   assert.equal(h.env.sessionSnapshotsRef.current.get("neighbor"), review);
   assert.equal(h.calls.applied.at(-1), review);
+});
+
+test("Bias Locks blocks backward directory actions at the handler while leaving forward navigation available", () => {
+  const h = navigationHarness();
+  h.env.sessionTabs[0].directoryRecordingId = h.plan.recordings[1].id;
+  h.env.primaryFile = h.plan.recordings[1].primary;
+  h.prior.primaryFile = h.env.primaryFile;
+  h.env.directorySessionTabsRef.current.clear();
+  h.env.directorySessionTabsRef.current.set(h.plan.recordings[1].id, { sessionId: "prior-tab", files: h.plan.recordings[1].files });
+  h.env.biasLocks = true;
+  h.navigate(-1);
+  assert.equal(h.env.queuedDirectoryOpen, null);
+  assert.equal(h.calls.stored, 0, "the disabled UI is not the only protection");
+  assert.equal(h.env.sessionTabs.length, 1);
+  h.env.biasLocks = false;
+  h.navigate(-1);
+  assert.equal(h.env.queuedDirectoryOpen.recordingId, h.plan.recordings[0].id, "disabling restores Previous");
+
+  const forward = navigationHarness();
+  forward.env.biasLocks = true;
+  forward.navigate(1);
+  assert.equal(forward.env.queuedDirectoryOpen.recordingId, forward.plan.recordings[1].id);
+});
+
+test("Bias Locks is an accessible enable/disable setting with a browser-local default-off preference", () => {
+  assert.match(page, /\[biasLocks, setBiasLocks\] = useState\(false\)/);
+  assert.match(page, /setBiasLocks\(localStorage.getItem\("neurotrace:bias-locks"\) === "true"\)/);
+  assert.match(page, /role="switch" className="bias-locks-toggle" aria-checked=\{biasLocks\}/);
+  assert.match(page, /aria-labelledby="bias-locks-label" aria-describedby="bias-locks-description"/);
+  assert.match(page, /onClick=\{\(\) => changeBiasLocks\(!biasLocks\)\}/);
+  assert.match(page, /\{biasLocks \? "Enabled" : "Disabled"\}/);
+});
+
+test("Bias Locks toggles persist both values without preventing changes when storage is blocked", () => {
+  for (const storageBlocked of [false, true]) {
+    const saved = [];
+    const env = { localStorage: { setItem: (key, value) => {
+      if (storageBlocked) throw new Error("Storage unavailable");
+      saved.push([key, value]);
+    } } };
+    state(env, "biasLocks", false);
+    const change = handler("changeBiasLocks", env);
+    change(true);
+    assert.equal(env.biasLocks, true);
+    change(false);
+    assert.equal(env.biasLocks, false);
+    assert.deepEqual(saved, storageBlocked ? [] : [["neurotrace:bias-locks", "true"], ["neurotrace:bias-locks", "false"]]);
+  }
 });
 
 test("failed local save blocks next/previous before any session or catalog is changed", () => {

@@ -1152,6 +1152,7 @@ textarea:focus-visible {
 .directory-tab-step { width: 21px; height: 21px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--mint); font-size: 18px; line-height: 1; cursor: pointer; }
 .directory-tab-step:not(:disabled):hover { background: var(--mint-dark); color: var(--ink); }
 .directory-tab-step:disabled { color: var(--muted); opacity: .3; cursor: default; }
+.directory-tab-step.bias-locked:disabled { opacity: .65; }
 .directory-tab-header button:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
 
 .session-tab-shell {
@@ -1877,6 +1878,14 @@ textarea:focus-visible {
 .channel-modal-note { margin: 10px 0 0 !important; font-size: 8px !important; }
 
 .settings-modal { width: min(680px, calc(100vw - 32px)); }
+.bias-locks-settings { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.bias-locks-settings strong { font-size: 12px; }
+.bias-locks-settings p { margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.bias-locks-toggle { flex: none; display: flex; align-items: center; gap: 7px; min-width: 90px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--panel-2); color: var(--muted); font-size: 11px; cursor: pointer; }
+.bias-locks-toggle > span { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.bias-locks-toggle[aria-checked="true"] { background: var(--mint-dark); border-color: var(--mint); color: var(--mint); }
+.bias-locks-toggle[aria-checked="true"] > span { background: var(--mint); }
+.bias-locks-toggle:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .settings-section {
   margin-top: 14px;
   padding: 12px;

@@ -70,7 +70,9 @@ test("production header occupies the shared grid above tabs and scrolls with its
   assert.equal((strip.match(/directory-sessions-toggle/g) ?? []).length, 1, "no leftover Directory button after +");
   assert.ok(strip.indexOf('className="directory-tab-navigation"') > strip.indexOf('className="directory-tab-name"'));
   assert.ok(strip.indexOf('className="directory-tab-navigation"') < strip.indexOf('className="directory-tab-count"'));
-  assert.match(strip, /disabled=\{navigationBusy \|\| !previous\}/);
+  assert.match(strip, /disabled=\{biasLocks \|\| navigationBusy \|\| !previous\}/);
+  assert.match(strip, /locked by Bias Locks/);
+  assert.match(strip, /onClick=\{\(\) => navigateDirectoryRecording\(group.catalogId, -1\)\}>\{biasLocks\s*\? <svg/);
   assert.match(strip, /disabled=\{navigationBusy \|\| !next\}/);
   assert.match(strip, /navigateDirectoryRecording\(group.catalogId, -1\)/);
   assert.match(strip, /navigateDirectoryRecording\(group.catalogId, 1\)/);

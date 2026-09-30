@@ -2003,6 +2003,7 @@ export default function Home() {
   const [showHelp, setShowHelp] = useState(false);
   const [helpTopic, setHelpTopic] = useState<TutorialTopic>("start");
   const [showSettings, setShowSettings] = useState(false);
+  const [biasLocks, setBiasLocks] = useState(false);
   const [showChannels, setShowChannels] = useState(false);
   const [showSessionMap, setShowSessionMap] = useState(false);
   const [showSessionContextPicker, setShowSessionContextPicker] = useState(false);
@@ -2195,6 +2196,21 @@ export default function Home() {
       }
     } catch { /* local preferences are optional */ }
   }, []);
+
+  useEffect(() => {
+    try {
+      // Restore this browser-local preference after hydration, not from a recording.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setBiasLocks(localStorage.getItem("neurotrace:bias-locks") === "true");
+    } catch { /* local preferences are optional */ }
+  }, []);
+
+  const changeBiasLocks = (enabled: boolean) => {
+    setBiasLocks(enabled);
+    try {
+      localStorage.setItem("neurotrace:bias-locks", String(enabled));
+    } catch { /* the toggle still works when browser storage is unavailable */ }
+  };
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -6171,7 +6187,7 @@ export default function Home() {
   };
 
   const navigateDirectoryRecording = (catalogId: string, direction: -1 | 1) => {
-    if (importBusyRef.current || queuedDirectoryOpenRef.current || pendingDat) return;
+    if ((biasLocks && direction === -1) || importBusyRef.current || queuedDirectoryOpenRef.current || pendingDat) return;
     const catalog = directoryCatalogs.find((entry) => entry.id === catalogId);
     const activeTab = sessionTabs.find((tab) => tab.id === activeSessionId);
     const next = catalog && adjacentDirectoryRecording(catalog, activeTab, direction);
@@ -7452,9 +7468,12 @@ export default function Home() {
                   onClick={() => openDirectoryCatalog(group.catalogId)}
                 ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M1.5 4.5V3h5l1.5 2h6.5v8H1.5z" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg><span className="directory-tab-name">{group.label}</span></button>
                 <div className="directory-tab-navigation">
-                  <button className="directory-tab-step" disabled={navigationBusy || !previous}
-                    aria-label={`Previous file in ${group.label}`} title={previous ? `Previous: ${previous.relativePath}` : "No previous file for the viewed session"}
-                    onClick={() => navigateDirectoryRecording(group.catalogId, -1)}><span aria-hidden="true">‹</span></button>
+                  <button className={`directory-tab-step ${biasLocks ? "bias-locked" : ""}`} disabled={biasLocks || navigationBusy || !previous}
+                    aria-label={`Previous file in ${group.label}${biasLocks ? " (locked by Bias Locks)" : ""}`}
+                    title={biasLocks ? "Backward directory navigation is locked by Bias Locks" : previous ? `Previous: ${previous.relativePath}` : "No previous file for the viewed session"}
+                    onClick={() => navigateDirectoryRecording(group.catalogId, -1)}>{biasLocks
+                      ? <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5 7V4a3 3 0 0 1 6 0v3" /></svg>
+                      : <span aria-hidden="true">‹</span>}</button>
                   <button className="directory-tab-step" disabled={navigationBusy || !next}
                     aria-label={`Next file in ${group.label}`} title={next ? `Next: ${next.relativePath}` : "No next file for the viewed session"}
                     onClick={() => navigateDirectoryRecording(group.catalogId, 1)}><span aria-hidden="true">›</span></button>
@@ -8300,6 +8319,12 @@ export default function Home() {
           <span className="modal-eyebrow">CONTROLS</span>
           <h2>Make the workspace feel natural.</h2>
           <p>Find every application shortcut here and change, add, or remove its keys.</p>
+          <section className="settings-section bias-locks-settings">
+            <div><strong id="bias-locks-label">Bias Locks</strong><p id="bias-locks-description">Disable the directory Previous button to prevent backward navigation. Next stays available.</p></div>
+            <button type="button" role="switch" className="bias-locks-toggle" aria-checked={biasLocks}
+              aria-labelledby="bias-locks-label" aria-describedby="bias-locks-description"
+              onClick={() => changeBiasLocks(!biasLocks)}><span aria-hidden="true" />{biasLocks ? "Enabled" : "Disabled"}</button>
+          </section>
           <ShortcutSettings bindings={controlBindings} onChange={setControlBindings} />
           <section className="settings-section interaction-settings">
             <div className="settings-heading"><strong>Pointer and timing controls</strong></div>
