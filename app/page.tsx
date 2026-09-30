@@ -64,7 +64,7 @@ import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
 import { DirectoryImportError, directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
 import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
-import { directoryTabHeaders } from "./directory-tab-layout";
+import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./import-selection";
 import {
   buildEDFFileWindowOffThread,
@@ -309,6 +309,7 @@ type DirectoryOpenRequest = {
   sessionId: string;
   format: DirectoryImportFormat;
   files: File[];
+  replaceSessionId?: string;
 };
 
 type DirectoryCatalog = { id: string; plan: DirectoryImportPlan };
@@ -354,6 +355,7 @@ type SessionTab = {
   recoveryStatus: "saved" | "error";
   contentView: "recording" | "structure";
   directoryId?: string;
+  directoryRecordingId?: string;
 };
 
 /** Keep source groups contiguous in the actual keyboard-navigation order. */
@@ -2245,7 +2247,7 @@ export default function Home() {
     directorySessionTabsRef.current = new Map();
     if (directoryConfirmationRef.current?.catalogId === id) directoryConfirmationRef.current = null;
     setDirectoryCatalogs((current) => current.filter((catalog) => catalog.id !== id));
-    setSessionTabs((current) => current.map((tab) => tab.directoryId === id ? { ...tab, directoryId: undefined } : tab));
+    setSessionTabs((current) => current.map((tab) => tab.directoryId === id ? { ...tab, directoryId: undefined, directoryRecordingId: undefined } : tab));
     setDirectoryCatalog(null);
     setDirectoryStatuses({});
     setShowDirectorySessions(false);
@@ -2277,7 +2279,7 @@ export default function Home() {
     }
     if (removed && !retained) {
       setSessionTabs((current) => groupDirectorySessionTabs(current.map((tab) => tab.id === sessionId
-        ? { ...tab, directoryId: undefined } : tab)));
+        ? { ...tab, directoryId: undefined, directoryRecordingId: undefined } : tab)));
     }
   }, []);
 
@@ -6067,13 +6069,24 @@ export default function Home() {
     }
   };
 
+  const completeDirectoryReplacement = useCallback((sessionId: string | undefined) => {
+    if (!sessionId) return;
+    // The outgoing review was saved before navigation. Keep it open until the
+    // incoming file is verified (including any MAT/DAT mapping confirmation).
+    detachDirectorySession(sessionId);
+    sessionSnapshotsRef.current.delete(sessionId);
+    setSessionTabs((current) => current.filter((tab) => tab.id !== sessionId));
+  }, [detachDirectorySession]);
+
   const updateDirectoryStatus = useCallback((request: DirectoryOpenRequest, status: DirectorySessionStatus) => {
+    if (!directoryCatalogWorkspacesRef.current.has(request.catalogId)) return;
+    if (status.state === "loaded") completeDirectoryReplacement(request.replaceSessionId);
     const workspace = directoryCatalogWorkspacesRef.current.get(request.catalogId);
     if (!workspace) return;
     const statuses = { ...workspace.statuses, [request.recordingId]: status };
     directoryCatalogWorkspacesRef.current.set(request.catalogId, { ...workspace, statuses });
     if (directoryCatalogIdRef.current === request.catalogId) setDirectoryStatuses(statuses);
-  }, []);
+  }, [completeDirectoryReplacement]);
 
   useEffect(() => {
     const request = queuedDirectoryOpen;
@@ -6092,15 +6105,33 @@ export default function Home() {
     });
   }, [activeSessionId, queuedDirectoryOpen, updateDirectoryStatus]);
 
-  const openDirectoryRecording = (recording: DirectoryRecording) => {
-    if (!directoryCatalog || importBusyRef.current || queuedDirectoryOpenRef.current) return;
-    const existing = directorySessionTabsRef.current.get(recording.id);
+  const openDirectoryRecording = (recording: DirectoryRecording, options?: { catalog: DirectoryCatalog; replaceSessionId: string }) => {
+    const catalog = options?.catalog ?? directoryCatalog;
+    if (!catalog || importBusyRef.current || queuedDirectoryOpenRef.current) return;
+    const workspace = directoryCatalogWorkspacesRef.current.get(catalog.id);
+    if (!workspace) return;
+    if (options) {
+      // Do not discard an unsaved review or another folder's viewed session.
+      if (options.replaceSessionId !== activeSessionId || !hasRecording
+        || sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId !== catalog.id) return;
+      storeActiveSession();
+      if (sessionSnapshotsRef.current.get(activeSessionId)?.recoveryStatus === "error") {
+        setToast("This session could not be saved locally — export it before changing files");
+        return;
+      }
+    }
+    directoryCatalogIdRef.current = catalog.id;
+    directorySessionTabsRef.current = workspace.sessions;
+    setDirectoryCatalog(catalog);
+    setDirectoryStatuses(workspace.statuses);
+    const existing = workspace.sessions.get(recording.id);
     const existingTab = existing && sessionTabs.find((tab) => tab.id === existing.sessionId);
     const snapshot = existing && sessionSnapshotsRef.current.get(existing.sessionId);
     const existingPrimary = existing?.sessionId === activeSessionId ? primaryFile : snapshot?.primaryFile;
     const existingLoaded = existing?.sessionId === activeSessionId ? hasRecording : snapshot?.hasRecording;
     if (existingTab && existingLoaded && existingPrimary && existing.files.includes(existingPrimary)) {
       switchSession(existingTab.id);
+      if (existingTab.id !== options?.replaceSessionId) completeDirectoryReplacement(options?.replaceSessionId);
       setShowDirectorySessions(false);
       return;
     }
@@ -6114,23 +6145,38 @@ export default function Home() {
     setSessionTabs((current) => {
       const target = {
         id: sessionId, title: shortFileName(recording.label, 22), hasRecording: false,
-        recoveryStatus: "saved" as const, contentView: "recording" as const, directoryId: directoryCatalog.id,
+        recoveryStatus: "saved" as const, contentView: "recording" as const,
+        directoryId: catalog.id, directoryRecordingId: recording.id,
       };
-      return groupDirectorySessionTabs(current.some((tab) => tab.id === sessionId)
-        ? current.map((tab) => tab.id === sessionId ? target : tab)
-        : [...current, target]);
+      if (current.some((tab) => tab.id === sessionId)) {
+        return groupDirectorySessionTabs(current.map((tab) => tab.id === sessionId ? target : tab));
+      }
+      const replacementIndex = current.findIndex((tab) => tab.id === options?.replaceSessionId);
+      const next = [...current];
+      next.splice(replacementIndex < 0 ? next.length : replacementIndex, 0, target);
+      return groupDirectorySessionTabs(next);
     });
     setActiveSessionId(sessionId);
     applySessionSnapshot(blank);
     directorySessionTabsRef.current.set(recording.id, { sessionId, files: recording.files });
     const request: DirectoryOpenRequest = {
-      catalogId: directoryCatalog.id, recordingId: recording.id, sessionId,
-      format: directoryCatalog.plan.format,
-      files: directoryRecordingFiles(directoryCatalog.plan, recording),
+      catalogId: catalog.id, recordingId: recording.id, sessionId,
+      format: catalog.plan.format,
+      files: directoryRecordingFiles(catalog.plan, recording),
+      ...(options ? { replaceSessionId: options.replaceSessionId } : {}),
     };
     queuedDirectoryOpenRef.current = request;
     setQueuedDirectoryOpen(request);
     setShowDirectorySessions(false);
+  };
+
+  const navigateDirectoryRecording = (catalogId: string, direction: -1 | 1) => {
+    if (importBusyRef.current || queuedDirectoryOpenRef.current || pendingDat) return;
+    const catalog = directoryCatalogs.find((entry) => entry.id === catalogId);
+    const activeTab = sessionTabs.find((tab) => tab.id === activeSessionId);
+    const next = catalog && adjacentDirectoryRecording(catalog, activeTab, direction);
+    if (!catalog || !next) return;
+    openDirectoryRecording(next, { catalog, replaceSessionId: activeSessionId });
   };
 
   const handleUploadedFiles = async (files: File[], keepSeparateSession = false): Promise<DirectorySessionStatus | undefined> => {
@@ -7382,20 +7428,40 @@ export default function Home() {
           window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-session-tab="${nextId}"]`)?.focus());
         }}>
           <div className="session-tabs">
-            {directoryHeaders.map((group) => <button
-              key={group.key}
-              id={`directory-header-${group.key}`}
-              className={`directory-sessions-toggle directory-tab-header ${group.sessionIds.includes(activeSessionId) ? "active" : ""}`}
-              style={{ gridColumn: `${group.column} / span ${group.span}` }}
-              data-directory-id={group.catalogId}
-              disabled={importBusy || Boolean(queuedDirectoryOpen)}
-              aria-label={`Open directory sessions from ${group.label} (${group.total})`}
-              aria-haspopup="dialog"
-              aria-expanded={showDirectorySessions && directoryCatalog?.id === group.catalogId}
-              aria-controls="directory-sessions-dialog"
-              title={`${group.label} · ${group.sessionIds.length} open · ${group.total} recordings · Open directory sessions`}
-              onClick={() => openDirectoryCatalog(group.catalogId)}
-            ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M1.5 4.5V3h5l1.5 2h6.5v8H1.5z" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg><span className="directory-tab-name">{group.label}</span><span className="directory-tab-count">{group.total}</span></button>)}
+            {directoryHeaders.map((group) => {
+              const catalog = directoryCatalogs.find((entry) => entry.id === group.catalogId);
+              const activeTab = sessionTabs.find((tab) => tab.id === activeSessionId);
+              const previous = catalog && adjacentDirectoryRecording(catalog, activeTab, -1);
+              const next = catalog && adjacentDirectoryRecording(catalog, activeTab, 1);
+              const navigationBusy = importBusy || Boolean(queuedDirectoryOpen) || Boolean(pendingDat) || !hasRecording;
+              return <div
+                key={group.key}
+                className={`directory-tab-header ${group.sessionIds.includes(activeSessionId) ? "active" : ""}`}
+                style={{ gridColumn: `${group.column} / span ${group.span}` }}
+                data-directory-id={group.catalogId}
+              >
+                <button
+                  id={`directory-header-${group.key}`}
+                  className="directory-sessions-toggle directory-tab-open"
+                  disabled={importBusy || Boolean(queuedDirectoryOpen)}
+                  aria-label={`Open directory sessions from ${group.label} (${group.total})`}
+                  aria-haspopup="dialog"
+                  aria-expanded={showDirectorySessions && directoryCatalog?.id === group.catalogId}
+                  aria-controls="directory-sessions-dialog"
+                  title={`${group.label} · ${group.sessionIds.length} open · ${group.total} recordings · Open directory sessions`}
+                  onClick={() => openDirectoryCatalog(group.catalogId)}
+                ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M1.5 4.5V3h5l1.5 2h6.5v8H1.5z" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg><span className="directory-tab-name">{group.label}</span></button>
+                <div className="directory-tab-navigation">
+                  <button className="directory-tab-step" disabled={navigationBusy || !previous}
+                    aria-label={`Previous file in ${group.label}`} title={previous ? `Previous: ${previous.relativePath}` : "No previous file for the viewed session"}
+                    onClick={() => navigateDirectoryRecording(group.catalogId, -1)}><span aria-hidden="true">‹</span></button>
+                  <button className="directory-tab-step" disabled={navigationBusy || !next}
+                    aria-label={`Next file in ${group.label}`} title={next ? `Next: ${next.relativePath}` : "No next file for the viewed session"}
+                    onClick={() => navigateDirectoryRecording(group.catalogId, 1)}><span aria-hidden="true">›</span></button>
+                </div>
+                <span className="directory-tab-count">{group.total}</span>
+              </div>;
+            })}
             {sessionTabs.map((tab, index) => {
               const tabRecovery = tab.id === activeSessionId ? recoveryStatus : tab.recoveryStatus;
               const tabHasRecording = tab.id === activeSessionId ? hasRecording : tab.hasRecording;

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { directoryTabHeaders, directoryTabLabel } from "../app/directory-tab-layout.ts";
+import { adjacentDirectoryRecording, directoryTabHeaders, directoryTabLabel } from "../app/directory-tab-layout.ts";
 
-const catalog = (id, paths) => ({ id, plan: { recordings: paths.map((relativePath) => ({ relativePath })), supportingFiles: [], format: "edf" } });
+const catalog = (id, paths) => ({ id, plan: { recordings: paths.map((relativePath) => ({ id: relativePath, relativePath })), supportingFiles: [], format: "edf" } });
 const a = catalog("a", ["Study A/day1/a.edf", "Study A/day2/b.edf"]);
 const b = catalog("b", ["Study B/day1/a.edf"]);
 
@@ -14,6 +14,22 @@ test("one directory header spans exactly its two session tabs", () => {
   const afterClose = directoryTabHeaders(tabs.slice(1), [a]);
   assert.equal(afterClose[0].span, 1);
   assert.equal(afterClose[0].column, 1);
+});
+
+test("directory arrows follow the file list and stop at either end without wrapping", () => {
+  const first = { id: "first", directoryId: a.id, directoryRecordingId: a.plan.recordings[0].id };
+  const last = { ...first, directoryRecordingId: a.plan.recordings[1].id };
+  assert.equal(adjacentDirectoryRecording(a, first, -1), undefined);
+  assert.equal(adjacentDirectoryRecording(a, first, 1), a.plan.recordings[1]);
+  assert.equal(adjacentDirectoryRecording(a, last, -1), a.plan.recordings[0]);
+  assert.equal(adjacentDirectoryRecording(a, last, 1), undefined);
+  for (const tab of [undefined, { id: "blank" }, { ...first, directoryId: "other" }, { ...first, directoryRecordingId: "missing" }]) {
+    assert.equal(adjacentDirectoryRecording(a, tab, -1), undefined);
+    assert.equal(adjacentDirectoryRecording(a, tab, 1), undefined);
+  }
+  const single = { id: "single", directoryId: b.id, directoryRecordingId: b.plan.recordings[0].id };
+  assert.equal(adjacentDirectoryRecording(b, single, -1), undefined);
+  assert.equal(adjacentDirectoryRecording(b, single, 1), undefined);
 });
 
 test("headers never cover standalone or other-directory tabs, even if given interleaved state", () => {
@@ -52,6 +68,12 @@ test("production header occupies the shared grid above tabs and scrolls with its
   assert.match(strip, /onClick=\{\(\) => openDirectoryCatalog\(group.catalogId\)\}/);
   assert.ok(strip.indexOf("directory-tab-header") < strip.indexOf("sessionTabs.map"));
   assert.equal((strip.match(/directory-sessions-toggle/g) ?? []).length, 1, "no leftover Directory button after +");
+  assert.ok(strip.indexOf('className="directory-tab-navigation"') > strip.indexOf('className="directory-tab-name"'));
+  assert.ok(strip.indexOf('className="directory-tab-navigation"') < strip.indexOf('className="directory-tab-count"'));
+  assert.match(strip, /disabled=\{navigationBusy \|\| !previous\}/);
+  assert.match(strip, /disabled=\{navigationBusy \|\| !next\}/);
+  assert.match(strip, /navigateDirectoryRecording\(group.catalogId, -1\)/);
+  assert.match(strip, /navigateDirectoryRecording\(group.catalogId, 1\)/);
   assert.match(css, /\.session-tabs\s*\{[^}]*display: grid;[^}]*overflow-x: auto;/s);
   assert.match(css, /\.session-tabs \.directory-tab-header\s*\{[^}]*grid-row: 1;/s);
   assert.match(css, /\.session-tab-shell\s*\{[^}]*grid-row: 2;/s);

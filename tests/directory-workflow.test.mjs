@@ -7,6 +7,7 @@ import { inspectMatRecording, RawDatSource } from "../app/eeg-core.ts";
 import { mergeSelectedFiles, relativeFilePath } from "../app/bids-companions.ts";
 import { DirectoryImportError, directoryRecordingFiles, planDirectoryImport } from "../app/directory-import.ts";
 import { classifyRecordingSelection, collectDroppedRecordingFiles } from "../app/import-selection.ts";
+import { adjacentDirectoryRecording } from "../app/directory-tab-layout.ts";
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "../app/mat-import.ts";
 import { legacyMatFile, standaloneMatFile } from "./fixtures/legacy-mat.mjs";
 
@@ -349,6 +350,7 @@ function openHarness({ hasRecording = true } = {}) {
   env.directoryCatalogWorkspacesRef.current.set("catalog", { sessions: env.directorySessionTabsRef.current, statuses: env.directoryStatuses });
   env.groupDirectorySessionTabs = handler("groupDirectorySessionTabs", {});
   env.detachDirectorySession = handler("detachDirectorySession", env);
+  env.completeDirectoryReplacement = handler("completeDirectoryReplacement", env);
   return { env, prior, plan, calls, open: (recording = plan.recordings[0]) => handler("openDirectoryRecording", env)(recording) };
 }
 
@@ -586,7 +588,7 @@ function queueHarness({ status = { state: "loaded" }, reject = false } = {}) {
   const env = { activeSessionId: "old-tab", queuedDirectoryOpen: request, queuedDirectoryOpenRef: { current: request },
     directoryCatalogIdRef: { current: "catalog" }, directoryConfirmationRef: { current: null },
     directoryCatalogWorkspacesRef: { current: new Map([["catalog", { sessions: new Map(), statuses: {} }]]) },
-    useCallback: (callback) => callback,
+    useCallback: (callback) => callback, completeDirectoryReplacement: (id) => assert.equal(id, undefined),
     directoryImportRunnerRef: { current: async (...args) => { calls.push(args); if (reject) throw new Error("synthetic failure"); return status; } },
   };
   state(env, "directoryStatuses", {});
@@ -594,6 +596,153 @@ function queueHarness({ status = { state: "loaded" }, reject = false } = {}) {
   env.updateDirectoryStatus = handler("updateDirectoryStatus", env);
   return { env, request, calls, effect: () => executable(`const effect = ${queueEffect};`, "effect", env) };
 }
+
+function navigationHarness() {
+  const h = openHarness();
+  const { env, plan, prior, calls } = h;
+  prior.primaryFile = plan.recordings[0].primary;
+  prior.recoveryStatus = "saved";
+  env.primaryFile = prior.primaryFile;
+  env.pendingDat = null;
+  env.importBusy = false;
+  env.adjacentDirectoryRecording = adjacentDirectoryRecording;
+  env.sessionTabs[0] = { id: "prior-tab", hasRecording: true, directoryId: "catalog", directoryRecordingId: plan.recordings[0].id };
+  env.directorySessionTabsRef.current.set(plan.recordings[0].id, { sessionId: "prior-tab", files: plan.recordings[0].files });
+  env.directoryCatalogWorkspacesRef.current.get("catalog").statuses[plan.recordings[0].id] = { state: "loaded" };
+  let serial = 0;
+  env.makeId = () => `navigation-${++serial}`;
+  env.storeActiveSession = () => { calls.stored += 1; };
+  env.applySessionSnapshot = (snapshot) => {
+    calls.applied.push(snapshot);
+    env.primaryFile = snapshot.primaryFile;
+    env.hasRecording = snapshot.hasRecording;
+  };
+  env.switchSession = (id) => {
+    const bindings = { ...env };
+    delete bindings.switchSession;
+    return handler("switchSession", bindings)(id);
+  };
+  env.openDirectoryRecording = (...args) => {
+    const bindings = { ...env };
+    delete bindings.openDirectoryRecording;
+    return handler("openDirectoryRecording", bindings)(...args);
+  };
+  return { ...h,
+    navigate: (direction, id = "catalog") => handler("navigateDirectoryRecording", env)(id, direction),
+    status: (request, status) => handler("updateDirectoryStatus", env)(request, status),
+  };
+}
+
+test("next replaces only the viewed directory session after a successful load, preserving tab position and reviews", () => {
+  const h = navigationHarness();
+  h.env.sessionTabs.push({ id: "unrelated", directoryId: "other", hasRecording: true });
+  const unrelated = { annotations: [{ id: "other-review" }] };
+  h.env.sessionSnapshotsRef.current.set("unrelated", unrelated);
+  // A different catalog can be the most recently opened list, without changing
+  // which folder owns the actively viewed tab and its arrows.
+  h.env.directoryCatalog = { id: "other", plan: h.plan };
+  h.env.directoryCatalogIdRef.current = "other";
+  h.navigate(1);
+  const request = h.env.queuedDirectoryOpen;
+  assert.equal(request.replaceSessionId, "prior-tab");
+  assert.equal(request.recordingId, h.plan.recordings[1].id);
+  assert.equal(h.env.directoryCatalogIdRef.current, "catalog");
+  assert.deepEqual(h.env.sessionTabs.map((tab) => tab.id), ["navigation-1", "prior-tab", "unrelated"]);
+  assert.equal(h.env.sessionTabs[0].directoryRecordingId, h.plan.recordings[1].id);
+  assert.ok(h.calls.stored > 0, "save outgoing review before opening anything");
+  assert.equal(h.env.sessionSnapshotsRef.current.get("prior-tab"), h.prior, "keep outgoing session until verified");
+  h.status(request, { state: "loaded" });
+  assert.deepEqual(h.env.sessionTabs.map((tab) => tab.id), ["navigation-1", "unrelated"]);
+  assert.equal(h.env.activeSessionId, "navigation-1");
+  assert.equal(h.env.sessionSnapshotsRef.current.has("prior-tab"), false);
+  assert.equal(h.env.sessionSnapshotsRef.current.get("unrelated"), unrelated);
+  assert.deepEqual(h.prior.annotations, [{ id: "saved-review" }]);
+  assert.equal(h.env.directorySessionTabsRef.current.has(h.plan.recordings[0].id), false);
+  assert.equal(h.env.directoryStatuses[h.plan.recordings[0].id], undefined);
+  assert.deepEqual(h.env.directoryStatuses[request.recordingId], { state: "loaded" });
+});
+
+test("previous navigates backwards and endpoints, other folders and standalone tabs cannot navigate", () => {
+  const h = navigationHarness();
+  h.navigate(-1);
+  h.navigate(1, "missing");
+  assert.equal(h.env.queuedDirectoryOpen, null);
+  assert.equal(h.calls.stored, 0);
+  h.env.sessionTabs[0].directoryRecordingId = h.plan.recordings[1].id;
+  h.env.primaryFile = h.plan.recordings[1].primary;
+  h.prior.primaryFile = h.env.primaryFile;
+  h.env.directorySessionTabsRef.current.clear();
+  h.env.directorySessionTabsRef.current.set(h.plan.recordings[1].id, { sessionId: "prior-tab", files: h.plan.recordings[1].files });
+  h.navigate(1);
+  assert.equal(h.env.queuedDirectoryOpen, null, "last file does not wrap");
+  h.navigate(-1);
+  assert.equal(h.env.queuedDirectoryOpen.recordingId, h.plan.recordings[0].id);
+  assert.equal(h.env.queuedDirectoryOpen.replaceSessionId, "prior-tab");
+});
+
+test("navigating to an already-open neighbor closes outgoing tab and reuses the neighbor without rereading it", () => {
+  const h = navigationHarness();
+  const target = h.plan.recordings[1];
+  const review = { hasRecording: true, primaryFile: target.primary, annotations: [{ id: "neighbor-review" }] };
+  h.env.sessionTabs.push({ id: "neighbor", hasRecording: true, directoryId: "catalog", directoryRecordingId: target.id });
+  h.env.sessionSnapshotsRef.current.set("neighbor", review);
+  h.env.directorySessionTabsRef.current.set(target.id, { sessionId: "neighbor", files: target.files });
+  h.navigate(1);
+  assert.equal(h.env.queuedDirectoryOpen, null);
+  assert.equal(h.env.activeSessionId, "neighbor");
+  assert.deepEqual(h.env.sessionTabs.map((tab) => tab.id), ["neighbor"]);
+  assert.equal(h.env.sessionSnapshotsRef.current.get("neighbor"), review);
+  assert.equal(h.calls.applied.at(-1), review);
+});
+
+test("failed local save blocks next/previous before any session or catalog is changed", () => {
+  const h = navigationHarness();
+  h.prior.recoveryStatus = "error";
+  h.navigate(1);
+  assert.equal(h.env.queuedDirectoryOpen, null);
+  assert.equal(h.env.sessionTabs.length, 1);
+  assert.equal(h.env.activeSessionId, "prior-tab");
+  assert.match(h.env.toast, /export.*before changing files/i);
+});
+
+test("directory navigation is blocked during loads, queued opens or pending mappings and rejects repeated clicks", () => {
+  for (const guard of ["busy", "queued", "mapping", "blank", "other-folder"]) {
+    const h = navigationHarness();
+    if (guard === "busy") h.env.importBusyRef.current = true;
+    if (guard === "queued") h.env.queuedDirectoryOpenRef.current = {};
+    if (guard === "mapping") h.env.pendingDat = {};
+    if (guard === "blank") h.env.hasRecording = false;
+    if (guard === "other-folder") h.env.sessionTabs[0].directoryId = "other";
+    h.navigate(1);
+    assert.equal(h.env.queuedDirectoryOpen, null, guard);
+    assert.equal(h.calls.stored, 0, guard);
+  }
+  const h = navigationHarness();
+  h.navigate(1);
+  const request = h.env.queuedDirectoryOpen;
+  h.navigate(1);
+  assert.equal(h.env.queuedDirectoryOpen, request);
+  assert.equal(h.env.sessionTabs.length, 2);
+});
+
+test("failed and confirmation-needed replacements keep outgoing review until explicit successful completion", () => {
+  for (const state of ["opening", "error", "confirmation"]) {
+    const h = navigationHarness();
+    h.navigate(1);
+    const request = h.env.queuedDirectoryOpen;
+    h.status(request, { state });
+    assert.equal(h.env.sessionSnapshotsRef.current.get("prior-tab"), h.prior, state);
+    assert.ok(h.env.sessionTabs.some((tab) => tab.id === "prior-tab"), state);
+    if (state === "confirmation") {
+      h.status(request, { state: "loaded" });
+      assert.equal(h.env.sessionSnapshotsRef.current.has("prior-tab"), false);
+      assert.equal(h.env.sessionTabs.length, 1);
+    }
+  }
+  const h = navigationHarness();
+  h.status({ catalogId: "removed", replaceSessionId: "prior-tab" }, { state: "loaded" });
+  assert.equal(h.env.sessionTabs.length, 1, "a stale catalog result cannot close a current tab");
+});
 
 test("queued import waits for the target render and runs once under StrictMode with the catalogue format", async () => {
   const h = queueHarness();

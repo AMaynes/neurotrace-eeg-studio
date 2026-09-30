@@ -1,7 +1,14 @@
 import type { DirectoryImportPlan } from "./directory-import";
 
-type OwnedTab = { id: string; directoryId?: string };
+type OwnedTab = { id: string; directoryId?: string; directoryRecordingId?: string };
 type Catalog = { id: string; plan: DirectoryImportPlan };
+
+/** Navigate the catalog's file order, not the order of the currently open tabs. */
+export function adjacentDirectoryRecording(catalog: Catalog, tab: OwnedTab | undefined, direction: -1 | 1) {
+  if (!tab || tab.directoryId !== catalog.id || !tab.directoryRecordingId) return undefined;
+  const index = catalog.plan.recordings.findIndex((recording) => recording.id === tab.directoryRecordingId);
+  return index < 0 ? undefined : catalog.plan.recordings[index + direction];
+}
 
 export type DirectoryTabHeader = {
   key: string;
