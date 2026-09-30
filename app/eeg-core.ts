@@ -725,13 +725,14 @@ export async function parseEDFAnnotations(
 const MAX_RECOMMENDED_DISPLAY_CHANNELS = 18;
 const MAX_PLAUSIBLE_EEG_SPAN_UV = 100_000;
 
-function isObviousAuxiliaryEDFSignal(signal: EDFSignalHeader): boolean {
-  const label = signal.label
+/** Explicit auxiliary labels only; unfamiliar electrodes are not guessed away. */
+export function isObviousAuxiliaryChannel(channelLabel: string): boolean {
+  const label = channelLabel
     .trim()
     .replace(/^EEG\s+/i, "")
     .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
     .trim();
-  return /^(?:BIO|MISC)(?:\s|$)/i.test(signal.label.trim())
+  return /^(?:BIO|MISC)(?:\s|$)/i.test(channelLabel.trim())
     || /^(?:AUX|ECG|EKG|EMG|EOG|RESP|RESPIRATION|TRIG|TRIGGER|DC\d*|E|ABD|SPO2|ETCO2|PULSE|CO2WAVE)$/i.test(label);
 }
 
@@ -762,7 +763,7 @@ function recommendEDFDisplayChannels(
       displayIndex,
       isVoltage: normalization.isVoltage,
       isLikelyEEG: isLikelyEEGEDFSignal(signal),
-      isAuxiliary: isObviousAuxiliaryEDFSignal(signal),
+      isAuxiliary: isObviousAuxiliaryChannel(signal.label),
       calibrated,
       plausibleSpan,
     };

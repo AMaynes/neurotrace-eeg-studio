@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildMatlabDisplayWindow, createMatlabRawFlatlineDetector } from "../app/matlab-display-window.ts";
 import { filterMatlabDisplayTrace, matlabDisplayDecimationFactor } from "../app/matlab-display-processing.ts";
-import { buildMontage, detectRawSynchronizedFlatlines, RawDatSource } from "../app/eeg-core.ts";
+import { buildMontage, detectRawSynchronizedFlatlines, isObviousAuxiliaryChannel, RawDatSource } from "../app/eeg-core.ts";
 import { buildRawDatFileWindow } from "../app/file-window.ts";
 
 function fakeSource({ labels = ["LA1", "LA2", "LA3"], rates = [200, 200, 200], duration = 70 } = {}) {
@@ -20,7 +20,7 @@ function fakeSource({ labels = ["LA1", "LA2", "LA3"], rates = [200, 200, 200], d
         data: selected.map((ch, position) => arrays[ch].slice(first[position], Math.min(arrays[ch].length, first[position] + Math.ceil(span * rates[ch])))),
         sampleRates: selected.map((ch) => rates[ch]), channelStartSecs: selected.map((ch, position) => first[position] / rates[ch]),
         startSec: start, durationSec: span, channelIndices: [...selected], channelLabels: selected.map((ch) => labels[ch]),
-        channelUnits: selected.map(() => "µV"),
+        channelUnits: selected.map((ch) => this.meta.channelUnits[ch]),
       };
     },
   };
@@ -98,6 +98,57 @@ test("double-precision bipolar derivation occurs before extrema, preserving canc
   result.envelopes.forEach((envelope, row) => assertExactEnvelope(envelope, derived.data[row], 200, 2, request.durationSec));
   assert.ok(result.envelopes[0].maxima[50] < 0.126, "shared high-amplitude waveform cancels before envelope reduction");
   assert.ok(result.envelopes[0].minima[50] > 0.124);
+});
+
+test("known auxiliary labels are recognized without guessing unfamiliar EEG electrodes", () => {
+  for (const label of ["misc DC03", "misc DC06", "  MISC DC04  ", "DC05", "EEG DC03-REF", "bio X1", "eeg SpO2", "AUX", "ECG"]) {
+    assert.equal(isObviousAuxiliaryChannel(label), true, label);
+  }
+  for (const label of ["eeg Fp1", "eeg C3", "LA1", "DCX1", "MISCAL1", "unrecognized", ""]) {
+    assert.equal(isObviousAuxiliaryChannel(label), false, label);
+  }
+});
+
+test("enable-all auxiliary unit exclusions are quiet without changing montage samples or provenance", async () => {
+  const source = fakeSource({ labels: ["LA1", "LA2", "LA3", "LA4", "LA5", "misc DC03", "misc DC04", "misc DC05", "misc DC06"], rates: Array(9).fill(200), duration: 3 });
+  source.meta.channelUnits = ["µV", "µV", "µV", "µV", "µV", "NA", "NA", "NA", "NA"];
+  const request = { source, startSec: 0, durationSec: 1, pixelWidth: 1000, channelIndices: [0, 1, 2, 3, 4, 5, 6, 7, 8] };
+  for (const montage of ["average", "bipolar"]) {
+    const all = await buildMatlabDisplayWindow({ ...request, montage }, testOptions);
+    const eeg = await buildMatlabDisplayWindow({ ...request, montage, channelIndices: [0, 1, 2, 3, 4] }, testOptions);
+    assert.deepEqual(all.warnings, [], montage);
+    assert.deepEqual(all.data, eeg.data, montage);
+    assert.deepEqual(all.labels, eeg.labels, montage);
+    assert.deepEqual(all.units, eeg.units, montage);
+    assert.deepEqual(all.sourceIndices, eeg.sourceIndices, montage);
+    assert.ok(all.sourceIndices.every((indices) => indices.every((index) => index < 5)), "auxiliary units never enter montage arithmetic");
+  }
+  const raw = await buildMatlabDisplayWindow({ ...request, montage: "referential" }, testOptions);
+  assert.deepEqual(raw.warnings, []);
+  assert.equal(raw.data.length, 9);
+  assert.deepEqual(raw.units, source.meta.channelUnits);
+});
+
+test("unit warnings remain for incompatible EEG and unfamiliar channels, including alongside quiet auxiliary exclusions", async () => {
+  const source = fakeSource({ labels: ["LA1", "LA2", "LA3", "unknown", "misc DC03"], rates: Array(5).fill(200), duration: 3 });
+  source.meta.channelUnits = ["µV", "µV", "µV", "NA", "NA"];
+  const request = { source, startSec: 0, durationSec: 1, pixelWidth: 1000, channelIndices: [0, 1, 2, 3, 4], montage: "average" };
+  const unknown = await buildMatlabDisplayWindow(request, testOptions);
+  assert.equal(unknown.warnings.length, 1);
+  assert.match(unknown.warnings[0], /incompatible physical units.*unknown/);
+  assert.doesNotMatch(unknown.warnings[0], /misc DC03/);
+  source.meta.channelLabels[3] = "LA4";
+  const eeg = await buildMatlabDisplayWindow({ ...request, montage: "bipolar" }, testOptions);
+  assert.ok(eeg.warnings.some((warning) => /incompatible physical units.*LA4/.test(warning)));
+  assert.ok(eeg.warnings.some((warning) => /LA3-4.*excluded/.test(warning)), "missing montage pairs still warn");
+});
+
+test("a majority of incompatible auxiliary channels cannot silently remove EEG channels", async () => {
+  const source = fakeSource({ labels: ["LA1", "LA2", "misc DC03", "misc DC04", "misc DC05"], rates: Array(5).fill(200), duration: 3 });
+  source.meta.channelUnits = ["µV", "µV", "NA", "NA", "NA"];
+  const result = await buildMatlabDisplayWindow({ source, startSec: 0, durationSec: 1, pixelWidth: 1000,
+    channelIndices: [0, 1, 2, 3, 4], montage: "average" }, testOptions);
+  assert.ok(result.warnings.some((warning) => /incompatible physical units.*LA1, LA2/.test(warning)));
 });
 
 test("mixed-rate referential channels retain separate factors/times; derived mixed-rate modes fail explicitly", async () => {

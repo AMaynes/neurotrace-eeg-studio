@@ -1,5 +1,5 @@
 /** Bounded, full-view MATLAB processing; reduction happens after filter/montage. */
-import { buildMontage, type MontageMode, type SignalReadOptions, type SignalSource, type WindowData } from "./eeg-core.ts";
+import { buildMontage, isObviousAuxiliaryChannel, type MontageMode, type SignalReadOptions, type SignalSource, type WindowData } from "./eeg-core.ts";
 import type { BipolarMontageKind } from "./bipolar-montage.ts";
 import { matlabDisplayChunkInputRange, matlabDisplayDecimationFactor, type MatlabDisplayFactor, type MatlabDisplaySamples } from "./matlab-display-processing.ts";
 import { createMatlabDisplayWorkerClient } from "./matlab-display-worker-client.ts";
@@ -223,7 +223,14 @@ export async function buildMatlabDisplayWindow(
     for (const unit of units) unitCounts.set(unit, (unitCounts.get(unit) ?? 0) + 1);
     const referenceUnit = [...unitCounts].sort((a, b) => b[1] - a[1] || Number(b[0] === "µV") - Number(a[0] === "µV"))[0]?.[0];
     units.forEach((unit, position) => { if (unit !== referenceUnit) excludedPositions.add(position); });
-    if (units.some((unit) => unit !== referenceUnit)) warnings.add("Channels with incompatible physical units were excluded from montage arithmetic.");
+    // Excluding auxiliary channels (e.g. DC channels marked NA) is normal, not
+    // a failed display. Keep the arithmetic guard and flag incompatible EEG or
+    // unrecognized channels, rather than treating every exclusion as a problem.
+    const unexpected = labels.filter((label, position) => units[position] !== referenceUnit && !isObviousAuxiliaryChannel(label));
+    if (unexpected.length) {
+      const names = unexpected.slice(0, 8).join(", ");
+      warnings.add(`Channels with incompatible physical units were excluded from montage arithmetic: ${names}${unexpected.length > 8 ? `, and ${unexpected.length - 8} more` : ""}.`);
+    }
   }
   const montageOptions = {
     allChannelLabels: request.allChannelLabels ?? source.meta.channelLabels,
