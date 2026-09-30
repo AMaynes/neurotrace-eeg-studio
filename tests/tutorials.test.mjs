@@ -11,6 +11,7 @@ import { subscribeTutorialActions } from "../app/tutorial-events.ts";
 
 const componentSource = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+const directorySessions = await readFile(new URL("../app/directory-sessions.tsx", import.meta.url), "utf8");
 const syntax = ts.createSourceFile("tutorial-center.tsx", componentSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = syntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "TutorialCenter");
 assert.ok(component);
@@ -41,7 +42,7 @@ function harness(overrides = {}) {
   let changed = false;
   const resizeObservers = new Set();
   const body = {};
-  const surface = { host: body, rect: null, fallback: false, ready: false, dialogName: null, viewport: { width: 1280, height: 720 } };
+  const surface = { host: body, rect: null, offscreen: false, fallback: false, ready: false, dialogName: null, viewport: { width: 1280, height: 720 } };
   const props = {
     open: true, topic: "start", hasRecording: true, canAnnotate: true, sessionId: "session-1",
     onAssist(action) { actions.push(`assist:${action}`); return true; },
@@ -127,7 +128,7 @@ test("every tutorial topic has unique lessons, valid steps, and real workspace a
   const ids = catalog.tutorialLessons.map((lesson) => lesson.id);
   assert.equal(new Set(ids).size, ids.length);
   const anchors = new Set();
-  const pageSyntax = ts.createSourceFile("page.tsx", page, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const pageSyntax = ts.createSourceFile("workspace.tsx", `${page}\n${directorySessions}`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   function collect(node) {
     if (ts.isJsxAttribute(node) && node.name.getText(pageSyntax) === "data-tutorial") {
       const collectStrings = (value) => {
@@ -160,7 +161,7 @@ test("the hub renders accessible topic tabs, step previews, and explicit prerequ
     assert.match(html, /role="dialog" aria-modal="true"/);
     assert.match(html, /role="tablist" aria-label="Tutorial topics"/);
     assert.match(html, new RegExp(`id="tutorial-tab-${topic.id}" role="tab" aria-selected="true"`));
-    assert.equal(ui.button("Start walkthrough →").props.disabled, !["start", "save"].includes(topic.id));
+    assert.equal(ui.button("Start walkthrough →").props.disabled, !["start", "directories", "save"].includes(topic.id));
     const step = ui.find((node) => node.type === "button" && text(node).startsWith("2"));
     step.props.onClick(); ui.render();
     assert.ok(ui.markup().includes('aria-current="step"'));
@@ -184,7 +185,7 @@ test("walkthroughs advance, go back, complete, and replay without performing wor
   assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
   assert.match(ui.markup(), /not a save or commit/);
   ui.click("All tutorials");
-  assert.match(ui.markup(), /1 \/ 11 walkthroughs completed/);
+  assert.ok(ui.markup().includes(`1 / ${catalog.tutorialLessons.length} walkthroughs completed`));
   ui.click("Replay walkthrough →");
   assert.match(ui.markup(), /STEP 1 OF 4/);
   assert.deepEqual(ui.actions, [], "start, next, and back never operate workspace controls");
@@ -227,6 +228,56 @@ test("every step offers assistance only for a real action, never just an explana
     assert.doesNotMatch(ui.markup(), />Do it for me</, "completed lessons have no action to assist");
     ui.dispose();
   }
+});
+
+test("directory loading follows folder readiness and the list without opening recordings automatically", () => {
+  const ui = harness({ topic: "directories", hasRecording: false });
+  assert.match(ui.markup(), /Load a directory/);
+  ui.click("Start walkthrough →");
+  ui.emit("import-opened");
+  assert.match(ui.markup(), /STEP 2 OF 5/);
+  ui.emit("import-format-chosen");
+  ui.emit("import-files-ready");
+  assert.match(ui.markup(), /STEP 3 OF 5/, "individual-file selection does not complete Folder");
+  ui.emit("directory-files-ready");
+  assert.match(ui.markup(), /STEP 4 OF 5/);
+  ui.emit("directory-list-opened");
+  assert.match(ui.markup(), /STEP 5 OF 5/);
+  ui.props.sessionId = "directory-recording"; ui.props.hasRecording = true; ui.render();
+  ui.emit("recording-opened");
+  assert.match(ui.markup(), /Open one recording/);
+  ui.click("Next →");
+  assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
+  assert.deepEqual(ui.actions, [], "the guide never chooses or loads files");
+  ui.dispose();
+});
+
+test("directory navigation is informational and Bias Locks stays an explicit user choice", () => {
+  const ui = harness({ topic: "directories" });
+  ui.find((node) => node.type === "button" && text(node).startsWith("Navigate directory files")).props.onClick();
+  ui.render(); ui.click("Start walkthrough →");
+  for (let index = 0; index < 4; index++) {
+    ui.emit("directory-list-opened"); ui.emit("recording-opened");
+    assert.match(ui.markup(), new RegExp(`STEP ${index + 1} OF 4`));
+    assert.doesNotMatch(ui.markup(), />Do it for me</);
+    ui.click("Next →");
+  }
+  assert.deepEqual(ui.actions, []);
+  ui.click("All tutorials");
+  ui.find((node) => node.type === "button" && text(node).startsWith("Bias Locks")).props.onClick();
+  ui.props.hasRecording = false; ui.render(); ui.click("Start walkthrough →");
+  ui.click("Do it for me");
+  assert.deepEqual(ui.actions, ["assist:open-settings"]);
+  assert.match(ui.markup(), /STEP 2 OF 3/);
+  assert.doesNotMatch(ui.markup(), />Do it for me</, "the guide cannot toggle the lock");
+  ui.emit("settings-opened");
+  assert.match(ui.markup(), /STEP 2 OF 3/);
+  ui.emit("bias-locks-changed");
+  assert.match(ui.markup(), /STEP 3 OF 3/);
+  assert.match(ui.markup(), /does not block the full session list/);
+  ui.click("Next →");
+  assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
+  ui.dispose();
 });
 
 test("the workspace tour stays informational even when its panels are opened", () => {
@@ -276,6 +327,19 @@ test("the guide stays inside open dialogs and cannot open a competing tutorial m
   assert.equal(ui.props.open, false);
 });
 
+test("a control below the visible dialog prompts scrolling, not closing or restarting the loader", () => {
+  const ui = harness({ topic: "directories" }); ui.click("Start walkthrough →");
+  for (let index = 0; index < 3; index++) ui.click("Next →");
+  ui.surface.dialogName = "Load recording";
+  ui.surface.host = { querySelector: () => ({ focus() {} }), closest: () => ({}) };
+  ui.surface.offscreen = true; ui.render();
+  assert.match(ui.markup(), /Scroll in Load recording/);
+  assert.doesNotMatch(ui.markup(), /Close Load recording|Select a folder first/);
+  ui.surface.offscreen = false; ui.surface.rect = { left: 100, top: 600, width: 100, height: 30 }; ui.render();
+  assert.doesNotMatch(ui.markup(), /Scroll in Load recording/);
+  ui.dispose();
+});
+
 test("tour Escape is local to the coach so waveform Escape can still clear channel selection", () => {
   const ui = harness({ topic: "spectrogram" }); ui.click("Start walkthrough →");
   let prevented = false;
@@ -290,10 +354,11 @@ test("tour Escape is local to the coach so waveform Escape can still clear chann
 });
 
 test("topic keyboard navigation wraps and ignores unrelated shortcuts", () => {
-  assert.equal(catalog.tutorialTabIndex("ArrowLeft", 0), 5);
-  assert.equal(catalog.tutorialTabIndex("ArrowRight", 5), 0);
+  const last = catalog.tutorialTopics.length - 1;
+  assert.equal(catalog.tutorialTabIndex("ArrowLeft", 0), last);
+  assert.equal(catalog.tutorialTabIndex("ArrowRight", last), 0);
   assert.equal(catalog.tutorialTabIndex("Home", 4), 0);
-  assert.equal(catalog.tutorialTabIndex("End", 0), 5);
+  assert.equal(catalog.tutorialTabIndex("End", 0), last);
   assert.equal(catalog.tutorialTabIndex("Escape", 0), null);
 });
 
@@ -436,7 +501,7 @@ test("completed actions advance once; unrelated clicks, duplicate events, Back, 
   ui.click("Next →");
   assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
   ui.click("All tutorials");
-  assert.match(ui.markup(), /1 \/ 11 walkthroughs completed/);
+  assert.ok(ui.markup().includes(`1 / ${catalog.tutorialLessons.length} walkthroughs completed`));
   assert.deepEqual(ui.actions, []);
   ui.dispose();
 });
@@ -599,7 +664,7 @@ test("remapped tutorial topic, move, reset, and close shortcuts work in their ow
   const ui = harness({ controlBindings: { ...shortcuts.DEFAULT_CONTROLS, topicNext: ["j"], coachLeftFast: ["k"], coachReset: ["r"], clear: ["F2"] } });
   const event = (key) => ({ key, preventDefault() {}, stopPropagation() {} });
   ui.button("01Get started").props.onKeyDown(event("j")); ui.render();
-  assert.equal(ui.props.topic, "navigate");
+  assert.equal(ui.props.topic, "directories");
   ui.click("Start walkthrough →");
   ui.button("Move walkthrough panel").props.onKeyDown(event("k")); ui.render();
   assert.match(ui.coach().props.className, /tutorial-coach-manual/);

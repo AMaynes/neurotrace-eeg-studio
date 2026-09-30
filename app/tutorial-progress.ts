@@ -11,6 +11,10 @@ export type TutorialMilestones = {
   importOpen: boolean;
   importFormat: string | null;
   filesReady: boolean;
+  directoryFilesReady: boolean;
+  directoryListOpen: boolean;
+  settingsOpen: boolean;
+  biasLocks: boolean;
   channelsOpen: boolean;
   montage: string;
   gain: number;
@@ -37,8 +41,12 @@ export function tutorialMilestoneActions(before: TutorialMilestones | null, afte
   changed("importOpen", "import-opened", after.importOpen);
   changed("importFormat", "import-format-chosen", after.importFormat !== null);
   changed("filesReady", "import-files-ready", after.filesReady);
+  changed("directoryFilesReady", "directory-files-ready", after.directoryFilesReady);
+  changed("directoryListOpen", "directory-list-opened", after.directoryListOpen);
   // Loading/restoring a recording can reset many controls without a user action.
   if (before.recording !== after.recording || before.stateKey !== after.stateKey) return actions;
+  changed("settingsOpen", "settings-opened", after.settingsOpen);
+  changed("biasLocks", "bias-locks-changed");
   changed("channelsOpen", after.channelsOpen ? "channels-opened" : "channels-closed");
   changed("montage", "montage-changed");
   changed("gain", "gain-changed");

@@ -6437,6 +6437,8 @@ export default function Home() {
   useTutorialMilestones({
     scope: activeSessionId, stateKey: sessionKey, recording: hasRecording ? meta.id : null,
     importOpen: showImport, importFormat: importChoice, filesReady: guidedImportReady || Boolean(pendingDat),
+    directoryFilesReady: guidedImportReady && importPickerKind === "directory",
+    directoryListOpen: showDirectorySessions && Boolean(directoryCatalog), settingsOpen: showSettings, biasLocks,
     channelsOpen: showChannels, montage, gain, clamp: traceDisplayMode,
     filtersOpen: showFilters, boxZoom: boxZoomActive, spectrogramOpen,
     labelsPanelOpen: rightPanelOpen && rightPanelView === "labels",
@@ -7307,9 +7309,11 @@ export default function Home() {
     const modalOpen = showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
       || showSessionMap || showPatientInfo || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
     if (modalOpen) return (action === "open-import" && showImport) || (action === "open-save" && showProjectSave)
+      || (action === "open-settings" && showSettings)
       || (action === "open-channels" && showChannels) || (action === "open-label-picker" && showEphysLabelPicker);
     if (action === "open-import") { setShowImport(true); return true; }
     if (action === "open-save") { setProjectSaveError(""); setShowProjectSave(true); return true; }
+    if (action === "open-settings") { setShowSettings(true); return true; }
     if (!hasRecording || activeSessionContentView !== "recording") return false;
     const clickControl = (anchor: string) => {
       const button = document.querySelector<HTMLButtonElement>(`button[data-tutorial="${anchor}"]`);
@@ -7459,6 +7463,7 @@ export default function Home() {
                 <button
                   id={`directory-header-${group.key}`}
                   className="directory-sessions-toggle directory-tab-open"
+                  data-tutorial={group.sessionIds.includes(activeSessionId) ? "directory-header" : undefined}
                   disabled={importBusy || Boolean(queuedDirectoryOpen)}
                   aria-label={`Open directory sessions from ${group.label} (${group.total})`}
                   aria-haspopup="dialog"
@@ -7469,12 +7474,14 @@ export default function Home() {
                 ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M1.5 4.5V3h5l1.5 2h6.5v8H1.5z" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg><span className="directory-tab-name">{group.label}</span></button>
                 <div className="directory-tab-navigation">
                   <button className={`directory-tab-step ${biasLocks ? "bias-locked" : ""}`} disabled={biasLocks || navigationBusy || !previous}
+                    data-tutorial={group.sessionIds.includes(activeSessionId) ? "directory-previous" : undefined}
                     aria-label={`Previous file in ${group.label}${biasLocks ? " (locked by Bias Locks)" : ""}`}
                     title={biasLocks ? "Backward directory navigation is locked by Bias Locks" : previous ? `Previous: ${previous.relativePath}` : "No previous file for the viewed session"}
                     onClick={() => navigateDirectoryRecording(group.catalogId, -1)}>{biasLocks
                       ? <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5 7V4a3 3 0 0 1 6 0v3" /></svg>
                       : <span aria-hidden="true">‹</span>}</button>
                   <button className="directory-tab-step" disabled={navigationBusy || !next}
+                    data-tutorial={group.sessionIds.includes(activeSessionId) ? "directory-next" : undefined}
                     aria-label={`Next file in ${group.label}`} title={next ? `Next: ${next.relativePath}` : "No next file for the viewed session"}
                     onClick={() => navigateDirectoryRecording(group.catalogId, 1)}><span aria-hidden="true">›</span></button>
                 </div>
@@ -7554,7 +7561,7 @@ export default function Home() {
             }}
           ><span className="resource-glyph" aria-hidden="true"><i /><i /><i /></span></button>
           <button className="utility-button" data-tutorial="help" aria-label="Open Help" title="Tutorials & walkthroughs" onClick={() => setShowHelp(true)}><span aria-hidden="true">?</span></button>
-          <button className="utility-button" aria-label="Open Settings" title="Settings" onClick={() => setShowSettings(true)}><span className="settings-glyph" aria-hidden="true">⚙</span></button>
+          <button className="utility-button" data-tutorial="settings" aria-label="Open Settings" title="Settings" onClick={() => setShowSettings(true)}><span className="settings-glyph" aria-hidden="true">⚙</span></button>
         </div>
       </header>
 
@@ -8156,7 +8163,7 @@ export default function Home() {
               <strong>{importChoice === "edf" ? "EDF / EDF+" : importChoice === "mat" ? "MAT" : importChoice === "mat-dat" ? "MAT + DAT" : "NeuroTrace"}</strong>
               <div>
                 <button type="button" className="button" disabled={importBusy} onClick={() => openImportPicker("files")}>Files</button>
-                <button type="button" className="button" disabled={importBusy} onClick={() => openImportPicker("directory")}>Folder</button>
+                <button type="button" className="button" data-tutorial="import-folder" disabled={importBusy} onClick={() => openImportPicker("directory")}>Folder</button>
               </div>
               <p>{importChoice === "mat-dat" ? "Select both matching files for each MAT + DAT pair, or choose their folder." : "Select one or multiple files, or choose a folder to include its subfolders."}</p>
             </section>}
@@ -8314,10 +8321,10 @@ export default function Home() {
       />
 
       {showSettings && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowSettings(false); }}>
-        <div className="modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1}>
+        <div className="modal settings-modal" data-tutorial="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1}>
           <button className="modal-close" onClick={() => setShowSettings(false)} aria-label="Close Settings">×</button>
           <h2>Settings</h2>
-          <section className="settings-section bias-locks-settings">
+          <section className="settings-section bias-locks-settings" data-tutorial="bias-locks">
             <div><strong id="bias-locks-label">Bias Locks</strong><p id="bias-locks-description">Disable the directory Previous button to prevent backward navigation. Next stays available.</p></div>
             <button type="button" role="switch" className="bias-locks-toggle" aria-checked={biasLocks}
               aria-labelledby="bias-locks-label" aria-describedby="bias-locks-description"

@@ -40,7 +40,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
   return <div className="modal-backdrop" onMouseDown={(event) => {
     if (event.target === event.currentTarget && !busy) onClose();
   }}>
-    <div id="directory-sessions-dialog" className="modal directory-sessions-modal" role="dialog" aria-modal="true" aria-labelledby="directory-sessions-heading" aria-describedby="directory-sessions-description" tabIndex={-1}>
+    <div id="directory-sessions-dialog" className="modal directory-sessions-modal" data-tutorial="directory-list" role="dialog" aria-modal="true" aria-labelledby="directory-sessions-heading" aria-describedby="directory-sessions-description" tabIndex={-1}>
       <button type="button" className="modal-close" disabled={busy} onClick={onClose} aria-label="Close directory sessions">×</button>
       <header className="directory-sessions-heading">
         <span className="modal-eyebrow">RECORDING DIRECTORY</span>

@@ -29,7 +29,7 @@ function fixture(overrides = {}) {
     document: { querySelector: (selector) => buttons.get(selector) ?? null },
     ...overrides,
   };
-  for (const name of ["setShowDirectorySessions", "setShowImport", "setProjectSaveError", "setShowProjectSave", "setPlaying", "setViewStartSafe",
+  for (const name of ["setShowDirectorySessions", "setShowSettings", "setShowImport", "setProjectSaveError", "setShowProjectSave", "setPlaying", "setViewStartSafe",
     "setLeftPanelOpen", "selectRightPanelTool", "setBottomTracksOpen", "setTimeWindow", "setWindowDraftValue",
     "setShowChannels", "changeZoomView", "setShowFilters", "setSpectrogramOpen", "setChannelSelectionActive",
     "setBoxZoomActive", "setActiveTool", "setMarkOnset", "setSelection", "setCursorTime", "setCursorLocked",
@@ -50,6 +50,9 @@ test("assistance opens dialogs without any loading/saving side effects or hidden
   ui.changes.length = 0;
   assert.equal(ui.assist("open-save"), true);
   assert.deepEqual(ui.changes, [["setProjectSaveError", ""], ["setShowProjectSave", true]]);
+  ui.changes.length = 0;
+  assert.equal(ui.assist("open-settings"), true);
+  assert.deepEqual(ui.changes, [["setShowSettings", true]], "opening Settings does not toggle Bias Locks");
 });
 
 test("assistance cannot operate behind another dialog, in file-structure view, or without a recording", () => {
@@ -63,11 +66,15 @@ test("assistance cannot operate behind another dialog, in file-structure view, o
   assert.equal(alreadyOpen.assist("open-import"), true);
   assert.equal(alreadyOpen.assist("open-save"), false);
   assert.deepEqual(alreadyOpen.changes, []);
+  assert.equal(alreadyOpen.assist("open-settings"), false);
+  const settings = fixture({ showSettings: true });
+  assert.equal(settings.assist("open-settings"), true);
+  assert.deepEqual(settings.changes, [], "opening Settings again is idempotent");
 });
 
 test("directory modal prevents tutorial assistance from opening other dialogs or navigating", () => {
   const ui = fixture({ showDirectorySessions: true });
-  for (const action of ["open-import", "open-save", "pan-waveform", "page-forward", "zoom-waveform", "open-session-label-picker"]) {
+  for (const action of ["open-import", "open-save", "open-settings", "pan-waveform", "page-forward", "zoom-waveform", "open-session-label-picker"]) {
     assert.equal(ui.assist(action), false, action);
   }
   assert.deepEqual(ui.changes, []);

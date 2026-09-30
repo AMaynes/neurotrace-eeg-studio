@@ -34,7 +34,7 @@ type TutorialCenterProps = {
 };
 
 type Tour = { lessonId: string; stepIndex: number };
-type TourSurface = { host: HTMLElement; rect: TutorialRect | null; fallback: boolean; ready: boolean; dialogName: string | null; viewport: { width: number; height: number } };
+type TourSurface = { host: HTMLElement; rect: TutorialRect | null; offscreen: boolean; fallback: boolean; ready: boolean; dialogName: string | null; viewport: { width: number; height: number } };
 
 /** Measure only the visible part of a target, including clipping by collapsed/scrolling panels. */
 function visibleTargetRect(element: HTMLElement): TutorialRect | null {
@@ -60,7 +60,7 @@ function visibleTargetRect(element: HTMLElement): TutorialRect | null {
 }
 
 function sameSurface(a: TourSurface | null, b: TourSurface): boolean {
-  return a?.host === b.host && a.fallback === b.fallback && a.ready === b.ready && a.dialogName === b.dialogName
+  return a?.host === b.host && a.offscreen === b.offscreen && a.fallback === b.fallback && a.ready === b.ready && a.dialogName === b.dialogName
     && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height
     && JSON.stringify(a.rect) === JSON.stringify(b.rect);
 }
@@ -92,19 +92,23 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
         if (element) resize.observe(element);
         observed = element;
       }
+      const rect = element ? visibleTargetRect(element) : null;
       const next: TourSurface = {
         host: dialog ?? document.body,
-        rect: element ? visibleTargetRect(element) : null,
-        fallback: Boolean(fallback),
+        rect,
+        offscreen: Boolean(element && !rect && element.getClientRects().length && getComputedStyle(element).visibility !== "hidden"),
+        fallback: !readyRect && Boolean(fallback),
         ready: Boolean(readyRect),
-        dialogName: dialog?.getAttribute("aria-label") ?? null,
+        dialogName: dialog ? dialog.getAttribute("aria-label")
+          || dialog.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim()).filter(Boolean).join(" ")
+          || "dialog" : null,
         viewport: { width: window.innerWidth, height: window.innerHeight },
       };
       setSurface((current) => sameSurface(current, next) ? current : next);
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
     const mutations = new MutationObserver(schedule);
-    mutations.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "hidden", "open"] });
+    mutations.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "hidden", "open", "data-tutorial"] });
     resize.observe(document.body);
     window.addEventListener("resize", schedule);
     window.addEventListener("scroll", schedule, true);
@@ -343,7 +347,9 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
           <p>{surface.ready ? "That area is already open. Select Next to continue." : activeStep ? shortcutText(activeStep.instruction, controlBindings) : "Replay whenever you need a refresher, or choose another lesson. This completes the guide, not a save or commit."}</p>
           {activeStep?.tip && <p className="tutorial-tip">{shortcutText(activeStep.tip, controlBindings)}</p>}
           {tourBlock && <p className="tutorial-prerequisite">{tourBlock}</p>}
-          {activeStep && !tourBlock && !surface.ready && (!surface.rect || surface.fallback) && <p className="tutorial-prerequisite">{embedded && !surface.rect ? `Close ${surface.dialogName} to continue in the workspace. ` : ""}{activeStep.unavailable}</p>}
+          {activeStep && !tourBlock && !surface.ready && (!surface.rect || surface.fallback) && <p className="tutorial-prerequisite">{surface.offscreen
+            ? `Scroll in ${surface.dialogName ?? "the workspace"} to reach the highlighted control.`
+            : <>{embedded && !surface.rect ? `Close ${surface.dialogName} to continue in the workspace. ` : ""}{activeStep.unavailable}</>}</p>}
         </div>
         {activeStep?.completeOn?.length && activeStep.assist && !tourBlock && !embedded && !surface.ready && <div className="tutorial-assistance">
           <button className="tutorial-do" onClick={() => {

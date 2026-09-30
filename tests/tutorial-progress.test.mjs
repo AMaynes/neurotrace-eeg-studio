@@ -15,6 +15,7 @@ const { tutorialMilestoneActions } = exports;
 
 const initial = {
   scope: "one", stateKey: "initial", recording: null, importOpen: false, importFormat: null, filesReady: false,
+  directoryFilesReady: false, directoryListOpen: false, settingsOpen: false, biasLocks: false,
   channelsOpen: false, montage: "referential", gain: 1, clamp: "clamped", filtersOpen: false,
   boxZoom: false, spectrogramOpen: false, labelsPanelOpen: true, labelPickerOpen: false,
   sessionLabelPickerOpen: false, labelsVisible: true, saveOpen: false, saveOptions: {},
@@ -51,6 +52,17 @@ test("view and modal milestones distinguish desired open/close and zoom directio
   assert.deepEqual(tutorialMilestoneActions({ ...initial, saveOpen: true }, initial), [], "closing Save does not mean a project was saved");
 });
 
+test("directory milestones require ready folder files or an open list, not a file picker or canceled request", () => {
+  assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, filesReady: true }), ["import-files-ready"], "individual files are not a folder");
+  assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, directoryFilesReady: true }), ["directory-files-ready"]);
+  assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, directoryListOpen: true }), ["directory-list-opened"]);
+  assert.deepEqual(tutorialMilestoneActions({ ...initial, directoryFilesReady: true, directoryListOpen: true }, initial), [], "clearing a folder or closing the list is not success");
+  assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, settingsOpen: true }), ["settings-opened"]);
+  assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, biasLocks: true }), ["bias-locks-changed"]);
+  assert.deepEqual(tutorialMilestoneActions({ ...initial, biasLocks: true }, initial), ["bias-locks-changed"]);
+  assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, scope: "other", biasLocks: true, directoryListOpen: true }), [], "session restoration cannot complete these steps");
+});
+
 test("a subscription consumes one matching action and cleanup blocks all later events", () => {
   const target = new EventTarget(); let completed = 0;
   const emit = (action) => target.dispatchEvent(new CustomEvent("neurotrace:tutorial-action", { detail: action }));
@@ -67,13 +79,15 @@ const centerSyntax = ts.createSourceFile("tutorial-center.tsx", centerSource, ts
 const measurement = centerSyntax.statements.filter((node) => ts.isFunctionDeclaration(node) && ["visibleTargetRect", "sameSurface", "useTourSurface"].includes(node.name?.text));
 const compiledMeasurement = ts.transpileModule(measurement.map((node) => node.getText(centerSyntax)).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
-function measurementHarness() {
+function measurementHarness(dialogOptions = null) {
   let current = null; let cleanup; let scheduled = 0;
   const frames = new Map();
   const rect = { left: 100, top: 80, width: 200, height: 100 };
   const body = { parentElement: null, getBoundingClientRect: () => ({ left: 0, top: 0, right: 1280, bottom: 720 }) };
   const target = { parentElement: body, getClientRects: () => [rect], getBoundingClientRect: () => ({ ...rect, right: rect.left + rect.width, bottom: rect.top + rect.height }) };
-  const doc = Object.assign(new EventTarget(), { body, querySelectorAll: () => [], querySelector: () => target });
+  const dialog = dialogOptions && { ...target, dataset: { tutorial: "directory-list" }, querySelector: () => null, getAttribute: (name) => dialogOptions[name] ?? null };
+  const doc = Object.assign(new EventTarget(), { body, querySelectorAll: () => dialog ? [dialog] : [], querySelector: () => target,
+    getElementById: (id) => id === "directory-heading" ? { textContent: "Directory sessions" } : null });
   const win = Object.assign(new EventTarget(), { innerWidth: 1280, innerHeight: 720 });
   const observers = [];
   const scope = {
@@ -87,7 +101,7 @@ function measurementHarness() {
     cancelAnimationFrame: (id) => frames.delete(id),
   };
   const hook = new Function(...Object.keys(scope), `${compiledMeasurement}\nreturn useTourSurface;`)(...Object.values(scope));
-  hook({ target: "import" }, true);
+  hook(dialog ? { target: "import-open", readyTarget: "directory-list" } : { target: "import" }, true);
   const flush = () => { const tasks = [...frames.values()]; frames.clear(); tasks.forEach((task) => task()); };
   return { rect, doc, frames, observers, flush, cleanup: () => cleanup(), surface: () => current };
 }
@@ -110,6 +124,29 @@ test("the actual measurement hook realigns after animations and cancellations, n
   assert.ok(ui.observers.every((observer) => observer.disconnected));
   ui.doc.dispatchEvent(new Event("animationend"));
   assert.equal(ui.frames.size, 0, "unmounted tutorials leave no animation listener behind");
+});
+
+test("directory dialogs labeled by headings keep tutorial controls inside the modal", () => {
+  const ui = measurementHarness({ "aria-labelledby": "directory-heading" }); ui.flush();
+  assert.equal(ui.surface().dialogName, "Directory sessions");
+  assert.equal(ui.surface().ready, true);
+  assert.equal(ui.surface().fallback, false);
+  assert.equal(ui.surface().host.dataset.tutorial, "directory-list");
+  ui.cleanup();
+  const unlabeled = measurementHarness({}); unlabeled.flush();
+  assert.equal(unlabeled.surface().dialogName, "dialog", "an unnamed modal must not permit a competing Help dialog");
+  unlabeled.cleanup();
+});
+
+test("measurement distinguishes clipped controls from absent controls", () => {
+  const ui = measurementHarness(); ui.rect.top = 900; ui.flush();
+  assert.equal(ui.surface().rect, null);
+  assert.equal(ui.surface().offscreen, true);
+  ui.rect.top = 400;
+  ui.doc.dispatchEvent(new Event("transitionend")); ui.flush();
+  assert.notEqual(ui.surface().rect, null);
+  assert.equal(ui.surface().offscreen, false);
+  ui.cleanup();
 });
 
 test("attention uses a slow opacity pulse with a reduced-motion opt-out and no pointer interception", async () => {

@@ -5,6 +5,7 @@
  */
 export type TutorialAction =
   | "import-opened" | "import-format-chosen" | "import-files-ready" | "recording-opened"
+  | "directory-files-ready" | "directory-list-opened" | "settings-opened" | "bias-locks-changed"
   | "overview-jumped" | "waveform-panned" | "transport-used" | "window-applied"
   | "waveform-zoom-enabled" | "waveform-zoom-disabled" | "waveform-zoomed"
   | "channels-opened" | "channels-closed" | "montage-changed" | "gain-changed"
@@ -17,7 +18,7 @@ export type TutorialAction =
 
 /** Allowlisted view-only assistance. File, label, montage and save choices stay manual. */
 export type TutorialAssistAction =
-  | "open-import" | "open-save" | "show-label-panel" | "show-label-tracks"
+  | "open-import" | "open-save" | "open-settings" | "show-label-panel" | "show-label-tracks"
   | "jump-overview" | "pan-waveform" | "page-forward" | "shorten-window"
   | "enable-waveform-zoom" | "disable-waveform-zoom" | "zoom-waveform" | "open-channels"
   | "increase-gain" | "toggle-clamp" | "open-filters" | "open-spectrogram"

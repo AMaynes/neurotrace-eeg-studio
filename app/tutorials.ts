@@ -3,11 +3,12 @@ import type { TutorialAction, TutorialAssistAction } from "./tutorial-events";
 /** Task-based help with explicit completion signals and opt-in, view-only assistance. */
 export const tutorialTopics = [
   { id: "start", title: "Get started", icon: "01" },
-  { id: "navigate", title: "Navigate", icon: "02" },
-  { id: "channels", title: "Channels", icon: "03" },
-  { id: "spectrogram", title: "Spectrogram", icon: "04" },
-  { id: "labels", title: "Labels", icon: "05" },
-  { id: "save", title: "Save & reopen", icon: "06" },
+  { id: "directories", title: "Directories", icon: "02" },
+  { id: "navigate", title: "Navigate", icon: "03" },
+  { id: "channels", title: "Channels", icon: "04" },
+  { id: "spectrogram", title: "Spectrogram", icon: "05" },
+  { id: "labels", title: "Labels", icon: "06" },
+  { id: "save", title: "Save & reopen", icon: "07" },
 ] as const;
 
 export type TutorialTopic = typeof tutorialTopics[number]["id"];
@@ -58,11 +59,41 @@ export const tutorialLessons: readonly TutorialLesson[] = [
     ],
   },
   {
+    id: "load-directory", topic: "directories", title: "Load a directory", duration: "2 min", requires: "workspace",
+    description: "Choose a folder and open recordings from its session list.",
+    steps: [
+      { completeOn: ["import-opened"], assist: { action: "open-import", description: "Open the recording loader. You choose the files." }, title: "Open the loader", target: "upload", readyTarget: "import", instruction: "Click Upload at the top right, or Load a recording on the homepage.", unavailable: "Close any other dialog to reach Upload." },
+      { completeOn: ["import-format-chosen"], title: "Choose one format", target: "import-formats", fallback: "upload", instruction: "Choose EDF / EDF+, MAT, MAT + DAT, or NeuroTrace. All sessions in this batch must use that format. Use MAT + DAT when the MAT metadata and signal bytes are separate files.", unavailable: "Open Upload to choose a format.", tip: "The folder check catches mixed recording formats and incomplete pairs. Signal contents are checked when you open each session." },
+      { completeOn: ["directory-files-ready"], title: "Choose Folder", target: "import-folder", fallback: "import-formats", instruction: "Click Folder, select the directory in the file picker, and confirm it. Subfolders are included. Use Files instead if you want to select individual files or several recordings without choosing a whole folder.", unavailable: "Choose a format to reveal the Folder button.", tip: "The homepage accepts individual files, including a MAT + DAT pair, but not folder drops. To drop a folder, first choose the format and Folder, cancel the picker, then drop inside the loader." },
+      { completeOn: ["directory-list-opened"], title: "Confirm the session list", target: "import-open", fallback: "import", readyTarget: "directory-list", instruction: "Check the detected paths and session count, then click Load N sessions. This creates the directory list; it does not read every recording into memory.", unavailable: "Select a folder first. If there is an error, correct the file selection before continuing." },
+      { title: "Open one recording", target: "directory-list", fallback: "sessions", instruction: "Click Open beside a recording. If a MAT + DAT layout form appears, verify its settings before confirming. Check the waveform, channel names, units, and duration once it opens.", unavailable: "Click the directory name above the tabs to reopen its session list.", tip: "Resume returns to an already-open session. Keep DAT channel count, sample rate, sample format, and calibration based on known metadata, not guesses." },
+    ],
+  },
+  {
+    id: "directory-navigation", topic: "directories", title: "Navigate directory files", duration: "1 min", requires: "recording",
+    description: "Use the directory header and its Previous and Next buttons.",
+    steps: [
+      { title: "Find the directory header", target: "directory-header", fallback: "sessions", instruction: "The directory name sits above its session tabs and spans adjacent tabs from that directory. Select a recording tab from the directory you want to browse.", unavailable: "Load a directory and open one of its recordings first.", tip: "These buttons change files. The playback arrows in Signal tools move through time within one recording." },
+      { title: "Next file", target: "directory-next", fallback: "sessions", instruction: "The right arrow opens the next recording in the directory list and closes the currently viewed tab after the new recording loads successfully. If that next recording is already open, it switches to its tab instead of loading it again.", unavailable: "Close any dialog and select an open directory recording.", tip: "Next is gray at the last file. Navigation is also unavailable while a file is opening or waiting for DAT layout confirmation. This guide will not change files for you." },
+      { title: "Previous file", target: "directory-previous", fallback: "sessions", instruction: "The left arrow does the same thing in reverse. It is gray at the first file. When Bias Locks is enabled in Settings, a lock replaces this arrow and backward directory navigation is disabled.", unavailable: "Close any dialog and select an open directory recording.", tip: "The buttons follow the directory list order, not the order of open tabs. They do not wrap around at either end." },
+      { title: "Open the full list", target: "directory-header", readyTarget: "directory-list", fallback: "sessions", instruction: "Click the directory name to see all its sessions. Open loads a recording; Resume returns to one already open. Opening from the list keeps other session tabs open, unlike the header arrows.", unavailable: "Load a directory to show its header above the tabs.", tip: "Bias Locks does not block manual selection from this list or switching existing tabs. Close the list when finished." },
+    ],
+  },
+  {
+    id: "bias-locks", topic: "directories", title: "Bias Locks", duration: "1 min", requires: "workspace",
+    description: "Enable or disable the directory Previous button.",
+    steps: [
+      { completeOn: ["settings-opened"], assist: { action: "open-settings", description: "Open Settings without changing any options." }, title: "Open Settings", target: "settings", readyTarget: "settings-dialog", instruction: "Click the gear at the top right to open Settings. Bias Locks is at the top.", unavailable: "Close any other dialog to reach Settings." },
+      { completeOn: ["bias-locks-changed"], title: "Enable or disable Bias Locks", target: "bias-locks", fallback: "settings", instruction: "Set Bias Locks to Enabled to disable the directory Previous button. Set it to Disabled to allow Previous again. Leave it as it is and select Next if you do not want to change the setting.", unavailable: "Open Settings to reach Bias Locks.", tip: "The setting applies across directory tabs and is remembered in this browser. This guide never changes it for you." },
+      { title: "Check the lock icon", target: "directory-previous", fallback: "sessions", instruction: "Close Settings and look at the directory header. When enabled, a lock replaces the left arrow. Next still works unless you are at the last file or a recording is loading.", unavailable: "Close Settings, then load a directory and open a recording to see its navigation buttons.", tip: "Bias Locks only blocks the directory Previous control. It does not block the full session list, switching open tabs, or moving backward in waveform time." },
+    ],
+  },
+  {
     id: "pan-time", topic: "navigate", title: "Move through time", duration: "1 min", requires: "recording",
     description: "Jump, pan, and page without losing your place.",
     steps: [
       { completeOn: ["overview-jumped"], assist: { action: "jump-overview", description: "Jump forward by one window (backward at the end)." }, title: "Jump from the overview", target: "overview", instruction: "Click the Full session overview to jump to a different part of the recording. Its highlighted section shows the current window.", unavailable: "Return to the recording view to see the overview." },
-      { completeOn: ["waveform-panned"], assist: { action: "pan-waveform", description: "Pan by one second." }, title: "Pan the waveform", target: "waveform", instruction: "Use the mouse wheel or trackpad over the waveform to move through time. One-second keys: {shortcut:panLeft} / {shortcut:panRight}. Ten-second keys: {shortcut:panLeftFast} / {shortcut:panRightFast}.", unavailable: "Load a recording and enable at least one channel.", tip: "Keyboard navigation works when you are not typing in a field or focused on a toolbar button. Change shortcuts in Controls." },
+      { completeOn: ["waveform-panned"], assist: { action: "pan-waveform", description: "Pan by one second." }, title: "Pan the waveform", target: "waveform", instruction: "Use the mouse wheel or trackpad over the waveform to move through time. One-second keys: {shortcut:panLeft} / {shortcut:panRight}. Ten-second keys: {shortcut:panLeftFast} / {shortcut:panRightFast}.", unavailable: "Load a recording and enable at least one channel.", tip: "Keyboard navigation works when you are not typing in a field or focused on a toolbar button. Change shortcuts in Settings." },
       { completeOn: ["transport-used"], assist: { action: "page-forward", description: "Move by one window, without starting playback." }, title: "Page or play", target: "transport", instruction: "Use ‹ and › to move by a full window. Play advances through the recording; click Pause when you are done.", unavailable: "Return to the waveform toolbar." },
     ],
   },
