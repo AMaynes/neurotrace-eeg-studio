@@ -125,7 +125,7 @@ test("requires exact pair basenames, never fuzzy matches", () => {
   expectError([fileAt("study/eeg.mat"), fileAt("study/eeg-1.dat")], "mat-dat", "MISSING_PAIR");
 });
 
-test("rejects mixed recording families anywhere in a directory", () => {
+test("selected format filters mixed recording families anywhere in a directory", () => {
   const cases = [
     ["edf", ["one.edf", "nested/two.mat"]],
     ["edf", ["one.edf", "nested/two.dat"]],
@@ -138,16 +138,38 @@ test("rejects mixed recording families anywhere in a directory", () => {
     ["neurotrace", ["one.neurotrace", "nested/two.bdf"]],
   ];
   for (const [format, paths] of cases) {
-    const failure = expectError(paths.map(fileAt), format, "MIXED_FORMATS");
-    assert.equal(failure.paths.length, 1);
-    assert.match(failure.message, /same-format directory/);
+    const files = paths.map(fileAt);
+    const plan = planDirectoryImport(files, format);
+    assert.equal(plan.recordings.length, 1);
+    const expected = format === "mat-dat" ? files.slice(0, 2) : files.slice(0, 1);
+    assert.deepEqual(plan.recordings[0].files, expected);
+    assert.deepEqual(directoryRecordingFiles(plan, plan.recordings[0]), expected);
+    assert.deepEqual(plan.supportingFiles, [], "ignored recordings must not become metadata companions");
   }
 });
 
-test("saved projects and known unsupported waveform formats are not companions", () => {
+test("saved projects and known unsupported waveform formats are ignored, not companions", () => {
   for (const extension of ["neurotrace", "bdf", "set", "nwb", "vhdr", "vmrk", "eeg", "fdt", "mefd"]) {
-    expectError([fileAt("study/one.edf"), fileAt(`study/other.${extension}`)], "edf", "MIXED_FORMATS");
+    const recording = fileAt("study/one.edf");
+    const metadata = fileAt("study/one_events.tsv");
+    const plan = planDirectoryImport([recording, metadata, fileAt(`study/other.${extension}`)], "edf");
+    assert.deepEqual(plan.recordings.map((entry) => entry.primary), [recording]);
+    assert.deepEqual(plan.supportingFiles, [metadata]);
+    assert.deepEqual(directoryRecordingFiles(plan, plan.recordings[0]), [recording, metadata]);
   }
+});
+
+test("ignored recording duplicates do not block the selected format, and no matches fail clearly", () => {
+  const recording = fileAt("study/one.edf");
+  const ignored = [fileAt("study/two.mat"), fileAt("study/TWO.MAT"), fileAt("study/two.dat")];
+  assert.deepEqual(planDirectoryImport([recording, ...ignored], "edf").recordings.map((entry) => entry.primary), [recording]);
+  const failure = expectError(ignored, "edf", "NO_RECORDINGS");
+  assert.match(failure.message, /No EDF \/ EDF\+ recordings/);
+});
+
+test("automatic detection can require one format instead of silently choosing a subset", () => {
+  assert.throws(() => planDirectoryImport([fileAt("study/one.edf"), fileAt("study/two.mat")], "edf", { rejectOtherFormats: true }),
+    (error) => error.code === "MIXED_FORMATS" && /Choose a recording type, then Folder/.test(error.message));
 });
 
 test("rejects duplicate and case-ambiguous paths including partner metadata", () => {

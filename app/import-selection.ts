@@ -10,12 +10,17 @@ function extensionOf(file: File): string {
   return file.name.includes(".") ? file.name.split(".").at(-1)!.toLowerCase() : "";
 }
 
-/** Classify input shape using filenames only. MAT contents are checked on opening. */
-export function classifyRecordingSelection(files: readonly File[], fromDirectory = false): RecordingSelection {
+/**
+ * Classify input shape using filenames only. A chosen folder format filters the
+ * directory; without a choice, automatic detection must not discard recordings.
+ * Ordinary file imports retain their existing routing. Contents are checked on opening.
+ */
+export function classifyRecordingSelection(files: readonly File[], fromDirectory = false, selectedFormat: DirectoryImportFormat | null = null): RecordingSelection {
   const directory = fromDirectory || files.some((file) => Boolean(file.webkitRelativePath));
   if (!files.length && directory) {
     throw new DirectoryImportError("EMPTY_DIRECTORY", "The selected directory is empty. Choose a directory containing recordings.");
   }
+  if (directory && selectedFormat) return { kind: "directory", plan: planDirectoryImport(files, selectedFormat) };
   let edf = 0;
   let mat = 0;
   let dat = 0;
@@ -40,7 +45,7 @@ export function classifyRecordingSelection(files: readonly File[], fromDirectory
       .map((file) => file.webkitRelativePath || file.name);
     throw new DirectoryImportError("MIXED_FORMATS", "Collections support EDF, standalone MAT, matching MAT + DAT pairs, or NeuroTrace projects. Choose a supported type, then Files or Folder. Every session in a collection must use the same format.", paths);
   }
-  return { kind: "directory", plan: planDirectoryImport(files, format) };
+  return { kind: "directory", plan: planDirectoryImport(files, format, { rejectOtherFormats: true }) };
 }
 
 interface DroppedEntry {

@@ -77,7 +77,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
       <header className="directory-sessions-heading">
         <span className="modal-eyebrow">RECORDING DIRECTORY</span>
         <h2 id="directory-sessions-heading">Directory sessions</h2>
-        <p id="directory-sessions-description">Every entry must match the selected recording format. Files stay on this device and open on demand, one session at a time.</p>
+        <p id="directory-sessions-description">Only the selected recording format is listed; other recording types are ignored. Files stay on this device and open on demand, one session at a time.</p>
       </header>
       <div className="directory-sessions-summary" role="status" aria-live="polite">
         <strong>{FORMAT_NAMES[plan.format]}</strong>

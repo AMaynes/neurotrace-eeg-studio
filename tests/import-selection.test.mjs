@@ -76,6 +76,31 @@ test("mixed families are rejected before a first recording can be silently chose
   expectError([fileAt("a.edf"), fileAt("b.dat")], false, "MIXED_FORMATS");
   expectError([fileAt("a.mat"), fileAt("a.dat"), fileAt("b.mat")], false, "MISSING_PAIR");
 });
+
+test("explicit folder formats override automatic detection and exclude other recording types", () => {
+  const files = [fileAt("study/one.edf", true), fileAt("study/two.MAT", true), fileAt("study/two.dat", true),
+    fileAt("study/review.neurotrace", true), fileAt("study/extra.bdf", true), fileAt("study/metadata.json", true)];
+  for (const [format, expected] of [["edf", [files[0]]], ["mat", [files[1]]], ["mat-dat", [files[2]]], ["neurotrace", [files[3]]]]) {
+    for (const fromDirectory of [true, false]) {
+      const result = classifyRecordingSelection(files, fromDirectory, format);
+      assert.equal(result.kind, "directory");
+      assert.equal(result.plan.format, format);
+      assert.deepEqual(result.plan.recordings.map((entry) => entry.primary), expected);
+      assert.deepEqual(result.plan.supportingFiles, [files[5]]);
+    }
+  }
+  const flat = [fileAt("a.mat"), fileAt("a.edf")];
+  assert.equal(classifyRecordingSelection(flat, true, "mat").plan.format, "mat", "directory provenance need not be stored on File objects");
+});
+
+test("a selected folder format with no matches errors instead of silently opening another type or metadata", () => {
+  for (const files of [[fileAt("study/a.mat", true)], [fileAt("study/events.tsv", true)]]) {
+    assert.throws(() => classifyRecordingSelection(files, true, "edf"), (error) => error.code === "NO_RECORDINGS");
+  }
+  assert.throws(() => classifyRecordingSelection([], true, "edf"), (error) => error.code === "EMPTY_DIRECTORY");
+  assert.throws(() => classifyRecordingSelection([fileAt("a.mat"), fileAt("wrong.dat"), fileAt("other.edf")], true, "mat-dat"),
+    (error) => error.code === "MISSING_PAIR");
+});
 test("DAT-only collections require MAT partners but single DAT is preserved", () => {
   expectError([fileAt("a.dat"), fileAt("b.dat")], false, "MISSING_PAIR");
   expectError([fileAt("study/a.dat", true)], false, "MISSING_PAIR");

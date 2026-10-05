@@ -74,8 +74,8 @@ function stageHarness(format = null) {
   state(env, "showImport", false);
   return {
     env, calls,
-    async stage(files, fromDirectory = true) {
-      await handler("handleSelectedRecordingFiles", env)(files, fromDirectory);
+    async stage(files, fromDirectory = true, selectedFormat = null) {
+      await handler("handleSelectedRecordingFiles", env)(files, fromDirectory, selectedFormat);
     },
   };
 }
@@ -105,13 +105,33 @@ test("mixed-directory rejection clears stale staged plans", async () => {
   assert.deepEqual(h.calls, []);
 });
 
-test("detected directory format overrides stale manual format choices", async () => {
+test("automatic detection without an explicit folder format does not reuse stale manual choices", async () => {
   const h = stageHarness("neurotrace");
   await h.stage([unreadableFile("root/session.mat"), unreadableFile("root/session.dat")]);
   assert.equal(h.env.importChoice, "mat-dat");
   assert.equal(h.env.stagedDirectoryPlan.format, "mat-dat");
   assert.equal(h.env.uploadError, null);
   assert.deepEqual(h.calls, []);
+});
+
+test("explicit folder selection keeps the chosen type and never opens ignored recordings", async () => {
+  const files = [unreadableFile("work/session.edf"), unreadableFile("work/session.mat"), unreadableFile("work/session.dat"),
+    unreadableFile("work/review.neurotrace"), unreadableFile("work/session_events.tsv")];
+  for (const [format, primary] of [["edf", files[0]], ["mat", files[1]], ["mat-dat", files[2]], ["neurotrace", files[3]]]) {
+    const h = stageHarness(format);
+    await h.stage(files, true, format);
+    assert.equal(h.env.uploadError, null);
+    assert.equal(h.env.importChoice, format);
+    assert.deepEqual(h.env.stagedDirectoryPlan.recordings.map((entry) => entry.primary), [primary]);
+    assert.deepEqual(h.env.stagedDirectoryPlan.supportingFiles, [files[4]]);
+    assert.deepEqual(h.calls, [], "filtered directory still opens only on demand");
+  }
+  const empty = stageHarness("edf");
+  await empty.stage(files.slice(1), true, "edf");
+  assert.match(empty.env.uploadError.message, /No EDF/);
+  assert.equal(empty.env.stagedDirectoryPlan, null);
+  assert.equal(empty.env.importChoice, "edf");
+  assert.deepEqual(empty.calls, []);
 });
 
 test("single files route to the existing importer while clearing stale directory plans", async () => {
@@ -191,7 +211,7 @@ test("drop routing holds its busy guard through asynchronous discovery and relea
     assert.deepEqual(routed, []);
     finish({ files, directory: true });
     await pending;
-    assert.deepEqual(routed, [[files, true]]);
+    assert.deepEqual(routed, [[files, true, null]]);
   }
 });
 
@@ -244,16 +264,19 @@ test("workspace folder drops reject the entire selection before directory traver
 });
 
 test("explicit dialog folder opt-in collects nested recordings lazily without reading waveform bytes", async () => {
-  const h = stageHarness();
+  const h = stageHarness("edf");
   state(h.env, "importBusy", false);
   h.env.collectDroppedRecordingFiles = collectDroppedRecordingFiles;
   h.env.handleSelectedRecordingFiles = handler("handleSelectedRecordingFiles", h.env);
   const file = new File([new Uint8Array(256)], "signal.edf");
   for (const method of ["arrayBuffer", "text", "slice", "stream"]) file[method] = () => assert.fail("folder discovery must not decode or copy signals");
-  const transfer = transferWithEntries([droppedDirectoryEntry("recordings", [droppedDirectoryEntry("day1", [droppedFileEntry(file)])])]);
+  const ignored = new File([], "signal.mat");
+  ignored.arrayBuffer = () => assert.fail("ignored MAT must not be decoded");
+  const transfer = transferWithEntries([droppedDirectoryEntry("recordings", [droppedDirectoryEntry("day1", [droppedFileEntry(file), droppedFileEntry(ignored)])])]);
   await handler("handleDroppedRecordingFiles", h.env)(transfer, true);
   assert.equal(h.env.stagedDirectoryPlan.recordings.length, 1);
   assert.equal(h.env.stagedDirectoryPlan.recordings[0].primary, file);
+  assert.deepEqual(h.env.stagedDirectoryPlan.supportingFiles, []);
   assert.equal(file.webkitRelativePath, "recordings/day1/signal.edf");
   assert.equal(h.env.uploadError, null);
   assert.deepEqual(h.calls, [], "folder ingestion only creates the session list");

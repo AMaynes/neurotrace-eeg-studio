@@ -6293,13 +6293,13 @@ export default function Home() {
     return result;
   };
 
-  const handleSelectedRecordingFiles = async (files: File[], fromDirectory = false) => {
+  const handleSelectedRecordingFiles = async (files: File[], fromDirectory = false, selectedFormat: DirectoryImportFormat | null = null) => {
     if (importBusyRef.current || (!files.length && !fromDirectory)) return;
     setStagedDirectoryPlan(null);
     directoryConfirmationRef.current = null;
     setUploadError(null);
     try {
-      const selection = classifyRecordingSelection(files, fromDirectory);
+      const selection = classifyRecordingSelection(files, fromDirectory, selectedFormat);
       if (selection.kind === "directory") {
         setPendingDat(null);
         setImportChoice(selection.plan.format);
@@ -6323,11 +6323,12 @@ export default function Home() {
     const fromDirectory = Boolean(event.target.webkitdirectory);
     event.target.value = "";
     if (!files.length) return;
-    void handleSelectedRecordingFiles(files, fromDirectory);
+    void handleSelectedRecordingFiles(files, fromDirectory, fromDirectory ? importChoice : null);
   };
 
   const handleDroppedRecordingFiles = async (transfer: DataTransfer, allowDirectories = false) => {
     if (importBusyRef.current) return;
+    const selectedFormat = allowDirectories ? importChoice : null;
     importBusyRef.current = true;
     setImportBusy(true);
     let selection: { files: File[]; directory: boolean } | null = null;
@@ -6346,7 +6347,7 @@ export default function Home() {
       importBusyRef.current = false;
       setImportBusy(false);
     }
-    if (selection) await handleSelectedRecordingFiles(selection.files, selection.directory);
+    if (selection) await handleSelectedRecordingFiles(selection.files, selection.directory, selectedFormat);
   };
 
   const chooseImportType = (choice: ImportChoice) => {
@@ -8224,18 +8225,18 @@ export default function Home() {
                 <button type="button" className="button" disabled={importBusy} onClick={() => openImportPicker("files")}>Files</button>
                 <button type="button" className="button" data-tutorial="import-folder" disabled={importBusy} onClick={() => openImportPicker("directory")}>Folder</button>
               </div>
-              <p>{importChoice === "mat-dat" ? "Select both matching files for each MAT + DAT pair, or choose their folder." : "Select one or multiple files, or choose a folder to include its subfolders."}</p>
+              <p>{importChoice === "mat-dat" ? "Select both matching files for each MAT + DAT pair, or choose their folder." : "Select one or multiple files, or choose a folder to include its subfolders."} Folders include only the selected recording type; other recording types are ignored.</p>
             </section>}
             <div className="recording-import-drop-hint">
               <strong>{importChoice && importPickerKind === "directory" ? "Or drop a folder here" : "Or drop individual files here"}</strong>
               <p>{importChoice && importPickerKind === "directory"
-                ? "Folder drops are accepted inside this dialog only and include subfolders. All sessions must use one recording format."
+                ? "Folder drops are accepted inside this dialog only and include subfolders. Only the selected recording type is included."
                 : "MAT + DAT pairs are accepted together. For folder drops, choose a recording type, then Folder."} Files stay on this device.</p>
             </div>
             {stagedDirectoryPlan && <section className="guided-import" aria-label="Detected session collection">
               <header>
                 <div><strong>Session collection detected</strong>
-                  <span>The recording format was detected automatically. All sessions must use the same format.</span></div>
+                  <span>Only recordings matching the collection format are included. Other recording types are ignored when you choose a folder format.</span></div>
                 <b>{importBusy ? "Opening…" : "Detected"}</b>
               </header>
               <div className="directory-import-summary" role="status">

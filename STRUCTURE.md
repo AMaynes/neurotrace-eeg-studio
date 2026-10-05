@@ -11,7 +11,7 @@ neurotrace-eeg-studio/
 │   └── hosting.json — Retains the legacy Sites project identifier and optional logical storage bindings.
 ├── app/
 │   ├── bids-companions.ts — Catalogs selected files and resolves matching BIDS JSON/TSV metadata, tables, channels, and events.
-│   ├── directory-import.ts — Discovers all same-format sessions without reading signal bytes; validates pairs and scopes companions.
+│   ├── directory-import.ts — Filters folders by the chosen recording type without reading signal bytes; validates pairs and scopes companions.
 │   ├── import-selection.ts — Automatically routes files versus collections and enumerates dropped folders without reading waveform bytes.
 │   ├── directory-sessions.tsx / directory-sessions.css — Paginated directory catalog, event-label search, keyword presets, and lazy open/resume/retry actions.
 │   ├── directory-event-client.ts / directory-event-worker.ts / directory-event-index.ts — Cancellable, sequential local metadata checks, per-catalog cache, and literal label matching; never opens waveforms or hashes sources.

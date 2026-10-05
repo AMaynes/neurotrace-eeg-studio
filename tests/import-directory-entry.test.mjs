@@ -360,18 +360,18 @@ test("backdrop and Escape close paths reset the explicit folder-drop choice", ()
   assert.equal(ui.env.importPickerKind, null);
 });
 
-test("actual input handler snapshots files and folder provenance before clearing the chooser", async () => {
+test("actual input handler preserves the folder format and snapshots files before clearing the chooser", async () => {
   for (const fromDirectory of [false, true]) {
     const files = [{ name: "one.edf" }, { name: "two.edf" }];
     const routed = [];
     const target = { files, webkitdirectory: fromDirectory, value: "chosen-path" };
-    await handler("stageDetectedImport", { handleSelectedRecordingFiles: (selected, isDirectory) => {
+    await handler("stageDetectedImport", { importChoice: "edf", handleSelectedRecordingFiles: (selected, isDirectory, format) => {
       assert.equal(target.value, "");
       assert.notEqual(selected, files, "snapshot the live chooser list");
-      routed.push([selected, isDirectory]);
+      routed.push([selected, isDirectory, format]);
     } })({ target });
     assert.equal(target.value, "");
-    assert.deepEqual(routed, [[files, fromDirectory]]);
+    assert.deepEqual(routed, [[files, fromDirectory, fromDirectory ? "edf" : null]]);
   }
 });
 

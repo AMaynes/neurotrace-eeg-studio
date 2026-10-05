@@ -52,13 +52,13 @@ interface DirectoryFile {
 }
 
 const FORMAT_LABELS: Record<DirectoryImportFormat, string> = {
-  edf: "EDF-only",
-  mat: "standalone MAT-only",
+  edf: "EDF / EDF+",
+  mat: "standalone MAT",
   "mat-dat": "paired MAT + DAT",
   neurotrace: "NeuroTrace",
 };
 
-// Recognizable non-selected waveform/project files are not harmless metadata.
+// Non-selected waveform/project files are ignored, never attached as metadata.
 // Unknown extensions remain available to the existing companion cataloguer.
 const RECORDING_EXTENSIONS = new Set([
   "edf", "mat", "dat", "neurotrace", "bdf", "set", "nwb", "vhdr", "vmrk", "eeg", "fdt", "mefd",
@@ -102,15 +102,28 @@ function recordingEntry(primary: DirectoryFile, files: File[]): DirectoryRecordi
  * Discover every recording recursively from a browser directory selection.
  * MAT + DAT pairing requires the same relative folder and basename (ignoring
  * case); a similarly named file in another directory is never a substitute.
- * Reject the entire selection on ambiguity or mixed recording families, before
+ * The chosen format filters out other recording families. Automatic detection
+ * opts into rejecting mixed families so it cannot silently choose a subset.
+ * Ambiguous selected paths and incomplete MAT + DAT pairs still fail before
  * opening any source. Non-recording companions are shared separately on the plan.
  */
-export function planDirectoryImport(files: readonly File[], format: DirectoryImportFormat): DirectoryImportPlan {
+export function planDirectoryImport(files: readonly File[], format: DirectoryImportFormat, options: { rejectOtherFormats?: boolean } = {}): DirectoryImportPlan {
   if (!files.length) {
     throw new DirectoryImportError("EMPTY_DIRECTORY", "The selected directory is empty. Choose a directory containing recordings.");
   }
 
-  const entries = files.map(describeFile).sort(comparePaths);
+  const allowed = new Set(format === "mat-dat" ? ["mat", "dat"] : [format]);
+  const described = files.map(describeFile).sort(comparePaths);
+  const incompatible = described.filter((entry) => RECORDING_EXTENSIONS.has(entry.extension) && !allowed.has(entry.extension));
+  if (options.rejectOtherFormats && incompatible.length) {
+    const paths = incompatible.map((entry) => entry.path);
+    throw new DirectoryImportError(
+      "MIXED_FORMATS",
+      `This selection contains mixed recording formats: ${describePaths(paths)} do not match ${FORMAT_LABELS[format]}. Choose a recording type, then Folder to include only that type.`,
+      paths,
+    );
+  }
+  const entries = described.filter((entry) => allowed.has(entry.extension) || !RECORDING_EXTENSIONS.has(entry.extension));
   const byPath = new Map<string, DirectoryFile>();
   for (const entry of entries) {
     const previous = byPath.get(entry.key);
@@ -122,17 +135,6 @@ export function planDirectoryImport(files: readonly File[], format: DirectoryImp
       );
     }
     byPath.set(entry.key, entry);
-  }
-
-  const allowed = new Set(format === "mat-dat" ? ["mat", "dat"] : [format]);
-  const incompatible = entries.filter((entry) => RECORDING_EXTENSIONS.has(entry.extension) && !allowed.has(entry.extension));
-  if (incompatible.length) {
-    const paths = incompatible.map((entry) => entry.path);
-    throw new DirectoryImportError(
-      "MIXED_FORMATS",
-      `This directory must contain ${FORMAT_LABELS[format]} ${format === "neurotrace" ? "projects" : "recordings"} only. Incompatible recording files: ${describePaths(paths)}. Choose a same-format directory; metadata companions such as JSON and TSV are allowed.`,
-      paths,
-    );
   }
 
   const sources = entries.filter((entry) => allowed.has(entry.extension));
