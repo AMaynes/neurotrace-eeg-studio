@@ -228,7 +228,7 @@ test("stages a unit-aware window amount until Sync applies it", async () => {
   const gainStart = page.indexOf('<div className="gain-control"', controlsEnd);
   const gainEnd = page.indexOf('<div className="toolbar-spacer"', gainStart);
   const gainControls = page.slice(gainStart, gainEnd);
-  assert.match(gainControls, /<b>\{gain\.toFixed\(1\)\}×<\/b>[\s\S]*?className="gain-step-buttons"[\s\S]*?aria-label="Increase gain"[\s\S]*?aria-label="Decrease gain"/, "gain plus/minus controls are stacked to the right of its value");
+  assert.match(gainControls, /aria-label="Gain multiplier"[\s\S]*?min=\{MIN_DISPLAY_GAIN\} max=\{MAX_DISPLAY_GAIN\}[\s\S]*?className="gain-step-buttons"[\s\S]*?aria-label="Increase gain"[\s\S]*?aria-label="Decrease gain"/, "editable gain and stacked plus/minus controls precede the trace toggle");
   const traceTogglePosition = gainControls.indexOf("trace-display-toggle");
   assert.ok(traceTogglePosition > gainControls.indexOf("gain-control"), "the trace display toggle sits immediately after gain");
   assert.match(gainControls, /aria-label="Allow channel traces to overlap"[\s\S]*?aria-pressed=\{traceDisplayMode === "overlap"\}/);

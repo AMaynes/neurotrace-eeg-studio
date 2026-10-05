@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { MAX_DISPLAY_GAIN, stepDisplayGain } from "../app/display-gain.ts";
 
 // Execute the actual page-owned command handler without file, annotation, or save APIs.
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
@@ -21,6 +22,7 @@ function fixture(overrides = {}) {
   const buttons = new Map();
   const values = { labelsVisible: true };
   const state = {
+    MAX_DISPLAY_GAIN, stepDisplayGain,
     showDirectorySessions: false, showEphysLabelPicker: false, showSettings: false, showChannels: false, showImport: false,
     showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
     queueDetailEntry: null, confirmCommit: [], hasRecording: true, activeSessionContentView: "recording",
@@ -127,4 +129,12 @@ test("zoom assistance preserves the center and refuses to falsely complete at mi
   const minimum = fixture({ timebase: 0.01 });
   assert.equal(minimum.assist("zoom-waveform"), false);
   assert.deepEqual(minimum.changes, []);
+});
+
+test("gain tutorial stays actionable at both new gain limits", () => {
+  for (const [gain, expected] of [[0.01, 0.02], [4, 3.2]]) {
+    const ui = fixture({ gain });
+    assert.equal(ui.assist("increase-gain"), true);
+    assert.deepEqual(ui.changes, [["changeZoomView", { gain: expected }]]);
+  }
 });

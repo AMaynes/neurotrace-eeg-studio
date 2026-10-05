@@ -458,7 +458,11 @@ textarea:focus-visible {
 .panel-toggle > b { font-weight: 650; }
 .gain-control { height: 40px; display: flex; align-items: center; gap: 5px; padding: 0 4px 0 8px; border: 1px solid #263d45; border-radius: 5px; background: #102027; }
 .gain-control button { width: 21px; height: 15px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 2px; background: #192b32; color: #b9c9ca; cursor: pointer; font-size: 11px; line-height: 1; }
-.gain-control b { min-width: 25px; text-align: center; color: #d3e0e0; font-size: 8px; }
+.gain-amount-field { display: flex; align-items: center; gap: 2px; color: #d3e0e0; }
+.gain-amount-field input { width: 42px; min-width: 0; height: 24px; padding: 2px; border: 1px solid #395159; border-radius: 3px; background: #09191e; color: inherit; text-align: right; font: 10px ui-monospace, monospace; appearance: textfield; }
+.gain-amount-field input::-webkit-inner-spin-button,
+.gain-amount-field input::-webkit-outer-spin-button { margin: 0; appearance: none; }
+.gain-control b { text-align: center; color: #d3e0e0; font-size: 8px; }
 .gain-step-buttons { display: flex; flex-direction: column; gap: 1px; }
 .trace-display-toggle { height: 40px; min-width: 72px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; border: 1px solid #263d45; border-radius: 5px; background: #102027; color: #afc1c4; cursor: pointer; }
 .trace-display-toggle > span { color: #7e999f; font-size: 15px; line-height: 1; }

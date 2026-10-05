@@ -64,6 +64,9 @@ test("conflicts account for focus, history precedence, and input editing", () =>
   assert.ok(shortcutRestriction("ArrowLeft", "windowApply"));
   assert.ok(shortcutRestriction("1", "windowApply"));
   assert.equal(shortcutRestriction("Alt+Enter", "windowApply"), null);
+  assert.ok(shortcutRestriction("1", "gainApply"));
+  assert.ok(shortcutRestriction("ArrowUp", "gainApply"));
+  assert.equal(shortcutRestriction("Alt+Enter", "gainApply"), null);
 });
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");

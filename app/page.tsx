@@ -108,6 +108,7 @@ import type { TutorialTopic } from "./tutorials";
 import { notifyTutorialAction, type TutorialAssistAction } from "./tutorial-events";
 import { useTutorialMilestones } from "./tutorial-progress";
 import { recordZoomChange, type ZoomView, type ZoomHistoryEntry, type ZoomGestureState, type SpectrogramFrequencyRange } from "./zoom-history";
+import { MAX_DISPLAY_GAIN, MIN_DISPLAY_GAIN, normalizeDisplayGain, stepDisplayGain } from "./display-gain";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -2441,7 +2442,7 @@ export default function Home() {
     setTimebase(snapshot.timebase);
     setWindowDraftUnit("s");
     setWindowDraftValue(null);
-    setGain(snapshot.gain);
+    setGain(normalizeDisplayGain(snapshot.gain));
     setTraceDisplayMode(snapshot.traceDisplayMode ?? "clamped");
     setMontage(snapshot.montage);
     setFilters({ ...snapshot.filters });
@@ -2629,6 +2630,7 @@ export default function Home() {
   }, []);
 
   const applyZoomView = useCallback((view: ZoomView) => {
+    view = { ...view, gain: normalizeDisplayGain(view.gain) };
     cancelPendingViewFrames();
     if (view.timebase !== zoomViewRef.current.timebase) setWindowDraftValue(null);
     zoomViewRef.current = view;
@@ -2647,8 +2649,16 @@ export default function Home() {
     if (!hasRecording) return;
     const before = readZoomView();
     const after = { ...before, ...patch };
+    after.gain = normalizeDisplayGain(after.gain, before.gain);
     if (recordZoomChange(undoRef.current, redoRef.current, before, after, zoomGestureRef.current, group)) applyZoomView(after);
   }, [applyZoomView, hasRecording, readZoomView]);
+
+  const commitGainInput = (input: HTMLInputElement) => {
+    // Commit once on blur, leaving partial decimal typing and native text undo alone.
+    const next = input.value.trim() ? normalizeDisplayGain(Number(input.value), gain) : gain;
+    input.value = String(next);
+    changeZoomView({ gain: next });
+  };
 
   const setTimeWindow = useCallback((requested: number, anchorTime?: number, group?: string) => {
     const current = readZoomView();
@@ -5925,7 +5935,7 @@ export default function Home() {
         0,
         Math.max(0, durationSec - restoredTimebase),
       ));
-      if (typeof workspace.gain === "number" && Number.isFinite(workspace.gain) && workspace.gain > 0) setGain(workspace.gain);
+      if (typeof workspace.gain === "number" && Number.isFinite(workspace.gain) && workspace.gain > 0) setGain(normalizeDisplayGain(workspace.gain));
       if (workspace.traceDisplayMode === "clamped" || workspace.traceDisplayMode === "overlap") {
         setTraceDisplayMode(workspace.traceDisplayMode);
       }
@@ -7403,7 +7413,7 @@ export default function Home() {
       case "enable-waveform-zoom": return boxZoomActive || clickControl("waveform-zoom");
       case "disable-waveform-zoom": return !boxZoomActive || clickControl("waveform-zoom");
       case "open-channels": setShowChannels(true); return true;
-      case "increase-gain": changeZoomView({ gain: gain >= 8 ? gain / 1.25 : Math.min(8, gain * 1.25) }); return true;
+      case "increase-gain": changeZoomView({ gain: stepDisplayGain(gain, gain >= MAX_DISPLAY_GAIN ? -1 : 1) }); return true;
       case "toggle-clamp": return clickControl("clamp");
       case "open-filters": setShowFilters(true); return true;
       case "open-spectrogram": setSpectrogramOpen(true); return true;
@@ -7762,7 +7772,31 @@ export default function Home() {
               </div>
               <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
             </div>
-            <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain"><span>Gain</span><b>{gain.toFixed(1)}×</b><div className="gain-step-buttons"><button disabled={!hasRecording} aria-label="Increase gain" title="Increase gain" onClick={() => changeZoomView({ gain: Math.min(8, gain * 1.25) })}>+</button><button disabled={!hasRecording} aria-label="Decrease gain" title="Decrease gain" onClick={() => changeZoomView({ gain: Math.max(0.25, gain / 1.25) })}>−</button></div></div>
+            <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain">
+              <span>Gain</span>
+              <label className="gain-amount-field"><input
+                key={`${activeSessionId}:${sessionKey}:${gain}`}
+                disabled={!hasRecording}
+                aria-label="Gain multiplier"
+                title={`Gain 0.01–4× · ${shortcutHint(controlBindings, "gainApply")} or leave the field to apply · ${shortcutHint(controlBindings, "clear")} to cancel`}
+                type="number" min={MIN_DISPLAY_GAIN} max={MAX_DISPLAY_GAIN} step="0.01"
+                defaultValue={gain}
+                onBlur={(event) => commitGainInput(event.currentTarget)}
+                onKeyDown={(event) => {
+                  const apply = matchesShortcut(event, controlBindings, "gainApply");
+                  const cancel = matchesShortcut(event, controlBindings, "clear");
+                  if (!apply && !cancel) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (cancel) event.currentTarget.value = String(gain);
+                  event.currentTarget.blur();
+                }}
+              /><b aria-hidden="true">×</b></label>
+              <div className="gain-step-buttons">
+                <button disabled={!hasRecording || gain >= MAX_DISPLAY_GAIN} aria-label="Increase gain" title="Increase gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, 1) })}>+</button>
+                <button disabled={!hasRecording || gain <= MIN_DISPLAY_GAIN} aria-label="Decrease gain" title="Decrease gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, -1) })}>−</button>
+              </div>
+            </div>
             <button
               className={`trace-display-toggle ${traceDisplayMode === "overlap" ? "active" : ""}`}
               data-tutorial="clamp"

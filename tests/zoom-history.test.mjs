@@ -5,6 +5,7 @@ import ts from "typescript";
 import { recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
 import { composeVerticalViewport } from "../app/waveform-viewport.ts";
 import { DEFAULT_CONTROLS, shortcutAction } from "../app/shortcuts.ts";
+import { normalizeDisplayGain } from "../app/display-gain.ts";
 
 const initialView = () => ({
   viewStart: 30, timebase: 20, gain: 1, verticalViewport: null,
@@ -80,7 +81,7 @@ function workspace(overrides = {}) {
   };
   const changes = [], canceled = [];
   const scope = {
-    ...refs, recordZoomChange, useCallback: (callback) => callback,
+    ...refs, recordZoomChange, normalizeDisplayGain, useCallback: (callback) => callback,
     hasRecording: true, meta: { durationSec: 300 }, minimumRenderableWindow: 0.1,
     timebase: 20, WINDOW_ZOOM_STEP_SECONDS: 0.1,
     clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
@@ -141,6 +142,26 @@ test("a two-axis box is one undo step, and zoom reset/gain/frequency changes joi
   ui.zoomToTimeRange(32, 38, { frequencyRange: { min: 10, max: 30 } });
   assert.equal(ui.refs.undoRef.current.length, 1);
   ui.undo(); assert.deepEqual(ui.readZoomView(), original, "spectrogram time and frequency undo together");
+});
+
+test("gain endpoints and exact entries share history; invalid values and bounded no-ops preserve redo", () => {
+  const ui = workspace();
+  for (const gain of [0.01, 0.73, 4]) ui.changeZoomView({ gain });
+  assert.equal(ui.refs.undoRef.current.length, 3);
+  ui.changeZoomView({ gain: 8 });
+  assert.equal(ui.refs.undoRef.current.length, 3, "upper-bound button is a no-op");
+  ui.undo(); assert.equal(ui.readZoomView().gain, 0.73);
+  ui.changeZoomView({ gain: NaN });
+  assert.equal(ui.refs.redoRef.current.length, 1);
+  ui.redo(); assert.equal(ui.readZoomView().gain, 4);
+  ui.undo(); ui.undo(); assert.equal(ui.readZoomView().gain, 0.01);
+  ui.undo(); assert.equal(ui.readZoomView().gain, 1);
+  ui.redo(); assert.equal(ui.readZoomView().gain, 0.01);
+  ui.changeZoomView({ gain: 0 });
+  assert.equal(ui.refs.redoRef.current.length, 2, "lower-bound no-op preserves redo");
+  ui.applyZoomView({ ...initialView(), gain: 8 });
+  assert.equal(ui.readZoomView().gain, 4, "old history cannot restore unsupported gain");
+  assert.deepEqual(ui.changes.filter(([name]) => name === "setGain").at(-1), ["setGain", 4]);
 });
 
 test("viewport boundaries create no-op history; new zooms clear redo and can run during verification", () => {

@@ -56,6 +56,7 @@ export const SHORTCUTS = [
   { id: "coachDownFast", scope: "coach", label: "Move walkthrough down 40 px", keys: ["Shift+ArrowDown"] },
   { id: "coachReset", scope: "coach", label: "Reset walkthrough position", keys: ["Home"] },
   { id: "windowApply", scope: "windowInput", label: "Apply time-window amount", keys: ["Enter"] },
+  { id: "gainApply", scope: "gainInput", label: "Apply gain multiplier", keys: ["Enter"] },
 ] as const;
 
 export type ShortcutAction = typeof SHORTCUTS[number]["id"];
@@ -66,7 +67,7 @@ export const SHORTCUT_GROUPS: { scopes: ShortcutScope[]; title: string; note: st
   { scopes: ["workspace", "viewer", "waveform"], title: "Viewer, labels & history", note: "Viewer shortcuts work outside fields and toolbar buttons. Undo/redo also work from the spectrogram and walkthrough; undo without Ctrl/⌘ cancels a pending ictal onset first. Waveform commit shortcuts require waveform focus." },
   { scopes: ["spectrogram"], title: "Spectrogram", note: "Click or focus the spectrogram plot first." },
   { scopes: ["sessionTabs", "tutorialTabs"], title: "Session & tutorial tabs", note: "Focus a tab in the corresponding tab strip first." },
-  { scopes: ["queueResize", "spectrogramResize", "windowInput"], title: "Panel sizing & time window", note: "Focus the corresponding divider or Window input first." },
+  { scopes: ["queueResize", "spectrogramResize", "windowInput", "gainInput"], title: "Panel sizing, time window & gain", note: "Focus the corresponding divider, Window input, or Gain input first. Gain also applies when leaving its field; Clear selection cancels an uncommitted gain entry without clearing viewer selections." },
   { scopes: ["coach"], title: "Walkthrough positioning", note: "Focus the walkthrough’s Move handle first. Placement still avoids covering the highlighted target." },
 ];
 
@@ -132,7 +133,7 @@ export function shortcutConflict(bindings: ControlBindings, action: ShortcutActi
 export function shortcutRestriction(chord: string, action: ShortcutAction): string | null {
   if (/^Mod\+(?:Shift\+)?(?:[acflnqrtvw]|Space)$/.test(chord) || /^Alt\+(?:F4|ArrowLeft|ArrowRight)$/.test(chord) || chord === "F5" || chord === "F11" || chord === "F12") return "That combination is reserved by the browser or system. Choose another.";
   const typingKey = chord.split("+").at(-1)!;
-  if (action === "windowApply" && !/^(Mod|Alt)\+/.test(chord) && typingKey !== "Enter" && !/^F\d+$/.test(typingKey)) return "Choose Enter, a function key, or Ctrl/⌘/Alt combination so you can still type a window amount.";
+  if (["windowApply", "gainApply"].includes(action) && !/^(Mod|Alt)\+/.test(chord) && typingKey !== "Enter" && !/^F\d+$/.test(typingKey)) return "Choose Enter, a function key, or Ctrl/⌘/Alt combination so you can still type an amount.";
   if (["undo", "redo", "clear"].includes(action) && /^(Shift\+)?(Enter|Space)$/.test(chord)) return "Enter and Space activate focused buttons. Use a modifier combination for workspace-wide shortcuts.";
   return null;
 }

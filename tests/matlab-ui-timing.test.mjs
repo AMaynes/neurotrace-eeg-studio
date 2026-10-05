@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { edfRecordingLabels, recordingLabelAnnotations, validRecordingLabel } from "../app/recording-labels.ts";
+import { normalizeDisplayGain } from "../app/display-gain.ts";
 
 const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -223,7 +224,7 @@ test("loading a source or applying a session snapshot clears the previous record
   for (const name of ["loadSource", "applySessionSnapshot"]) {
     const callback = variables.get(name).initializer.arguments[0];
     const setters = new Map();
-    const env = { sourceMeta: pure.sourceMeta, EMPTY_DISPLAY: {}, activeSessionId: "next-session",
+    const env = { sourceMeta: pure.sourceMeta, normalizeDisplayGain, EMPTY_DISPLAY: {}, activeSessionId: "next-session",
       emptyBidsCompanionBundle: () => ({}), DEFAULT_FILTERS: { enabled: false },
       window: { cancelAnimationFrame() {} }, commitViewStart() {}, storeActiveSession() {}, cancelPendingViewFrames() {} };
     function bindings(node) {
@@ -243,8 +244,10 @@ test("loading a source or applying a session snapshot clears the previous record
     if (name === "applySessionSnapshot") {
       const snapshot = pure.blankSessionSnapshot({ meta }, "next-session");
       snapshot.hasRecording = true;
+      snapshot.gain = 8;
       env.snapshot = snapshot;
       evaluate(`const transition = ${callback.getText(ast)};`, "transition(snapshot)", env);
+      assert.deepEqual(setters.get("setGain"), [4], "old session gains respect the new maximum");
     } else {
       // Execute every real installation statement before asynchronous file
       // verification begins; there is no file/network work in this harness.
