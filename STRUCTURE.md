@@ -13,7 +13,9 @@ neurotrace-eeg-studio/
 │   ├── bids-companions.ts — Catalogs selected files and resolves matching BIDS JSON/TSV metadata, tables, channels, and events.
 │   ├── directory-import.ts — Discovers all same-format sessions without reading signal bytes; validates pairs and scopes companions.
 │   ├── import-selection.ts — Automatically routes files versus collections and enumerates dropped folders without reading waveform bytes.
-│   ├── directory-sessions.tsx / directory-sessions.css — Paginated directory catalog with lazy open/resume/retry actions.
+│   ├── directory-sessions.tsx / directory-sessions.css — Paginated directory catalog, event-label search, keyword presets, and lazy open/resume/retry actions.
+│   ├── directory-event-client.ts / directory-event-worker.ts / directory-event-index.ts — Cancellable, sequential local metadata checks, per-catalog cache, and literal label matching; never opens waveforms or hashes sources.
+│   ├── mat-event-reader.ts — Bounded Level-5 traversal for the directory index; skips waveform payloads and streams compression, passing only known event subtrees to the production MAT decoder.
 │   ├── chatgpt-auth.ts — Provides optional ChatGPT-host authentication helpers; unused by the public GitHub build.
 │   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.
 │   ├── globals.css — Defines the shared NeuroTrace visual system and responsive workspace layout.
@@ -46,7 +48,7 @@ neurotrace-eeg-studio/
 │   └── og.png — Provides the NeuroTrace social-preview image.
 ├── tests/
 │   ├── bids-companions.test.mjs — Verifies BIDS inheritance, TSV decoding, event/channel discovery, and additive file selection.
-│   ├── directory-*.test.mjs — Verify directory planning, metadata isolation, paginated catalog controls, and actual import/tab handlers using synthetic recordings.
+│   ├── directory-*.test.mjs — Verify directory planning, metadata-only label scans, worker cancellation/cache, search/presets/pagination, session isolation, and actual import/tab handlers using synthetic recordings.
 │   ├── eeg-integrity.test.mjs — Verifies EDF+ annotation decoding and montage safety.
 │   ├── neurotrace-project.test.mjs — Verifies project archives, manifests, binary preservation, and custom-definition safety.
 │   ├── pages-release.test.mjs — Verifies the static Pages artifact and relative runtime assets.

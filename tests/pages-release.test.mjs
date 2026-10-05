@@ -86,7 +86,7 @@ test("MATLAB processing workers are bundled and resolve under a GitHub Pages pro
     readFile(new URL(`assets/${name}`, releaseRoot), "utf8")))).join("\n");
   const relativeUrlReferences = [...entrySource.matchAll(/new URL\(\s*["'`]([^"'`]+)["'`]\s*,\s*import\.meta\.url/g)]
     .map((match) => match[1]);
-  for (const stem of ["matlab-display-worker", "matlab-spectrogram-worker", "file-window-worker"]) {
+  for (const stem of ["matlab-display-worker", "matlab-spectrogram-worker", "file-window-worker", "directory-event-worker"]) {
     const matches = assetNames.filter((name) => name.startsWith(`${stem}-`) && name.endsWith(".js"));
     assert.equal(matches.length, 1, `${stem} must be emitted exactly once`);
     const name = matches[0];

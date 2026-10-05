@@ -22,6 +22,7 @@ import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
 import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
 import { ANATOMICAL_EXCLUDED_GROUPS, bipolarMontageKind, scalpBipolarPairs, type BipolarMontageKind, type BipolarPair } from "./bipolar-montage.ts";
 import { decodeMatRecordingLabels, type RecordingLabel } from "./recording-labels.ts";
+import { visitMatEventMatrices } from "./mat-event-reader.ts";
 
 export type RecordingFormat =
   | "demo"
@@ -1844,6 +1845,21 @@ function matRecordingLabels(context: MatParseContext) {
  */
 export async function parseLegacyMatMetadata(file: File): Promise<LegacyMatMetadata> {
   return legacyMetadataFromContext(await loadMatV5Context(file));
+}
+
+/** Metadata-only directory search; skips numeric waveforms and retains valid partial results on failure. */
+export async function indexMatRecordingLabels(file: File) {
+  const context: MatParseContext = { littleEndian: true, numeric: [], strings: [], structures: [], warnings: [] };
+  try {
+    await visitMatEventMatrices(file, async (bytes, prefix, littleEndian) => {
+      context.littleEndian = littleEndian;
+      await parseMatMatrix(bytes, context, prefix, 0);
+    });
+  } catch (error) {
+    context.warnings.push(error instanceof Error ? error.message : "MAT event metadata could not be checked.");
+  }
+  const decoded = matRecordingLabels(context);
+  return { labels: [...new Set(decoded.labels.map((label) => label.label))], warnings: [...context.warnings, ...decoded.warnings] };
 }
 
 /**

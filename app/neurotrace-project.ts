@@ -98,6 +98,8 @@ export type ImportedNeurotraceProject = {
   customToolFiles: File[];
   review: unknown | null;
   workspace: unknown | null;
+  /** Opt-in metadata for directory label search; definitions remain inert. */
+  labelDefinitions?: unknown;
 };
 
 type ZipContent = string | Uint8Array | Blob;
@@ -556,7 +558,7 @@ async function readProjectJson(file: File, entries: Map<string, StoredZipEntry>,
 }
 
 /** Reads a versioned, stored-ZIP `.neurotrace` project without copying large recordings into memory. */
-export async function readNeurotraceProjectArchive(file: File): Promise<ImportedNeurotraceProject> {
+export async function readNeurotraceProjectArchive(file: File, options: { labelDefinitions?: boolean } = {}): Promise<ImportedNeurotraceProject> {
   const entries = await storedZipDirectory(file);
   const rawManifest = await readProjectJson(file, entries, "manifest.json");
   if (!rawManifest || typeof rawManifest !== "object" || Array.isArray(rawManifest)) {
@@ -633,5 +635,6 @@ export async function readNeurotraceProjectArchive(file: File): Promise<Imported
     customToolFiles,
     review: await readProjectJson(file, entries, manifest.sections.review),
     workspace: await readProjectJson(file, entries, manifest.sections.workspace),
+    ...(options.labelDefinitions ? { labelDefinitions: await readProjectJson(file, entries, manifest.sections.labelDefinitions) } : {}),
   };
 }

@@ -7104,6 +7104,8 @@ export default function Home() {
         event.stopPropagation();
         return;
       }
+      // The keyword picker closes first; a second Escape dismisses its directory dialog.
+      if (event.key === "Escape" && target?.closest("[data-shortcut-scope='directory-keywords']")) return;
       if (clearShortcut && modalOpen && (!editingTarget || event.key === "Escape")) {
         event.preventDefault();
         if (confirmCommit.length) {
