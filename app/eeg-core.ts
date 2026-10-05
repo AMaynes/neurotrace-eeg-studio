@@ -21,6 +21,7 @@ import { Mat73WorkerClient } from "./mat73-worker-client.ts";
 import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
 import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
 import { ANATOMICAL_EXCLUDED_GROUPS, bipolarMontageKind, scalpBipolarPairs, type BipolarMontageKind, type BipolarPair } from "./bipolar-montage.ts";
+import { decodeMatRecordingLabels, type RecordingLabel } from "./recording-labels.ts";
 
 export type RecordingFormat =
   | "demo"
@@ -102,6 +103,8 @@ export interface SignalSource {
   readonly meta: RecordingMeta;
   /** Release an unopened/rejected worker-backed source. */
   dispose?(): void;
+  /** Known recording-system labels; never implies machine versus human authorship. */
+  readonly recordingLabels?: readonly RecordingLabel[];
   getWindow(
     startSec: number,
     durationSec: number,
@@ -1077,6 +1080,7 @@ export interface RawDatSourceOptions {
   name?: string;
   warnings?: readonly string[];
   assumptions?: readonly string[];
+  recordingLabels?: readonly RecordingLabel[];
 }
 
 function expandPerChannel(
@@ -1098,6 +1102,7 @@ function expandPerChannel(
 
 export class RawDatSource implements SignalSource {
   readonly meta: RecordingMeta;
+  readonly recordingLabels: readonly RecordingLabel[];
   private readonly file: File;
   private readonly scale: number[];
   private readonly physicalOffset: number[];
@@ -1120,6 +1125,7 @@ export class RawDatSource implements SignalSource {
       }
     }
     this.file = file;
+    this.recordingLabels = options.recordingLabels ?? [];
     this.scale = expandPerChannel(options.physicalScale, options.channelCount, 1, "physicalScale");
     this.physicalOffset = expandPerChannel(options.physicalOffset, options.channelCount, 0, "physicalOffset");
     const bytesPerFrame = options.channelCount * 2;
@@ -1352,6 +1358,8 @@ export interface LegacyMatMetadata {
   channelEntryCount?: number;
   channelLabels: string[];
   events: Array<{ label: string; timeSec: number }>;
+  /** All occurrences, including non-seizure labels and extended intervals. */
+  recordingLabels: RecordingLabel[];
   warnings: string[];
 }
 
@@ -1772,8 +1780,61 @@ function canonicalMatPath(path: string): string {
 }
 
 function legacyEventIndex(path: string, field: "label" | "times"): number | undefined {
-  const match = new RegExp(`(?:^|\\.)events(?:\\[(\\d+)\\])?\\.${field}(?:\\[\\d+\\])?$`, "i").exec(path);
+  const match = new RegExp(`(?:^|\\.)sessionInfo(?:\\[\\d+\\])?\\.sFile(?:\\[\\d+\\])?\\.events(?:\\[(\\d+)\\])?\\.${field}(?:\\[\\d+\\])?$`, "i").exec(path);
   return match ? Number(match[1] ?? 0) : undefined;
+}
+
+/** Decode only the known sFile event schema, never unrelated arrays named events. */
+function matRecordingLabels(context: MatParseContext) {
+  const labels: RecordingLabel[] = [];
+  const warnings: string[] = [];
+  const labelByGroup = new Map<number, string>();
+  const numericByPath = new Map(context.numeric.map((item) => [item.name.toLowerCase(), item]));
+  const textByField = new Map<string, Array<{ occurrence: number; values: string[] }>>();
+  for (const descriptor of context.strings) {
+    const group = legacyEventIndex(descriptor.name, "label");
+    if (group !== undefined) labelByGroup.set(group, descriptor.values.find((value) => value.trim())?.trim() ?? "");
+    const field = /^(.*\.(?:channels|notes))((?:\[\d+\])*)$/i.exec(descriptor.name);
+    if (field) {
+      const key = field[1].toLowerCase();
+      const entries = textByField.get(key) ?? [];
+      entries.push({ occurrence: Number(/\[(\d+)\]/.exec(field[2])?.[1] ?? 0), values: descriptor.values });
+      textByField.set(key, entries);
+    }
+  }
+  for (const descriptor of context.numeric) {
+    const groupIndex = legacyEventIndex(descriptor.name, "times");
+    if (groupIndex === undefined || !descriptor.elementCount) continue;
+    const prefix = descriptor.name.replace(/\.times(?:\[\d+\])?$/i, "");
+    const epoch = numericByPath.get(`${prefix}.epochs`.toLowerCase());
+    // Index optional notes/channel cells once, rather than rescanning metadata
+    // for every marker in large event groups.
+    const textByOccurrence = (field: "channels" | "notes") => {
+      const result = new Map<number, string[]>();
+      for (const entry of textByField.get(`${prefix}.${field}`.toLowerCase()) ?? []) {
+        const index = descriptor.dimensions[1] === 1 ? 0 : entry.occurrence;
+        result.set(index, [...(result.get(index) ?? []), ...entry.values.filter((value) => value.trim())]);
+      }
+      return result;
+    };
+    const channels = textByOccurrence("channels");
+    const notes = textByOccurrence("notes");
+    if (descriptor.complex) {
+      warnings.push(`Event group ${groupIndex + 1} has complex times and was not imported.`);
+      continue;
+    }
+    const decoded = decodeMatRecordingLabels({
+      groupIndex, label: labelByGroup.get(groupIndex) ?? "", dimensions: descriptor.dimensions,
+      count: descriptor.elementCount, valueAt: (index) => readNumericAt(descriptor, index),
+      epochAt: epoch?.elementCount ? (index) => index < epoch.elementCount && !epoch.complex ? readNumericAt(epoch, index) : NaN : undefined,
+      channelsAt: (index) => channels.get(index) ?? [],
+      notesAt: (index) => notes.get(index)?.join(" · ") ?? "",
+    });
+    // Avoid the engine's function-argument limit for dense trigger/event groups.
+    for (const label of decoded.labels) labels.push(label);
+    warnings.push(...decoded.warnings);
+  }
+  return { labels, warnings };
 }
 
 /**
@@ -1901,12 +1962,16 @@ function legacyMetadataFromContext(context: MatParseContext): LegacyMatMetadata 
       ? [{ label: event.label, timeSec: event.timeSec }]
       : []);
 
+  const recordingLabels = matRecordingLabels(context);
+  warnings.push(...recordingLabels.warnings);
+
   return {
     sampleRate,
     channelCount,
     channelEntryCount,
     channelLabels,
     events,
+    recordingLabels: recordingLabels.labels,
     warnings: [...new Set(warnings)],
   };
 }
@@ -2128,6 +2193,7 @@ export class Mat73Source implements SignalSource {
 
 export class MatSource implements SignalSource {
   readonly meta: RecordingMeta;
+  readonly recordingLabels: readonly RecordingLabel[];
   readonly matrixName: string;
   private readonly data: Float32Array[];
 
@@ -2139,7 +2205,9 @@ export class MatSource implements SignalSource {
     sampleRateSource: string,
     options: MatSourceOptions,
     parserWarnings: string[],
+    recordingLabels: readonly RecordingLabel[],
   ) {
+    this.recordingLabels = recordingLabels;
     this.data = decoded.data;
     this.matrixName = descriptor.name;
     const labels = Array.from({ length: decoded.channelCount }, (_, index) =>
@@ -2223,6 +2291,8 @@ export class MatSource implements SignalSource {
         `Provided ${options.channelLabels.length} channel labels for a MAT matrix decoded as ${decoded.channelCount} channels.`,
       );
     }
+    const recordingLabels = matRecordingLabels(context);
+    selectionWarnings.push(...recordingLabels.warnings);
     return new MatSource(
       file,
       signal,
@@ -2231,6 +2301,7 @@ export class MatSource implements SignalSource {
       sampleRateSource,
       options,
       selectionWarnings,
+      recordingLabels.labels,
     );
   }
 

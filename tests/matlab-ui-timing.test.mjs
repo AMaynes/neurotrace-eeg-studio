@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { edfRecordingLabels, recordingLabelAnnotations, validRecordingLabel } from "../app/recording-labels.ts";
 
 const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -33,9 +34,9 @@ const variable = (name, env = {}) => evaluate(`const result = ${variables.get(na
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 const LABELS = variable("LABELS");
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
-const pureNames = ["snapTime", "sampleSnapOrigin", "sourceRateForDisplayRow", "annotationTimingSampleRate", "primarySampleRate", "annotationGeometry", "normalizeAnnotationGeometry", "annotationOverlapsWindow", "csvCell", "tsvCell", "sourceMeta", "blankSessionSnapshot", "migrateAnnotationList"];
+const pureNames = ["snapTime", "sampleSnapOrigin", "sourceRateForDisplayRow", "annotationTimingSampleRate", "primarySampleRate", "annotationLabel", "annotationGeometry", "normalizeAnnotationGeometry", "annotationOverlapsWindow", "csvCell", "tsvCell", "sourceMeta", "blankSessionSnapshot", "migrateAnnotationList"];
 const pure = evaluate(pureNames.map((name) => functions.get(name).getText(ast)).join("\n"),
-  `({ ${pureNames.join(",")} })`, { clamp, LABEL_BY_ID, DEFAULT_FILTERS: { enabled: false }, emptyBidsCompanionBundle: () => ({}) });
+  `({ ${pureNames.join(",")} })`, { clamp, LABEL_BY_ID, validRecordingLabel, DEFAULT_FILTERS: { enabled: false }, emptyBidsCompanionBundle: () => ({}) });
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-10, `${actual} != ${expected}`);
 
 function display(overrides = {}) {
@@ -99,10 +100,21 @@ function annotationHarness(overrides = {}) {
   return { add, env, notices, annotations: () => annotations };
 }
 function jsonl(annotations, overrides = {}) {
-  return variable("annotationsJsonl", { annotations, LABEL_BY_ID, meta: defaultMeta,
+  return variable("annotationsJsonl", { annotations, LABEL_BY_ID, annotationLabel: pure.annotationLabel, meta: defaultMeta,
     uniformSampleRate: true, sampleRate: 1000, rawSourceHash: "source", sourceHash: "interpretation", ...overrides })
     .split("\n").filter(Boolean).map((row) => JSON.parse(row));
 }
+
+test("recording-label exports preserve source seconds and names without a MATLAB display offset", () => {
+  const detected = recordingLabelAnnotations(edfRecordingLabels([{ label: "Custom marker", timeSec: .123, durationSec: .05 }]), 120, []);
+  const [result] = jsonl(detected.annotations);
+  assert.equal(result.label, "Custom marker");
+  assert.equal(result.status, "suggestion");
+  assert.equal(result.start_sample, 123);
+  assert.equal(result.end_sample, 173);
+  assert.equal(result.source_time_offset_sec, 0);
+  assert.deepEqual(result.recordingLabel, detected.annotations[0].recordingLabel);
+});
 
 test("actual click-to-point annotation keeps plotted seconds but exports the physical source sample", () => {
   const h = annotationHarness({ snapMode: "sample" });

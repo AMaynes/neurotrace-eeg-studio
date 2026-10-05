@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { edfRecordingLabels, mergeRecordingLabels, recordingLabelAnnotations, validRecordingLabel } from "../app/recording-labels.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const syntax = ts.createSourceFile("page.tsx", page, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -29,7 +30,7 @@ const helpers = ["clamp", "annotationGeometry", "normalizeAnnotationGeometry", "
 const api = evaluate([
   ...["LABELS", "LABEL_BY_ID"].map((name) => `const ${declarations.get(name).getText(syntax)};`),
   ...helpers.map((name) => declarations.get(name).getText(syntax)),
-].join("\n"), "({ parseRecoveryProject, matlabExportIdentityFromInterpretation })");
+].join("\n"), "({ parseRecoveryProject, matlabExportIdentityFromInterpretation })", { validRecordingLabel });
 
 function review(sourceInterpretation = null) {
   return {
@@ -37,13 +38,14 @@ function review(sourceInterpretation = null) {
       track: "windowed", status: "committed", channels: [0], reviewer: "QA", notes: "Preserve this review",
       confidence: 80, reliability: "silver", origin: "manual", revision: 1 }],
     candidates: [{ id: "candidate-1", time: 2, label: "Seizure", status: "queued", source: "bronze" }],
-    activeCandidate: 0, reviewer: "QA", sourceInterpretation,
+    activeCandidate: 0, reviewer: "QA", sourceInterpretation, recordingLabelsImported: true,
     cursorAmplitude: NaN,
   };
 }
 function save(writer, state) {
   return evaluate(`const saved = ${writer.getText(syntax)};`, "saved", {
-    ...state, snapshot: state, matlabExportIdentityFromInterpretation: api.matlabExportIdentityFromInterpretation,
+    ...state, snapshot: state, recordingLabelsImportedRef: { current: state.recordingLabelsImported },
+    matlabExportIdentityFromInterpretation: api.matlabExportIdentityFromInterpretation,
   });
 }
 
@@ -81,4 +83,16 @@ test("both actual MAT+DAT autosaves preserve their export identity without relax
   delete valid.matlabExportIdentity;
   assert.equal(api.parseRecoveryProject(JSON.stringify(valid), 20, 2).matlabExportIdentity, null,
     "older autosaves without the optional field remain valid");
+});
+
+test("both autosave paths preserve imported-label edits and do not resurrect deleted occurrences", () => {
+  const detected = recordingLabelAnnotations(edfRecordingLabels([{ label: "Button", timeSec: 1 }, { label: "Button", timeSec: 4 }]), 20, []).annotations;
+  for (const writer of writers) {
+    const state = { ...review(), annotations: [{ ...detected[0], notes: "Edited note", start: 1.1, end: 1.1 }], candidates: [] };
+    const restored = api.parseRecoveryProject(save(writer, state), 20, 2);
+    assert.equal(restored.recordingLabelsImported, true);
+    assert.equal(restored.annotations[0].start, 1.1);
+    assert.deepEqual(restored.annotations[0].recordingLabel, detected[0].recordingLabel);
+    assert.equal(mergeRecordingLabels(restored.annotations, detected, restored.recordingLabelsImported).length, 1);
+  }
 });

@@ -517,6 +517,13 @@ textarea:focus-visible {
   background: linear-gradient(90deg, rgba(87, 223, 183, .09), rgba(10, 24, 27, .98) 35%);
   box-shadow: inset 3px 0 0 var(--mint), inset 0 1px 0 rgba(255, 255, 255, .025);
 }
+.queue-search { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px; color: #94a9ae; font-size: 9px; }
+.queue-search input { min-width: 0; width: 100%; border: 1px solid #315048; border-radius: 4px; background: #0b1918; color: #dce9e5; padding: 6px; font-size: 10px; }
+.queue-result-count { padding: 0 10px 6px; color: #94a9ae; font-size: 9px; }
+.queue-load-more { width: 100%; padding: 8px; border: 1px solid #315048; background: #0b1918; color: #94c5cf; font-size: 10px; }
+.recording-label-evidence { padding: 10px; border: 1px solid #315048; border-radius: 5px; background: #0b1918; color: #bdd4d9; overflow-wrap: anywhere; }
+.recording-label-evidence p { margin: 6px 0; white-space: pre-wrap; }
+.recording-label-evidence small { display: block; margin-top: 8px; color: #94a9ae; }
 .candidate-review-bar[data-review-status="reviewed"] { box-shadow: inset 3px 0 0 #6bb5ed; }
 .candidate-review-bar[data-review-status="skipped"] { box-shadow: inset 3px 0 0 #6d7e81; opacity: .88; }
 .candidate-review-identity { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -668,7 +675,7 @@ textarea:focus-visible {
 .resize-handle.end { right: 1px; }
 .event-pin { position: absolute; top: 4px; width: 1px; height: 26px; padding: 0; border: 0; background: var(--label-color); cursor: pointer; z-index: 2; }
 .event-pin i { position: absolute; top: -1px; left: -4px; width: 9px; height: 9px; border-radius: 50% 50% 50% 0; background: var(--label-color); transform: rotate(-45deg); box-shadow: 0 0 0 2px #0a161b; }
-.event-pin span { position: absolute; top: 10px; left: 4px; color: var(--label-color); font-size: 6px; font-weight: 800; letter-spacing: .04em; white-space: nowrap; }
+.event-pin span { position: absolute; top: 10px; left: 4px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; color: var(--label-color); font-size: 6px; font-weight: 800; letter-spacing: .04em; white-space: nowrap; }
 .event-pin.selected i { box-shadow: 0 0 0 2px white, 0 0 8px var(--label-color); }
 .event-pin.context-pin { width: 2px; background: color-mix(in srgb, var(--label-color) 76%, white); }
 .event-pin.context-pin i { border-radius: 2px; transform: rotate(45deg); box-shadow: 0 0 0 2px #0a161b; }

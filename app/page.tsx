@@ -66,6 +66,7 @@ import { DirectoryImportError, directoryRecordingFiles, type DirectoryImportForm
 import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./import-selection";
+import { edfRecordingLabels, mergeRecordingLabels, recordingLabelAnnotations, validRecordingLabel, type RecordingLabel } from "./recording-labels";
 import {
   buildEDFFileWindowOffThread,
   buildRawDatFileWindowOffThread,
@@ -211,6 +212,8 @@ type Annotation = {
   notes: string;
   status: AnnotationStatus;
   candidateId?: string;
+  /** Original recording evidence survives edits, recovery, and exports unchanged. */
+  recordingLabel?: RecordingLabel;
   channelScope?: ChannelScope;
   /** Plot-axis seconds stay authoritative; this records their source-grid offset. */
   sourceTimeOffsetSec?: number;
@@ -489,6 +492,7 @@ type SessionWorkspaceSnapshot = {
   selectedChannels: number[];
   focusedChannel: number;
   annotations: Annotation[];
+  recordingLabelsImported: boolean;
   selectedAnnotationId: string | null;
   selection: { start: number; end: number } | null;
   cursorTime: number;
@@ -511,6 +515,7 @@ type SessionWorkspaceSnapshot = {
 };
 
 const LABELS: LabelDefinition[] = [
+  { id: "recording-label", name: "Recording label", short: "SOURCE", color: "#94c5cf", geometry: "point", track: "instance", defaultDuration: 0, category: "Other", hidden: true },
   { id: "session-context", name: "Entire-session context", short: "SESSION", color: "#8db7f3", geometry: "session", track: "context", defaultDuration: 0, category: "Context" },
   { id: "laterality", name: "Lateralization / locality", short: "LOCALITY", color: "#b99cf7", geometry: "session", track: "context", defaultDuration: 0, category: "Context" },
   { id: "note", name: "Other", short: "OTHER", color: "#8db7f3", geometry: "interval", track: "context", defaultDuration: 5, category: "Context" },
@@ -542,6 +547,18 @@ const LABELS: LabelDefinition[] = [
 ];
 
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
+
+/** Display source wording without inventing a clinical classification. */
+function annotationLabel(annotation: Annotation): LabelDefinition | undefined {
+  const definition = LABEL_BY_ID.get(annotation.labelId);
+  return definition && annotation.labelId === "recording-label" && annotation.recordingLabel
+    ? { ...definition, name: annotation.recordingLabel.label, short: annotation.recordingLabel.label }
+    : definition;
+}
+
+function detectedRecordingLabels(source: SignalSource): readonly RecordingLabel[] {
+  return source instanceof EDFSource ? edfRecordingLabels(source.events) : source.recordingLabels ?? [];
+}
 const DEFAULT_PROJECT_SAVE_SELECTION: ProjectSaveSelection = {
   review: true,
   workspace: true,
@@ -874,6 +891,8 @@ function migrateAnnotationList(value: unknown, durationSec: number, channelCount
     const labelId = saved.labelId === "iiic" ? "rpp-unspecified" : saved.labelId === "nrem" ? "sleep-unspecified" : saved.labelId;
     const label = LABEL_BY_ID.get(labelId);
     if (!label || !Number.isFinite(Number(saved.start)) || !Number.isFinite(Number(saved.end))) return [];
+    if (saved.recordingLabel !== undefined && !validRecordingLabel(saved.recordingLabel)) return [];
+    if (labelId === "recording-label" && !validRecordingLabel(saved.recordingLabel)) return [];
     const status: AnnotationStatus = ["draft", "committed", "suggestion"].includes(saved.status) ? saved.status : "draft";
     const reliability: Reliability = ["gold", "silver", "bronze", "gray"].includes(saved.reliability) ? saved.reliability : "gray";
     const origin: AnnotationOrigin = ["manual", "imported", "detector", "legacy"].includes(saved.origin) ? saved.origin : "legacy";
@@ -1000,6 +1019,7 @@ type RecoveredProject = {
   activeCandidate: number;
   reviewer: string | null;
   matlabExportIdentity: MatlabExportIdentity | null;
+  recordingLabelsImported: boolean;
 };
 
 function hasValidRecoveryBounds(value: unknown, durationSec: number): boolean {
@@ -1064,6 +1084,7 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
     candidates,
     activeCandidate: candidates.length ? activeCandidate : 0,
     reviewer: typeof project.reviewer === "string" ? project.reviewer : null,
+    recordingLabelsImported: project.recordingLabelsImported === true,
     matlabExportIdentity: rawMatlabExportIdentity ? {
       patientId: typeof rawMatlabExportIdentity.patientId === "string" ? rawMatlabExportIdentity.patientId : "",
       matPath: typeof rawMatlabExportIdentity.matPath === "string" ? rawMatlabExportIdentity.matPath : "",
@@ -1645,6 +1666,7 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     selectedChannels: [],
     focusedChannel: 0,
     annotations: [],
+    recordingLabelsImported: false,
     selectedAnnotationId: null,
     selection: null,
     cursorTime: 0,
@@ -1944,6 +1966,9 @@ export default function Home() {
   const [channelViewportHeight, setChannelViewportHeight] = useState(245);
   const [loadingSignal, setLoadingSignal] = useState(false);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const recordingLabelsImportedRef = useRef(false);
+  const [queueSearch, setQueueSearch] = useState("");
+  const [queueLimit, setQueueLimit] = useState(100);
   const [annotationDragPreview, setAnnotationDragPreview] = useState<{ patches: Record<string, AnnotationDragPatch> } | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [selectedAnnotationIds, setSelectedAnnotationIds] = useState<Set<string>>(() => new Set());
@@ -2119,8 +2144,8 @@ export default function Home() {
         kind: "annotation" as const,
         id: item.id,
         time: item.start,
-        label: LABEL_BY_ID.get(item.labelId)?.name ?? item.labelId,
-        detail: item.track === "context" ? "Context event" : "Instance label",
+        label: annotationLabel(item)?.name ?? item.labelId,
+        detail: item.recordingLabel ? "Recording label · imported" : item.track === "context" ? "Context event" : "Instance label",
         status: item.status,
         confidence: Math.round(clamp(item.confidence, 0, 100)),
         locked: Boolean(item.candidateId && item.status === "committed"),
@@ -2138,6 +2163,11 @@ export default function Home() {
       }));
     return [...annotationEntries, ...candidateEntries].sort((a, b) => a.time - b.time || a.label.localeCompare(b.label));
   }, [annotations, candidates]);
+  const filteredQueueEntries = useMemo(() => {
+    const terms = queueSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return instanceQueueEntries.map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => terms.every((term) => `${entry.label} ${entry.detail} ${entry.status}`.toLowerCase().includes(term)));
+  }, [instanceQueueEntries, queueSearch]);
   const activeQueueIndex = useMemo(() => {
     const selectedIndex = selectedAnnotationId
       ? instanceQueueEntries.findIndex((item) => item.kind === "annotation" && item.id === selectedAnnotationId)
@@ -2149,6 +2179,7 @@ export default function Home() {
       : -1;
     return candidateIndex >= 0 ? candidateIndex : instanceQueueEntries.length ? 0 : -1;
   }, [activeCandidate, candidates, instanceQueueEntries, selectedAnnotationId]);
+  const activeFilteredQueueIndex = filteredQueueEntries.findIndex(({ index }) => index === activeQueueIndex);
   const queueDetailEntry = queueDetailTarget
     ? instanceQueueEntries.find((item) => item.kind === queueDetailTarget.kind && item.id === queueDetailTarget.id) ?? null
     : null;
@@ -2158,7 +2189,7 @@ export default function Home() {
   const queueDetailCandidate = queueDetailTarget?.kind === "candidate"
     ? candidates.find((item) => item.id === queueDetailTarget.id) ?? null
     : null;
-  const queueDetailLabel = queueDetailAnnotation ? LABEL_BY_ID.get(queueDetailAnnotation.labelId) : null;
+  const queueDetailLabel = queueDetailAnnotation ? annotationLabel(queueDetailAnnotation) : null;
   const sourceHashDisplay = verifyingSource
     ? "Verifying…"
     : sourceHash.startsWith("demo:")
@@ -2319,6 +2350,7 @@ export default function Home() {
       selectedChannels: [...selectedChannels],
       focusedChannel,
       annotations,
+      recordingLabelsImported: recordingLabelsImportedRef.current,
       selectedAnnotationId,
       selection,
       cursorTime,
@@ -2345,6 +2377,7 @@ export default function Home() {
         localStorage.setItem(`neurotrace:project:${snapshot.sessionKey}`, JSON.stringify({
           version: 2,
           annotations: snapshot.annotations,
+          recordingLabelsImported: snapshot.recordingLabelsImported,
           candidates: snapshot.candidates,
           activeCandidate: snapshot.activeCandidate,
           reviewer: snapshot.reviewer,
@@ -2421,6 +2454,9 @@ export default function Home() {
     // reopening a session does not discard its expensive full-session index.
     setDisplay(EMPTY_DISPLAY);
     setAnnotations(snapshot.annotations);
+    recordingLabelsImportedRef.current = snapshot.recordingLabelsImported ?? false;
+    setQueueSearch("");
+    setQueueLimit(100);
     setSelectedAnnotationId(snapshot.selectedAnnotationId);
     setSelectedAnnotationIds(snapshot.selectedAnnotationId ? new Set([snapshot.selectedAnnotationId]) : new Set());
     setSelection(snapshot.selection);
@@ -3221,6 +3257,7 @@ export default function Home() {
         localStorage.setItem(`neurotrace:project:${sessionKey}`, JSON.stringify({
           version: 2,
           annotations,
+          recordingLabelsImported: recordingLabelsImportedRef.current,
           candidates,
           activeCandidate,
           reviewer,
@@ -4379,7 +4416,7 @@ export default function Home() {
       } else {
         for (const item of waveformAnnotations) {
           if (item.end < displayStart || item.start > displayEnd) continue;
-          const label = LABEL_BY_ID.get(item.labelId);
+          const label = annotationLabel(item);
           if (!label) continue;
           const x1 = ((Math.max(item.start, displayStart) - displayStart) / timebase) * width;
           const geometry = annotationGeometry(item);
@@ -5366,6 +5403,8 @@ export default function Home() {
   const selectInstanceQueueEntry = useCallback((index: number) => {
     const entry = instanceQueueEntries[index];
     if (!entry) return;
+    const filteredIndex = filteredQueueEntries.findIndex((item) => item.index === index);
+    setQueueLimit((limit) => Math.max(limit, filteredIndex + 1));
     if (entry.kind === "candidate") {
       const candidateIndex = candidates.findIndex((item) => item.id === entry.id);
       if (candidateIndex >= 0) selectCandidate(candidateIndex);
@@ -5382,7 +5421,7 @@ export default function Home() {
     setCursorLocked(true);
     jumpTo(annotation.start);
     setToast(`${entry.detail}: ${entry.label}`);
-  }, [annotations, candidates, instanceQueueEntries, jumpTo, selectCandidate]);
+  }, [annotations, candidates, filteredQueueEntries, instanceQueueEntries, jumpTo, selectCandidate]);
 
   const loadSource = useCallback(async (
     source: SignalSource,
@@ -5461,6 +5500,9 @@ export default function Home() {
     setReviewer("");
     annotationsRef.current = [];
     setAnnotations([]);
+    recordingLabelsImportedRef.current = false;
+    setQueueSearch("");
+    setQueueLimit(100);
     undoRef.current = [];
     redoRef.current = [];
     zoomGestureRef.current = {};
@@ -5715,6 +5757,7 @@ export default function Home() {
     let restoredActiveCandidate = 0;
     let restoredReviewer: string | null = null;
     let restoredMatlabExportIdentity: MatlabExportIdentity | null = null;
+    let recordingLabelsImported = false;
     let recoveryWarning: string | null = null;
     let usedLegacyRecoveryKey = false;
     const draftKey = `neurotrace:draft:${nextKey}`;
@@ -5759,6 +5802,7 @@ export default function Home() {
         restoredActiveCandidate = project.activeCandidate;
         restoredReviewer = project.reviewer;
         restoredMatlabExportIdentity = project.matlabExportIdentity;
+        recordingLabelsImported = project.recordingLabelsImported;
       } catch {
         const preserved = preserveUnreadableRecovery("project", projectJson);
         try {
@@ -5784,6 +5828,9 @@ export default function Home() {
     if (usedLegacyRecoveryKey && !recoveryWarning) {
       recoveryWarning = "Recovered prior DAT review state and migrated it to the unscaled raw-count display.";
     }
+    const detectedLabels = recordingLabelAnnotations(detectedRecordingLabels(source), nextMeta.durationSec, nextMeta.channelLabels);
+    restored = mergeRecordingLabels<Annotation>(restored, detectedLabels.annotations, recordingLabelsImported);
+    nextMeta.warnings = [...new Set([...nextMeta.warnings, ...detectedLabels.warnings])];
     if (importContext) {
       const restoredIds = new Set(restored.map((annotation) => annotation.id));
       restored = [
@@ -5810,10 +5857,12 @@ export default function Home() {
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
     setReviewer(restoredReviewer ?? "");
+    recordingLabelsImportedRef.current = true;
     annotationsRef.current = restored;
     setAnnotations(restored);
+    setMeta({ ...nextMeta, warnings: [...nextMeta.warnings] });
     setToast(recoveryWarning ?? (restored.length
-      ? `Recovered ${restored.length} labels and local review state`
+      ? `${detectedLabels.annotations.length} recording labels detected · ${restored.length} total labels ready · existing reviews preserved`
       : `${nextMeta.format} recording ready — ${nextMeta.channelLabels.length} channels${nextMeta.warnings.length ? ` · ${nextMeta.warnings.length} source warning${nextMeta.warnings.length === 1 ? "" : "s"}` : ""}`));
     return { restoredCandidates, restoredActiveCandidate };
     } catch (error) {
@@ -5848,8 +5897,11 @@ export default function Home() {
         throw new Error("The NeuroTrace project contains invalid source events.");
       }
       const restoredActiveCandidate = Number(review.activeCandidate ?? 0);
-      annotationsRef.current = restoredAnnotations;
-      setAnnotations(restoredAnnotations);
+      const detected = recordingLabelAnnotations(detectedRecordingLabels(sourceRef.current), durationSec, sourceRef.current.meta.channelLabels);
+      const mergedAnnotations = mergeRecordingLabels<Annotation>(restoredAnnotations, detected.annotations, review.recordingLabelsImported === true);
+      recordingLabelsImportedRef.current = true;
+      annotationsRef.current = mergedAnnotations;
+      setAnnotations(mergedAnnotations);
       setCandidates(restoredCandidates);
       setActiveCandidate(Number.isInteger(restoredActiveCandidate) && restoredActiveCandidate >= 0
         && restoredActiveCandidate < Math.max(1, restoredCandidates.length)
@@ -6007,9 +6059,9 @@ export default function Home() {
           commitViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
           setCursorTime(resumeCandidate.time);
           setCursorLocked(true);
-          setToast(`${importedCandidates.length} EDF+ source event${importedCandidates.length === 1 ? "" : "s"} indexed in the source pass`);
+          setToast(`${source.events.length} recording labels detected · ${importedCandidates.length} seizure events ready for review`);
         } else if (hasAnnotationChannels) {
-          setToast("EDF+ annotation index complete — no seizure-keyword events found");
+          setToast(`${source.events.length} recording labels detected · no seizure-keyword events found`);
         } else if (importContext.companionBundle.files.length > 1) {
           setToast(`${source.meta.format.toUpperCase()} ready · ${importContext.companionBundle.files.filter((file) => file.status === "applied").length} companions applied · ${importContext.companionBundle.events.length} BIDS events imported`);
         }
@@ -6538,6 +6590,7 @@ export default function Home() {
         channelCount: datMapping.channelCount,
         physicalScale: verifiedPhysicalScale,
         channelLabels: datChannelNames.labels.length ? datChannelNames.labels : undefined,
+        recordingLabels: pendingLegacyMeta?.recordingLabels,
         channelUnits: verifiedPhysicalScale === undefined ? "ADC count" : "µV",
         warnings: [
           ...(pendingLegacyMeta?.warnings ?? []),
@@ -6619,7 +6672,7 @@ export default function Home() {
       } else if (pendingLegacyMeta && datMapping.channelCount < 100) {
         setCandidates([]);
         setActiveCandidate(0);
-        setToast("Recording opened, but legacy candidate review is disabled because this session has fewer than 100 channels");
+        setToast(`${source.recordingLabels.length} recording labels detected · the separate MATLAB seizure review requires 100 channels`);
       }
       if (pendingProjectImportRef.current) {
         const project = pendingProjectImportRef.current;
@@ -6665,7 +6718,7 @@ export default function Home() {
     const base = recordingId.replace(/[^a-zA-Z0-9_-]+/g, "_");
     const committed = annotations.filter((item) => item.status === "committed");
     const eventsTsv = [["annotation_id", "onset", "duration", "trial_type", "geometry", "track", "confidence", "origin", "reviewer", "candidate_id", "source_event_label", "source_event_time", "relative_onset", "relative_offset", "primary_channel", "source_channel_indices", "reference_contributors", "montage", "notes"].join("\t"), ...committed.map((item) => {
-      const label = LABEL_BY_ID.get(item.labelId);
+      const label = annotationLabel(item);
       const candidate = candidates.find((entry) => entry.id === item.candidateId);
       return [
         item.id,
@@ -6678,8 +6731,8 @@ export default function Home() {
         item.origin,
         item.reviewer,
         item.candidateId ?? "",
-        candidate?.label ?? "",
-        candidate?.time.toFixed(6) ?? "",
+        candidate?.label ?? item.recordingLabel?.label ?? "",
+        candidate?.time.toFixed(6) ?? item.recordingLabel?.timeSec.toFixed(6) ?? "",
         candidate ? (item.start - candidate.time).toFixed(6) : "",
         candidate ? (item.end - candidate.time).toFixed(6) : "",
         item.channelScope ? meta.channelLabels[item.channelScope.primarySourceIndex] ?? item.channelScope.displayLabel : item.channels.map((index) => meta.channelLabels[index]).join(","),
@@ -6839,7 +6892,7 @@ export default function Home() {
           : undefined;
       return JSON.stringify({
         ...item,
-        label: LABEL_BY_ID.get(item.labelId)?.name,
+        label: annotationLabel(item)?.name,
         start_sample: annotationRate ? Math.max(0, Math.round((item.start - (item.sourceTimeOffsetSec ?? 0)) * annotationRate)) : null,
         end_sample: annotationRate ? Math.max(0, Math.round((item.end - (item.sourceTimeOffsetSec ?? 0)) * annotationRate)) : null,
         source_time_offset_sec: item.sourceTimeOffsetSec ?? 0,
@@ -6923,6 +6976,7 @@ export default function Home() {
           schema: "neurotrace-review",
           version: 1,
           annotations,
+          recordingLabelsImported: recordingLabelsImportedRef.current,
           candidates,
           activeCandidate,
           reviewer,
@@ -7152,10 +7206,10 @@ export default function Home() {
         else commitSelected();
       } else if (action === "delete" && selectedAnnotationIds.size) {
         event.preventDefault(); deleteSelectedAnnotations();
-      } else if (action === "nextCandidate" && instanceQueueEntries.length) {
-        selectInstanceQueueEntry(Math.min(instanceQueueEntries.length - 1, activeQueueIndex + 1));
-      } else if (action === "previousCandidate" && instanceQueueEntries.length) {
-        selectInstanceQueueEntry(Math.max(0, activeQueueIndex - 1));
+      } else if (action === "nextCandidate" && filteredQueueEntries.length) {
+        selectInstanceQueueEntry(filteredQueueEntries[Math.min(filteredQueueEntries.length - 1, activeFilteredQueueIndex + 1)].index);
+      } else if (action === "previousCandidate" && filteredQueueEntries.length) {
+        selectInstanceQueueEntry(filteredQueueEntries[Math.max(0, activeFilteredQueueIndex - 1)].index);
       } else if (action === "help") {
         setShowHelp(true);
       } else if (action.startsWith("label:")) {
@@ -7165,7 +7219,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, hasRecording, importBusy, instanceQueueEntries, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -7598,7 +7652,7 @@ export default function Home() {
             </div>
             <div className="session-label-list">
               {!labelsVisible ? <div className="empty-session-labels"><strong>Labels hidden</strong><span>Show labels from the right panel to restore them.</span></div> : sessionContextAnnotations.length ? sessionContextAnnotations.map((item) => {
-                const label = LABEL_BY_ID.get(item.labelId);
+                const label = annotationLabel(item);
                 return <button key={item.id} className={selectedAnnotationId === item.id ? "active" : ""} onClick={() => {
                   setSelectedAnnotationId(item.id);
                   setSelectedAnnotationIds(new Set([item.id]));
@@ -7640,13 +7694,15 @@ export default function Home() {
 
           <section className="queue-section" ref={queueSectionRef}>
             <div className="queue-heading">
-              <button disabled={!instanceQueueEntries.length || activeQueueIndex <= 0} aria-label="Previous event or instance" title="Previous event or instance" onClick={() => selectInstanceQueueEntry(Math.max(0, activeQueueIndex - 1))}>‹</button>
-              <div><strong>Instance Queue</strong><span>{instanceQueueEntries.length ? activeQueueIndex + 1 : 0}/{instanceQueueEntries.length}</span></div>
-              <button disabled={!instanceQueueEntries.length || activeQueueIndex >= instanceQueueEntries.length - 1} aria-label="Next event or instance" title="Next event or instance" onClick={() => selectInstanceQueueEntry(Math.min(instanceQueueEntries.length - 1, activeQueueIndex + 1))}>›</button>
+              <button disabled={activeFilteredQueueIndex <= 0} aria-label="Previous event or instance" title="Previous matching event or instance" onClick={() => selectInstanceQueueEntry(filteredQueueEntries[activeFilteredQueueIndex - 1].index)}>‹</button>
+              <div><strong>Instance Queue</strong><span>{activeFilteredQueueIndex + 1}/{filteredQueueEntries.length}</span></div>
+              <button disabled={!filteredQueueEntries.length || activeFilteredQueueIndex >= filteredQueueEntries.length - 1} aria-label="Next event or instance" title="Next matching event or instance" onClick={() => selectInstanceQueueEntry(filteredQueueEntries[activeFilteredQueueIndex + 1].index)}>›</button>
             </div>
+            <label className="queue-search"><span>Find labels / events</span><input type="search" value={queueSearch} placeholder="Label text, imported, seizure…" onChange={(event) => { setQueueSearch(event.target.value); setQueueLimit(100); }} /></label>
+            <div className="queue-result-count">{filteredQueueEntries.length} match{filteredQueueEntries.length === 1 ? "" : "es"} · {annotations.filter((item) => item.recordingLabel).length} imported recording labels</div>
             <div className="queue-list">
-              {instanceQueueEntries.length ? instanceQueueEntries.map((entry, index) => <div key={`${entry.kind}-${entry.id}`} className={`queue-item ${index === activeQueueIndex ? "active" : ""}`}>
-                <button className="queue-jump" onClick={() => selectInstanceQueueEntry(index)} aria-label={`Jump to ${entry.label}`}>
+              {filteredQueueEntries.length ? filteredQueueEntries.slice(0, queueLimit).map(({ entry, index }) => <div key={`${entry.kind}-${entry.id}`} className={`queue-item ${index === activeQueueIndex ? "active" : ""}`}>
+                <button className="queue-jump" onClick={() => selectInstanceQueueEntry(index)} aria-label={`Jump to ${entry.label}`} title={entry.label}>
                   <span className={`queue-status ${entry.status}`} />
                   <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
                 </button>
@@ -7655,7 +7711,8 @@ export default function Home() {
                   <span>%</span>
                 </label>
                 <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
-              </div>) : <div className="empty-queue"><strong>No events or instance labels</strong><p>{hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
+              </div>) : <div className="empty-queue"><strong>{queueSearch ? "No matching labels" : "No events or instance labels"}</strong><p>{queueSearch ? "Try another search or clear the filter." : hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
+              {filteredQueueEntries.length > queueLimit && <button className="queue-load-more" onClick={() => setQueueLimit((limit) => limit + 100)}>Show next {Math.min(100, filteredQueueEntries.length - queueLimit)} labels</button>}
             </div>
           </section>
         </aside>
@@ -7941,7 +7998,7 @@ export default function Home() {
                         title={`${bin.count} annotation${bin.count === 1 ? "" : "s"} in this overview interval — zoom in to edit`}
                       />;
                     }) : bottomAnnotations.filter((item) => item.track === track.id).map((item) => {
-                    const label = LABEL_BY_ID.get(item.labelId)!;
+                    const label = annotationLabel(item)!;
                     const geometry = annotationGeometry(item);
                     const point = geometry === "point";
                     const visibleStart = point ? item.start : Math.max(item.start, viewStart);
@@ -8199,7 +8256,7 @@ export default function Home() {
           </div>}
           {pendingDat && <div className="dat-mapper">
             <div><span className="file-type">DAT</span><div><strong>{pendingDat.name}</strong><small>Signed int16 · little-endian</small></div></div>
-            <p>{pendingLegacyMeta ? `Companion MAT metadata found ${pendingLegacyMeta.channelLabels.length || pendingLegacyMeta.channelCount || 0} channels and ${pendingLegacyMeta.events.filter((event) => isLegacySeizureCandidate(event.label)).length} seizure-keyword events (${pendingLegacyMeta.events.length} total). ${datMapping.channelCount < 100 ? "As in the MATLAB reviewer, source-event review will be disabled below 100 channels. " : ""}Every timing and scale value remains unverified until you confirm it here.` : "Enter and confirm the raw binary layout. Zero means the timing/channel mapping is still unknown; the recording cannot open until those fields are verified."}</p>
+            <p>{pendingLegacyMeta ? `Companion MAT metadata found ${pendingLegacyMeta.channelLabels.length || pendingLegacyMeta.channelCount || 0} channels and ${pendingLegacyMeta.recordingLabels.length} recording labels. All valid labels will be imported automatically, including non-seizure markers and repeated occurrences. They remain unreviewed. ${datMapping.channelCount < 100 ? "The separate MATLAB seizure-review workflow requires 100 channels; automatic label import does not. " : ""}Confirm the timing and scale below.` : "Enter and confirm the raw binary layout. Zero means the timing/channel mapping is still unknown; the recording cannot open until those fields are verified."}</p>
             <div className="mapper-fields"><label><span>Sample rate</span><input type="number" value={datMapping.sampleRate} onChange={(event) => setDatMapping((current) => ({ ...current, sampleRate: Number(event.target.value) }))} /><small>Hz</small></label><label><span>Channels</span><input type="number" value={datMapping.channelCount} onChange={(event) => setDatMapping((current) => ({ ...current, channelCount: Number(event.target.value) }))} /></label><label><span>Scale (optional)</span><input type="number" step="0.001" min="0.000001" placeholder="Raw counts" value={datMapping.physicalScale} onChange={(event) => setDatMapping((current) => ({ ...current, physicalScale: event.target.value === "" ? "" : Number(event.target.value) }))} /><small>µV/count</small></label></div>
             <p className="dat-scale-note">Use sessionInfo.sFile.header.sample_rate and num_channels. DAT bytes do not contain these values; do not use LoadBinary&apos;s defaults unless independently confirmed. Layout: channel 1, channel 2, … for each sample; int16, little-endian, no header.</p>
             <label className="dat-channel-names"><span>Channel names (optional, in file order)</span><textarea aria-label="DAT channel names" rows={4} value={datChannelNamesText} placeholder={"LA1\nLA2\nRA1"} onChange={(event) => setDatChannelNamesText(event.target.value)} /><small>Paste one name per line from {'{sessionInfo.ChannelMat.Channel.Name}\u0027'}. Leave blank to use numbered channels.</small></label>
@@ -8225,7 +8282,7 @@ export default function Home() {
                 })} />
                 <span>{formatClock(sourceEvent.timeSec, true)}</span><strong title={sourceEvent.label}>{sourceEvent.label}</strong>
               </label>)}</div>
-              <small>{pendingLegacyCandidateEvents.filter(({ sourceIndex }) => selectedLegacyEventIndices.has(sourceIndex)).length} of {pendingLegacyCandidateEvents.length} selected</small>
+              <small>{pendingLegacyCandidateEvents.filter(({ sourceIndex }) => selectedLegacyEventIndices.has(sourceIndex)).length} of {pendingLegacyCandidateEvents.length} selected for the MATLAB-style seizure review. This selection does not exclude recording labels from automatic import.</small>
             </fieldset>}
             <button className="button primary wide" disabled={!Number.isFinite(datMapping.sampleRate) || !(datMapping.sampleRate > 0) || !Number.isInteger(datMapping.channelCount) || !(datMapping.channelCount > 0) || !datPhysicalScaleValid || Boolean(datChannelNames.error) || !datLayout?.frames} onClick={confirmDatImport}>Confirm mapping &amp; open DAT</button>
           </div>}
@@ -8423,10 +8480,18 @@ export default function Home() {
           <button className="modal-close" onClick={() => setShowAnnotationEditor(false)} aria-label="Close annotation editor">×</button>
           <span className="modal-eyebrow">ANNOTATION EDITOR</span>
           <div className="annotation-editor-heading">
-            <div className="selected-label" style={{ "--label-color": LABEL_BY_ID.get(selectedAnnotation.labelId)?.color } as React.CSSProperties}><i /><div><strong>{LABEL_BY_ID.get(selectedAnnotation.labelId)?.name}</strong><span>{selectedGeometry} label · {selectedAnnotation.track} track · revision {selectedAnnotation.revision}</span></div></div>
+            <div className="selected-label" style={{ "--label-color": annotationLabel(selectedAnnotation)?.color } as React.CSSProperties}><i /><div><strong>{annotationLabel(selectedAnnotation)?.name}</strong><span>{selectedGeometry} label · {selectedAnnotation.track} track · revision {selectedAnnotation.revision}</span></div></div>
             <span className={`revision-state ${selectedAnnotation.status}`}>{selectedAnnotation.status}</span>
           </div>
           <div className="inspector-form">
+            {selectedAnnotation.recordingLabel && <section className="recording-label-evidence" aria-label="Original recording label">
+              <strong>Original recording label · {selectedAnnotation.recordingLabel.source.toUpperCase()}</strong>
+              <p>{selectedAnnotation.recordingLabel.label}</p>
+              <span>{formatClock(selectedAnnotation.recordingLabel.timeSec, true)}{selectedAnnotation.recordingLabel.durationSec > 0 ? ` → ${formatClock(selectedAnnotation.recordingLabel.timeSec + selectedAnnotation.recordingLabel.durationSec, true)}` : " · point marker"}</span>
+              {selectedAnnotation.recordingLabel.channels.length > 0 && <p>Source channels: {selectedAnnotation.recordingLabel.channels.join(", ")}</p>}
+              {selectedAnnotation.recordingLabel.notes && <p>Source note: {selectedAnnotation.recordingLabel.notes}</p>}
+              <small>Imported from the recording, not automatically accepted. Original text and timing remain preserved when you edit this annotation.</small>
+            </section>}
             {selectedCandidateDecisionLocked && <div className="candidate-editor-lock"><div><strong>Accepted source-event decision locked</strong><span>Reopen it through the review bar before changing marks or review metadata.</span></div><button className="button secondary" onClick={() => {
               const candidateIndex = candidates.findIndex((candidate) => candidate.id === selectedAnnotation.candidateId);
               if (candidateIndex >= 0) selectCandidate(candidateIndex);
@@ -9398,7 +9463,7 @@ function GeneralInfoPanel({
       <section className="general-info-section nearby-labels">
         <header><h3>Labels in area</h3><span>{relatedAnnotations.length}</span></header>
         {relatedAnnotations.length ? <div>{relatedAnnotations.map((annotation) => {
-          const label = LABEL_BY_ID.get(annotation.labelId);
+          const label = annotationLabel(annotation);
           const point = annotationGeometry(annotation) === "point";
           return <article key={annotation.id} style={{ "--label-color": label?.color ?? "#6f8990" } as React.CSSProperties}><i /><span><strong>{label?.name ?? annotation.labelId}</strong><small>{point ? formatClock(annotation.start, true) : `${formatClock(annotation.start, true)}–${formatClock(annotation.end, true)}`}</small></span></article>;
         })}</div> : <p>No labels overlap this {isArea ? "area" : "point"}.</p>}
@@ -9654,7 +9719,7 @@ function SessionMap({
       <div className={`map-inspection ${inspected ? "active" : ""}`}>
       {inspected?.kind === "annotation" ? <>
         <i style={{ background: LABEL_BY_ID.get(inspected.item.labelId)?.color }} />
-        <div><strong>{LABEL_BY_ID.get(inspected.item.labelId)?.name ?? inspected.item.labelId}</strong><span>{annotationGeometry(inspected.item) === "point" ? formatClock(inspected.item.start, true) : `${formatClock(inspected.item.start, true)} → ${formatClock(inspected.item.end, true)}`} · {inspected.item.status} · {inspected.item.reviewer || "reviewer unset"}</span></div>
+        <div><strong>{annotationLabel(inspected.item)?.name ?? inspected.item.labelId}</strong><span>{annotationGeometry(inspected.item) === "point" ? formatClock(inspected.item.start, true) : `${formatClock(inspected.item.start, true)} → ${formatClock(inspected.item.end, true)}`} · {inspected.item.status} · {inspected.item.reviewer || "reviewer unset"}</span></div>
         <button onClick={() => onOpenAnnotation(inspected.item)}>Open in viewer</button>
       </> : <><div><strong>Explore the map</strong><span>Hover for details. Click an item to keep its details here.</span></div></>}
       </div>
@@ -9666,7 +9731,7 @@ function SessionMap({
         const annotationLaneCount = Math.min(8, laneLayout.laneCount);
         const rowHeight = 12 + annotationLaneCount * 29;
         return <div className={`map-row ${row.id}`} key={row.id} style={{ minHeight: rowHeight }}><strong>{row.label}</strong><div style={{ minHeight: rowHeight }}>{rowAnnotations.map((item) => {
-          const label = LABEL_BY_ID.get(item.labelId);
+          const label = annotationLabel(item);
           if (!label) return null;
           const point = annotationGeometry(item) === "point";
           const payload = { kind: "annotation" as const, item };

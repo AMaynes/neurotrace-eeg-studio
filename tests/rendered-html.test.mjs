@@ -927,7 +927,8 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   const queueStart = page.indexOf('<section className="queue-section"');
   const queueEnd = page.indexOf("</section>", queueStart);
   const queue = page.slice(queueStart, queueEnd);
-  assert.match(queue, /instanceQueueEntries\.map/);
+  assert.match(queue, /filteredQueueEntries\.slice\(0, queueLimit\)\.map\(\(\{ entry, index \}\)/);
+  assert.match(queue, /filteredQueueEntries\[activeFilteredQueueIndex \+ 1\]\.index/);
   assert.match(queue, /selectInstanceQueueEntry/);
   assert.match(queue, /className="queue-arrow"[\s\S]*?Open details for/);
   assert.match(queue, /className="queue-confidence"[\s\S]*?<input type="number" min="0" max="100"[\s\S]*?value=\{entry\.confidence\}/);

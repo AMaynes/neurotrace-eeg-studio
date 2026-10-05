@@ -21,6 +21,7 @@ neurotrace-eeg-studio/
 │   ├── neurotrace-project.ts — Builds and reopens versioned `.neurotrace` ZIP containers and safely classifies inert custom definitions.
 │   ├── pages-client.tsx — Mounts the shared workstation for the browser-only GitHub Pages release.
 │   ├── page.tsx — Coordinates the browser workstation, annotation state, session workflow, rendering, and exports.
+│   ├── recording-labels.ts — Decodes recording events into unreviewed annotations with stable identities and original source evidence.
 │   ├── source-integrity.ts — Computes incremental SHA-256 fingerprints without buffering complete recordings.
 │   ├── tutorial-center.tsx / tutorial-center.css — Own the tutorial hub and live, non-blocking walkthrough coach.
 │   ├── tutorial-events.ts / tutorial-progress.ts — Payload-free action notifications and committed UI milestones for walkthrough advancement.
@@ -49,6 +50,7 @@ neurotrace-eeg-studio/
 │   ├── eeg-integrity.test.mjs — Verifies EDF+ annotation decoding and montage safety.
 │   ├── neurotrace-project.test.mjs — Verifies project archives, manifests, binary preservation, and custom-definition safety.
 │   ├── pages-release.test.mjs — Verifies the static Pages artifact and relative runtime assets.
+│   ├── recording-labels.test.mjs — Verifies automatic MAT/EDF label import, bounds, provenance, and recovery without patient data.
 │   ├── rendered-html.test.mjs — Verifies server rendering and key product interaction contracts.
 │   └── source-integrity.test.mjs — Verifies incremental SHA-256 correctness across chunk boundaries.
 ├── worker/
@@ -136,6 +138,10 @@ Owns the current workstation orchestration: recording import, session state, loc
 ### `app/source-integrity.ts`
 
 Implements bounded-memory incremental SHA-256 and chunked `Blob` hashing. It is part of source provenance and must remain deterministic across chunk sizes.
+
+### `app/recording-labels.ts`
+
+Owns the known MAT event-time schema, EDF annotation identities, timing/channel validation, neutral unreviewed annotation conversion, and recovery merging. `eeg-core.ts` supplies parsed MAT descriptors and source metadata; `page.tsx` installs the labels only after source verification and persists completed-import state. Source evidence remains separate from editable review annotations; this module performs no signal detection or clinical classification.
 
 ## `build/`
 
@@ -232,6 +238,10 @@ Checks the built `pages-dist/` snapshot for document-relative hashed assets, the
 ### `tests/rendered-html.test.mjs`
 
 Builds the server worker, verifies the rendered NeuroTrace shell, and protects key interface and interaction wiring from regression.
+
+### `tests/recording-labels.test.mjs`
+
+Generates anonymous compressed/uncompressed, little-/big-endian MAT fixtures to test repeated markers, intervals, notes/channels, malformed events, and dense groups. Covers MAT+DAT routing without changing samples, embedded standalone MAT events, EDF labels, recovery/deletion behavior, portable projects, and UI import wiring.
 
 ### `tests/source-integrity.test.mjs`
 

@@ -89,7 +89,7 @@ function globalHarness(overrides = {}) {
     queueDetailEntry: null, confirmCommit: [], cursorLocked: false, cursorTime: 10, markOnset: null, importBusy: false, projectSaveBusy: false,
     selectedAnnotationIds: new Set(), selectedAnnotation: null, activeCandidateItem: null,
     dragAnnotationRef: {}, pendingAnnotationDragRef: {}, annotationSelectionRef: {},
-    instanceQueueEntries: [], activeQueueIndex: 0, timebase: 10, LABEL_BY_ID: new Map([["ictal", { id: "ictal" }]]),
+    filteredQueueEntries: [], activeFilteredQueueIndex: 0, timebase: 10, LABEL_BY_ID: new Map([["ictal", { id: "ictal" }]]),
   };
   for (const name of ["undo", "redo", "zoomTimeWindow", "moveSelectedAnnotations", "commitSelected", "placePaletteLabel", "setViewStartSafe", "notifyTutorialAction", "setToast", "setShowSettings", "setShowHelp", "setShowDirectorySessions", "setAnnotationDragPreview", "setAnnotationSelectionBox", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setSelection", "setInspectionRange", "setMarkOnset", "setCursorLocked", "setChannelSelectionActive", "setDragGhost", "setShowSessionContextPicker", "setActiveTool", "setBoxZoomActive"]) scope[name] = (...args) => calls.push([name, ...args]);
   Object.assign(scope, overrides);
@@ -152,6 +152,20 @@ test("directory modal blocks viewer shortcuts and only dismisses when idle", () 
   assert.deepEqual(remapped.calls, []);
   remapped.press("F2");
   assert.deepEqual(remapped.calls, [["setShowDirectorySessions", false]]);
+});
+
+test("queue shortcuts follow filtered labels while preserving original queue indices", () => {
+  const selected = [];
+  const ui = globalHarness({
+    controlBindings: { ...DEFAULT_CONTROLS, nextCandidate: ["j"], previousCandidate: ["k"] },
+    filteredQueueEntries: [{ index: 3 }, { index: 19 }, { index: 105 }], activeFilteredQueueIndex: 1,
+    selectInstanceQueueEntry: (index) => selected.push(index),
+  });
+  ui.press("j"); ui.press("k");
+  assert.deepEqual(selected, [105, 3]);
+  const empty = globalHarness({ controlBindings: { ...DEFAULT_CONTROLS, nextCandidate: ["j"] } });
+  empty.press("j");
+  assert.deepEqual(empty.calls, []);
 });
 
 test("all local handlers honor customized bindings without requiring the original modifiers", () => {
