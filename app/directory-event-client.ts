@@ -28,7 +28,8 @@ export function setDirectoryEventQuery(plan: DirectoryImportPlan, query: string)
 export async function scanDirectoryEvents(plan: DirectoryImportPlan, signal: AbortSignal, onUpdate: (id: string | null) => void, retry = false) {
   const cache = directoryEventCache(plan);
   const pending = plan.recordings.filter((entry) => !cache.entries[entry.id] || (retry && cache.entries[entry.id].state !== "ready"));
-  if (!pending.length || signal.aborted) return;
+  if (signal.aborted) return;
+  if (!pending.length) { onUpdate(null); return; }
   let worker: Worker | undefined;
   let failPending: ((error: Error) => void) | undefined;
   let fatal: Error | undefined;

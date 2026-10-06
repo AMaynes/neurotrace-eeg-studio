@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DirectoryImportPlan, DirectoryRecording } from "./directory-import";
-import { COMMON_EVENT_KEYWORDS, eventLabelMatches } from "./directory-event-index";
+import { COMMON_EVENT_KEYWORDS, eventKeywords, eventLabelMatches } from "./directory-event-index";
 import { directoryEventCache, scanDirectoryEvents, setDirectoryEventQuery } from "./directory-event-client";
 import "./directory-sessions.css";
 
@@ -34,6 +34,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
   const cache = directoryEventCache(plan);
   const [requestedPage, setRequestedPage] = useState(0);
   const [query, setQuery] = useState(() => cache.query);
+  const [draft, setDraft] = useState("");
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [includeUnchecked, setIncludeUnchecked] = useState(false);
   const [checking, setChecking] = useState<string | null>(null);
@@ -55,7 +56,14 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
     setQuery(value);
     setRequestedPage(0);
   };
-  const searching = query.split(",").some((term) => term.trim());
+  const keywords = eventKeywords(query);
+  const submitKeywords = () => {
+    if (busy || !eventKeywords(draft).length) return;
+    changeQuery(eventKeywords([...keywords, draft].join(",")).join(", "));
+    setDraft("");
+    searchRef.current?.focus();
+  };
+  const searching = keywords.length > 0;
   const indexedCount = plan.recordings.filter((recording) => cache.entries[recording.id]).length;
   const uncheckedCount = plan.recordings.filter((recording) => cache.entries[recording.id]?.state !== "ready").length;
   const incompleteCount = plan.recordings.filter((recording) => cache.entries[recording.id] && cache.entries[recording.id].state !== "ready").length;
@@ -92,15 +100,26 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
           onKeyDown={(event) => {
             if (event.key === "Escape" && presetsOpen) { event.preventDefault(); event.stopPropagation(); setPresetsOpen(false); keywordsRef.current?.focus(); }
           }}>
-          <input id="directory-event-query" ref={searchRef} type="search" disabled={busy} value={query} placeholder="seizure, sz, EEG onset…" aria-describedby="directory-event-query-help" onChange={(event) => changeQuery(event.target.value)} />
+          <input id="directory-event-query" ref={searchRef} type="search" disabled={busy} value={draft} placeholder="seizure, sz, EEG onset…" aria-describedby="directory-event-query-help" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+              event.preventDefault(); event.stopPropagation(); submitKeywords();
+            }
+          }} />
+          <button type="button" className="button secondary" disabled={busy || !eventKeywords(draft).length} aria-label="Search event labels" onClick={submitKeywords}>Search</button>
           <button type="button" ref={keywordsRef} className="button secondary directory-keywords-toggle" disabled={busy} aria-label="Common event keywords" aria-expanded={presetsOpen} aria-controls="directory-common-keywords" title="Choose common event keywords" onClick={() => setPresetsOpen((open) => !open)}>…</button>
-          {query && <button type="button" className="button secondary" disabled={busy} onClick={() => { changeQuery(""); searchRef.current?.focus(); }} aria-label="Clear event label filter">Clear</button>}
+          {(query || draft) && <button type="button" className="button secondary" disabled={busy} onClick={() => { changeQuery(""); setDraft(""); searchRef.current?.focus(); }} aria-label="Clear event label filter">Clear</button>}
           {presetsOpen && <div id="directory-common-keywords" className="directory-keywords-popover" role="group" aria-label="Common event keyword presets">
-            <strong>Common keywords</strong><small>Click to search. You can edit the keywords afterward.</small>
-            {COMMON_EVENT_KEYWORDS.map((preset) => <button type="button" disabled={busy} key={preset.name} onClick={() => { changeQuery(preset.query); setPresetsOpen(false); searchRef.current?.focus(); }}><strong>{preset.name}</strong><span>{preset.query}</span></button>)}
+            <strong>Common keywords</strong><small>Choose keywords, then press Enter or Search to apply.</small>
+            {COMMON_EVENT_KEYWORDS.map((preset) => <button type="button" disabled={busy} key={preset.name} onClick={() => { setDraft(preset.query); setPresetsOpen(false); searchRef.current?.focus(); }}><strong>{preset.name}</strong><span>{preset.query}</span></button>)}
           </div>}
         </div>
-        <small id="directory-event-query-help">Searches label text, not filenames. Case-insensitive; commas match any keyword. Spaces stay together as a phrase.</small>
+        {keywords.length > 0 && <ul className="directory-keyword-tags" aria-label="Active event keywords">
+          {keywords.map((keyword) => <li key={keyword.toLowerCase()}><span>{keyword}</span><button type="button" disabled={busy} aria-label={`Remove keyword ${keyword}`} onClick={() => {
+            changeQuery(keywords.filter((term) => term !== keyword).join(", "));
+            searchRef.current?.focus();
+          }}>×</button></li>)}
+        </ul>}
+        <small id="directory-event-query-help">Press Enter or Search to add tags and filter event labels, not filenames. Commas separate keywords; any tag can match. Spaces stay together as a phrase. Case-insensitive.</small>
         <div className="directory-event-progress" role="status" aria-live="polite">
           <span>{matches.length.toLocaleString()} of {plan.recordings.length.toLocaleString()} sessions shown · {indexedCount.toLocaleString()} checked{checking || indexedCount < plan.recordings.length ? ` · ${busy ? "checking paused" : "checking event labels…"}` : ""}</span>
           {incompleteCount > 0 && <button type="button" disabled={busy || Boolean(checking)} onClick={() => setScanGeneration((version) => version + 1)}>Retry {incompleteCount} incomplete check{incompleteCount === 1 ? "" : "s"}</button>}

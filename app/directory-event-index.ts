@@ -28,8 +28,18 @@ export const COMMON_EVENT_KEYWORDS = [
 ] as const;
 
 /** Commas mean OR; spaces within a keyword remain a phrase. No regex or clinical inference. */
+export function eventKeywords(query: string): string[] {
+  const seen = new Set<string>();
+  return query.split(",").map((term) => term.trim()).filter((term) => {
+    const key = term.toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function eventLabelMatches(labels: readonly string[], query: string): boolean {
-  const terms = query.split(",").map((term) => term.trim().toLowerCase()).filter(Boolean);
+  const terms = eventKeywords(query).map((term) => term.toLowerCase());
   return !terms.length || labels.some((label) => terms.some((term) => label.toLowerCase().includes(term)));
 }
 
@@ -54,19 +64,57 @@ export async function readDirectoryEventIndex(request: DirectoryEventRequest): P
     } else if (format === "edf") {
       const header = await parseEDFHeader(file);
       const signals = header.signals.filter((signal) => signal.isAnnotation);
-      const chunks: Array<Promise<ArrayBuffer>> = [];
-      const flush = async () => {
-        for (const bytes of await Promise.all(chunks)) parseEdfTalText(new TextDecoder().decode(bytes)).forEach((event) => add(event.label));
-        chunks.length = 0;
+      const maxBytes = 4 * 1024 * 1024;
+      const decoder = new TextDecoder();
+      const parse = (bytes: Uint8Array) => {
+        // TAL records are zero-padded. Avoid decoding and splitting megabytes
+        // of empty strings; only trailing padding is removed, never interior TALs.
+        let end = bytes.length;
+        while (end && bytes[end - 1] === 0) end -= 1;
+        if (end) parseEdfTalText(decoder.decode(bytes.subarray(0, end))).forEach((event) => add(event.label));
       };
-      // Read TAL byte ranges only, at most 16 small reads concurrently. Never
-      // scan the interleaved waveform samples just to discover event text.
+      for (const signal of signals) {
+        if (signal.samplesPerRecord * 2 > 1024 * 1024) throw new Error("EDF annotation record exceeds the 1 MiB background-search safety limit.");
+      }
+      const annotationBytes = signals.reduce((sum, signal) => sum + signal.samplesPerRecord * 2, 0);
+      // Dense annotation layouts benefit from sequential disk reads. Bound both
+      // memory and read amplification (<=4x); signal bytes are never decoded.
+      if (annotationBytes >= header.bytesPerDataRecord / 4 && header.bytesPerDataRecord <= maxBytes) {
+        const perChunk = Math.max(1, Math.floor(maxBytes / header.bytesPerDataRecord));
+        for (let record = 0; record < header.dataRecordCount; record += perChunk) {
+          const count = Math.min(perChunk, header.dataRecordCount - record);
+          const start = header.headerBytes + record * header.bytesPerDataRecord;
+          const bytes = new Uint8Array(await file.slice(start, start + count * header.bytesPerDataRecord).arrayBuffer());
+          if (bytes.length !== count * header.bytesPerDataRecord) throw new Error("Truncated EDF annotation data.");
+          for (let local = 0; local < count; local += 1) for (const signal of signals) {
+            const offset = local * header.bytesPerDataRecord + signal.byteOffsetInRecord;
+            parse(bytes.subarray(offset, offset + signal.samplesPerRecord * 2));
+          }
+        }
+        return;
+      }
+      const chunks: Blob[] = [];
+      let batchBytes = 0;
+      const flush = async () => {
+        if (!chunks.length) return;
+        // A composite Blob batches sparse annotation ranges into one browser
+        // read, without fetching intervening EEG samples or joining TAL records.
+        const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
+        if (bytes.length !== batchBytes) throw new Error("Truncated EDF annotation data.");
+        let offset = 0;
+        for (const chunk of chunks) { parse(bytes.subarray(offset, offset + chunk.size)); offset += chunk.size; }
+        chunks.length = 0;
+        batchBytes = 0;
+      };
       for (let record = 0; signals.length && record < header.dataRecordCount; record += 1) {
         for (const signal of signals) {
-          if (signal.samplesPerRecord * 2 > 1024 * 1024) throw new Error("EDF annotation record exceeds the 1 MiB background-search safety limit.");
+          const size = signal.samplesPerRecord * 2;
+          if (chunks.length >= 256 || batchBytes + size > maxBytes) await flush();
           const start = header.headerBytes + record * header.bytesPerDataRecord + signal.byteOffsetInRecord;
-          chunks.push(file.slice(start, start + signal.samplesPerRecord * 2).arrayBuffer());
-          if (chunks.length >= 16) await flush();
+          const chunk = file.slice(start, start + size);
+          if (chunk.size !== size) throw new Error("Truncated EDF annotation data.");
+          chunks.push(chunk);
+          batchBytes += size;
         }
       }
       await flush();

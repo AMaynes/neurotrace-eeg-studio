@@ -1,6 +1,7 @@
 /**
  * Selective Level-5 MAT traversal for directory event indexing. Numeric signal
- * payloads are skipped, not decoded or retained. Compressed elements are streamed
+ * payloads are skipped, not decoded (bounded read-ahead may touch their edges).
+ * Compressed elements are streamed
  * through zlib; only known sessionInfo.sFile.events matrices reach the existing
  * MAT decoder. Called in a cancellable worker, never during waveform rendering.
  */
@@ -22,6 +23,8 @@ interface Reader {
 class BlobReader implements Reader {
   position = 0;
   private blob: Blob;
+  private buffer = new Uint8Array();
+  private bufferStart = 0;
   constructor(blob: Blob) { this.blob = blob; }
   async read(size: number, short = false) {
     if (!short && this.position + size > this.blob.size) throw new Error("Truncated MAT metadata.");
@@ -29,7 +32,17 @@ class BlobReader implements Reader {
     this.position += bytes.length;
     return bytes;
   }
-  async peek(size: number) { return new Uint8Array(await this.blob.slice(this.position, this.position + size).arrayBuffer()); }
+  async peek(size: number) {
+    const length = Math.min(size, this.blob.size - this.position);
+    if (!length) return new Uint8Array();
+    if (this.position < this.bufferStart || this.position + length > this.bufferStart + this.buffer.length) {
+      // MAT metadata consists of thousands of tiny adjacent tags. A bounded
+      // read-ahead avoids a separate browser/disk round-trip for every field.
+      this.bufferStart = this.position;
+      this.buffer = new Uint8Array(await this.blob.slice(this.position, this.position + Math.max(length, 16 * 1024)).arrayBuffer());
+    }
+    return this.buffer.subarray(this.position - this.bufferStart, this.position - this.bufferStart + length);
+  }
   async skip(size: number) {
     if (size < 0 || this.position + size > this.blob.size) throw new Error("Truncated MAT metadata.");
     this.position += size;
@@ -80,7 +93,14 @@ class StreamReader implements Reader {
   }
   async skip(size: number) {
     if (size < 0) throw new Error("Invalid MAT container boundary.");
-    while (size) { const take = Math.min(size, 64 * 1024); await this.read(take); size -= take; }
+    while (size) {
+      await this.fill();
+      if (!this.pending.length && this.done) throw new Error("Truncated compressed MAT metadata.");
+      const take = Math.min(size, this.pending.length);
+      this.pending = this.pending.subarray(take);
+      this.position += take;
+      size -= take;
+    }
   }
   stream(size: number) {
     return new ReadableStream<Uint8Array<ArrayBuffer>>({ pull: async (controller) => {

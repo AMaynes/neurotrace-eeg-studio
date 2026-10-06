@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
-import { COMMON_EVENT_KEYWORDS, eventLabelMatches } from "../app/directory-event-index.ts";
+import { COMMON_EVENT_KEYWORDS, eventKeywords, eventLabelMatches } from "../app/directory-event-index.ts";
 import { directoryEventCache, setDirectoryEventQuery } from "../app/directory-event-client.ts";
 
 // Execute the actual component and effect lifecycle; scanning is tested separately
@@ -41,7 +41,7 @@ function harness(count, options = {}) {
         }
       },
     };
-    if (name === "./directory-event-index") return { COMMON_EVENT_KEYWORDS, eventLabelMatches };
+    if (name === "./directory-event-index") return { COMMON_EVENT_KEYWORDS, eventKeywords, eventLabelMatches };
     if (name === "./directory-event-client") return {
       directoryEventCache, setDirectoryEventQuery,
       scanDirectoryEvents: async (plan, signal, notify, retry) => { scans.push({ plan, signal, notify, retry }); },
@@ -82,7 +82,9 @@ function harness(count, options = {}) {
       return found;
     },
     rows(tree) { return elements(tree, (node) => node.type === "li" && node.props["data-recording-id"]); },
-    search(tree, query) { elements(tree, (node) => node.props?.id === "directory-event-query")[0].props.onChange({ target: { value: query } }); },
+    input(tree) { return elements(tree, (node) => node.props?.id === "directory-event-query")[0]; },
+    type(tree, query) { this.input(tree).props.onChange({ target: { value: query } }); },
+    search(tree, query) { this.type(tree, query); this.button(this.render(), "Search event labels").props.onClick(); },
   };
 }
 
@@ -195,7 +197,7 @@ test("search filters actual event text, not filenames, and clearing restores the
   assert.match(content(tree), /No sessions contain these event-label keywords/);
 });
 
-test("ellipsis presets are editable searches and Escape closes the picker before the directory", () => {
+test("ellipsis presets stage editable keywords until submitted and Escape closes the picker before the directory", () => {
   const ui = harness(2);
   ui.cache.entries["session-0"] = ready("SZ onset");
   ui.cache.entries["session-1"] = ready("Button press");
@@ -208,9 +210,15 @@ test("ellipsis presets are editable searches and Escape closes the picker before
   presets[0].props.onClick();
   tree = ui.render();
   assert.equal(ui.button(tree, "Common event keywords").props["aria-expanded"], false);
+  assert.equal(ui.rows(tree).length, 2, "choosing a preset does not apply it");
+  assert.equal(ui.cache.query, "");
+  assert.match(ui.input(tree).props.value, /seizure, seiz/);
+  ui.button(tree, "Search event labels").props.onClick();
+  tree = ui.render();
   assert.equal(ui.rows(tree).length, 1);
   assert.equal(ui.rows(tree)[0].props["data-recording-id"], "session-0");
-  ui.search(tree, "button");
+  ui.button(tree, "Clear event label filter").props.onClick();
+  ui.search(ui.render(), "button");
   assert.equal(ui.rows(ui.render())[0].props["data-recording-id"], "session-1");
   ui.button(ui.render(), "Common event keywords").props.onClick();
   tree = ui.render();
@@ -288,8 +296,54 @@ test("scan effects stop on close or busy import and query survives reopening onl
   ui.unmount();
   assert.ok(ui.scans[1].signal.aborted);
   const reopened = harness(0, { plan: ui.props.plan });
-  assert.equal(elements(reopened.render(), (node) => node.props?.id === "directory-event-query")[0].props.value, "Seizure");
+  assert.equal(reopened.input(reopened.render()).props.value, "");
+  assert.ok(reopened.button(reopened.render(), "Remove keyword Seizure"));
   const other = harness(2);
   assert.equal(elements(other.render(), (node) => node.props?.id === "directory-event-query")[0].props.value, "");
   reopened.unmount(); other.unmount();
+});
+
+test("typing does not filter, reset pagination or persist draft; Enter commits removable deduplicated OR tags", () => {
+  const ui = harness(110);
+  for (let i = 0; i < 110; i++) ui.cache.entries[`session-${i}`] = ready(i % 2 ? "EEG Onset" : "Button");
+  ui.button(ui.render(), "Next sessions").props.onClick();
+  ui.type(ui.render(), "  EEG onset, eeg ONSET, , ");
+  let tree = ui.render();
+  assert.match(content(tree), /Page 2 of 3/);
+  assert.equal(ui.rows(tree).length, 50);
+  assert.equal(ui.cache.query, "");
+  let prevented = false, stopped = false;
+  const enter = { key: "Enter", nativeEvent: { isComposing: true }, preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } };
+  ui.input(tree).props.onKeyDown(enter);
+  assert.equal(ui.cache.query, "", "IME confirmation must not prematurely apply a tag");
+  enter.nativeEvent = { isComposing: false, keyCode: 229 };
+  ui.input(tree).props.onKeyDown(enter);
+  assert.equal(ui.cache.query, "");
+  enter.nativeEvent = { isComposing: false, keyCode: 13 };
+  ui.input(tree).props.onKeyDown(enter);
+  tree = ui.render();
+  assert.ok(prevented && stopped);
+  assert.equal(ui.cache.query, "EEG onset");
+  assert.equal(ui.input(tree).props.value, "");
+  assert.match(content(tree), /Page 1 of 2/);
+  assert.equal(ui.rows(tree)[0].props["data-recording-id"], "session-1");
+  assert.ok(ui.button(tree, "Remove keyword EEG onset"));
+  assert.equal(ui.button(tree, "Search event labels").props.disabled, true);
+  ui.type(tree, "not yet applied");
+  assert.equal(ui.cache.query, "EEG onset");
+  ui.search(ui.render(), "Button, EEG ONSET");
+  tree = ui.render();
+  assert.equal(ui.cache.query, "EEG onset, Button");
+  assert.equal(ui.rows(tree)[0].props["data-recording-id"], "session-0");
+  ui.button(tree, "Remove keyword EEG onset").props.onClick();
+  assert.equal(ui.cache.query, "Button");
+  ui.button(ui.render(), "Remove keyword Button").props.onClick();
+  assert.equal(ui.cache.query, "");
+  assert.match(content(ui.render()), /110 of 110 sessions shown/);
+  ui.type(ui.render(), ", ,  ");
+  assert.equal(ui.button(ui.render(), "Search event labels").props.disabled, true);
+  ui.button(ui.render(), "Clear event label filter").props.onClick();
+  assert.equal(ui.input(ui.render()).props.value, "");
+  assert.equal(ui.scans.length, 1, "editing tags never restarts file indexing");
+  ui.unmount();
 });

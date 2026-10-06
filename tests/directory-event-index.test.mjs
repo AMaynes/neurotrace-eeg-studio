@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { matWriter, legacyMatFile } from "./fixtures/legacy-mat.mjs";
-import { indexMatRecordingLabels, parseLegacyMatMetadata } from "../app/eeg-core.ts";
-import { COMMON_EVENT_KEYWORDS, eventLabelMatches, readDirectoryEventIndex } from "../app/directory-event-index.ts";
+import { indexMatRecordingLabels, parseLegacyMatMetadata, parseEDFHeader, parseEDFAnnotations } from "../app/eeg-core.ts";
+import { COMMON_EVENT_KEYWORDS, eventKeywords, eventLabelMatches, readDirectoryEventIndex } from "../app/directory-event-index.ts";
 import { directoryEventCache, scanDirectoryEvents } from "../app/directory-event-client.ts";
 import { planDirectoryImport } from "../app/directory-import.ts";
 import { createNeurotraceProjectArchive } from "../app/neurotrace-project.ts";
@@ -28,6 +28,7 @@ test("keyword matching is case-insensitive literal substring OR, with multiword 
   assert.equal(eventLabelMatches(["seizure onset"], "onset seizure"), false);
   assert.equal(eventLabelMatches(["spike"], ".*"), false);
   assert.equal(eventLabelMatches([], " ,  , "), true);
+  assert.deepEqual(eventKeywords(" EEG onset, sz, EEG ONSET, , SZ , spike "), ["EEG onset", "sz", "spike"]);
   assert.ok(COMMON_EVENT_KEYWORDS.some((preset) => preset.name === "Seizure" && eventLabelMatches(["SZ onset"], preset.query)));
 });
 
@@ -41,18 +42,30 @@ test("selective MAT event reads match the production importer across endian, com
   }
 });
 
-test("uncompressed top-level and nested waveform arrays are skipped rather than read into memory", async () => {
+test("uncompressed waveforms are skipped with only bounded read-ahead at metadata edges", async () => {
   for (const nested of [false, true]) {
     const file = eventMat({ waveform: !nested, nested });
     let bytesRequested = 0;
     const slice = file.slice.bind(file);
     file.arrayBuffer = () => { throw new Error("Whole-file read is forbidden"); };
-    file.slice = (start = 0, end = file.size) => { bytesRequested += end - start; return slice(start, end); };
+    file.slice = (start = 0, end = file.size) => { bytesRequested += Math.min(end, file.size) - start; return slice(start, end); };
     const result = await indexMatRecordingLabels(file);
     assert.deepEqual(result.warnings, []);
     assert.deepEqual(result.labels, ["Seizure onset", "Stim β"]);
-    assert.ok(bytesRequested < 10000, `requested only ${bytesRequested} bytes from ${file.size}`);
+    assert.ok(bytesRequested < 2 * 16384 + 10000, `bounded read-ahead requested only ${bytesRequested} bytes from ${file.size}`);
   }
+});
+
+test("MAT metadata read-ahead replaces thousands of tiny reads without changing imported event labels", async () => {
+  const file = legacyMatFile();
+  const expected = await parseLegacyMatMetadata(file);
+  let reads = 0;
+  const slice = file.slice.bind(file);
+  file.slice = (...args) => { reads++; return slice(...args); };
+  const result = await indexMatRecordingLabels(file);
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.labels, [...new Set(expected.recordingLabels.map(event => event.label))]);
+  assert.ok(reads < 10, `metadata required ${reads} reads`);
 });
 
 test("compressed waveforms stream through without whole-file buffers, retaining following event metadata", async () => {
@@ -119,6 +132,70 @@ test("EDF indexing reads only the header and annotation channel ranges, never EE
   const result = await readDirectoryEventIndex({ format: "edf", file, eventTables: [] });
   assert.equal(result.state, "ready");
   assert.deepEqual(result.labels, ["Button β", "Seizure onset"]);
+});
+
+function multiRecordEdf({ records, waveformSamples, annotationSamples }) {
+  const header = Buffer.alloc(1024, 32);
+  const fixed = (offset, width, value) => header.write(String(value).padEnd(width), offset, width, "ascii");
+  fixed(0, 8, "0"); fixed(168, 8, "01.01.25"); fixed(176, 8, "00.00.00");
+  fixed(184, 8, 1024); fixed(192, 44, "EDF+C"); fixed(236, 8, records); fixed(244, 8, 1); fixed(252, 4, 3);
+  let cursor = 256;
+  for (const [width, values] of [[16, ["EDF Annotations", "A1", "EDF Annotations"]], [80, ["", "", ""]], [8, ["", "uV", ""]],
+    [8, [-1, -100, -1]], [8, [1, 100, 1]], [8, [-32768, -32768, -32768]], [8, [32767, 32767, 32767]], [80, ["", "", ""]],
+    [8, [annotationSamples, waveformSamples, annotationSamples]], [32, ["", "", ""]]]) for (const value of values) { fixed(cursor, width, value); cursor += width; }
+  const recordBytes = waveformSamples * 2 + annotationSamples * 4;
+  const body = Buffer.alloc(recordBytes * records);
+  for (let record = 0; record < records; record++) {
+    body.write(`+${record}\x14\x14\0`, record * recordBytes);
+    // Interior zero padding, multiple labels and UTF-8 must survive batching.
+    if (record === 256) body.write(`+256\x14EEG onset\x14Stim β\x14\0`, record * recordBytes + 32);
+    body.write(`+${record}\x14Button\x14\0`, record * recordBytes + annotationSamples * 2 + waveformSamples * 2);
+    if (record === records - 1) body.write(`+${record}\x14Late seizure\x14\0`, record * recordBytes + 32);
+  }
+  return new File([header, body], "anonymous.edf");
+}
+
+test("dense EDF annotation batches match the importer through chunk boundaries and late events with bounded reads", async () => {
+  const file = multiRecordEdf({ records: 9000, waveformSamples: 8, annotationSamples: 128 });
+  const expected = await parseEDFAnnotations(file, await parseEDFHeader(file));
+  let reads = 0, bytesRead = 0;
+  const slice = file.slice.bind(file);
+  file.arrayBuffer = () => { throw new Error("Whole-file reads forbidden"); };
+  file.slice = (start, end) => {
+    reads++; bytesRead += end - start;
+    assert.ok(end - start <= 4 * 1024 * 1024, "each background buffer is bounded");
+    return slice(start, end);
+  };
+  const result = await readDirectoryEventIndex({ format: "edf", file, eventTables: [] });
+  assert.equal(result.state, "ready");
+  assert.deepEqual(result.labels, [...new Set(expected.events.map(event => event.label))].sort((a, b) => a.localeCompare(b)));
+  assert.ok(result.labels.includes("Late seizure"));
+  assert.ok(reads <= 4, `${reads} reads instead of 18000 annotation reads`);
+  assert.ok(bytesRead <= file.size + 1024);
+});
+
+test("sparse EDF annotations use composite batches, skip all signal bytes, and preserve every record/channel boundary", async () => {
+  const file = multiRecordEdf({ records: 600, waveformSamples: 5000, annotationSamples: 64 });
+  const header = await parseEDFHeader(file);
+  const expected = await parseEDFAnnotations(file, header);
+  const slice = file.slice.bind(file);
+  file.slice = (start, end) => {
+    if (start >= header.headerBytes) {
+      const offset = (start - header.headerBytes) % header.bytesPerDataRecord;
+      assert.ok(offset === 0 || offset === 10128);
+      assert.equal(end - start, 128);
+    }
+    return slice(start, end);
+  };
+  const original = Blob.prototype.arrayBuffer;
+  let reads = 0;
+  Blob.prototype.arrayBuffer = function() { reads++; return original.call(this); };
+  let result;
+  try { result = await readDirectoryEventIndex({ format: "edf", file, eventTables: [] }); }
+  finally { Blob.prototype.arrayBuffer = original; }
+  assert.equal(result.state, "ready");
+  assert.deepEqual(result.labels, [...new Set(expected.events.map(event => event.label))].sort((a, b) => a.localeCompare(b)));
+  assert.ok(reads <= 7, `${reads} browser reads instead of 1200`);
 });
 
 test("valid sidecar matches survive a failed embedded metadata scan, with explicit partial status", async () => {
@@ -197,6 +274,9 @@ test("worker scheduler indexes sequentially, chooses only paired MAT metadata, a
     assert.deepEqual(updates, [plan.recordings[0].id, plan.recordings[1].id, null]);
     await scanDirectoryEvents(plan, new AbortController().signal, () => {});
     assert.equal(sent.length, 2, "reopening does not reread completed files");
+    const complete = [];
+    await scanDirectoryEvents(plan, new AbortController().signal, id => complete.push(id));
+    assert.deepEqual(complete, [null], "cached scans reset any stale checking indicator");
     const other = planDirectoryImport([fileAt("a/x.mat"), fileAt("a/x.dat")], "mat-dat");
     assert.deepEqual(directoryEventCache(other).entries, {}, "a replacement file at the same path gets a fresh cache");
   } finally { if (previous === undefined) delete globalThis.Worker; else globalThis.Worker = previous; }
