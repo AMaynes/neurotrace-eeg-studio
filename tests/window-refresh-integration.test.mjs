@@ -8,6 +8,7 @@ import { bipolarMontageKind } from "../app/bipolar-montage.ts";
 import { recordingOverviewDisplayPolicy } from "../app/overview-display-policy.ts";
 import { RecordingOverviewCache, recordingOverviewPlan } from "../app/recording-overview.ts";
 import { resolveStableTraceBaseline } from "../app/waveform-geometry.ts";
+import { recenteredTraceCenters, traceCenterKey } from "../app/trace-centering.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const syntax = ts.createSourceFile("page.tsx", page, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -102,7 +103,7 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
       cleanup?.(); dependencies = nextDependencies; cleanup = callback();
     },
     EDFSource, RawDatSource, bipolarMontageKind, mergeNearbyFlatlineRegions,
-    recordingOverviewDisplayPolicy, recordingOverviewPlan, resolveStableTraceBaseline,
+    recordingOverviewDisplayPolicy, recordingOverviewPlan, resolveStableTraceBaseline, traceCenterKey,
     buildMatlabDisplayWindow: builder, createMatlabFileReader: createReader,
     buildEDFFileWindowOffThread: fileWorker, buildRawDatFileWindowOffThread: fileWorker,
     performanceDiagnostics: { beginSourceRead: operation("read"), beginDecode: operation("decode"), recordDecode() {} }, primarySampleRate: (meta) => meta.sampleRate,
@@ -113,7 +114,7 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
     matlabWindowCacheRef: { current: [] }, setDisplay: (display) => displays.push(display), setLoadingSignal: (value) => loading.push(value),
     setFocusedChannel: (update) => { focused = update(focused); }, setToast: (message) => toasts.push(message),
     filters: { enabled: false }, montage: "referential", selectedChannels: new Set([0, 1]), hasRecording: true, matlabAnatomicalLayout: false, meta: source.meta,
-    signalViewStart: 0, timebase: duration, waveformWidth: 1600, verifyingSource: verifying, recordingOverviewRevision: 0,
+    signalViewStart: 0, timebase: duration, waveformWidth: 1600, verifyingSource: verifying, recordingOverviewRevision: 0, traceCenters: {},
   };
   const execute = new Function(...Object.keys(env), effectCode);
   return { env, source, cache, calls, displays, loading, toasts, fileCalls, legacyFileCalls, readers, diagnostics,
@@ -154,6 +155,23 @@ test("background raw-index revisions cannot cancel/restart exact MATLAB window p
   for (let revision = 1; revision <= 10; revision++) h.render({ recordingOverviewRevision: revision });
   assert.equal(request.options.signal.aborted, false); assert.equal(h.calls.length, 1);
   request.finish(); await tick(); assert.equal(h.displays.at(-1).data[0][0], 30); h.dispose();
+});
+
+test("manual centering and its undo redraw without rereading or rebuilding the loaded window", async () => {
+  const h = await harness({ duration: 21600 }); h.render();
+  h.calls[0].finish(500); await tick();
+  const display = h.displays.at(-1);
+  // Simulate a view whose stable center was established in an earlier window.
+  const centered = recenteredTraceCenters({ ...display, traceBaselines: [0, 0] }, {}, 0, 21600);
+  assert.equal(Object.keys(centered).length, 2);
+  h.render({ traceCenters: centered });
+  h.render({ traceCenters: {} });
+  await tick();
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.readers.length, 1);
+  assert.equal(h.displays.length, 1);
+  assert.deepEqual(h.toasts, []);
+  h.dispose();
 });
 
 test("superseded exact requests are cancelled and cannot publish over the newer window", async () => {

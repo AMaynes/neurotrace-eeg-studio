@@ -456,6 +456,9 @@ textarea:focus-visible {
 .panel-toggle { white-space: nowrap; }
 .panel-toggle > span { color: var(--mint); font-size: 12px; }
 .panel-toggle > b { font-weight: 650; }
+.gain-control-stack { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
+.viewer-toolbar:has(.gain-control-stack) { min-height: 77px; flex-shrink: 0; }
+.viewer-toolbar .recenter-button { height: 18px; min-height: 18px; padding: 0 6px; border: 1px solid #395159; border-radius: 4px; background: #102027; color: #b9c9ca; font-size: 9px; cursor: pointer; }
 .gain-control { height: 40px; display: flex; align-items: center; gap: 5px; padding: 0 4px 0 8px; border: 1px solid #263d45; border-radius: 5px; background: #102027; }
 .gain-control button { width: 21px; height: 15px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 2px; background: #192b32; color: #b9c9ca; cursor: pointer; font-size: 11px; line-height: 1; }
 .gain-amount-field { display: flex; align-items: center; gap: 2px; color: #d3e0e0; }

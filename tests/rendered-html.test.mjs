@@ -1115,7 +1115,7 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(page, /channelRowFromFraction\(\s*channelRowLayout/);
   assert.match(page, /traceBaselineCacheRef\s*=\s*useRef<WeakMap<SignalSource, Map<string, number>>>/, "baseline state is scoped to the loaded signal source");
   assert.match(page, /stableTraceBaselines[\s\S]*?resolveStableTraceBaseline/, "new windows reuse each channel's established baseline");
-  assert.match(draw, /display\.traceBaselines\[channel\]\s*\?\?\s*robustTraceBaseline\(values\)/, "drawing uses the stable per-channel baseline");
+  assert.match(draw, /displayedTraceCenter\(display, channel, traceCenters\)/, "drawing uses the manual override or stable per-channel baseline");
   assert.match(continuousTrace, /value\s*-\s*baseline/, "direct traces are centered on that baseline");
   assert.match(continuousTrace, /confineToRow[\s\S]*?confineTraceYValueToRow\(rawY,\s*rowTop,\s*rowHeight\)[\s\S]*?confineTraceYValueToRow\(rawY,\s*plotTop,\s*plotHeight\)/, "overlap mode uses the whole plot instead of the source row as its vertical boundary");
   assert.match(continuousTrace, /if \(!Number\.isFinite\(value\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");

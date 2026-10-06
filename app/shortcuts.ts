@@ -64,7 +64,7 @@ export type ShortcutScope = typeof SHORTCUTS[number]["scope"];
 export type ControlBindings = Record<ShortcutAction, string[]>;
 export const DEFAULT_CONTROLS = Object.fromEntries(SHORTCUTS.map(({ id, keys }) => [id, [...keys]])) as ControlBindings;
 export const SHORTCUT_GROUPS: { scopes: ShortcutScope[]; title: string; note: string }[] = [
-  { scopes: ["workspace", "viewer", "waveform"], title: "Viewer, labels & history", note: "Viewer shortcuts work outside fields and toolbar buttons. Undo/redo also work from the spectrogram and walkthrough; undo without Ctrl/⌘ cancels a pending ictal onset first. Waveform commit shortcuts require waveform focus." },
+  { scopes: ["workspace", "viewer", "waveform"], title: "Viewer, labels & history", note: "Viewer shortcuts work outside fields and toolbar buttons. Undo/redo include Recenter and also work from the spectrogram and walkthrough; undo without Ctrl/⌘ cancels a pending ictal onset first. Waveform commit shortcuts require waveform focus." },
   { scopes: ["spectrogram"], title: "Spectrogram", note: "Click or focus the spectrogram plot first." },
   { scopes: ["sessionTabs", "tutorialTabs"], title: "Session & tutorial tabs", note: "Focus a tab in the corresponding tab strip first." },
   { scopes: ["queueResize", "spectrogramResize", "windowInput", "gainInput"], title: "Panel sizing, time window & gain", note: "Focus the corresponding divider, Window input, or Gain input first. Gain also applies when leaving its field; Clear selection cancels an uncommitted gain entry without clearing viewer selections." },

@@ -245,9 +245,11 @@ test("loading a source or applying a session snapshot clears the previous record
       const snapshot = pure.blankSessionSnapshot({ meta }, "next-session");
       snapshot.hasRecording = true;
       snapshot.gain = 8;
+      snapshot.traceCenters = { '["recorded","A1",[0],"counts"]': 500 };
       env.snapshot = snapshot;
       evaluate(`const transition = ${callback.getText(ast)};`, "transition(snapshot)", env);
       assert.deepEqual(setters.get("setGain"), [4], "old session gains respect the new maximum");
+      assert.deepEqual(setters.get("setTraceCenters"), [snapshot.traceCenters], "manual centers follow their session");
     } else {
       // Execute every real installation statement before asynchronous file
       // verification begins; there is no file/network work in this harness.
@@ -261,6 +263,7 @@ test("loading a source or applying a session snapshot clears the previous record
       env.keepSeparateSession = false;
       evaluate(install, "undefined", env);
       assert.equal(setters.get("setMeta")[0], meta);
+      assert.deepEqual(setters.get("setTraceCenters"), [{}], "new recordings cannot inherit old manual centers");
     }
     assert.deepEqual(setters.get("setExactSpectrogramSignal"), [null]);
     assert.deepEqual(setters.get("setSpectrogramAnchor"), [null], `${name} must clear the transient anchor`);

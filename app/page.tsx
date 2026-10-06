@@ -109,6 +109,7 @@ import { notifyTutorialAction, type TutorialAssistAction } from "./tutorial-even
 import { useTutorialMilestones } from "./tutorial-progress";
 import { recordZoomChange, type ZoomView, type ZoomHistoryEntry, type ZoomGestureState, type SpectrogramFrequencyRange } from "./zoom-history";
 import { MAX_DISPLAY_GAIN, MIN_DISPLAY_GAIN, normalizeDisplayGain, stepDisplayGain } from "./display-gain";
+import { displayedTraceCenter, normalizeTraceCenters, recenteredTraceCenters, traceCenterKey, type TraceCenters } from "./trace-centering";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -116,7 +117,6 @@ import {
   envelopeWindowMatchesViewport,
   gaussianClippingHaloIntensity,
   resolveStableTraceBaseline,
-  robustTraceBaseline,
   traceClippingRange,
   waveformOverviewColumnBudget,
 } from "./waveform-geometry";
@@ -407,6 +407,8 @@ type PerformanceWithMemory = Performance & {
 type DisplayWindow = {
   /** Processing identity prevents old values appearing under newly selected controls. */
   settingsKey?: string;
+  /** Processing-only identity shared by automatic and manual row centers. */
+  baselineSettingsKey?: string;
   data: SignalSamples[];
   /** Stable per-row centers that do not change as the time viewport moves. */
   traceBaselines: number[];
@@ -487,6 +489,7 @@ type SessionWorkspaceSnapshot = {
   viewStart: number;
   timebase: number;
   gain: number;
+  traceCenters: TraceCenters;
   traceDisplayMode: TraceDisplayMode;
   montage: MontageMode;
   filters: DisplayFilterSettings;
@@ -1661,6 +1664,7 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     viewStart: 0,
     timebase: 20,
     gain: 1,
+    traceCenters: {},
     traceDisplayMode: "clamped",
     montage: "referential",
     filters: { ...DEFAULT_FILTERS },
@@ -1946,6 +1950,7 @@ export default function Home() {
   const [windowDraftUnit, setWindowDraftUnit] = useState<WindowTimeUnit>("s");
   const [windowDraftValue, setWindowDraftValue] = useState<string | null>(null);
   const [gain, setGain] = useState(1);
+  const [traceCenters, setTraceCenters] = useState<TraceCenters>({});
   const [traceDisplayMode, setTraceDisplayMode] = useState<TraceDisplayMode>("clamped");
   const [montage, setMontage] = useState<MontageMode>("referential");
   const [filters, setFilters] = useState<DisplayFilterSettings>(DEFAULT_FILTERS);
@@ -1986,6 +1991,9 @@ export default function Home() {
   ]), [meta.id, montage, filters, selectedChannels]);
   const displayReadoutReady = !loadingSignal && display.settingsKey === displaySettingsKey
     && display.viewStart === signalViewStart && display.viewDuration === timebase;
+  const canRecenter = hasRecording && displayReadoutReady && display.viewStart === viewStart
+    && display.data.length > 0 && !display.refiningOverview
+    && (display.unreadAfterSec === undefined || display.unreadAfterSec >= viewStart + timebase);
   const cursorReadout = useMemo<CursorReadout>(() => !displayReadoutReady
     ? { kind: "unavailable", unit: display.units[focusedChannel] || "a.u.", reason: "no-data" }
     : readCursorReadout(display, focusedChannel, cursorTime), [cursorTime, display, focusedChannel, displayReadoutReady]);
@@ -1999,10 +2007,10 @@ export default function Home() {
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
   const [expandedChannels, setExpandedChannels] = useState(false);
   const [spectrogramFrequencyRange, setSpectrogramFrequencyRange] = useState<SpectrogramFrequencyRange>({ min: 0, max: 150 });
-  const zoomViewRef = useRef<ZoomView>({ viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: 0, frequencyRange: spectrogramFrequencyRange });
+  const zoomViewRef = useRef<ZoomView>({ viewStart, timebase, gain, traceCenters, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: 0, frequencyRange: spectrogramFrequencyRange });
   useLayoutEffect(() => {
-    zoomViewRef.current = { viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: channelScrollOffsetRef.current, frequencyRange: spectrogramFrequencyRange };
-  }, [viewStart, timebase, gain, waveformVerticalViewport, expandedChannels, spectrogramFrequencyRange]);
+    zoomViewRef.current = { viewStart, timebase, gain, traceCenters, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: channelScrollOffsetRef.current, frequencyRange: spectrogramFrequencyRange };
+  }, [viewStart, timebase, gain, traceCenters, waveformVerticalViewport, expandedChannels, spectrogramFrequencyRange]);
   useLayoutEffect(() => {
     const scrollTop = pendingZoomScrollRef.current;
     if (scrollTop === null || !waveformScrollRef.current) return;
@@ -2345,6 +2353,7 @@ export default function Home() {
       viewStart,
       timebase,
       gain,
+      traceCenters,
       traceDisplayMode,
       montage,
       filters: { ...filters },
@@ -2394,7 +2403,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
+  }, [activeCandidate, activeSessionId, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, spectrogramFrequencyRange, timebase, traceCenters, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2443,6 +2452,7 @@ export default function Home() {
     setWindowDraftUnit("s");
     setWindowDraftValue(null);
     setGain(normalizeDisplayGain(snapshot.gain));
+    setTraceCenters(snapshot.traceCenters ?? {});
     setTraceDisplayMode(snapshot.traceDisplayMode ?? "clamped");
     setMontage(snapshot.montage);
     setFilters({ ...snapshot.filters });
@@ -2637,6 +2647,7 @@ export default function Home() {
     commitViewStart(view.viewStart);
     setTimebase(view.timebase);
     setGain(view.gain);
+    setTraceCenters(view.traceCenters ?? {});
     setWaveformVerticalViewport(view.verticalViewport);
     setExpandedChannels(view.expandedChannels);
     pendingZoomScrollRef.current = view.channelScrollTop;
@@ -2652,6 +2663,20 @@ export default function Home() {
     after.gain = normalizeDisplayGain(after.gain, before.gain);
     if (recordZoomChange(undoRef.current, redoRef.current, before, after, zoomGestureRef.current, group)) applyZoomView(after);
   }, [applyZoomView, hasRecording, readZoomView]);
+
+  const recenterChannels = () => {
+    // Do not center an old window while a pan/read is queued or still refining.
+    if (!canRecenter || display.viewStart !== viewStartRef.current) return;
+    const current = readZoomView().traceCenters ?? {};
+    const next = recenteredTraceCenters(display, current, viewStartRef.current, timebase);
+    if (next === current) {
+      setToast("No channel centers changed");
+      return;
+    }
+    setPlaying(false);
+    changeZoomView({ traceCenters: next });
+    setToast("Channels recentered — recorded values and gain unchanged");
+  };
 
   const commitGainInput = (input: HTMLInputElement) => {
     // Commit once on blur, leaving partial decimal typing and native text undo alone.
@@ -2757,7 +2782,7 @@ export default function Home() {
       redoRef.current.push(previous);
       setPlaying(false);
       applyZoomView(previous.before);
-      setToast("Zoom undone");
+      setToast(previous.before.traceCenters !== previous.after.traceCenters ? "Recenter undone" : "Zoom undone");
       return;
     }
     redoRef.current.push({
@@ -2788,7 +2813,7 @@ export default function Home() {
       undoRef.current.push(next);
       setPlaying(false);
       applyZoomView(next.after);
-      setToast("Zoom restored");
+      setToast(next.before.traceCenters !== next.after.traceCenters ? "Recenter restored" : "Zoom restored");
       return;
     }
     undoRef.current.push({
@@ -3353,12 +3378,12 @@ export default function Home() {
           units: string[],
         ) => data.map((values, position) => resolveStableTraceBaseline(
           sourceTraceBaselines,
-          JSON.stringify([
+          traceCenterKey(
             baselineSettingsKey,
             labels[position] ?? "",
             sourceIndices[position] ?? [],
             units[position] ?? "",
-          ]),
+          ),
           values,
         ));
         if (!filters.enabled) {
@@ -3389,6 +3414,7 @@ export default function Home() {
           }
           if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
           const nextDisplay: DisplayWindow = { ...prepared, settingsKey: displaySettingsKey,
+            baselineSettingsKey,
             traceBaselines: stableTraceBaselines(prepared.data, prepared.labels, prepared.sourceIndices, prepared.units),
             timingConvention: "matlab-window", viewStart: signalViewStart, viewDuration: timebase,
             flatlineRegions: mergeNearbyFlatlineRegions(prepared.flatlineRegions, FLATLINE_DISPLAY_MERGE_GAP_SECONDS) };
@@ -3407,6 +3433,7 @@ export default function Home() {
           const labels = indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`);
           const nextDisplay: DisplayWindow = {
             settingsKey: displaySettingsKey,
+            baselineSettingsKey,
             data: visible.data,
             traceBaselines: stableTraceBaselines(visible.data, labels, sourceIndices, visible.channelUnits),
             envelopes: visible.data.map((_, position) => ({
@@ -3789,6 +3816,7 @@ export default function Home() {
           displayAppliedRequestIdRef.current = requestId;
           const nextDisplay: DisplayWindow = {
             settingsKey: displaySettingsKey,
+            baselineSettingsKey,
             data,
             traceBaselines: stableTraceBaselines(data, labels, sourceIndices, visibleEnvelope.channelUnits),
             envelopes,
@@ -4148,6 +4176,7 @@ export default function Home() {
         displayAppliedRequestIdRef.current = requestId;
         const nextDisplay: DisplayWindow = {
           settingsKey: displaySettingsKey,
+          baselineSettingsKey,
           data: montageResult.data,
           traceBaselines: stableTraceBaselines(montageResult.data, montageResult.labels, sourceIndices, units),
           envelopes: montageResult.data.map(() => null),
@@ -4473,7 +4502,7 @@ export default function Home() {
         context.lineWidth = selected ? 1.25 : 0.85;
         const envelope = display.envelopes[channel];
         if (envelope) {
-          const baseline = display.traceBaselines[channel] ?? robustTraceBaseline(values);
+          const baseline = displayedTraceCenter(display, channel, traceCenters);
           overflow = drawContinuousTrace(
             context,
             values,
@@ -4519,7 +4548,7 @@ export default function Home() {
             );
           }
         } else {
-          const baseline = display.traceBaselines[channel] ?? robustTraceBaseline(values);
+          const baseline = displayedTraceCenter(display, channel, traceCenters);
           overflow = drawContinuousTrace(
             context,
             values,
@@ -4612,7 +4641,7 @@ export default function Home() {
     waveDrawRef.current = draw;
     draw();
     return () => performanceDiagnostics.removeCanvasSurface("waveform");
-  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, labelsVisible, legacyRawCountDisplay, markOnset, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, expandedChannels, focusedChannel, gain, labelsVisible, legacyRawCountDisplay, markOnset, montage, timebase, traceCenters, traceDisplayMode, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -5488,6 +5517,7 @@ export default function Home() {
     setDisplay(EMPTY_DISPLAY);
     commitViewStart(0);
     setGain(1);
+    setTraceCenters({});
     setMontage("referential");
     setFilters({ ...DEFAULT_FILTERS });
     setCursorTime(0);
@@ -5936,6 +5966,7 @@ export default function Home() {
         Math.max(0, durationSec - restoredTimebase),
       ));
       if (typeof workspace.gain === "number" && Number.isFinite(workspace.gain) && workspace.gain > 0) setGain(normalizeDisplayGain(workspace.gain));
+      setTraceCenters(normalizeTraceCenters(workspace.traceCenters));
       if (workspace.traceDisplayMode === "clamped" || workspace.traceDisplayMode === "overlap") {
         setTraceDisplayMode(workspace.traceDisplayMode);
       }
@@ -7004,6 +7035,7 @@ export default function Home() {
           viewStart,
           timebase,
           gain,
+          traceCenters,
           traceDisplayMode,
           montage,
           filters,
@@ -7772,29 +7804,32 @@ export default function Home() {
               </div>
               <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
             </div>
-            <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain">
-              <span>Gain</span>
-              <label className="gain-amount-field"><input
-                key={`${activeSessionId}:${sessionKey}:${gain}`}
-                disabled={!hasRecording}
-                aria-label="Gain multiplier"
-                title={`Gain 0.01–4× · ${shortcutHint(controlBindings, "gainApply")} or leave the field to apply · ${shortcutHint(controlBindings, "clear")} to cancel`}
-                type="number" min={MIN_DISPLAY_GAIN} max={MAX_DISPLAY_GAIN} step="0.01"
-                defaultValue={gain}
-                onBlur={(event) => commitGainInput(event.currentTarget)}
-                onKeyDown={(event) => {
-                  const apply = matchesShortcut(event, controlBindings, "gainApply");
-                  const cancel = matchesShortcut(event, controlBindings, "clear");
-                  if (!apply && !cancel) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  if (cancel) event.currentTarget.value = String(gain);
-                  event.currentTarget.blur();
-                }}
-              /><b aria-hidden="true">×</b></label>
-              <div className="gain-step-buttons">
-                <button disabled={!hasRecording || gain >= MAX_DISPLAY_GAIN} aria-label="Increase gain" title="Increase gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, 1) })}>+</button>
-                <button disabled={!hasRecording || gain <= MIN_DISPLAY_GAIN} aria-label="Decrease gain" title="Decrease gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, -1) })}>−</button>
+            <div className="gain-control-stack">
+              <button className="recenter-button" data-tutorial="recenter" disabled={!canRecenter} aria-label="Recenter channels" title="Center all enabled traces on their visible median estimate; hold centers fixed while panning. Does not change gain or recorded values." onClick={recenterChannels}>Recenter</button>
+              <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain">
+                <span>Gain</span>
+                <label className="gain-amount-field"><input
+                  key={`${activeSessionId}:${sessionKey}:${gain}`}
+                  disabled={!hasRecording}
+                  aria-label="Gain multiplier"
+                  title={`Gain 0.01–4× · ${shortcutHint(controlBindings, "gainApply")} or leave the field to apply · ${shortcutHint(controlBindings, "clear")} to cancel`}
+                  type="number" min={MIN_DISPLAY_GAIN} max={MAX_DISPLAY_GAIN} step="0.01"
+                  defaultValue={gain}
+                  onBlur={(event) => commitGainInput(event.currentTarget)}
+                  onKeyDown={(event) => {
+                    const apply = matchesShortcut(event, controlBindings, "gainApply");
+                    const cancel = matchesShortcut(event, controlBindings, "clear");
+                    if (!apply && !cancel) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (cancel) event.currentTarget.value = String(gain);
+                    event.currentTarget.blur();
+                  }}
+                /><b aria-hidden="true">×</b></label>
+                <div className="gain-step-buttons">
+                  <button disabled={!hasRecording || gain >= MAX_DISPLAY_GAIN} aria-label="Increase gain" title="Increase gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, 1) })}>+</button>
+                  <button disabled={!hasRecording || gain <= MIN_DISPLAY_GAIN} aria-label="Decrease gain" title="Decrease gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, -1) })}>−</button>
+                </div>
               </div>
             </div>
             <button

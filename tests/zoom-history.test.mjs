@@ -6,9 +6,10 @@ import { recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
 import { composeVerticalViewport } from "../app/waveform-viewport.ts";
 import { DEFAULT_CONTROLS, shortcutAction } from "../app/shortcuts.ts";
 import { normalizeDisplayGain } from "../app/display-gain.ts";
+import { recenteredTraceCenters, traceCenterKey } from "../app/trace-centering.ts";
 
 const initialView = () => ({
-  viewStart: 30, timebase: 20, gain: 1, verticalViewport: null,
+  viewStart: 30, timebase: 20, gain: 1, traceCenters: {}, verticalViewport: null,
   expandedChannels: false, channelScrollTop: 0, frequencyRange: { min: 0, max: 100 },
 });
 
@@ -81,7 +82,8 @@ function workspace(overrides = {}) {
   };
   const changes = [], canceled = [];
   const scope = {
-    ...refs, recordZoomChange, normalizeDisplayGain, useCallback: (callback) => callback,
+    ...refs, recordZoomChange, normalizeDisplayGain, recenteredTraceCenters, useCallback: (callback) => callback,
+    canRecenter: false, display: { viewStart: 30 },
     hasRecording: true, meta: { durationSec: 300 }, minimumRenderableWindow: 0.1,
     timebase: 20, WINDOW_ZOOM_STEP_SECONDS: 0.1,
     clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
@@ -90,12 +92,12 @@ function workspace(overrides = {}) {
     window: { cancelAnimationFrame: (id) => canceled.push(id) },
     notifyTutorialAction: () => {}, ...overrides,
   };
-  for (const name of ["setPlaying", "setTimebase", "setWindowDraftValue", "setGain", "setWaveformVerticalViewport",
+  for (const name of ["setPlaying", "setTimebase", "setWindowDraftValue", "setGain", "setTraceCenters", "setWaveformVerticalViewport",
     "setExpandedChannels", "setSpectrogramFrequencyRange", "setInspectionRange", "setInspectionDragging",
     "setAnnotations", "setCandidates", "setActiveCandidate", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setToast"]) {
     scope[name] = (value) => changes.push([name, value]);
   }
-  const names = ["readZoomView", "cancelPendingViewFrames", "applyZoomView", "changeZoomView", "setTimeWindow", "zoomToTimeRange", "zoomTimeWindow", "commitMutation", "undo", "redo"];
+  const names = ["readZoomView", "cancelPendingViewFrames", "applyZoomView", "changeZoomView", "recenterChannels", "setTimeWindow", "zoomToTimeRange", "zoomTimeWindow", "commitMutation", "undo", "redo"];
   const api = compile(names.map(declaration).join("\n"), scope, `{${names.join(",")}}`);
   return { ...api, refs, scope, changes, canceled };
 }
@@ -262,13 +264,52 @@ test("Ctrl/Cmd+Z and Shift+Z reach shared history from waveform, spectrogram, bu
 test("session snapshots preserve zoom axes with their own histories; new recordings reset both", () => {
   const store = declaration("storeActiveSession");
   const restore = declaration("applySessionSnapshot");
-  for (const field of ["waveformVerticalViewport", "spectrogramFrequencyRange", "channelScrollTop"]) {
+  for (const field of ["waveformVerticalViewport", "spectrogramFrequencyRange", "channelScrollTop", "traceCenters"]) {
     assert.ok(store.includes(field), `${field} stored per session`);
     assert.ok(restore.includes(`snapshot.${field}`), `${field} restored per session`);
   }
   assert.match(restore, /undoRef.current = snapshot.undo/);
   assert.match(restore, /redoRef.current = snapshot.redo/);
   assert.match(page, /undoRef.current = \[\];\s*redoRef.current = \[\];\s*zoomGestureRef.current = \{\}/);
+});
+
+test("Recenter joins annotation/gain history atomically without altering data, gain, or time", () => {
+  const display = {
+    baselineSettingsKey: "recorded", viewStart: 30, data: [Float32Array.of(480, 500, 520)],
+    labels: ["Fp1"], sourceIndices: [[0]], units: ["µV"], traceBaselines: [0],
+    sampleRates: [1], startSecs: [30], envelopes: [null],
+  };
+  const original = structuredClone(display);
+  const ui = workspace({ canRecenter: true, display });
+  ui.commitMutation(() => ["label"]);
+  ui.recenterChannels();
+  const centered = ui.readZoomView();
+  const key = traceCenterKey("recorded", "Fp1", [0], "µV");
+  assert.equal(centered.traceCenters[key], 500);
+  assert.deepEqual({ ...centered, traceCenters: {} }, initialView());
+  assert.deepEqual(display, original, "raw samples and cached automatic baselines are untouched");
+  assert.equal(ui.refs.undoRef.current.length, 2);
+  ui.changeZoomView({ gain: 0.5 });
+  ui.undo(); assert.deepEqual(ui.readZoomView(), centered);
+  ui.undo(); assert.deepEqual(ui.readZoomView().traceCenters, {});
+  assert.deepEqual(ui.refs.annotationsRef.current, ["label"]);
+  ui.undo(); assert.deepEqual(ui.refs.annotationsRef.current, []);
+  ui.redo(); ui.redo(); assert.deepEqual(ui.readZoomView(), centered);
+  ui.recenterChannels();
+  assert.equal(ui.refs.redoRef.current.length, 1, "recenter at the same median is a no-op");
+  ui.redo(); assert.equal(ui.readZoomView().gain, 0.5);
+  assert.equal(ui.readZoomView().traceCenters[key], 500);
+});
+
+test("Recenter refuses stale/loading data and preserves the existing undo/redo stacks", () => {
+  for (const overrides of [{ canRecenter: false }, { canRecenter: true, display: { viewStart: 29 } }]) {
+    const ui = workspace(overrides);
+    ui.changeZoomView({ gain: 2 }); ui.undo();
+    ui.recenterChannels();
+    assert.equal(ui.refs.undoRef.current.length, 0);
+    assert.equal(ui.refs.redoRef.current.length, 1);
+    assert.deepEqual(ui.readZoomView().traceCenters, {});
+  }
 });
 
 test("restoring an expanded session waits for rows before restoring its scroll offset", () => {
