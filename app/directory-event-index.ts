@@ -18,7 +18,8 @@ export interface DirectoryEventRequest {
 }
 
 export const COMMON_EVENT_KEYWORDS = [
-  { name: "Seizure", query: "seizure, seiz, sz, tonic, EEG onset, ictal" },
+  // Matches target_evs in seizure_annotation_tool_update.m.
+  { name: "Seizure", query: "sz, seizure, seiz, tonic, EEG onset" },
   { name: "Spikes / sharp waves", query: "spike, sharp" },
   { name: "Artifact", query: "artifact, artefact" },
   { name: "Stimulation", query: "stim" },
@@ -38,9 +39,17 @@ export function eventKeywords(query: string): string[] {
   });
 }
 
-export function eventLabelMatches(labels: readonly string[], query: string): boolean {
+/** Normalize the search once, like MATLAB's tgt_lower, not once per session. */
+export function createEventLabelMatcher(query: string): (labels: readonly string[]) => boolean {
   const terms = eventKeywords(query).map((term) => term.toLowerCase());
-  return !terms.length || labels.some((label) => terms.some((term) => label.toLowerCase().includes(term)));
+  return (labels) => !terms.length || labels.some((label) => {
+    const lower = label.toLowerCase();
+    return terms.some((term) => lower.includes(term));
+  });
+}
+
+export function eventLabelMatches(labels: readonly string[], query: string): boolean {
+  return createEventLabelMatcher(query)(labels);
 }
 
 /** Partial/error results must never be presented as a confirmed non-match. */

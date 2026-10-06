@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DirectoryImportPlan, DirectoryRecording } from "./directory-import";
-import { COMMON_EVENT_KEYWORDS, eventKeywords, eventLabelMatches } from "./directory-event-index";
+import { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords } from "./directory-event-index";
 import { directoryEventCache, scanDirectoryEvents, setDirectoryEventQuery } from "./directory-event-client";
 import "./directory-sessions.css";
 
@@ -64,11 +64,12 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
     searchRef.current?.focus();
   };
   const searching = keywords.length > 0;
+  const matchesLabels = createEventLabelMatcher(query);
   const indexedCount = plan.recordings.filter((recording) => cache.entries[recording.id]).length;
   const uncheckedCount = plan.recordings.filter((recording) => cache.entries[recording.id]?.state !== "ready").length;
   const incompleteCount = plan.recordings.filter((recording) => cache.entries[recording.id] && cache.entries[recording.id].state !== "ready").length;
   const matches = plan.recordings.map((recording, index) => ({ recording, index })).filter(({ recording }) => !searching
-    || eventLabelMatches(cache.entries[recording.id]?.labels ?? [], query)
+    || matchesLabels(cache.entries[recording.id]?.labels ?? [])
     || (includeUnchecked && cache.entries[recording.id]?.state !== "ready"));
   const pageCount = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
   const page = Math.min(requestedPage, pageCount - 1);
@@ -130,7 +131,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
         {visible.map(({ recording, index }) => {
           const status = statuses[recording.id];
           const labelIndex = cache.entries[recording.id];
-          const matchingLabels = labelIndex?.labels.filter((label) => !searching || eventLabelMatches([label], query)) ?? [];
+          const matchingLabels = labelIndex?.labels.filter((label) => !searching || matchesLabels([label])) ?? [];
           const action = status?.state === "loaded" || status?.state === "confirmation" ? "Resume"
             : status?.state === "error" ? "Retry"
               : status?.state === "opening" ? "Opening…" : "Open";

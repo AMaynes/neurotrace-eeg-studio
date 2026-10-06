@@ -22,7 +22,7 @@ import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
 import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
 import { ANATOMICAL_EXCLUDED_GROUPS, bipolarMontageKind, scalpBipolarPairs, type BipolarMontageKind, type BipolarPair } from "./bipolar-montage.ts";
 import { decodeMatRecordingLabels, type RecordingLabel } from "./recording-labels.ts";
-import { visitMatEventMatrices } from "./mat-event-reader.ts";
+import { visitMatEventLabelMatrices } from "./mat-event-reader.ts";
 
 export type RecordingFormat =
   | "demo"
@@ -1847,19 +1847,29 @@ export async function parseLegacyMatMetadata(file: File): Promise<LegacyMatMetad
   return legacyMetadataFromContext(await loadMatV5Context(file));
 }
 
-/** Metadata-only directory search; skips numeric waveforms and retains valid partial results on failure. */
+/**
+ * MATLAB-style directory search: cache {sessionInfo.sFile.events.label}, then
+ * match keywords against that list. Do not expand/validate event times here;
+ * timing is checked by the recording importer when a session is opened.
+ */
 export async function indexMatRecordingLabels(file: File) {
-  const context: MatParseContext = { littleEndian: true, numeric: [], strings: [], structures: [], warnings: [] };
+  const labels = new Set<string>();
+  const warnings: string[] = [];
   try {
-    await visitMatEventMatrices(file, async (bytes, prefix, littleEndian) => {
-      context.littleEndian = littleEndian;
+    await visitMatEventLabelMatrices(file, async (bytes, prefix, littleEndian) => {
+      const context: MatParseContext = { littleEndian, numeric: [], strings: [], structures: [], warnings: [] };
       await parseMatMatrix(bytes, context, prefix, 0);
+      for (const descriptor of context.strings) for (const value of descriptor.values) {
+        const label = value.trim();
+        if (!label) continue;
+        if (labels.size >= 10000 && !labels.has(label)) throw new Error("More than 10,000 distinct labels; search results are incomplete.");
+        labels.add(label);
+      }
     });
   } catch (error) {
-    context.warnings.push(error instanceof Error ? error.message : "MAT event metadata could not be checked.");
+    warnings.push(error instanceof Error ? error.message : "MAT event metadata could not be checked.");
   }
-  const decoded = matRecordingLabels(context);
-  return { labels: [...new Set(decoded.labels.map((label) => label.label))], warnings: [...context.warnings, ...decoded.warnings] };
+  return { labels: [...labels], warnings };
 }
 
 /**

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { matWriter, legacyMatFile } from "./fixtures/legacy-mat.mjs";
 import { indexMatRecordingLabels, parseLegacyMatMetadata, parseEDFHeader, parseEDFAnnotations } from "../app/eeg-core.ts";
-import { COMMON_EVENT_KEYWORDS, eventKeywords, eventLabelMatches, readDirectoryEventIndex } from "../app/directory-event-index.ts";
+import { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords, eventLabelMatches, readDirectoryEventIndex } from "../app/directory-event-index.ts";
 import { directoryEventCache, scanDirectoryEvents } from "../app/directory-event-client.ts";
 import { planDirectoryImport } from "../app/directory-import.ts";
 import { createNeurotraceProjectArchive } from "../app/neurotrace-project.ts";
@@ -30,6 +30,70 @@ test("keyword matching is case-insensitive literal substring OR, with multiword 
   assert.equal(eventLabelMatches([], " ,  , "), true);
   assert.deepEqual(eventKeywords(" EEG onset, sz, EEG ONSET, , SZ , spike "), ["EEG onset", "sz", "spike"]);
   assert.ok(COMMON_EVENT_KEYWORDS.some((preset) => preset.name === "Seizure" && eventLabelMatches(["SZ onset"], preset.query)));
+});
+
+test("Seizure preset uses MATLAB's five target_evs and case-insensitive contains OR semantics", () => {
+  // Source: seizure_annotation_tool_update.m, startup event-label search.
+  const target_evs = ["sz", "seizure", "seiz", "tonic", "eeg onset"];
+  const preset = COMMON_EVENT_KEYWORDS.find(preset => preset.name === "Seizure");
+  assert.deepEqual(eventKeywords(preset.query).map(term => term.toLowerCase()), target_evs);
+  const matches = createEventLabelMatcher(preset.query);
+  for (const labels of [["Sz"], ["SZ"], ["ESz end"], ["SEIZURE onset"], ["Seiz"], ["tonic-clonic"],
+    ["EEG ONSET"], ["Button", "sz onset"], ["interictal spikes"], ["ictal"], ["EEG", "onset"], [], ["Button"]]) {
+    const matlabContains = labels.some(label => target_evs.some(keyword => label.toLowerCase().includes(keyword)));
+    assert.equal(matches(labels), matlabContains, JSON.stringify(labels));
+  }
+});
+
+test("MAT directory filtering reads the label list even when occurrences are empty or invalid, as MATLAB does", async () => {
+  for (const little of [false, true]) for (const compressed of [false, true]) {
+    const w = matWriter(little);
+    const file = w.file([w.struct("sessionInfo", [{ sFile: w.struct("", [{ events: w.struct("", [
+      { label: w.string("Sz without occurrences"), times: w.numeric([]) },
+      { label: w.string("EEG onset invalid time"), times: w.numeric([NaN]) },
+      { label: w.string("Button press"), times: w.unset() },
+      { label: w.string(""), times: w.numeric([1]) },
+    ]) }]) }])], "labels-only.mat", { compressed });
+    const result = await indexMatRecordingLabels(file);
+    assert.deepEqual(result, { labels: ["Sz without occurrences", "EEG onset invalid time", "Button press"], warnings: [] });
+    const imported = await parseLegacyMatMetadata(file);
+    assert.deepEqual(imported.recordingLabels, [], "directory matches must not create invalid markers in the viewer");
+    assert.ok(imported.warnings.length, "opening the recording still validates actual event timing");
+  }
+});
+
+test("MAT label indexing skips large times, notes and unrelated channel structures without expanding occurrences", async () => {
+  const w = matWriter();
+  const manyTimes = w.numeric(Array.from({ length: 250000 }, (_, i) => i / 1000));
+  const file = w.file([w.struct("sessionInfo", [{
+    sFile: w.struct("", [{ events: w.struct("", [
+      { label: w.string("Seizure onset"), times: manyTimes, notes: w.cell([w.string("Not an event label"), manyTimes]) },
+      { label: w.string("Button"), times: manyTimes, notes: w.cell([]) },
+    ]), header: w.struct("", [{ arbitrary: manyTimes }]) }]),
+    ChannelMat: w.struct("", [{ Channel: w.struct("", Array.from({ length: 1000 }, () => ({
+      Name: w.string("Non-event"), unrelated: w.struct("", [{ label: w.string("Wrong label") }]),
+    }))) }]),
+  }])], "many-markers.mat");
+  let bytes = 0, reads = 0;
+  const slice = file.slice.bind(file);
+  file.arrayBuffer = () => { throw new Error("Do not load the whole MAT"); };
+  file.slice = (start = 0, end = file.size) => { bytes += Math.min(end, file.size) - start; reads++; return slice(start, end); };
+  assert.deepEqual(await indexMatRecordingLabels(file), { labels: ["Seizure onset", "Button"], warnings: [] });
+  assert.ok(bytes <= 5 * 16 * 1024, `${bytes} bytes read out of ${file.size}`);
+  assert.ok(reads <= 5, `${reads} reads; only tags at metadata boundaries, not channel/marker lists, should be read`);
+});
+
+test("MAT labels retain wrapper, struct-array and cell compatibility without admitting unrelated label fields", async () => {
+  for (const compressed of [false, true]) {
+    const w = matWriter();
+    const session = (label) => w.struct("", [{ sFile: w.struct("", [{ events: w.struct("", [
+      { label: w.cell([w.string(label)]), times: w.numeric([1]), notes: w.string("Ignore notes") },
+      { label: w.string("Stim β"), times: w.numeric([2]), notes: w.string("Ignore also") },
+    ]) }]), ChannelMat: w.struct("", [{ label: w.string("Ignore channel label") }]) }]);
+    const file = w.file([w.struct("wrapper", [{ sessionInfo: session("ESz first") }, { sessionInfo: session("EEG onset last") }]),
+      w.struct("notes", [{ events: w.struct("", [{ label: w.string("Ignore unrelated events") }]) }])], "wrapped.mat", { compressed });
+    assert.deepEqual(await indexMatRecordingLabels(file), { labels: ["ESz first", "Stim β", "EEG onset last"], warnings: [] });
+  }
 });
 
 test("selective MAT event reads match the production importer across endian, compression, and padding variants", async () => {
@@ -65,7 +129,7 @@ test("MAT metadata read-ahead replaces thousands of tiny reads without changing 
   const result = await indexMatRecordingLabels(file);
   assert.deepEqual(result.warnings, []);
   assert.deepEqual(result.labels, [...new Set(expected.recordingLabels.map(event => event.label))]);
-  assert.ok(reads < 10, `metadata required ${reads} reads`);
+  assert.equal(reads, 1, "known event metadata fits in one read; ChannelMat is skipped");
 });
 
 test("compressed waveforms stream through without whole-file buffers, retaining following event metadata", async () => {
@@ -279,6 +343,38 @@ test("worker scheduler indexes sequentially, chooses only paired MAT metadata, a
     assert.deepEqual(complete, [null], "cached scans reset any stale checking indicator");
     const other = planDirectoryImport([fileAt("a/x.mat"), fileAt("a/x.dat")], "mat-dat");
     assert.deepEqual(directoryEventCache(other).entries, {}, "a replacement file at the same path gets a fresh cache");
+  } finally { if (previous === undefined) delete globalThis.Worker; else globalThis.Worker = previous; }
+});
+
+test("MAT+DAT catalogs search actual MAT labels, never touch DAT samples, and reuse the list for new keywords", async () => {
+  const mat = legacyMatFile({ name: "session.mat" });
+  const dat = new File([new Uint8Array(1000)], "session.dat");
+  for (const method of ["slice", "arrayBuffer", "stream"]) dat[method] = () => { throw new Error("Directory keyword search must not read DAT"); };
+  let matReads = 0;
+  const slice = mat.slice.bind(mat);
+  mat.slice = (...args) => { matReads++; return slice(...args); };
+  const plan = planDirectoryImport([mat, dat], "mat-dat");
+  const previous = globalThis.Worker;
+  let dispatched = 0;
+  globalThis.Worker = class {
+    postMessage(message) {
+      dispatched++;
+      assert.equal(message.request.file, mat);
+      readDirectoryEventIndex(message.request).then(result => this.onmessage({ data: { id: message.id, result } }));
+    }
+    terminate() {}
+  };
+  try {
+    await scanDirectoryEvents(plan, new AbortController().signal, () => {});
+    const entry = directoryEventCache(plan).entries[plan.recordings[0].id];
+    assert.equal(entry.state, "ready");
+    assert.deepEqual(entry.labels, ["Synthetic end", "Synthetic onset"]);
+    assert.ok(createEventLabelMatcher("onset")(entry.labels));
+    assert.ok(createEventLabelMatcher("END")(entry.labels));
+    assert.equal(createEventLabelMatcher("unmatched")(entry.labels), false);
+    await scanDirectoryEvents(plan, new AbortController().signal, () => {});
+    assert.equal(dispatched, 1);
+    assert.equal(matReads, 1, "read the metadata once, then search its cached label list");
   } finally { if (previous === undefined) delete globalThis.Worker; else globalThis.Worker = previous; }
 });
 

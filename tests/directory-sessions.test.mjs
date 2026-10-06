@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
-import { COMMON_EVENT_KEYWORDS, eventKeywords, eventLabelMatches } from "../app/directory-event-index.ts";
+import { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords } from "../app/directory-event-index.ts";
 import { directoryEventCache, setDirectoryEventQuery } from "../app/directory-event-client.ts";
 
 // Execute the actual component and effect lifecycle; scanning is tested separately
@@ -41,7 +41,7 @@ function harness(count, options = {}) {
         }
       },
     };
-    if (name === "./directory-event-index") return { COMMON_EVENT_KEYWORDS, eventKeywords, eventLabelMatches };
+    if (name === "./directory-event-index") return { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords };
     if (name === "./directory-event-client") return {
       directoryEventCache, setDirectoryEventQuery,
       scanDirectoryEvents: async (plan, signal, notify, retry) => { scans.push({ plan, signal, notify, retry }); },

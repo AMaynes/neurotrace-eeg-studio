@@ -1,9 +1,10 @@
 /**
  * Selective Level-5 MAT traversal for directory event indexing. Numeric signal
  * payloads are skipped, not decoded (bounded read-ahead may touch their edges).
- * Compressed elements are streamed
- * through zlib; only known sessionInfo.sFile.events matrices reach the existing
- * MAT decoder. Called in a cancellable worker, never during waveform rendering.
+ * Compressed elements are streamed through zlib; only character matrices under
+ * sessionInfo.sFile.events.label reach the existing MAT decoder. Event times,
+ * notes and channel metadata are not needed for MATLAB's label-list search.
+ * Called in a cancellable worker, never during waveform rendering.
  */
 
 const MAX_METADATA_BYTES = 64 * 1024 * 1024;
@@ -169,8 +170,16 @@ function integers(item: { type: number; payload: Uint8Array }, little: boolean) 
     : width === 2 ? view.getUint16(i * width, little) : view.getInt32(i * width, little));
 }
 
-/** Extract known event subtrees; the caller reuses the production MAT decoder. */
-export async function visitMatEventMatrices(file: File, visit: (bytes: Uint8Array, prefix: string, little: boolean) => Promise<void>) {
+/** Keep wrapper support, then follow only the known session/event/label fields. */
+function containsEventLabels(path: string) {
+  const parts = path.replace(/\[\d+\]/g, "").toLowerCase().split(".");
+  const start = parts.indexOf("sessioninfo");
+  if (start === -1) return true;
+  return /^sessioninfo(?:\.sfile(?:\.events(?:\.label)?)?)?$/.test(parts.slice(start).join("."));
+}
+
+/** Extract only the event label list, not one expanded marker per timestamp. */
+export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint8Array, prefix: string, little: boolean) => Promise<void>) {
   const reader = new BlobReader(file);
   const header = await reader.read(128);
   if (!/MATLAB\s+(?:5\.0|Level 5)\s+MAT-file/i.test(text(header))) throw new Error("Background event search supports Level-5 MAT metadata; this MAT format cannot be checked.");
@@ -193,7 +202,8 @@ export async function visitMatEventMatrices(file: File, visit: (bytes: Uint8Arra
     const shape = integers(dimensions, little);
     const count = shape.reduce((product, value) => product * value, 1);
     if (!shape.length || shape.some((value) => value < 0) || !Number.isSafeInteger(count)) throw new Error("Invalid MAT dimensions.");
-    if (/(?:^|\.)sessionInfo(?:\[\d+\])?\.sFile(?:\[\d+\])?\.events$/i.test(name)) {
+    if (!containsEventLabels(name)) { await input.skip(end - input.position); return; }
+    if (kind === 4 && /(?:^|\.)sessionInfo(?:\[\d+\])?\.sFile(?:\[\d+\])?\.events(?:\[\d+\])?\.label(?:\[\d+\])*$/i.test(name)) {
       const remaining = end - input.position;
       metadataBytes += flags.raw.length + dimensions.raw.length + nameField.raw.length + remaining;
       if (metadataBytes > MAX_METADATA_BYTES) throw new Error("Event metadata exceeds the 64 MiB background-search safety limit.");
@@ -216,7 +226,10 @@ export async function visitMatEventMatrices(file: File, visit: (bytes: Uint8Arra
       const container = kind === 2 ? Math.floor(index / Math.max(1, names.length)) : index;
       const path = count > 1 ? `${name}[${container}]` : name;
       if (child.type === 14 && !child.small) {
-        await matrix(input, childEnd, kind === 2 ? `${path}.${names[index % names.length]}` : path, depth + 1);
+        const childPath = kind === 2 ? `${path}.${names[index % names.length]}` : path;
+        // Child byte lengths let us seek past large times/notes/ChannelMat
+        // arrays without parsing their elements or allocating marker objects.
+        if (containsEventLabels(childPath)) await matrix(input, childEnd, childPath, depth + 1);
         index += 1;
       }
       await input.skip(childEnd - input.position);
