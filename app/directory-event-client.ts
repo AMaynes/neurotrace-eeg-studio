@@ -3,7 +3,7 @@
  * the directory dialog aborts outstanding work; reopening reuses completed scans.
  * File references remain local and no source samples or hashes enter this cache.
  */
-import { directoryRecordingFiles, type DirectoryImportPlan } from "./directory-import.ts";
+import { directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan } from "./directory-import.ts";
 import type { DirectoryEventIndex, DirectoryEventRequest } from "./directory-event-index.ts";
 import type { DirectoryEventResponse } from "./directory-event-worker.ts";
 
@@ -12,6 +12,10 @@ export interface DirectoryEventCache {
   query: string;
 }
 const caches = new WeakMap<DirectoryImportPlan, DirectoryEventCache>();
+
+export function supportsDirectoryEventSearch(format: DirectoryImportFormat): boolean {
+  return format !== "edf";
+}
 
 export function directoryEventCache(plan: DirectoryImportPlan): DirectoryEventCache {
   let cache = caches.get(plan);
@@ -26,9 +30,12 @@ export function setDirectoryEventQuery(plan: DirectoryImportPlan, query: string)
 
 /** Starts one worker, with one pending request. No main-thread decoding fallback. */
 export async function scanDirectoryEvents(plan: DirectoryImportPlan, signal: AbortSignal, onUpdate: (id: string | null) => void, retry = false) {
+  if (signal.aborted) return;
+  // EDF labels can require reading annotation records throughout the recording.
+  // Do not start that work just to display a directory, including on retries.
+  if (!supportsDirectoryEventSearch(plan.format)) { onUpdate(null); return; }
   const cache = directoryEventCache(plan);
   const pending = plan.recordings.filter((entry) => !cache.entries[entry.id] || (retry && cache.entries[entry.id].state !== "ready"));
-  if (signal.aborted) return;
   if (!pending.length) { onUpdate(null); return; }
   let worker: Worker | undefined;
   let failPending: ((error: Error) => void) | undefined;

@@ -318,6 +318,34 @@ function fileAt(path, content = "") {
   return file;
 }
 
+test("EDF directory scans and retries do no file I/O, start no worker, and never claim labels were checked", async () => {
+  const edf = fileAt("folder/session.edf");
+  const sidecar = fileAt("folder/session_events.tsv");
+  for (const file of [edf, sidecar]) {
+    for (const method of ["slice", "arrayBuffer", "stream", "text"]) file[method] = () => assert.fail("EDF directory search must not read files");
+  }
+  const plan = planDirectoryImport([edf, sidecar], "edf");
+  const previous = globalThis.Worker;
+  let workers = 0;
+  globalThis.Worker = class { constructor() { workers++; throw new Error("EDF directory search must not start a worker"); } };
+  try {
+    const updates = [];
+    await scanDirectoryEvents(plan, new AbortController().signal, id => updates.push(id));
+    await scanDirectoryEvents(plan, new AbortController().signal, id => updates.push(id), true);
+    assert.equal(workers, 0);
+    assert.deepEqual(updates, [null, null]);
+    assert.deepEqual(directoryEventCache(plan).entries, {});
+    const canceled = new AbortController(); canceled.abort();
+    await scanDirectoryEvents(plan, canceled.signal, () => assert.fail("canceled scans must not update UI"));
+    // Cached results from older callers must also be left untouched, not retried.
+    const old = { state: "error", labels: ["Known label"], warnings: ["Old failure"] };
+    directoryEventCache(plan).entries[plan.recordings[0].id] = old;
+    await scanDirectoryEvents(plan, new AbortController().signal, () => {}, true);
+    assert.equal(directoryEventCache(plan).entries[plan.recordings[0].id], old);
+    assert.equal(workers, 0);
+  } finally { if (previous === undefined) delete globalThis.Worker; else globalThis.Worker = previous; }
+});
+
 test("worker scheduler indexes sequentially, chooses only paired MAT metadata, and caches per catalog", async () => {
   const plan = planDirectoryImport([fileAt("a/x.mat"), fileAt("a/x.dat"), fileAt("b/x.mat"), fileAt("b/x.dat"),
     fileAt("a/x_events.tsv"), fileAt("b/x_events.tsv")], "mat-dat");
@@ -379,7 +407,7 @@ test("MAT+DAT catalogs search actual MAT labels, never touch DAT samples, and re
 });
 
 test("canceling a scan terminates it immediately, ignores late results, and resumes only unfinished entries", async () => {
-  const plan = planDirectoryImport([fileAt("a.edf"), fileAt("b.edf")], "edf");
+  const plan = planDirectoryImport([fileAt("a.mat"), fileAt("b.mat")], "mat");
   const previous = globalThis.Worker;
   let message;
   const workers = [];
@@ -402,7 +430,7 @@ test("canceling a scan terminates it immediately, ignores late results, and resu
 });
 
 test("unavailable workers report unchecked sessions instead of decoding on the UI thread or claiming no matches", async () => {
-  const plan = planDirectoryImport([fileAt("a.edf"), fileAt("b.edf")], "edf");
+  const plan = planDirectoryImport([fileAt("a.mat"), fileAt("b.mat")], "mat");
   const previous = globalThis.Worker;
   delete globalThis.Worker;
   try {
@@ -412,7 +440,7 @@ test("unavailable workers report unchecked sessions instead of decoding on the U
 });
 
 test("failed checks retry without rereading ready entries, and cancellation before dispatch cannot strand a promise", async () => {
-  const plan = planDirectoryImport([fileAt("a.edf"), fileAt("b.edf")], "edf");
+  const plan = planDirectoryImport([fileAt("a.mat"), fileAt("b.mat")], "mat");
   const cache = directoryEventCache(plan);
   cache.entries[plan.recordings[0].id] = { state: "ready", labels: ["Sleep"], warnings: [] };
   cache.entries[plan.recordings[1].id] = { state: "error", labels: [], warnings: ["Failed"] };

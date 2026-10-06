@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DirectoryImportPlan, DirectoryRecording } from "./directory-import";
 import { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords } from "./directory-event-index";
-import { directoryEventCache, scanDirectoryEvents, setDirectoryEventQuery } from "./directory-event-client";
+import { directoryEventCache, scanDirectoryEvents, setDirectoryEventQuery, supportsDirectoryEventSearch } from "./directory-event-client";
 import "./directory-sessions.css";
 
 export type DirectorySessionStatus = {
@@ -31,6 +31,7 @@ const STATUS_LABELS = {
 
 /** On-demand session catalog with a cancellable, metadata-only event-label index. */
 export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear }: DirectorySessionsProps) {
+  const searchSupported = supportsDirectoryEventSearch(plan.format);
   const cache = directoryEventCache(plan);
   const [requestedPage, setRequestedPage] = useState(0);
   const [query, setQuery] = useState(() => cache.query);
@@ -43,22 +44,23 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
   const searchRef = useRef<HTMLInputElement>(null);
   const keywordsRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (busy) return;
+    if (busy || !searchSupported) return;
     const controller = new AbortController();
     void scanDirectoryEvents(plan, controller.signal, (id) => {
       setChecking(id);
       refreshIndex((version) => version + 1);
     }, scanGeneration > 0);
     return () => controller.abort();
-  }, [plan, busy, scanGeneration]);
+  }, [plan, busy, scanGeneration, searchSupported]);
   const changeQuery = (value: string) => {
+    if (!searchSupported) return;
     setDirectoryEventQuery(plan, value);
     setQuery(value);
     setRequestedPage(0);
   };
-  const keywords = eventKeywords(query);
+  const keywords = searchSupported ? eventKeywords(query) : [];
   const submitKeywords = () => {
-    if (busy || !eventKeywords(draft).length) return;
+    if (busy || !searchSupported || !eventKeywords(draft).length) return;
     changeQuery(eventKeywords([...keywords, draft].join(",")).join(", "));
     setDraft("");
     searchRef.current?.focus();
@@ -96,20 +98,22 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
       </div>
       <div className="directory-event-search">
         <label htmlFor="directory-event-query">Filter sessions by event label</label>
-        <div className="directory-event-search-row" data-shortcut-scope={presetsOpen ? "directory-keywords" : undefined}
+        <div className="directory-event-search-row" data-unsupported={!searchSupported || undefined}
+          title={!searchSupported ? "Not supported for EDF" : undefined}
+          data-shortcut-scope={searchSupported && presetsOpen ? "directory-keywords" : undefined}
           onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPresetsOpen(false); }}
           onKeyDown={(event) => {
             if (event.key === "Escape" && presetsOpen) { event.preventDefault(); event.stopPropagation(); setPresetsOpen(false); keywordsRef.current?.focus(); }
           }}>
-          <input id="directory-event-query" ref={searchRef} type="search" disabled={busy} value={draft} placeholder="seizure, sz, EEG onset…" aria-describedby="directory-event-query-help" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+          <input id="directory-event-query" ref={searchRef} type="search" disabled={busy || !searchSupported} value={searchSupported ? draft : ""} placeholder="seizure, sz, EEG onset…" aria-describedby="directory-event-query-help" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
             if (event.key === "Enter" && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
               event.preventDefault(); event.stopPropagation(); submitKeywords();
             }
           }} />
-          <button type="button" className="button secondary" disabled={busy || !eventKeywords(draft).length} aria-label="Search event labels" onClick={submitKeywords}>Search</button>
-          <button type="button" ref={keywordsRef} className="button secondary directory-keywords-toggle" disabled={busy} aria-label="Common event keywords" aria-expanded={presetsOpen} aria-controls="directory-common-keywords" title="Choose common event keywords" onClick={() => setPresetsOpen((open) => !open)}>…</button>
-          {(query || draft) && <button type="button" className="button secondary" disabled={busy} onClick={() => { changeQuery(""); setDraft(""); searchRef.current?.focus(); }} aria-label="Clear event label filter">Clear</button>}
-          {presetsOpen && <div id="directory-common-keywords" className="directory-keywords-popover" role="group" aria-label="Common event keyword presets">
+          <button type="button" className="button secondary" disabled={busy || !searchSupported || !eventKeywords(draft).length} aria-label="Search event labels" onClick={submitKeywords}>Search</button>
+          <button type="button" ref={keywordsRef} className="button secondary directory-keywords-toggle" disabled={busy || !searchSupported} aria-label="Common event keywords" aria-expanded={searchSupported && presetsOpen} aria-controls="directory-common-keywords" title={searchSupported ? "Choose common event keywords" : "Not supported for EDF"} onClick={() => setPresetsOpen((open) => !open)}>…</button>
+          {searchSupported && (query || draft) && <button type="button" className="button secondary" disabled={busy} onClick={() => { changeQuery(""); setDraft(""); searchRef.current?.focus(); }} aria-label="Clear event label filter">Clear</button>}
+          {searchSupported && presetsOpen && <div id="directory-common-keywords" className="directory-keywords-popover" role="group" aria-label="Common event keyword presets">
             <strong>Common keywords</strong><small>Choose keywords, then press Enter or Search to apply.</small>
             {COMMON_EVENT_KEYWORDS.map((preset) => <button type="button" disabled={busy} key={preset.name} onClick={() => { setDraft(preset.query); setPresetsOpen(false); searchRef.current?.focus(); }}><strong>{preset.name}</strong><span>{preset.query}</span></button>)}
           </div>}
@@ -120,17 +124,19 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
             searchRef.current?.focus();
           }}>×</button></li>)}
         </ul>}
-        <small id="directory-event-query-help">Press Enter or Search to add tags and filter event labels, not filenames. Commas separate keywords; any tag can match. Spaces stay together as a phrase. Case-insensitive.</small>
-        <div className="directory-event-progress" role="status" aria-live="polite">
+        <small id="directory-event-query-help">{searchSupported
+          ? "Press Enter or Search to add tags and filter event labels, not filenames. Commas separate keywords; any tag can match. Spaces stay together as a phrase. Case-insensitive."
+          : "Keyword searching is not supported for EDF."}</small>
+        {searchSupported && <div className="directory-event-progress" role="status" aria-live="polite">
           <span>{matches.length.toLocaleString()} of {plan.recordings.length.toLocaleString()} sessions shown · {indexedCount.toLocaleString()} checked{checking || indexedCount < plan.recordings.length ? ` · ${busy ? "checking paused" : "checking event labels…"}` : ""}</span>
           {incompleteCount > 0 && <button type="button" disabled={busy || Boolean(checking)} onClick={() => setScanGeneration((version) => version + 1)}>Retry {incompleteCount} incomplete check{incompleteCount === 1 ? "" : "s"}</button>}
-        </div>
+        </div>}
         {searching && uncheckedCount > 0 && <label className="directory-include-unchecked"><input type="checkbox" disabled={busy} checked={includeUnchecked} onChange={(event) => { setIncludeUnchecked(event.target.checked); setRequestedPage(0); }} />Include {uncheckedCount} unchecked / partially checked sessions. Results are incomplete until these can be checked.</label>}
       </div>
       <ol className="directory-sessions-list" aria-label="Recordings in directory" start={first + 1}>
         {visible.map(({ recording, index }) => {
           const status = statuses[recording.id];
-          const labelIndex = cache.entries[recording.id];
+          const labelIndex = searchSupported ? cache.entries[recording.id] : undefined;
           const matchingLabels = labelIndex?.labels.filter((label) => !searching || matchesLabels([label])) ?? [];
           const action = status?.state === "loaded" || status?.state === "confirmation" ? "Resume"
             : status?.state === "error" ? "Retry"
@@ -140,7 +146,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
               <strong className="directory-session-path">{recording.relativePath}</strong>
               <span className="directory-session-meta">Session {(index + 1).toLocaleString()} · {FORMAT_NAMES[plan.format]}{plan.format === "mat-dat" ? " pair" : ""}</span>
               <span className="directory-session-state" data-state={status?.state ?? "ready"}>{status ? status.message || STATUS_LABELS[status.state] : "Ready to open"}</span>
-              <span className="directory-session-events" title={matchingLabels.join(" · ")}>{matchingLabels.length ? `Events: ${matchingLabels.slice(0, 3).join(" · ")}${matchingLabels.length > 3 ? ` · +${matchingLabels.length - 3} more` : ""}` : labelIndex?.state === "ready" ? "No supported event labels found" : checking === recording.id && !busy ? "Checking event labels…" : "Event labels not fully checked"}</span>
+              {searchSupported && <span className="directory-session-events" title={matchingLabels.join(" · ")}>{matchingLabels.length ? `Events: ${matchingLabels.slice(0, 3).join(" · ")}${matchingLabels.length > 3 ? ` · +${matchingLabels.length - 3} more` : ""}` : labelIndex?.state === "ready" ? "No supported event labels found" : checking === recording.id && !busy ? "Checking event labels…" : "Event labels not fully checked"}</span>}
               {!!labelIndex?.warnings.length && <details className="directory-event-warning"><summary>Event-label check incomplete</summary>{labelIndex.warnings.map((warning) => <p key={warning}>{warning}</p>)}</details>}
             </div>
             <button type="button" className="button secondary" disabled={busy || status?.state === "opening"} aria-label={`${action} ${recording.relativePath}`} onClick={() => onOpen(recording)}>{action}</button>

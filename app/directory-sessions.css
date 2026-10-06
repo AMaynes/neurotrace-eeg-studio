@@ -87,6 +87,10 @@
 .directory-event-search > label { font-size: 11px; color: var(--ink); }
 .directory-event-search-row { position: relative; display: flex; gap: 6px; margin: 6px 0; }
 .directory-event-search-row > input { flex: 1; min-width: 0; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--panel-2); color: var(--ink); padding: 8px 10px; font-size: 12px; }
+.directory-event-search-row > input:disabled { opacity: .45; }
+/* The wrapper receives hover so its explanation works over disabled controls. */
+.directory-event-search-row[data-unsupported] { cursor: not-allowed; }
+.directory-event-search-row[data-unsupported] > :is(input, button) { pointer-events: none; }
 .directory-keyword-tags { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 8px 0; max-height: 100px; overflow-y: auto; }
 .directory-keyword-tags > li { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 2px 3px 2px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--mint-dark); color: var(--mint); font-size: 11px; }
 .directory-keyword-tags > li > span { overflow-wrap: anywhere; min-width: 0; }

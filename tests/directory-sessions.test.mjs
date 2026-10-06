@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords } from "../app/directory-event-index.ts";
-import { directoryEventCache, setDirectoryEventQuery } from "../app/directory-event-client.ts";
+import { directoryEventCache, setDirectoryEventQuery, supportsDirectoryEventSearch } from "../app/directory-event-client.ts";
 
 // Execute the actual component and effect lifecycle; scanning is tested separately
 // against a worker double. Rendering must never read recording bytes itself.
@@ -43,7 +43,7 @@ function harness(count, options = {}) {
     };
     if (name === "./directory-event-index") return { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords };
     if (name === "./directory-event-client") return {
-      directoryEventCache, setDirectoryEventQuery,
+      directoryEventCache, setDirectoryEventQuery, supportsDirectoryEventSearch,
       scanDirectoryEvents: async (plan, signal, notify, retry) => { scans.push({ plan, signal, notify, retry }); },
     };
     if (name.endsWith(".css")) return {};
@@ -52,9 +52,9 @@ function harness(count, options = {}) {
   const actions = [];
   const props = {
     plan: {
-      format: "edf",
+      format: "mat",
       recordings: Array.from({ length: count }, (_, index) => ({
-        id: `session-${index}`, label: `session-${index}`, relativePath: `folder/session-${index}.edf`,
+        id: `session-${index}`, label: `session-${index}`, relativePath: `folder/session-${index}.mat`,
         // Reading bytes from any catalog entry must fail this test immediately.
         primary: { arrayBuffer() { throw new Error("Catalog attempted to read recording bytes"); } }, files: [],
       })),
@@ -96,6 +96,78 @@ function content(tree) {
 
 const ready = (...labels) => ({ state: "ready", labels, warnings: [] });
 
+test("EDF keyword controls are disabled with a hover explanation, without scanning or hiding sessions", () => {
+  const ui = harness(51);
+  ui.props.plan.format = "edf";
+  for (const recording of ui.props.plan.recordings) recording.relativePath = recording.relativePath.replace(/\.mat$/, ".edf");
+  // Stale labels, a query or a failed check must not affect an unsupported format.
+  ui.cache.query = "seizure";
+  ui.cache.entries["session-0"] = { state: "error", labels: ["Seizure"], warnings: ["Old failure"] };
+  let tree = ui.render();
+  assert.equal(ui.input(tree).props.disabled, true);
+  assert.equal(ui.input(tree).props.value, "");
+  for (const name of ["Search event labels", "Common event keywords"]) assert.equal(ui.button(tree, name).props.disabled, true);
+  const row = elements(tree, node => node.props?.className === "directory-event-search-row")[0];
+  assert.equal(row.props.title, "Not supported for EDF");
+  assert.equal(row.props["data-unsupported"], true);
+  assert.match(content(tree), /Keyword searching is not supported for EDF/);
+  assert.doesNotMatch(content(tree), /not fully checked|Checking|Old failure|Events:|No supported event labels found/);
+  assert.equal(elements(tree, node => node.props?.className === "directory-event-progress").length, 0);
+  assert.equal(elements(tree, node => ["Active event keywords", "Clear event label filter", "Common event keyword presets"].includes(node.props?.["aria-label"])).length, 0);
+  assert.equal(ui.rows(tree).length, 50);
+  assert.equal(ui.scans.length, 0);
+  assert.equal(ui.button(tree, "Open folder/session-0.edf").props.disabled, false);
+  ui.button(tree, "Open folder/session-0.edf").props.onClick();
+  assert.deepEqual(ui.actions, [["open", "session-0"]]);
+  ui.button(tree, "Next sessions").props.onClick();
+  tree = ui.render();
+  assert.equal(ui.rows(tree).length, 1);
+  assert.equal(ui.rows(tree)[0].props["data-recording-id"], "session-50");
+  // Even invoking handlers directly must not submit an EDF query.
+  ui.search(tree, "button");
+  assert.equal(ui.cache.query, "seizure");
+  ui.props.busy = true; ui.render();
+  ui.props.busy = false; ui.render();
+  assert.equal(ui.scans.length, 0);
+  ui.unmount();
+});
+
+test("MAT and MAT+DAT keyword search stays enabled and scans once across submitted tags", () => {
+  for (const format of ["mat", "mat-dat"]) {
+    const ui = harness(2);
+    ui.props.plan.format = format;
+    ui.cache.entries["session-0"] = ready("EEG onset");
+    ui.cache.entries["session-1"] = ready("Button");
+    let tree = ui.render();
+    assert.equal(ui.input(tree).props.disabled, false);
+    assert.equal(ui.button(tree, "Common event keywords").props.disabled, false);
+    ui.type(tree, "EEG onset");
+    tree = ui.render();
+    assert.equal(ui.rows(tree).length, 2);
+    assert.equal(ui.button(tree, "Search event labels").props.disabled, false);
+    ui.button(tree, "Search event labels").props.onClick();
+    assert.equal(ui.rows(ui.render()).length, 1);
+    assert.equal(ui.scans.length, 1);
+    ui.unmount();
+  }
+});
+
+test("switching to EDF cancels an active MAT label scan and ignores its late status", () => {
+  const ui = harness(2);
+  ui.render();
+  ui.scans[0].notify("session-0");
+  ui.search(ui.render(), "EEG onset");
+  ui.button(ui.render(), "Common event keywords").props.onClick();
+  ui.props.plan = { ...ui.props.plan, format: "edf" };
+  const tree = ui.render();
+  assert.equal(ui.scans[0].signal.aborted, true);
+  assert.equal(ui.scans.length, 1);
+  assert.equal(ui.rows(tree).length, 2);
+  assert.doesNotMatch(content(tree), /Checking|Common keywords|not fully checked/);
+  assert.equal(ui.button(tree, "Common event keywords").props["aria-expanded"], false);
+  ui.unmount();
+});
+
 test("directory catalog renders at most 50 entries and paginates without reading recordings", () => {
   const ui = harness(123);
   let tree = ui.render();
@@ -125,12 +197,12 @@ test("directory actions identify the exact recording and distinguish resume, ret
   } });
   const tree = ui.render();
   for (const [index, label] of [[0, "Open"], [1, "Resume"], [2, "Resume"], [3, "Retry"]]) {
-    const button = ui.button(tree, `${label} folder/session-${index}.edf`);
+    const button = ui.button(tree, `${label} folder/session-${index}.mat`);
     assert.equal(button.props.disabled, false);
     button.props.onClick();
   }
   assert.deepEqual(ui.actions, [["open", "session-0"], ["open", "session-1"], ["open", "session-2"], ["open", "session-3"]]);
-  assert.equal(ui.button(tree, "Opening… folder/session-4.edf").props.disabled, true);
+  assert.equal(ui.button(tree, "Opening… folder/session-4.mat").props.disabled, true);
   assert.ok(elements(tree, (node) => node.props?.children === "Choose the matching MAT file.").length);
 });
 
@@ -181,13 +253,13 @@ test("search filters actual event text, not filenames, and clearing restores the
     "session-0": ready("Artifact"), "session-1": ready("Button press"),
     "session-2": ready("EEG Onset", "SZ end"), "session-3": ready(),
   });
-  ui.props.plan.recordings[0].relativePath = "seizure.edf";
+  ui.props.plan.recordings[0].relativePath = "seizure.mat";
   ui.search(ui.render(), " Seizure, EEG onset ");
   let tree = ui.render();
   assert.deepEqual(ui.rows(tree).map((row) => row.props["data-recording-id"]), ["session-2"]);
   assert.match(content(ui.rows(tree)[0]), /Session 3/);
   assert.match(content(tree), /Events: EEG Onset/);
-  ui.button(tree, "Resume folder/session-2.edf").props.onClick();
+  ui.button(tree, "Resume folder/session-2.mat").props.onClick();
   assert.deepEqual(ui.actions, [["open", "session-2"]]);
   ui.button(tree, "Clear event label filter").props.onClick();
   assert.equal(ui.rows(ui.render()).length, 4);
@@ -247,7 +319,7 @@ test("filtered pagination resets for a new query and keeps exact recording ident
   tree = ui.render();
   assert.equal(ui.rows(tree).length, 25);
   assert.equal(ui.rows(tree)[0].props["data-recording-id"], "session-101");
-  ui.button(tree, "Open folder/session-101.edf").props.onClick();
+  ui.button(tree, "Open folder/session-101.mat").props.onClick();
   assert.deepEqual(ui.actions, [["open", "session-101"]]);
   ui.search(tree, "button");
   assert.equal(ui.rows(ui.render())[0].props["data-recording-id"], "session-0");
