@@ -74,7 +74,7 @@ import {
 import { buildEDFEnvelopeWindowOffThread } from "./edf-envelope-worker-client";
 import type { EDFEnvelopeProgress } from "./edf-envelope";
 import { buildRawDatEnvelopeWindowOffThread } from "./raw-dat-envelope-worker-client";
-import { computeMatlabSpectrogramOffThread } from "./matlab-spectrogram-worker-client";
+import { computeFullWindowSpectrogramOffThread } from "./full-window-spectrogram-client";
 import type { MatlabSpectrogramResult } from "./matlab-spectrogram";
 import { matlabSpectrogramInputPlan } from "./matlab-spectrogram-input";
 import { buildMatlabDisplayWindow, type MatlabDisplayWindow } from "./matlab-display-window";
@@ -1126,7 +1126,6 @@ const ENVELOPE_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
 const ENVELOPE_ENTRY_BUDGET_BYTES = ENVELOPE_CACHE_BUDGET_BYTES / 2;
 const SOURCE_READ_AHEAD_BUDGET_BYTES = 96 * 1024 * 1024;
 const INITIAL_PREVIEW_READ_BUDGET_BYTES = 16 * 1024 * 1024;
-const SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES = 32 * 1024 * 1024;
 // A full-width drag shifts less than one window so trackpad/mouse movement can
 // be precise without breaking the shared waveform/spectrogram time lock.
 const SPECTROGRAM_DRAG_PAN_SCALE = 0.3;
@@ -1951,16 +1950,12 @@ export default function Home() {
   const [focusedChannel, setFocusedChannel] = useState(0);
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
   const [display, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
-  const [exactSpectrogramSignal, setExactSpectrogramSignal] = useState<{
+  const [spectrogramState, setSpectrogramState] = useState<{
     requestKey: string;
-    channels: Array<{
-      sourceIndex: number;
-      dataStart: number;
-      data: Float32Array;
-      sampleRate: number;
-    }>;
+    result: MatlabSpectrogramResult | null;
+    progress: number;
+    error: string;
   } | null>(null);
-  const [spectrogramInputError, setSpectrogramInputError] = useState<{ requestKey: string; message: string } | null>(null);
   const [waveformWidth, setWaveformWidth] = useState(1);
   const [channelViewportHeight, setChannelViewportHeight] = useState(245);
   const [loadingSignal, setLoadingSignal] = useState(false);
@@ -2447,7 +2442,7 @@ export default function Home() {
     setSelectedChannels(new Set(snapshot.selectedChannels));
     setFocusedChannel(snapshot.focusedChannel);
     setChannelSelectionActive(false);
-    setExactSpectrogramSignal(null);
+    setSpectrogramState(null);
     setSpectrogramAnchor(null);
     // Signal caches are global LRUs keyed by source. Retain them across tabs so
     // reopening a session does not discard its expensive full-session index.
@@ -4177,53 +4172,68 @@ export default function Home() {
       ? spectrogramAnchor : signalViewStart + timebase / 2;
     try {
       const plan = matlabSpectrogramInputPlan(meta, spectrogramSourceIndex, signalViewStart, timebase, anchor);
-      return { plan, error: "", expectedBytes: plan ? plan.sourceIndices.length * plan.sampleCount * 4 : 0,
+      return { plan, error: "",
         requestKey: JSON.stringify([sessionKey, plan]) };
     } catch (error) {
-      return { plan: null, error: error instanceof Error ? error.message : "Invalid spectrogram inputs", expectedBytes: 0,
+      return { plan: null, error: error instanceof Error ? error.message : "Invalid spectrogram inputs",
         requestKey: JSON.stringify([sessionKey, signalViewStart, timebase, spectrogramSourceIndex]) };
     }
   }, [meta, sessionKey, signalViewStart, spectrogramAnchor, spectrogramSourceIndex, timebase]);
 
-  // MATLAB analyzes raw group channels, within +/-15 seconds of the clicked
-  // sample, cropped to the loaded window. It does not analyze display montages.
+  // Raw-group Gabor analysis covers the whole visible window. The worker asks
+  // for bounded source slices; never send reduced waveform/montage samples.
   useEffect(() => {
     const source = sourceRef.current;
-    const { plan, expectedBytes, requestKey } = spectrogramInputPlan;
+    const { plan, requestKey } = spectrogramInputPlan;
     if (!spectrogramOpen
       || !hasRecording
       || !source
-      || !plan
-      || expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES) {
-      setExactSpectrogramSignal(null);
+      || !plan) {
+      setSpectrogramState(null);
       return;
     }
 
     const abortController = new AbortController();
-    setExactSpectrogramSignal(null);
-    void readMatlabSourceWindow(source, plan.readStart, plan.readDuration, plan.sourceIndices, { signal: abortController.signal })
-      .then((windowData) => {
+    const reader = createMatlabFileReader(source, { signal: abortController.signal });
+    const operation = performanceDiagnostics.beginDecode({
+      label: `Full-window Gabor spectrogram · ${plan.sourceIndices.length}-channel power average`,
+      totalBytes: plan.sampleCount * plan.sourceIndices.length * 4,
+      phase: "Computing full-window Gabor wavelets",
+    });
+    setSpectrogramState({ requestKey, result: null, progress: 0, error: "" });
+    void computeFullWindowSpectrogramOffThread(plan, async (offset, count) => {
+      abortController.signal.throwIfAborted();
+      const first = plan.firstSourceSample + offset;
+      // Quarter-sample read margin avoids seek-floor roundoff. Slice using the
+      // returned source origin so neither timing nor the retained count moves.
+      const start = Math.max(0, first - .25) / plan.sampleRate;
+      const windowData = await readMatlabSourceWindow(source, start, (count + 1) / plan.sampleRate,
+        plan.sourceIndices, { signal: abortController.signal }, reader);
+      abortController.signal.throwIfAborted();
+      return plan.sourceIndices.map((_, position) => {
+        const begin = first - Math.round(windowData.channelStartSecs[position] * plan.sampleRate);
+        if (begin < 0 || windowData.data[position].length < begin + count) throw new Error("Spectrogram source read did not cover the requested samples.");
+        return windowData.data[position].slice(begin, begin + count);
+      });
+    }, { signal: abortController.signal, onProgress: (completed, total) => {
+      if (abortController.signal.aborted || sourceRef.current !== source) return;
+      operation.update({ completedBytes: completed * plan.sourceIndices.length * 4 });
+      setSpectrogramState({ requestKey, result: null, progress: completed / total, error: "" });
+    } })
+      .then((result) => {
         if (abortController.signal.aborted || sourceRef.current !== source) return;
-        setSpectrogramInputError(null);
-        const channels = plan.sourceIndices.map((sourceIndex, position) => {
-          const offset = plan.firstSourceSample - Math.round(windowData.channelStartSecs[position] * plan.sampleRate);
-          if (offset < 0 || windowData.data[position].length < offset + plan.sampleCount) throw new Error("Spectrogram source read did not cover the exact MATLAB sample window.");
-          return {
-            sourceIndex,
-            dataStart: plan.dataStart,
-            data: windowData.data[position].slice(offset, offset + plan.sampleCount),
-            sampleRate: plan.sampleRate,
-          };
-        });
-        setExactSpectrogramSignal({ requestKey, channels });
+        operation.finish({ completedBytes: plan.sampleCount * plan.sourceIndices.length * 4, durationMs: result.metrics.computeMs });
+        setSpectrogramState({ requestKey, result, progress: 1, error: "" });
       })
       .catch((error) => {
-        if (!abortController.signal.aborted && !isAbortFailure(error)) {
-          setExactSpectrogramSignal(null);
-          setSpectrogramInputError({ requestKey, message: error instanceof Error ? error.message : "Could not load spectrogram data." });
+        const aborted = abortController.signal.aborted || isAbortFailure(error);
+        operation[aborted ? "cancel" : "fail"]();
+        if (!aborted && sourceRef.current === source) {
+          setSpectrogramState({ requestKey, result: null, progress: 0,
+            error: error instanceof Error ? error.message : "Could not load spectrogram data." });
         }
-      });
-    return () => abortController.abort();
+      }).finally(() => reader.dispose());
+    return () => { abortController.abort(); reader.dispose(); operation.cancel(); };
   }, [hasRecording, spectrogramInputPlan, spectrogramOpen]);
 
   useEffect(() => {
@@ -5471,7 +5481,7 @@ export default function Home() {
     setSourceInterpretation(interpretation ?? null);
     setSelectedChannels(new Set(recommendedChannels));
     setChannelSelectionActive(false);
-    setExactSpectrogramSignal(null);
+    setSpectrogramState(null);
     setSpectrogramAnchor(null);
     // Do not clear cross-session LRUs here; entries are source-keyed and their
     // global byte ceilings evict the least-recently used recording as needed.
@@ -7441,22 +7451,10 @@ export default function Home() {
   const activeDisplayVisibleBytes = activeDisplayViews.reduce((sum, view) => sum + view.byteLength, 0);
   const activeBackingBuffers = new Set(activeDisplayViews.map((view) => view.buffer));
   const activeDisplayBytes = [...activeBackingBuffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
-  const matchingExactSpectrogramSignal = exactSpectrogramSignal
-    && exactSpectrogramSignal.requestKey === spectrogramInputPlan.requestKey
-      ? exactSpectrogramSignal
+  const matchingSpectrogram = spectrogramState
+    && spectrogramState.requestKey === spectrogramInputPlan.requestKey
+      ? spectrogramState
       : null;
-  const spectrogramSignals = useMemo<SpectrogramSignalInput[]>(() => {
-    return (spectrogramInputPlan.plan?.sourceIndices ?? []).map((sourceIndex, position) => {
-      const exact = matchingExactSpectrogramSignal?.channels[position];
-      return {
-        data: exact?.data,
-        dataStart: exact?.dataStart ?? spectrogramInputPlan.plan?.dataStart ?? 0,
-        signalKey: `${spectrogramInputPlan.requestKey}:${sourceIndex}`,
-        sampleRate: exact?.sampleRate ?? meta.sampleRates[sourceIndex] ?? primarySampleRate(meta),
-        overview: !exact,
-      };
-    });
-  }, [matchingExactSpectrogramSignal, meta, spectrogramInputPlan]);
   const spectrogramLabel = spectrogramInputPlan.plan?.label ?? "Select a waveform channel";
 
   return (
@@ -7978,11 +7976,11 @@ export default function Home() {
             {spectrogramOpen && <SpectrogramPanel
               controlBindings={controlBindings}
               waveformCanvasRef={canvasRef}
-              signals={spectrogramSignals}
-              baselineTime={spectrogramInputPlan.plan?.baselineTime ?? 0}
-              inputError={spectrogramInputPlan.error || (spectrogramInputPlan.expectedBytes > SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES
-                ? "Zoom in or enable fewer channels to load full-resolution spectrogram data."
-                : spectrogramInputError?.requestKey === spectrogramInputPlan.requestKey ? spectrogramInputError.message : "")}
+              spectrum={matchingSpectrogram?.result ?? null}
+              progress={matchingSpectrogram?.progress ?? 0}
+              sampleRate={spectrogramInputPlan.plan?.sampleRate ?? 0}
+              channelCount={spectrogramInputPlan.plan?.sourceIndices.length ?? 0}
+              inputError={spectrogramInputPlan.error || matchingSpectrogram?.error || ""}
               viewStart={viewStart}
               viewDuration={timebase}
               sessionDuration={meta.durationSec}
@@ -8579,24 +8577,18 @@ type SpectrogramZoomBox = {
   height: number;
 };
 
-type SpectrogramSignalInput = {
-  data?: Float32Array;
-  dataStart: number;
-  signalKey: string;
-  sampleRate: number;
-  overview: boolean;
-};
-
 type SpectrogramPanelProps = {
   controlBindings: ControlBindings;
   waveformCanvasRef: React.RefObject<HTMLCanvasElement | null>;
-  signals: SpectrogramSignalInput[];
+  spectrum: MatlabSpectrogramResult | null;
+  progress: number;
+  sampleRate: number;
+  channelCount: number;
   inputError: string;
   viewStart: number;
   viewDuration: number;
   sessionDuration: number;
   cursor: number;
-  baselineTime: number;
   label: string;
   onPreviewStart(start: number): void;
   onCommitStart(start: number): void;
@@ -8615,14 +8607,17 @@ const SPECTROGRAM_PLOT_BOTTOM = 22;
 const SPECTROGRAM_MINIMUM_DRAG_PX = 4;
 
 function spectrogramAnalysisRange(spectrum: MatlabSpectrogramResult) {
-  const start = spectrum.dataStart + (spectrum.times[0] ?? 0);
-  const end = spectrum.dataStart + (spectrum.times[spectrum.width - 1] ?? 0);
+  const first = spectrum.times[0] ?? 0;
+  const last = spectrum.times[spectrum.width - 1] ?? 0;
+  // An overview's times identify cell centers; coverage includes their edges.
+  const halfCell = spectrum.tiled && spectrum.width > 1 ? (last - first) / (spectrum.width - 1) / 2 : 0;
+  const start = spectrum.dataStart + first - halfCell;
+  const end = spectrum.dataStart + last + halfCell;
   return `${formatClock(start, true)}–${formatClock(end, true)}`;
 }
 
-function spectrogramAnalysisNote(spectrum: MatlabSpectrogramResult, viewDuration: number) {
-  return viewDuration > 2 * spectrum.width / spectrum.sampleRate
-    ? `Wavelets cover ${spectrogramAnalysisRange(spectrum)} only. Zoom in for detail.` : "";
+function spectrogramAnalysisNote(spectrum: MatlabSpectrogramResult) {
+  return spectrum.tiled ? "Full-window wavelet overview · zoom in for detail" : "";
 }
 
 function matlabJet(value: number) {
@@ -8710,13 +8705,15 @@ function rasterizeMatlabSpectrogram(
 function SpectrogramPanel({
   controlBindings,
   waveformCanvasRef,
-  signals,
+  spectrum,
+  progress,
+  sampleRate,
+  channelCount,
   inputError,
   viewStart,
   viewDuration,
   sessionDuration,
   cursor,
-  baselineTime,
   label,
   onPreviewStart,
   onCommitStart,
@@ -8747,18 +8744,6 @@ function SpectrogramPanel({
   const rasterCacheRef = useRef<{ spectrum: MatlabSpectrogramResult; key: string; canvas: HTMLCanvasElement } | null>(null);
   const resizeRef = useRef<{ pointerId: number; startY: number; startHeight: number; maximumHeight: number } | null>(null);
   const [spectrogramHeight, setSpectrogramHeight] = useState(DEFAULT_SPECTROGRAM_HEIGHT);
-  const [spectrumState, setSpectrumState] = useState<{
-    signals: SpectrogramSignalInput[] | null;
-    baselineTime: number | null;
-    result: MatlabSpectrogramResult | null;
-    error: string;
-  }>({ signals: null, baselineTime: null, result: null, error: "" });
-  const dataStart = signals[0]?.dataStart ?? viewStart;
-  const overview = signals.some((signal) => signal.overview);
-  const sampleRate = signals[0]?.sampleRate ?? 0;
-  const spectrumInputMatches = spectrumState.signals === signals && spectrumState.baselineTime === baselineTime;
-  const spectrum = spectrumInputMatches ? spectrumState.result : null;
-  const computeError = spectrumInputMatches ? spectrumState.error : "";
   const previousHeightRef = useRef(DEFAULT_SPECTROGRAM_HEIGHT);
   const interactionRef = useRef<{
     pointerId: number;
@@ -8799,60 +8784,6 @@ function SpectrogramPanel({
     };
   }, []);
 
-  useEffect(() => {
-    const computableSignals = signals.filter((signal) => signal.data?.length && signal.sampleRate > 0);
-    if (overview || !computableSignals.length) return;
-    const abortController = new AbortController();
-    const inputBytes = computableSignals.reduce((sum, signal) => sum + (signal.data?.byteLength ?? 0), 0);
-    const operation = performanceDiagnostics.beginDecode({
-      label: `MATLAB Gabor spectrogram · ${computableSignals.length}-channel power average`,
-      totalBytes: inputBytes,
-      phase: "Computing Gabor wavelets and pre-click log-power Z-scores",
-    });
-    const aligned = computableSignals.length === signals.length && computableSignals.every((signal) =>
-      signal.sampleRate === sampleRate && Math.abs(signal.dataStart - dataStart) <= 1e-9);
-    const pending = aligned
-      ? computeMatlabSpectrogramOffThread({
-        data: computableSignals.map((signal) => signal.data!),
-        sampleRate,
-        dataStart,
-        baselineTime,
-      }, { signal: abortController.signal })
-      : Promise.reject(new Error("MATLAB group spectrogram requires synchronized raw channels with equal sample rates."));
-    void pending.then(
-      (result) => {
-        if (abortController.signal.aborted) return;
-        operation.finish({
-          completedBytes: inputBytes,
-          durationMs: result.metrics.computeMs + (result.metrics.inputCopyMs ?? 0),
-          transientAllocatedBytes: inputBytes,
-        });
-        setSpectrumState({
-          signals,
-          baselineTime,
-          result,
-          error: "",
-        });
-      },
-      (error: unknown) => {
-        // A worker can report a normal load/compute error after its view was
-        // cancelled. It must not overwrite a newer successfully computed view.
-        const aborted = abortController.signal.aborted || isAbortFailure(error);
-        operation[aborted ? "cancel" : "fail"]();
-        if (!aborted) setSpectrumState({
-          signals,
-          baselineTime,
-          result: null,
-          error: error instanceof Error ? error.message : "Spectrogram computation failed",
-        });
-      },
-    );
-    return () => {
-      abortController.abort(new DOMException("Spectrogram view changed", "AbortError"));
-      operation.cancel();
-    };
-  }, [baselineTime, dataStart, overview, sampleRate, signals]);
-
   useLayoutEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
@@ -8883,11 +8814,9 @@ function SpectrogramPanel({
         ctx.fillRect(0, 0, width, height);
         ctx.fillStyle = "#02080a";
         ctx.fillRect(plotLeft, plotTop, plotWidth, plotHeight);
-        const status = inputError || (overview && !spectrum
-          ? "Loading full-resolution spectrogram samples…"
-          : !(sampleRate > 0)
+        const status = inputError || (!(sampleRate > 0)
           ? "Spectrogram unavailable without a valid sample rate"
-          : computeError || (!spectrum ? "Computing Gabor wavelets · pre-click baseline…" : ""));
+          : !spectrum ? `Computing full-window Gabor wavelets · ${Math.round(progress * 100)}%…` : "");
         if (status) {
           ctx.fillStyle = "rgba(235,245,243,.6)";
           ctx.font = "10px ui-monospace, monospace";
@@ -8918,10 +8847,10 @@ function SpectrogramPanel({
         }
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(raster.canvas, plotLeft, plotTop, plotWidth, plotHeight);
-        const analysisNote = spectrogramAnalysisNote(spectrum, viewDuration);
+        const analysisNote = spectrogramAnalysisNote(spectrum);
         if (analysisNote) {
-          // Preserve the shared absolute-time axis. A local MATLAB analysis
-          // must never be stretched to imply that hours of EEG were analyzed.
+          // Explicitly distinguish a time-binned, tiled overview from exact
+          // short-window output while retaining the shared absolute-time axis.
           ctx.fillStyle = "rgba(235,245,243,.85)";
           ctx.font = "10px ui-monospace, monospace";
           ctx.textAlign = "left";
@@ -8965,7 +8894,7 @@ function SpectrogramPanel({
       observer.disconnect();
       performanceDiagnostics.removeCanvasSurface("spectrogram");
     };
-  }, [colorLimitShift, computeError, cursor, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, inputError, overview, sampleRate, spectrum, viewDuration, viewStart]);
+  }, [colorLimitShift, cursor, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, inputError, progress, sampleRate, spectrum, viewDuration, viewStart]);
 
   const plotRatio = (clientX: number, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
@@ -9092,7 +9021,7 @@ function SpectrogramPanel({
         ));
       }}
     />
-    <div className="spectrogram-label" title={`${label} · ${signals.length}-channel raw power average · MATLAB Gabor wavelets · ${spectrum ? `${spectrum.height} log-spaced analysis bins ${formatSpectrogramFrequency(spectrum.frequencies[0])}–${formatSpectrogramFrequency(spectrum.frequencies[spectrum.height - 1])} Hz` : "Up to 60 log-spaced analysis bins"} · true-Hz axis limited to Nyquist · pre-click log-power Z-score${spectrum ? ` · Analysis: ${spectrogramAnalysisRange(spectrum)} (up to ±15 s around the selected time)` : ""}${spectrum?.warnings.length ? ` · ${spectrum.warnings.join(" · ")}` : ""}`}>
+    <div className="spectrogram-label" title={`${label} · ${channelCount}-channel raw power average · MATLAB Gabor wavelets · ${spectrum ? `${spectrum.height} log-spaced analysis bins ${formatSpectrogramFrequency(spectrum.frequencies[0])}–${formatSpectrogramFrequency(spectrum.frequencies[spectrum.height - 1])} Hz` : "Up to 60 log-spaced analysis bins"} · true-Hz axis limited to Nyquist · pre-click log-power Z-score${spectrum ? ` · Analysis: ${spectrogramAnalysisRange(spectrum)}${spectrum.tiled ? " · overlapping tiles, time-bin averaged overview" : " · exact full-window transform"}` : ""}${spectrum?.warnings.length ? ` · ${spectrum.warnings.join(" · ")}` : ""}`}>
       <strong>{label}</strong>
       <div className="spectrogram-frequency-axis" aria-label="Frequency (Hz)" style={{ top: SPECTROGRAM_PLOT_TOP, bottom: SPECTROGRAM_PLOT_BOTTOM }}>
         <span className="spectrogram-frequency-title">Frequency (Hz)</span>
@@ -9146,6 +9075,7 @@ function SpectrogramPanel({
       <canvas
         ref={ref}
         data-tutorial="spectrogram-plot"
+        aria-busy={!spectrum && !inputError}
         tabIndex={0}
         role="img"
         aria-label={`${label} MATLAB Gabor wavelet Z-score spectrogram. ${tool === "box-zoom" ? "Box zoom selected; drag a time-frequency area to zoom." : "Browse selected; click to center or drag to pan."}`}

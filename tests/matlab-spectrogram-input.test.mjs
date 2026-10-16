@@ -8,7 +8,7 @@ function metadata(rate = 200, durationSec = 20000) {
 }
 
 // Literal reference operations: ts_EEG=(1:N)/fs+start and first minimum
-// abs(ts_EEG-click), followed by inclusive +/-round(15*fs) indexing.
+// abs(ts_EEG-click). Unlike the original +/-15-second crop, retain the full view.
 function referencePlan(meta, primary, start, duration, click) {
   const rate = meta.sampleRates[primary];
   const firstSourceSample = Math.floor(start * rate);
@@ -19,8 +19,8 @@ function referencePlan(meta, primary, start, duration, click) {
   for (let index = 1; index < count; index++) {
     if (Math.abs(times[index] - click) < Math.abs(times[clicked] - click)) clicked = index;
   }
-  const first = Math.max(0, clicked - Math.round(15 * rate));
-  const last = Math.min(count - 1, clicked + Math.round(15 * rate));
+  const first = 0;
+  const last = count - 1;
   return { firstSourceSample: firstSourceSample + first, sampleCount: last - first + 1,
     dataStart: times[first], baselineTime: times[clicked] };
 }
@@ -40,7 +40,7 @@ test("spectrogram selects the complete raw source group, including hidden contac
   const plan = matlabSpectrogramInputPlan(meta, 2, 0, 60, 30);
   assert.deepEqual(plan.sourceIndices, [0, 2, 3]);
   assert.equal(plan.label, "LA raw group (3)");
-  assert.equal(plan.sampleCount, 6001, "inclusive +/-15 seconds contains 30*fs+1 samples");
+  assert.equal(plan.sampleCount, 12000, "the entire 60-second view is analyzed");
   assert.deepEqual(matlabSpectrogramInputPlan(meta, 4, 0, 60, 30).sourceIndices, [4]);
   assert.deepEqual(matlabSpectrogramInputPlan(meta, 5, 0, 60, 30).sourceIndices, [5]);
   // The helper intentionally accepts no displayed-channel selection or montage
@@ -60,14 +60,14 @@ test("raw source grouping does not include already-derived bipolar channel label
   assert.deepEqual(matlabSpectrogramInputPlan(meta, 7, 0, 40, 20).sourceIndices, [7]);
 });
 
-test("inclusive click crop is bounded by the loaded window, not only the file", () => {
+test("full view coverage is independent of click position and bounded by the file", () => {
   const meta = metadata();
   compareReference(meta, 0, 100, 80, 140);
   const left = compareReference(meta, 0, 100, 40, 100.005);
-  assert.equal(left.sampleCount, 3001);
+  assert.equal(left.sampleCount, 8000);
   assert.equal(left.firstSourceSample, 20000);
   const right = compareReference(meta, 0, 100, 40, 140);
-  assert.equal(right.sampleCount, 3001);
+  assert.equal(right.sampleCount, 8000);
   assert.equal(right.firstSourceSample + right.sampleCount, 28000);
   const short = compareReference(meta, 0, 100, 4.007, 102);
   assert.equal(short.sampleCount, Math.floor(4.007 * 200));

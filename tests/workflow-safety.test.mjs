@@ -273,13 +273,13 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(baseline, /reservoir sampling/i);
 
   const spectrum = section(page, "function SpectrogramPanel", "function FileStructurePanel");
-  assert.match(spectrum, /computeMatlabSpectrogramOffThread/);
-  assert.match(spectrum, /if\s*\(overview\s*\|\|/);
-  assert.match(spectrum, /Loading full-resolution spectrogram samples/);
+  assert.match(page, /computeFullWindowSpectrogramOffThread/);
+  assert.match(page, /spectrogramState\.requestKey === spectrogramInputPlan\.requestKey/);
+  assert.match(spectrum, /Computing full-window Gabor wavelets/);
   assert.match(spectrogramCore, /channel\.some\(\(value\) => !Number\.isFinite\(value\)\)/);
   assert.match(spectrogramCore, /cannot compute through missing\/non-finite samples/);
   assert.match(spectrogramCore, /MATLAB_SPECTROGRAM_MAX_OUTPUT_BYTES/);
-  assert.match(spectrum, /computeError \|\|/);
+  assert.match(spectrum, /const status = inputError \|\|/);
 
   const drawing = section(page, "const traceOrder", "if (markOnset !== null)");
   const clippingRibbon = section(page, "function drawSampleClippingRibbon", "function expectedEDFRecordBytes");

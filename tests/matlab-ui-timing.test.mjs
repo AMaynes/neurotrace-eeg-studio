@@ -265,7 +265,7 @@ test("loading a source or applying a session snapshot clears the previous record
       assert.equal(setters.get("setMeta")[0], meta);
       assert.equal(setters.has("setTraceCenters"), false, "new recordings use only automatic window centering");
     }
-    assert.deepEqual(setters.get("setExactSpectrogramSignal"), [null]);
+    assert.deepEqual(setters.get("setSpectrogramState"), [null]);
     assert.deepEqual(setters.get("setSpectrogramAnchor"), [null], `${name} must clear the transient anchor`);
     // The old click (4s) is deliberately still inside the next view. Without
     // the reset it would silently change the next recording's normalization.

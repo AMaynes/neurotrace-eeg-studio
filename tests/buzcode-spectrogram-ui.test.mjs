@@ -9,8 +9,8 @@ test("exposes MATLAB wavelet processing with linked navigation and frequency/col
   const start = page.indexOf("function SpectrogramPanel");
   const end = page.indexOf("type FileStructureNode", start);
   const panel = page.slice(start, end);
-  assert.match(panel, /computeMatlabSpectrogramOffThread/);
-  assert.match(panel, /baselineTime/);
+  assert.match(page, /computeFullWindowSpectrogramOffThread/);
+  assert.match(page, /matlabSpectrogramInputPlan/);
   assert.match(panel, /rasterizeMatlabSpectrogram/);
   assert.match(panel, /Wavelet Z-score/);
   assert.doesNotMatch(panel, /BUZCODE_DEFAULT_SMOOTHING_SECONDS|BUZCODE_SMOOTHING_OPTIONS|thetaRatioOverlay|DPSS|Whitening/);
@@ -51,17 +51,17 @@ test("lets the spectrogram replace the waveform pane without changing the wavefo
     readFile(projectFile("app/page.tsx"), "utf8"),
     readFile(projectFile("app/globals.css"), "utf8"),
   ]);
-  assert.match(page, /SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES/);
+  assert.doesNotMatch(page, /SPECTROGRAM_EXACT_INPUT_BUDGET_BYTES/);
   assert.doesNotMatch(page, /spectrogramCanUseExactSamples/);
-  assert.match(page, /setExactSpectrogramSignal/);
+  assert.match(page, /setSpectrogramState/);
   assert.match(page, /const spectrogramSourceIndex = display\.primarySourceIndices\[focusedChannel\]/);
   assert.match(page, /matlabSpectrogramInputPlan\(meta, spectrogramSourceIndex, signalViewStart, timebase, anchor\)/);
-  assert.match(page, /readMatlabSourceWindow\(source, plan\.readStart, plan\.readDuration, plan\.sourceIndices/);
-  assert.match(page, /data: exact\?\.data,/);
+  assert.match(page, /readMatlabSourceWindow\(source, start, \(count \+ 1\) \/ plan\.sampleRate/);
+  assert.match(page, /windowData\.data\[position\]\.slice\(begin, begin \+ count\)/);
   assert.doesNotMatch(page, /data: exact\?\.data \?\? display\.data/);
   assert.match(page, /const spectrogramLabel = spectrogramInputPlan\.plan\?\.label/);
-  assert.match(page, /baselineTime=\{spectrogramInputPlan\.plan\?\.baselineTime/);
-  assert.match(panelResizeSection(page), /computeMatlabSpectrogramOffThread/);
+  assert.match(page, /spectrum=\{matchingSpectrogram\?\.result \?\? null\}/);
+  assert.match(page, /computeFullWindowSpectrogramOffThread/);
   assert.doesNotMatch(panelResizeSection(page), /computeAverageSpectrogramOffThread/);
   assert.match(page, /viewer\.clientHeight - fixedSiblingHeight/);
   assert.doesNotMatch(page, /viewer\.clientHeight - waveformMinimumHeight/);
@@ -71,10 +71,9 @@ test("lets the spectrogram replace the waveform pane without changing the wavefo
 
 test("keeps spectrogram bins aligned with continuous horizontal panning", async () => {
   const page = await readFile(projectFile("app/page.tsx"), "utf8");
-  const panel = panelResizeSection(page);
 
-  assert.match(page, /signals=\{spectrogramSignals\}/, "the panel receives exact raw group inputs");
-  assert.match(panel, /spectrumState\.signals === signals && spectrumState\.baselineTime === baselineTime/,
+  assert.match(page, /spectrum=\{matchingSpectrogram\?\.result/, "the panel receives the completed raw-group spectrum");
+  assert.match(page, /spectrogramState\.requestKey === spectrogramInputPlan\.requestKey/,
     "a previous window or baseline is never shown as the new result");
   const raster = page.slice(page.indexOf("function rasterizeMatlabSpectrogram"), page.indexOf("function SpectrogramPanel"));
   assert.match(raster, /firstTime = spectrum\.dataStart \+ \(spectrum\.times\[0\] \?\? 0\)/);

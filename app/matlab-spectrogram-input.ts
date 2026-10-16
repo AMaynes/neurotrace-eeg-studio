@@ -1,4 +1,4 @@
-/** Input selection in seizure_annotation_tool_update.m, independent of display reduction. */
+/** Raw-group selection and MATLAB sample timing, covering the full visible window. */
 import { anatomicalChannelGroup, type RecordingMeta } from "./eeg-core.ts";
 
 // anatomicalChannelGroup also accepts labels produced by display montages
@@ -44,16 +44,15 @@ export function matlabSpectrogramInputPlan(
   const right = Math.min(count - 1, left + 1);
   const clickIndex = Math.abs(viewStart + (left + 1) / sampleRate - clickTime)
     <= Math.abs(viewStart + (right + 1) / sampleRate - clickTime) ? left : right;
-  const halfWindow = Math.round(15 * sampleRate);
-  const first = Math.max(0, clickIndex - halfWindow);
-  const last = Math.min(count - 1, clickIndex + halfWindow);
   return {
-    sourceIndices, sampleRate, sampleCount: last - first + 1,
-    firstSourceSample: firstSourceSample + first,
-    readStart: (firstSourceSample + first) / sampleRate,
-    readDuration: (last - first + 1) / sampleRate,
-    dataStart: viewStart + (first + 1) / sampleRate,
+    sourceIndices, sampleRate, sampleCount: count,
+    firstSourceSample,
+    readStart: firstSourceSample / sampleRate,
+    readDuration: count / sampleRate,
+    dataStart: origin,
     baselineTime: viewStart + (clickIndex + 1) / sampleRate,
     label: group ? `${group} raw group (${sourceIndices.length})` : meta.channelLabels[primarySourceIndex],
   };
 }
+
+export type MatlabSpectrogramInputPlan = NonNullable<ReturnType<typeof matlabSpectrogramInputPlan>>;

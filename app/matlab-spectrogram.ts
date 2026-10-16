@@ -47,6 +47,8 @@ export interface MatlabSpectrogramResult {
   usedBaselineFallback: boolean;
   colorLimit: number;
   warnings: string[];
+  /** Long windows are computed in overlapping tiles, then time-bin averaged. */
+  tiled?: boolean;
   metrics: { computeMs: number; inputBytes: number; outputBytes: number; inputCopyMs?: number; workerRoundTripMs?: number };
 }
 
@@ -236,13 +238,12 @@ export function matlabPercentile(values: Float64Array, percentile: number) {
   return sorted[lower] + fraction * (sorted[Math.min(lower + 1, sorted.length - 1)] - sorted[lower]);
 }
 
-export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): MatlabSpectrogramResult {
+/** Raw group power, shared by exact views and bounded full-window tiles. */
+export function computeMatlabSpectrogramPower(request: MatlabSpectrogramRequest) {
   const started = performance.now();
-  const { samples, inputBytes, outputBytes, frequencies } = validateMatlabSpectrogramRequest(request);
-  const { sampleRate, dataStart, baselineTime } = request;
-  const times = Float64Array.from({ length: samples }, (_, index) => index / sampleRate);
+  const { samples, inputBytes, frequencies } = validateMatlabSpectrogramRequest(request);
+  const { sampleRate } = request;
   const power = new Float64Array(samples * frequencies.length);
-  const zScores = new Float64Array(power.length);
   const plan = new ExactDftPlan(samples);
   const real = new Float64Array(samples);
   const imaginary = new Float64Array(samples);
@@ -261,6 +262,23 @@ export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): Mat
       }
     }
   }
+  for (let index = 0; index < power.length; index++) {
+    power[index] /= request.data.length;
+    if (!Number.isFinite(power[index])) throw new RangeError("Spectrogram power exceeds the supported numeric range.");
+  }
+  const warnings: string[] = [];
+  if (frequencies.length < MATLAB_SPECTROGRAM_BINS) warnings.push(`Frequencies above this recording's ${sampleRate / 2} Hz Nyquist limit are omitted. Retained wavelet bins keep their original frequencies.`);
+  if (invalidBins) warnings.push(`${invalidBins} frequency bins lie outside awt_freqlist's valid scale interval and remain zero-power, matching MATLAB.`);
+  return { power, frequencies, width: samples, height: frequencies.length, warnings,
+    metrics: { computeMs: Math.max(0, performance.now() - started), inputBytes, outputBytes: power.byteLength + frequencies.byteLength } };
+}
+
+export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): MatlabSpectrogramResult {
+  const started = performance.now();
+  const { power, frequencies, width: samples, warnings, metrics: { inputBytes } } = computeMatlabSpectrogramPower(request);
+  const { sampleRate, dataStart, baselineTime } = request;
+  const times = Float64Array.from({ length: samples }, (_, index) => index / sampleRate);
+  const zScores = new Float64Array(power.length);
   let baselineFrameCount = 0;
   // MATLAB subtracts sample indices before dividing. Snap only floating point
   // subtraction roundoff so a clicked sample never includes itself in baseline.
@@ -279,8 +297,6 @@ export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): Mat
     let centeredSum = 0;
     for (let index = 0; index < samples; index += 1) {
       const position = offset + index;
-      power[position] /= request.data.length;
-      if (!Number.isFinite(power[position])) throw new RangeError("Spectrogram power exceeds the supported numeric range.");
       zScores[position] = 10 * Math.log10(power[position] + MATLAB_EPS);
       if (index === 0) baselineOrigin = zScores[position];
       if (index < baselineFrameCount) centeredSum += zScores[position] - baselineOrigin;
@@ -302,9 +318,7 @@ export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): Mat
   const absoluteScores = Float64Array.from(zScores, Math.abs);
   const colorLimit = Math.max(1, matlabPercentile(absoluteScores, 98));
   if (!Number.isFinite(colorLimit)) throw new RangeError("Spectrogram color range is not finite.");
-  const warnings: string[] = [];
-  if (frequencies.length < MATLAB_SPECTROGRAM_BINS) warnings.push(`Frequencies above this recording's ${sampleRate / 2} Hz Nyquist limit are omitted. Retained wavelet bins keep their original frequencies.`);
-  if (invalidBins) warnings.push(`${invalidBins} frequency bins lie outside awt_freqlist's valid scale interval and remain zero-power, matching MATLAB.`);
+  const outputBytes = [power, zScores, frequencies, times, baselineMean, baselineStd].reduce((sum, values) => sum + values.byteLength, 0);
   return { power, zScores, frequencies, times, dataStart, sampleRate, width: samples, height: frequencies.length,
     baselineMean, baselineStd, baselineFrameCount, usedBaselineFallback, colorLimit, warnings,
     metrics: { computeMs: Math.max(0, performance.now() - started), inputBytes, outputBytes } };

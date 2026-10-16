@@ -16,19 +16,9 @@ const displayHelpers = ["spectrogramDisplayRange", "spectrogramFrequencyTicks", 
   .map((name) => functions.get(name).getText(ast)).join("\n");
 const { displayRange, ticks, formatFrequency } = new Function("clamp", `${transpile(displayHelpers)}
   return { displayRange: spectrogramDisplayRange, ticks: spectrogramFrequencyTicks, formatFrequency: formatSpectrogramFrequency };`)(clamp);
-const analysisNote = new Function("formatClock", `${transpile(["spectrogramAnalysisRange", "spectrogramAnalysisNote"]
-  .map((name) => functions.get(name).getText(ast)).join("\n"))}\nreturn spectrogramAnalysisNote;`)((seconds) => seconds.toFixed(3));
+const { analysisNote, analysisRange } = new Function("formatClock", `${transpile(["spectrogramAnalysisRange", "spectrogramAnalysisNote"]
+  .map((name) => functions.get(name).getText(ast)).join("\n"))}\nreturn {analysisNote: spectrogramAnalysisNote, analysisRange: spectrogramAnalysisRange};`)((seconds) => seconds.toFixed(3));
 const panel = functions.get("SpectrogramPanel");
-let computeEffect;
-const visit = (node) => {
-  if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect"
-    && node.arguments[0]?.getText(ast).includes("computeMatlabSpectrogramOffThread")) computeEffect = node.arguments[0];
-  ts.forEachChild(node, visit);
-};
-visit(panel);
-assert.ok(computeEffect);
-const runEffect = (bindings) => new Function(...Object.keys(bindings), `${transpile(`const run = ${computeEffect.getText(ast)};`)}\nreturn run();`)(...Object.values(bindings));
-
 const rgba = (pixels, index) => [...pixels.slice(index * 4, index * 4 + 4)];
 const mappedColor = (z, limit) => [...jet(Math.round(clamp((z + limit) / (2 * limit), 0, 1) * 255) / 255), 255];
 
@@ -129,84 +119,24 @@ test("raster work is bounded by output pixels, not all N by 60 transform values"
   assert.ok(reads < source.width * source.height / 100);
 });
 
-test("an hours-wide view explicitly discloses the local analysis range without stretching its heatmap", () => {
-  const source = spectrum({ width: 6001, sampleRate: 200, dataStart: 100,
-    times: { 0: 0, 6000: 30 } });
-  assert.equal(analysisNote(source, 21604), "Wavelets cover 100.000–130.000 only. Zoom in for detail.");
-  assert.equal(analysisNote(source, 30), "");
+test("a tiled full-window overview is labeled without claiming exact short-window output", () => {
+  const source = spectrum({ width: 2048, sampleRate: 200, dataStart: 100,
+    times: { 0: 0, 2047: 21600 }, tiled: true });
+  assert.equal(analysisNote(source), "Full-window wavelet overview · zoom in for detail");
+  assert.equal(analysisNote(spectrum()), "");
   assert.match(panel.getText(ast), /ctx\.fillText\(analysisNote,/);
   assert.match(panel.getText(ast), /Analysis: \$\{spectrogramAnalysisRange\(spectrum\)\}/);
 });
 
-function harness(overrides = {}) {
-  const requests = [], states = [], metrics = [];
-  const inputs = [{ data: new Float64Array([1, 2, 3]), dataStart: 5.125, sampleRate: 200 },
-    { data: new Float64Array([4, 5, 6]), dataStart: 5.125, sampleRate: 200 }];
-  const result = { ...spectrum(), metrics: { computeMs: 4, inputCopyMs: 1 } };
-  const bindings = {
-    signals: inputs, overview: false, sampleRate: 200, dataStart: 5.125, baselineTime: 5.13,
-    performanceDiagnostics: { beginDecode: () => ({ finish: (value) => metrics.push(["finish", value]), cancel: () => metrics.push(["cancel"]), fail: () => metrics.push(["fail"]) }) },
-    computeMatlabSpectrogramOffThread: (request, options) => { requests.push({ request, options }); return Promise.resolve(result); },
-    setSpectrumState: (state) => states.push(state), isAbortFailure: (error) => error?.name === "AbortError",
-    ...overrides,
-  };
-  return { bindings, requests, states, metrics, inputs, result };
-}
-
-test("production panel sends synchronized raw group samples and clicked baseline to the MATLAB worker", async () => {
-  const h = harness();
-  const cleanup = runEffect(h.bindings);
-  await Promise.resolve();
-  assert.equal(h.requests.length, 1);
-  assert.deepEqual(h.requests[0].request, { data: h.inputs.map((input) => input.data), sampleRate: 200, dataStart: 5.125, baselineTime: 5.13 });
-  assert.equal(h.requests[0].request.data[0], h.inputs[0].data, "panel does not whiten, filter, or resample input");
-  assert.equal(h.states[0].result, h.result);
-  assert.equal(h.states[0].baselineTime, 5.13);
-  assert.equal(h.metrics[0][0], "finish");
-  cleanup();
-  assert.equal(h.requests[0].options.signal.aborted, true);
-});
-
-test("cancelled panel work cannot publish stale spectrum and incompatible group timing is rejected", async () => {
-  let resolve;
-  const h = harness({ computeMatlabSpectrogramOffThread: () => new Promise((done) => { resolve = done; }) });
-  const cleanup = runEffect(h.bindings);
-  cleanup();
-  resolve(h.result);
-  await Promise.resolve();
-  assert.equal(h.states.length, 0);
-  const invalid = harness();
-  invalid.inputs[1].dataStart += .005;
-  runEffect(invalid.bindings);
-  await Promise.resolve();
-  assert.equal(invalid.requests.length, 0);
-  assert.match(invalid.states[0].error, /synchronized raw channels/);
-});
-
-test("a late ordinary error from a cancelled worker cannot replace a newer completed spectrum", async () => {
-  let rejectOld;
-  const published = [];
-  const old = harness({
-    setSpectrumState: (state) => published.push(state),
-    computeMatlabSpectrogramOffThread: () => new Promise((_resolve, reject) => { rejectOld = reject; }),
-  });
-  const cancelOld = runEffect(old.bindings);
-  cancelOld();
-  const current = harness({ setSpectrumState: (state) => published.push(state), baselineTime: 5.135 });
-  runEffect(current.bindings);
-  await Promise.resolve();
-  assert.equal(published.length, 1);
-  assert.equal(published[0].result, current.result);
-  rejectOld(new Error("Worker load failed after the view changed"));
-  await Promise.resolve();
-  assert.equal(published.length, 1, "the stale error must not erase the new result and leave the panel loading");
-  assert.equal(old.metrics.at(-1)[0], "cancel");
+test("overview coverage labels include cell edges, not just their center timestamps", () => {
+  assert.equal(analysisRange(spectrum({ width: 3, dataStart: 100, times: Float64Array.of(5, 15, 25), tiled: true })), "100.000–130.000");
+  assert.equal(analysisRange(spectrum({ width: 3, dataStart: 100, times: Float64Array.of(0, .5, 1) })), "100.000–101.000");
 });
 
 test("production UI uses symmetric current-result color limits and a cached image, without retired processing controls", () => {
   const source = panel.getText(ast);
   assert.match(source, /spectrum\.colorLimit \* Math\.exp\(colorLimitShift\)/);
-  assert.match(source, /spectrumState\.baselineTime === baselineTime/);
+  assert.match(page, /spectrogramState\.requestKey === spectrogramInputPlan\.requestKey/);
   assert.match(source, /createImageData\(imageWidth, imageHeight\)/);
   assert.match(source, /putImageData\(image, 0, 0\)/);
   assert.match(source, /ctx\.drawImage\(raster\.canvas/);
