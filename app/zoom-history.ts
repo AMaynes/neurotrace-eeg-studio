@@ -1,5 +1,4 @@
 import type { NormalizedVerticalViewport } from "./waveform-viewport";
-import { sameTraceCenters, type TraceCenters } from "./trace-centering.ts";
 
 export type SpectrogramFrequencyRange = { min: number; max: number };
 
@@ -8,8 +7,6 @@ export type ZoomView = {
   viewStart: number;
   timebase: number;
   gain: number;
-  /** Optional for older in-memory histories; centers are immutable display offsets. */
-  traceCenters?: TraceCenters;
   verticalViewport: NormalizedVerticalViewport | null;
   expandedChannels: boolean;
   channelScrollTop: number;
@@ -24,7 +21,6 @@ export type ZoomGestureState = { entry?: ZoomHistoryEntry; group?: string; lastA
 /** Exact equality avoids adding history for a control already at its limit. */
 export function sameZoomView(a: ZoomView, b: ZoomView): boolean {
   return a.viewStart === b.viewStart && a.timebase === b.timebase && a.gain === b.gain
-    && sameTraceCenters(a.traceCenters, b.traceCenters)
     && a.verticalViewport?.top === b.verticalViewport?.top && a.verticalViewport?.bottom === b.verticalViewport?.bottom
     && a.expandedChannels === b.expandedChannels && a.channelScrollTop === b.channelScrollTop
     && a.frequencyRange.min === b.frequencyRange.min && a.frequencyRange.max === b.frequencyRange.max;

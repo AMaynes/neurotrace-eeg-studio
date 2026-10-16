@@ -798,7 +798,7 @@ test("toggles live resource usage from the control left of Help and Settings", a
   assert.match(actions, /aria-haspopup="dialog"[\s\S]*?aria-expanded=\{showProjectSave\}[\s\S]*?aria-controls="project-save-dialog"/, "save communicates whether its dialog is open");
   assert.match(css, /\.upload-recording-button\s*\{[^}]*margin-right:\s*auto[^}]*\}/, "upload and download are visually separated from resource usage");
   assert.doesNotMatch(css.match(/\.save-project-button\s*\{[^}]*\}/)?.[0] ?? "", /border|background|color/, "save inherits the neutral utility-button resting style");
-  assert.match(css, /\.save-project-button\[aria-expanded="true"\],[\s\S]{0,100}\{[^}]*color:\s*var\(--mint\)/, "save turns green only while its dialog is open");
+  assert.match(css, /\.save-project-button\[aria-expanded="true"\],[\s\S]{0,100}\{[^}]*color:\s*var\(--mint\)/, "save turns blue only while its dialog is open");
   assert.match(page, /id="recording-import-dialog" className="modal import-modal"/, "upload targets the existing import dialog");
   assert.match(actions, /setRightPanelView\("resources"\)[\s\S]*?setRightPanelOpen\(true\)/);
 
@@ -1064,7 +1064,7 @@ test("box-selects labels and moves or deletes the selected group atomically", as
   assert.match(page, /action === "delete" && selectedAnnotationIds\.size/);
   assert.match(page, /deleteSelectedAnnotations\(\)/);
   assert.match(page, /commitMutation\(\(\)\s*=>\s*remaining\)/);
-  assert.match(css, /\.annotation-selection-box\s*\{[^}]*border:\s*1px dashed #7ce8c7;[^}]*pointer-events:\s*none;/);
+  assert.match(css, /\.annotation-selection-box\s*\{[^}]*border:\s*1px dashed #82c2ff;[^}]*pointer-events:\s*none;/);
 });
 
 test("highlights a focused channel and provides compact or vertically scrollable channel layouts", async () => {
@@ -1113,9 +1113,9 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(page, /const matlabAnatomicalLayout\s*=\s*meta\.format\s*===\s*"raw-int16-le"[\s\S]*?recordingType\s*===\s*"SEEG \/ iEEG"/);
   assert.match(page, /matlabAnatomicalLayout[\s\S]*?orderAnatomicalChannelIndices\(meta\.channelLabels, selectedIndices\)/, "intracranial recordings use MATLAB anatomical channel ordering");
   assert.match(page, /channelRowFromFraction\(\s*channelRowLayout/);
-  assert.match(page, /traceBaselineCacheRef\s*=\s*useRef<WeakMap<SignalSource, Map<string, number>>>/, "baseline state is scoped to the loaded signal source");
-  assert.match(page, /stableTraceBaselines[\s\S]*?resolveStableTraceBaseline/, "new windows reuse each channel's established baseline");
-  assert.match(draw, /displayedTraceCenter\(display, channel, traceCenters\)/, "drawing uses the manual override or stable per-channel baseline");
+  assert.match(page, /const centered = centerDisplayWindow\(next\)/, "every prepared view is centered before publication");
+  assert.match(draw, /display\.traceBaselines\[channel\]/, "painting uses the prepared automatic center");
+  assert.doesNotMatch(page, /traceBaselineCacheRef|setTraceCenters|recenter-button/, "old first-window and manual centers cannot leak across views");
   assert.match(continuousTrace, /value\s*-\s*baseline/, "direct traces are centered on that baseline");
   assert.match(continuousTrace, /confineToRow[\s\S]*?confineTraceYValueToRow\(rawY,\s*rowTop,\s*rowHeight\)[\s\S]*?confineTraceYValueToRow\(rawY,\s*plotTop,\s*plotHeight\)/, "overlap mode uses the whole plot instead of the source row as its vertical boundary");
   assert.match(continuousTrace, /if \(!Number\.isFinite\(value\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");

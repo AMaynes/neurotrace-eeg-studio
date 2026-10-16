@@ -7,8 +7,7 @@ import { EDFSource, RawDatSource, mergeNearbyFlatlineRegions } from "../app/eeg-
 import { bipolarMontageKind } from "../app/bipolar-montage.ts";
 import { recordingOverviewDisplayPolicy } from "../app/overview-display-policy.ts";
 import { RecordingOverviewCache, recordingOverviewPlan } from "../app/recording-overview.ts";
-import { resolveStableTraceBaseline } from "../app/waveform-geometry.ts";
-import { recenteredTraceCenters, traceCenterKey } from "../app/trace-centering.ts";
+import { centerDisplayWindow } from "../app/trace-centering.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const syntax = ts.createSourceFile("page.tsx", page, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -103,18 +102,18 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
       cleanup?.(); dependencies = nextDependencies; cleanup = callback();
     },
     EDFSource, RawDatSource, bipolarMontageKind, mergeNearbyFlatlineRegions,
-    recordingOverviewDisplayPolicy, recordingOverviewPlan, resolveStableTraceBaseline, traceCenterKey,
+    recordingOverviewDisplayPolicy, recordingOverviewPlan, centerDisplayWindow,
     buildMatlabDisplayWindow: builder, createMatlabFileReader: createReader,
     buildEDFFileWindowOffThread: fileWorker, buildRawDatFileWindowOffThread: fileWorker,
     performanceDiagnostics: { beginSourceRead: operation("read"), beginDecode: operation("decode"), recordDecode() {} }, primarySampleRate: (meta) => meta.sampleRate,
     sourceRef: { current: source }, sourceVerificationRef: { current: verifying }, displayAbortRef: { current: null }, displayRequestIdRef: { current: 0 },
     displayAppliedRequestIdRef: { current: 0 }, displayPreviewReadyRef: { current: false }, displayRefreshPendingRef: { current: null }, displayRefreshActiveRef: { current: false },
-    traceBaselineCacheRef: { current: new Map() }, recordingOverviewCacheRef: { current: cache },
+    recordingOverviewCacheRef: { current: cache },
     envelopeWindowCacheRef: { current: rawDetail ? [{ source, channelKey: "0,1", startSec: 0, endSec: duration, levels: [rawEnvelope(source, 40)], byteLength: 2048 * 2 * 17 }] : [] },
     matlabWindowCacheRef: { current: [] }, setDisplay: (display) => displays.push(display), setLoadingSignal: (value) => loading.push(value),
     setFocusedChannel: (update) => { focused = update(focused); }, setToast: (message) => toasts.push(message),
     filters: { enabled: false }, montage: "referential", selectedChannels: new Set([0, 1]), hasRecording: true, matlabAnatomicalLayout: false, meta: source.meta,
-    signalViewStart: 0, timebase: duration, waveformWidth: 1600, verifyingSource: verifying, recordingOverviewRevision: 0, traceCenters: {},
+    signalViewStart: 0, timebase: duration, waveformWidth: 1600, verifyingSource: verifying, recordingOverviewRevision: 0,
   };
   const execute = new Function(...Object.keys(env), effectCode);
   return { env, source, cache, calls, displays, loading, toasts, fileCalls, legacyFileCalls, readers, diagnostics,
@@ -157,16 +156,11 @@ test("background raw-index revisions cannot cancel/restart exact MATLAB window p
   request.finish(); await tick(); assert.equal(h.displays.at(-1).data[0][0], 30); h.dispose();
 });
 
-test("manual centering and its undo redraw without rereading or rebuilding the loaded window", async () => {
+test("publishing a prepared window centers it without rereading or rebuilding", async () => {
   const h = await harness({ duration: 21600 }); h.render();
   h.calls[0].finish(500); await tick();
   const display = h.displays.at(-1);
-  // Simulate a view whose stable center was established in an earlier window.
-  const centered = recenteredTraceCenters({ ...display, traceBaselines: [0, 0] }, {}, 0, 21600);
-  assert.equal(Object.keys(centered).length, 2);
-  h.render({ traceCenters: centered });
-  h.render({ traceCenters: {} });
-  await tick();
+  assert.deepEqual(display.traceBaselines, [500, 500]);
   assert.equal(h.calls.length, 1);
   assert.equal(h.readers.length, 1);
   assert.equal(h.displays.length, 1);

@@ -249,7 +249,7 @@ test("loading a source or applying a session snapshot clears the previous record
       env.snapshot = snapshot;
       evaluate(`const transition = ${callback.getText(ast)};`, "transition(snapshot)", env);
       assert.deepEqual(setters.get("setGain"), [4], "old session gains respect the new maximum");
-      assert.deepEqual(setters.get("setTraceCenters"), [snapshot.traceCenters], "manual centers follow their session");
+      assert.equal(setters.has("setTraceCenters"), false, "old manual centers cannot override automatic centering");
     } else {
       // Execute every real installation statement before asynchronous file
       // verification begins; there is no file/network work in this harness.
@@ -263,7 +263,7 @@ test("loading a source or applying a session snapshot clears the previous record
       env.keepSeparateSession = false;
       evaluate(install, "undefined", env);
       assert.equal(setters.get("setMeta")[0], meta);
-      assert.deepEqual(setters.get("setTraceCenters"), [{}], "new recordings cannot inherit old manual centers");
+      assert.equal(setters.has("setTraceCenters"), false, "new recordings use only automatic window centering");
     }
     assert.deepEqual(setters.get("setExactSpectrogramSignal"), [null]);
     assert.deepEqual(setters.get("setSpectrogramAnchor"), [null], `${name} must clear the transient anchor`);
