@@ -207,13 +207,14 @@ High-pass and low-pass use second-order Butterworth-style filters. Notch filteri
 ### Montages
 
 - **Recorded / referential:** shows each channel as it exists in the file.
-- **Average reference (CAR):** finds the largest group with matching rate, sample count, and start time, then subtracts its finite sample-by-sample average from every channel in that group. Incompatible channels are omitted with a warning.
-- **Bipolar:** matches the MATLAB reviewer: contacts stay in `ChannelMat` order within each electrode group, and each result is the following listed contact minus the current contact. A row labeled `LA1-2` therefore contains `LA2 - LA1`; contact numbers do not need to be consecutive if their source order is consecutive.
+- **Average reference (CAR):** excludes explicitly labeled auxiliary signals (including ECG/EOG/DC, even when measured in µV), selects a single physical unit (calibrated µV when available), and finds the largest group with matching rate, sample count, and start time. It subtracts that group's finite sample-by-sample average from every member. Expected auxiliary exclusions are quiet; incompatible EEG channels are omitted with a warning. Exact and custom-filter views share these rules. Excluded auxiliary signals cannot block exact montage processing merely because they have a different sampling rate, and remain available in recorded reference.
+- **Anatomical bipolar:** matches the MATLAB reviewer: contacts stay in `ChannelMat` order within each electrode group, and each result is the following listed contact minus the current contact. A row labeled `LA1-2` therefore contains `LA2 - LA1`; contact numbers do not need to be consecutive if their source order is consecutive. Hiding a contact omits its existing pairs rather than creating a new bridge.
+- **Scalp bipolar:** uses 18 explicitly defined longitudinal pairs, with the first electrode minus the second (for example, `Fp1-F7`). Legacy temporal names are aliases. Missing or ambiguous electrodes omit their affected pairs with a warning; scalp channels are never paired by their numeric suffixes.
 - **Electrode display order:** keeps each letter-prefix electrode together, showing L-prefixed groups, R-prefixed groups, then other groups. Groups are alphabetical within each section and contacts use natural numeric order. Selected auxiliary/unclassified channels remain at the end in recorded-reference mode. Gaps occupy 0.12 of a channel row with 2-pixel dividers; CAR and bipolar display labels use the same grouping. Display sorting preserves source identities and does not redefine legacy bipolar pairs, which still use original contact order.
 
 Channels with incompatible units, sample rates, or timing are not combined. Gaps remain gaps.
 
-**Files:** `app/eeg-core.ts` (`buildMontage`, `orderAnatomicalChannelIndices`, and `anatomicalChannelGroup`) contains the montage and ordering algorithms; `app/page.tsx` applies the order, group spacing, unit checks, and source-channel links.
+**Files:** `app/eeg-core.ts` (`buildMontage`, `montageInputPolicy`, `orderAnatomicalChannelIndices`, and `anatomicalChannelGroup`) contains the montage, shared input safety rules, and ordering algorithms; `app/page.tsx` applies the order, group spacing, and source-channel links.
 
 ### Supplied MATLAB display preparation
 

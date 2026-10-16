@@ -238,3 +238,24 @@ test("late completion after cancellation neither populates exact cache nor publi
   assert.equal(h.displays.at(-1).data[0][0], 70); assert.equal(h.env.matlabWindowCacheRef.current.length, 1);
   h.dispose();
 });
+
+test("rapid montage switches cancel obsolete work and returning to recorded reference restores its cache", async () => {
+  const h = await harness(); h.render(); h.calls[0].finish(40); await tick();
+  const recorded = h.displays.at(-1);
+  h.render({ montage: "average" }); await tick();
+  const average = h.calls.at(-1);
+  h.render({ montage: "bipolar" }); await tick();
+  const bipolar = h.calls.at(-1);
+  h.render({ montage: "referential" }); await tick();
+  assert.ok(average.options.signal.aborted && bipolar.options.signal.aborted);
+  assert.equal(h.calls.length, 3, "return uses the existing recorded-reference cache");
+  assert.deepEqual(h.displays.at(-1), recorded);
+  const publications = h.displays.length;
+  bipolar.finish(99); average.finish(88); await tick();
+  assert.equal(h.displays.length, publications, "late derived windows cannot overwrite the restored recorded window");
+  assert.equal(h.env.matlabWindowCacheRef.current.length, 1);
+  assert.equal(h.loading.at(-1), false);
+  assert.deepEqual(h.toasts, []);
+  assert.ok(h.readers.every((reader) => reader.disposeCount === 1));
+  h.dispose();
+});

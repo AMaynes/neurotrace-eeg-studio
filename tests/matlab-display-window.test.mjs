@@ -41,7 +41,8 @@ function assertExactEnvelope(envelope, values, fs, factor, duration) {
   const minima = new Float64Array(envelope.minima.length).fill(Infinity);
   const maxima = new Float64Array(envelope.maxima.length).fill(-Infinity);
   for (let sample = 0; sample < values.length; sample++) {
-    const bucket = Math.min(minima.length - 1, Math.floor((sample * factor + 1) * minima.length / (fs * duration)));
+    const relativeTime = (sample * factor + 1) / fs;
+    const bucket = Math.min(minima.length - 1, Math.floor(relativeTime / duration * minima.length));
     minima[bucket] = Math.min(minima[bucket], values[sample]);
     maxima[bucket] = Math.max(maxima[bucket], values[sample]);
   }
@@ -100,6 +101,29 @@ test("double-precision bipolar derivation occurs before extrema, preserving canc
   assert.ok(result.envelopes[0].minima[50] > 0.124);
 });
 
+test("streamed depth montages match MATLAB's acquisition-order subtraction, independent of display order", async () => {
+  const source = fakeSource({ labels: ["RA2", "LA3", "LA1", "RA1", "LA2"], rates: Array(5).fill(200) });
+  for (const durationSec of [2, 35]) {
+    const request = { source, startSec: 1.003, durationSec, pixelWidth: 1000,
+      channelIndices: [4, 3, 2, 1, 0], montage: "bipolar" };
+    const result = await buildMatlabDisplayWindow(request, testOptions);
+    // Literal bpSig = dOrdered(:, grpIdx(ci+1)) - dOrdered(:, grpIdx(ci)):
+    // original ChannelMat group order is LA3,LA1,LA2 and RA2,RA1.
+    const filtered = expectedSignals(source, request.startSec, durationSec, 1000, [0, 1, 2, 3, 4]);
+    const pairs = [[1, 2], [2, 4], [0, 3]];
+    assert.deepEqual(result.labels, ["LA3-1", "LA1-2", "RA2-1"]);
+    assert.deepEqual(result.sourceIndices, pairs);
+    assert.deepEqual(result.primarySourceIndices, [2, 4, 3]);
+    for (let row = 0; row < pairs.length; row++) {
+      const [first, second] = pairs[row];
+      const expected = Float64Array.from(filtered[first], (value, n) => filtered[second][n] - value);
+      if (result.envelopes[row]) assertExactEnvelope(result.envelopes[row], expected, 200, 2, durationSec);
+      else assert.deepEqual(result.data[row], expected);
+    }
+    assert.deepEqual(result.warnings, []);
+  }
+});
+
 test("known auxiliary labels are recognized without guessing unfamiliar EEG electrodes", () => {
   for (const label of ["misc DC03", "misc DC06", "  MISC DC04  ", "DC05", "EEG DC03-REF", "bio X1", "eeg SpO2", "AUX", "ECG"]) {
     assert.equal(isObviousAuxiliaryChannel(label), true, label);
@@ -139,8 +163,8 @@ test("unit warnings remain for incompatible EEG and unfamiliar channels, includi
   assert.doesNotMatch(unknown.warnings[0], /misc DC03/);
   source.meta.channelLabels[3] = "LA4";
   const eeg = await buildMatlabDisplayWindow({ ...request, montage: "bipolar" }, testOptions);
-  assert.ok(eeg.warnings.some((warning) => /incompatible physical units.*LA4/.test(warning)));
-  assert.ok(eeg.warnings.some((warning) => /LA3-4.*excluded/.test(warning)), "missing montage pairs still warn");
+  assert.ok(eeg.warnings.some((warning) => /LA3-4.*different units/.test(warning)), "an incompatible fixed pair still warns");
+  assert.deepEqual(eeg.labels, ["LA1-2", "LA2-3"]);
 });
 
 test("a majority of incompatible auxiliary channels cannot silently remove EEG channels", async () => {
@@ -148,7 +172,30 @@ test("a majority of incompatible auxiliary channels cannot silently remove EEG c
   source.meta.channelUnits = ["µV", "µV", "NA", "NA", "NA"];
   const result = await buildMatlabDisplayWindow({ source, startSec: 0, durationSec: 1, pixelWidth: 1000,
     channelIndices: [0, 1, 2, 3, 4], montage: "average" }, testOptions);
-  assert.ok(result.warnings.some((warning) => /incompatible physical units.*LA1, LA2/.test(warning)));
+  assert.deepEqual(result.labels, ["LA1 (CAR)", "LA2 (CAR)"]);
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.sourceIndices, [[0, 1], [0, 1]]);
+  assert.ok(source.reads.every((read) => read.selected.every((index) => index < 2)));
+});
+
+test("slow auxiliary channels cannot block or contaminate a valid EEG montage", async () => {
+  const source = fakeSource({ labels: ["misc DC03", "LA1", "ECG1", "LA2", "LA3", "eeg SpO2"],
+    rates: [1, 200, 100, 200, 200, 1], duration: 50 });
+  source.meta.channelUnits = ["NA", "µV", "µV", "µV", "µV", "%"];
+  for (const durationSec of [2, 35]) {
+    for (const montage of ["average", "bipolar"]) {
+      const request = { source, startSec: 1.003, durationSec, pixelWidth: 1000, montage };
+      source.reads.length = 0;
+      const all = await buildMatlabDisplayWindow({ ...request, channelIndices: [0, 1, 2, 3, 4, 5] }, testOptions);
+      assert.ok(source.reads.every((read) => read.selected.join(",") === "1,3,4"));
+      const eeg = await buildMatlabDisplayWindow({ ...request, channelIndices: [1, 3, 4] }, testOptions);
+      assert.deepEqual(all, eeg, `${montage}, ${durationSec}s: samples, extrema, units, timing and provenance`);
+      assert.deepEqual(all.warnings, []);
+    }
+  }
+  const raw = await buildMatlabDisplayWindow({ source, startSec: 0, durationSec: 2, pixelWidth: 1000,
+    montage: "referential", channelIndices: [0, 1, 2, 3, 4, 5] }, testOptions);
+  assert.deepEqual(raw.labels, source.meta.channelLabels, "recorded reference retains every selected channel");
 });
 
 test("mixed-rate referential channels retain separate factors/times; derived mixed-rate modes fail explicitly", async () => {

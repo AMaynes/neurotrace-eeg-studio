@@ -737,7 +737,7 @@ export function isObviousAuxiliaryChannel(channelLabel: string): boolean {
     .replace(/(?:[-_\s]+(?:REF|LE|AR|AVG))$/i, "")
     .trim();
   return /^(?:BIO|MISC)(?:\s|$)/i.test(channelLabel.trim())
-    || /^(?:AUX|ECG|EKG|EMG|EOG|RESP|RESPIRATION|TRIG|TRIGGER|DC\d*|E|ABD|SPO2|ETCO2|PULSE|CO2WAVE)$/i.test(label);
+    || /^(?:(?:AUX|ECG|EKG|EMG|EOG|RESP|RESPIRATION|TRIG|TRIGGER|DC|MARK|REF|GND|SYNC|STI)\d*|E|ABD|SPO2|ETCO2|PULSE|CO2WAVE)$/i.test(label);
 }
 
 function isLikelyEEGEDFSignal(signal: EDFSignalHeader): boolean {
@@ -3739,6 +3739,38 @@ function channelIsExcluded(index: number, label: string, excludedChannels: Exclu
   return false;
 }
 
+/** Shared by exact and custom-filter views; auxiliary signals never define an EEG reference. */
+export function montageInputPolicy(
+  labels: readonly string[],
+  units: readonly string[] | undefined,
+  mode: MontageMode,
+  excludedChannels: ExcludedChannelSet = new Set(),
+): { excludedPositions: Set<number | string>; warnings: string[] } {
+  const excludedPositions = new Set(excludedChannels);
+  const warnings: string[] = [];
+  if (mode === "referential") return { excludedPositions, warnings };
+  labels.forEach((label, index) => {
+    if (isObviousAuxiliaryChannel(label)) excludedPositions.add(index);
+  });
+  // Bipolar units are checked per fixed pair, not by voting across unrelated
+  // electrodes. CAR, in contrast, must use one physical unit for its reference.
+  if (units && (mode === "average" || mode === "average-reference")) {
+    const usable = labels.map((_, index) => index)
+      .filter((index) => !channelIsExcluded(index, labels[index], excludedPositions));
+    const unitCounts = new Map<string, number>();
+    usable.forEach((index) => unitCounts.set(units[index], (unitCounts.get(units[index]) ?? 0) + 1));
+    const referenceUnit = [...unitCounts].sort((a, b) =>
+      Number(b[0] === "µV") - Number(a[0] === "µV") || b[1] - a[1])[0]?.[0];
+    const incompatible = usable.filter((index) => units[index] !== referenceUnit);
+    incompatible.forEach((index) => excludedPositions.add(index));
+    if (incompatible.length) {
+      const names = incompatible.slice(0, 8).map((index) => labels[index]).join(", ");
+      warnings.push(`Channels with incompatible physical units were excluded from montage arithmetic: ${names}${incompatible.length > 8 ? `, and ${incompatible.length - 8} more` : ""}.`);
+    }
+  }
+  return { excludedPositions, warnings };
+}
+
 const MATLAB_EXCLUDED_CHANNEL_GROUPS = ANATOMICAL_EXCLUDED_GROUPS;
 
 interface MatlabAnatomicalChannel {
@@ -3859,10 +3891,11 @@ export function buildMontage<T extends SignalSamples>(
       || options.allChannelLabels![index] !== labels[position]))) {
     throw new Error("Montage source channel indices must uniquely identify the supplied channel labels.");
   }
+  const inputPolicy = montageInputPolicy(labels, options.channelUnits, mode, excludedChannels);
   const validIndices = data
     .map((_, index) => index)
-    .filter((index) => !channelIsExcluded(index, labels[index], excludedChannels));
-  const warnings: string[] = [];
+    .filter((index) => !channelIsExcluded(index, labels[index], inputPolicy.excludedPositions));
+  const warnings: string[] = [...inputPolicy.warnings];
 
   // MATLAB casts the source to double before filtering/reference arithmetic.
   // Preserve that precision; legacy Float32 callers retain their existing type.

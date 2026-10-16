@@ -1,5 +1,5 @@
 /** Bounded, full-view MATLAB processing; reduction happens after filter/montage. */
-import { buildMontage, isObviousAuxiliaryChannel, type MontageMode, type SignalReadOptions, type SignalSource, type WindowData } from "./eeg-core.ts";
+import { buildMontage, montageInputPolicy, type MontageMode, type SignalReadOptions, type SignalSource, type WindowData } from "./eeg-core.ts";
 import type { BipolarMontageKind } from "./bipolar-montage.ts";
 import { matlabDisplayChunkInputRange, matlabDisplayDecimationFactor, type MatlabDisplayFactor, type MatlabDisplaySamples } from "./matlab-display-processing.ts";
 import { createMatlabDisplayWorkerClient } from "./matlab-display-worker-client.ts";
@@ -200,38 +200,31 @@ export async function buildMatlabDisplayWindow(
   if (plans.some((plan) => !Number.isSafeInteger(plan.inputCount) || !Number.isSafeInteger(plan.firstSample))) {
     throw new Error("MATLAB display sample range exceeds safe integer precision.");
   }
-  if (montage !== "referential" && plans.some((plan) => plan.rate !== plans[0].rate
-    || plan.factor !== plans[0].factor || plan.inputCount !== plans[0].inputCount)) {
-    throw new Error("MATLAB-compatible derived montages require equal sample rates and aligned window lengths; mixed-rate signals cannot be combined.");
-  }
-  const excludedPositions = new Set<number | string>();
+  const explicitExclusions = new Set<number | string>();
   for (const excluded of request.excludedChannels ?? []) {
-    if (typeof excluded === "string") excludedPositions.add(excluded);
+    if (typeof excluded === "string") explicitExclusions.add(excluded);
     else {
       const position = indices.indexOf(excluded);
-      if (position >= 0) excludedPositions.add(position);
+      if (position >= 0) explicitExclusions.add(position);
     }
   }
-  const warnings = new Set<string>();
-  const sameRawGrid = plans.every((plan) => plan.rate === plans[0].rate && plan.inputCount === plans[0].inputCount);
-  const flatlines = sameRawGrid
-    ? createMatlabRawFlatlineDetector(plans.length, plans[0].rate, startSec + 1 / plans[0].rate)
+  const { excludedPositions, warnings: inputWarnings } = montageInputPolicy(labels, units, montage, explicitExclusions);
+  const excludedNames = new Set([...excludedPositions].filter((value): value is string => typeof value === "string")
+    .map((label) => label.trim().toLowerCase()));
+  const activePlans = montage === "referential" ? plans : plans.filter((plan) =>
+    !excludedPositions.has(plan.position) && !excludedNames.has(labels[plan.position].trim().toLowerCase()));
+  // Excluded auxiliary channels may have entirely different rates. They must
+  // neither block the EEG montage nor consume FIR/read work for that montage.
+  if (montage !== "referential" && activePlans.some((plan) => plan.rate !== activePlans[0].rate
+    || plan.factor !== activePlans[0].factor || plan.inputCount !== activePlans[0].inputCount)) {
+    throw new Error("MATLAB-compatible derived montages require equal sample rates and aligned window lengths; mixed-rate signals cannot be combined.");
+  }
+  const warnings = new Set<string>(inputWarnings);
+  const sameRawGrid = activePlans.every((plan) => plan.rate === activePlans[0].rate && plan.inputCount === activePlans[0].inputCount);
+  const flatlines = activePlans.length && sameRawGrid
+    ? createMatlabRawFlatlineDetector(activePlans.length, activePlans[0].rate, startSec + 1 / activePlans[0].rate)
     : null;
   if (!sameRawGrid) warnings.add("Synchronized raw flatline markers are unavailable for mixed-rate selections in MATLAB-compatible view.");
-  if (montage !== "referential") {
-    const unitCounts = new Map<string, number>();
-    for (const unit of units) unitCounts.set(unit, (unitCounts.get(unit) ?? 0) + 1);
-    const referenceUnit = [...unitCounts].sort((a, b) => b[1] - a[1] || Number(b[0] === "µV") - Number(a[0] === "µV"))[0]?.[0];
-    units.forEach((unit, position) => { if (unit !== referenceUnit) excludedPositions.add(position); });
-    // Excluding auxiliary channels (e.g. DC channels marked NA) is normal, not
-    // a failed display. Keep the arithmetic guard and flag incompatible EEG or
-    // unrecognized channels, rather than treating every exclusion as a problem.
-    const unexpected = labels.filter((label, position) => units[position] !== referenceUnit && !isObviousAuxiliaryChannel(label));
-    if (unexpected.length) {
-      const names = unexpected.slice(0, 8).join(", ");
-      warnings.add(`Channels with incompatible physical units were excluded from montage arithmetic: ${names}${unexpected.length > 8 ? `, and ${unexpected.length - 8} more` : ""}.`);
-    }
-  }
   const montageOptions = {
     allChannelLabels: request.allChannelLabels ?? source.meta.channelLabels,
     sourceChannelIndices: indices,
@@ -283,14 +276,14 @@ export async function buildMatlabDisplayWindow(
   // A montage with no usable rows cannot show a waveform. In particular, do
   // not decode/filter six hours just to return an empty result or start a
   // processing worker for a window containing no whole input samples.
-  const totalSamples = template.labels.length ? plans.reduce((sum, plan) => sum + plan.outputCount, 0) : 0;
+  const totalSamples = template.labels.length ? activePlans.reduce((sum, plan) => sum + plan.outputCount, 0) : 0;
   if (!totalSamples) {
     options.onProgress?.({ completedSamples: 0, totalSamples: 0, fraction: 1 });
     checkAborted(options.signal);
     return finalize();
   }
   const groups = new Map<string, SourcePlan[]>();
-  for (const plan of plans) {
+  for (const plan of activePlans) {
     const key = `${plan.rate}:${plan.inputCount}:${plan.factor}`;
     const group = groups.get(key) ?? [];
     group.push(plan);
@@ -345,9 +338,13 @@ export async function buildMatlabDisplayWindow(
         if (montage === "referential") {
           rows = filtered.map((values, position) => ({ row: group[position].position, values }));
         } else {
-          // Equal rates/lengths above ensure every selected source is in this
-          // group. Promote factor-1 views as well so montage never rounds them.
-          const derived = buildMontage(filtered.map((values) => values instanceof Float64Array ? values : Float64Array.from(values)),
+          // Keep positions in the complete selection, including excluded rows,
+          // so source identities and fixed pairs survive omitted read channels.
+          const montageData: Float64Array[] = plans.map(() => new Float64Array());
+          filtered.forEach((values, position) => {
+            montageData[group[position].position] = values instanceof Float64Array ? values : Float64Array.from(values);
+          });
+          const derived = buildMontage(montageData,
             labels, montage, excludedPositions, outputRates,
             firstTimes.map((time, position) => time + outputStart / outputRates[position]), montageOptions);
           if (derived.labels.length !== template.labels.length || derived.labels.some((label, row) => label !== template.labels[row])) {

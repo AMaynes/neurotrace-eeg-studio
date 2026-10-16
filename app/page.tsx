@@ -4069,20 +4069,6 @@ export default function Home() {
           return output;
         });
         const labels = indices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`);
-        const excludedDisplayPositions = new Set<number>();
-        const montageWarnings: string[] = [];
-        if (montage !== "referential") {
-          const unitCounts = new Map<string, number>();
-          rawWindow.channelUnits.forEach((unit) => {
-            unitCounts.set(unit, (unitCounts.get(unit) ?? 0) + 1);
-          });
-          const referenceUnit = [...unitCounts].sort((left, right) => right[1] - left[1] || Number(right[0] === "µV") - Number(left[0] === "µV"))[0]?.[0];
-          rawWindow.channelUnits.forEach((unit, position) => {
-            if (referenceUnit && unit !== referenceUnit) excludedDisplayPositions.add(position);
-          });
-          const omittedUnits = [...new Set(rawWindow.channelUnits.filter((unit) => referenceUnit && unit !== referenceUnit))];
-          if (omittedUnits.length) montageWarnings.push(`${omittedUnits.join(", ")} channels were excluded from ${montage === "bipolar" ? "bipolar" : "average-reference"} arithmetic because units cannot be mixed.`);
-        }
         const montageBytes = cropped.reduce((sum, channel) => sum + channel.byteLength, 0);
         const montageOperation = performanceDiagnostics.beginDecode({
           label: "Montage derivation",
@@ -4095,7 +4081,7 @@ export default function Home() {
             cropped,
             labels,
             montage,
-            excludedDisplayPositions,
+            new Set(),
             processed.sampleRates,
             croppedStartSecs,
             { allChannelLabels: meta.channelLabels, sourceChannelIndices: indices,
@@ -4129,7 +4115,7 @@ export default function Home() {
           units,
           sourceIndices,
           primarySourceIndices,
-          warnings: [...montageWarnings, ...montageResult.warnings],
+          warnings: montageResult.warnings,
           viewStart: signalViewStart, viewDuration: timebase,
           flatlineRegions: rawWindow.flatlineRegions.filter((region) => region.endSec > signalViewStart && region.startSec < signalViewStart + timebase),
         };
