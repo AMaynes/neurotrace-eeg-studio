@@ -377,13 +377,15 @@ test("large source verification stays off the UI thread and combines EDF hashing
   assert.match(worker, /hash:\s*sha256\.hexDigest\(\)/);
   assert.match(page, /sourceVerificationAbortRef\.current/);
   assert.match(page, /className="verification-cancel"/);
-  assert.match(page, /verifySourceOffThread\(\s*pendingLegacyMatFile/);
+  assert.match(page, /verifySourceOffThread\(companion,\s*\{\s*signal:\s*verificationAbortController.signal/);
+  assert.match(page, /importContext.companionMatFile = pendingLegacyMatFile/);
   assert.match(displayClient, /new Worker\(new URL\("\.\/display-processing-worker\.ts",\s*import\.meta\.url\)/);
   assert.match(displayClient, /options\.signal\?\.addEventListener\("abort"/);
   assert.match(displayClient, /fallbackToDirect[\s\S]*?processDirectly/);
   assert.match(displayWorker, /applyDisplayFilters/);
   assert.match(displayWorker, /prepareClinicalDisplaySignals/);
-  assert.doesNotMatch(page, /source\.loadAnnotations\(/, "EDF+ events reuse the shared hash/index pass instead of rereading the source");
+  assert.match(page, /source\.loadAnnotations\(\{ signal: verificationAbortController.signal \}\)/,
+    "early label discovery is cancellable and independent of the full-file verification pass");
   const applySnapshot = section(page, "const applySessionSnapshot", "const switchSession");
   assert.doesNotMatch(applySnapshot, /(?:rawWindow|processedWindow|envelopeWindow)CacheRef\.current\s*=\s*\[\]/, "switching tabs retains source-keyed signal indexes");
 });

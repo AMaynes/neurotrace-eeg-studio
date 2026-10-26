@@ -67,6 +67,8 @@ import { DirectorySessions, type DirectorySessionStatus } from "./directory-sess
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./import-selection";
 import { edfRecordingLabels, mergeRecordingLabels, recordingLabelAnnotations, validRecordingLabel, type RecordingLabel } from "./recording-labels";
+import { annotationLabelTypeKey, collectLabelTypes, recordingLabelTypeKey } from "./label-visibility";
+import { LabelVisibilityFilter } from "./label-visibility-filter";
 import {
   buildEDFFileWindowOffThread,
   buildRawDatFileWindowOffThread,
@@ -87,6 +89,7 @@ import {
 import { sha256Blob } from "./source-integrity";
 import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
+import { parseRecordingTimestamp } from "./recording-timestamp";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
 import { buildChannelRowLayout, channelRowFromFraction, orderElectrodeDisplayRows } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
@@ -349,6 +352,8 @@ type SourceImportContext = {
   uploadedFileInputs: File[];
   companionBundle: BidsCompanionBundle;
   importedAnnotations: Annotation[];
+  /** Verify alongside the DAT scan after the read-only preview has opened. */
+  companionMatFile?: File;
 };
 
 type SessionTab = {
@@ -1092,6 +1097,26 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
       datFile: typeof rawMatlabExportIdentity.datFile === "string" ? rawMatlabExportIdentity.datFile : "",
     } : null,
   };
+}
+
+/** Read-only label preview; verified recovery remains authoritative after hashing. */
+function previewSourceAnnotations(source: SignalSource, imported: readonly Annotation[], projectReview: unknown) {
+  const { durationSec, channelLabels } = source.meta;
+  const detected = recordingLabelAnnotations(detectedRecordingLabels(source), durationSec, channelLabels);
+  let saved: Annotation[] = [];
+  let alreadyImported = false;
+  if (projectReview && typeof projectReview === "object" && !Array.isArray(projectReview)) {
+    const review = projectReview as Record<string, unknown>;
+    if (Array.isArray(review.annotations) && review.annotations.every((item) => hasValidRecoveryBounds(item, durationSec))) {
+      const migrated = migrateAnnotationList(review.annotations, durationSec, channelLabels.length);
+      if (migrated.length === review.annotations.length) {
+        saved = migrated;
+        alreadyImported = review.recordingLabelsImported === true;
+      }
+    }
+  }
+  const labels = mergeRecordingLabels<Annotation>(saved, detected.annotations, alreadyImported);
+  return { annotations: mergeRecordingLabels(labels, imported), warnings: detected.warnings };
 }
 
 const DEFAULT_FILTERS: DisplayFilterSettings = {
@@ -2009,9 +2034,14 @@ export default function Home() {
   const [enabledEphysLabelIds, setEnabledEphysLabelIds] = useState<Set<string>>(() => new Set(["ictal"]));
   const [showEphysLabelPicker, setShowEphysLabelPicker] = useState(false);
   const [labelsVisible, setLabelsVisible] = useState(true);
+  const [hiddenLabelTypes, setHiddenLabelTypes] = useState<ReadonlySet<string>>(() => new Set());
+  const [showLabelVisibilityFilter, setShowLabelVisibilityFilter] = useState(false);
   const [channelSearch, setChannelSearch] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [activeCandidate, setActiveCandidate] = useState(0);
+  const displayAnnotations = useMemo(() => annotations.filter((item) => !hiddenLabelTypes.has(annotationLabelTypeKey(item))), [annotations, hiddenLabelTypes]);
+  const labelTypeOptions = useMemo(() => collectLabelTypes(annotations, candidates, LABELS), [annotations, candidates]);
+  const hiddenLabelTypeCount = useMemo(() => labelTypeOptions.filter((option) => hiddenLabelTypes.has(option.key)).length, [hiddenLabelTypes, labelTypeOptions]);
   const [toast, setToast] = useState("Blank session ready — load a recording");
   const [uploadError, setUploadError] = useState<UploadErrorMessage | null>(null);
   const [importBusy, setImportBusy] = useState(false);
@@ -2092,6 +2122,7 @@ export default function Home() {
 
   const activeCandidateItem = candidates[activeCandidate] ?? null;
   const activeCandidateTime = activeCandidateItem?.time ?? null;
+  const activeCandidateVisible = activeCandidateItem !== null && !hiddenLabelTypes.has(recordingLabelTypeKey(activeCandidateItem.label));
   const activeCandidateAnnotation = activeCandidateItem
     ? [...annotations].reverse().find((item) => item.candidateId === activeCandidateItem.id
       && item.labelId === "ictal"
@@ -2139,6 +2170,7 @@ export default function Home() {
         id: item.id,
         time: item.start,
         label: annotationLabel(item)?.name ?? item.labelId,
+        visibilityKey: annotationLabelTypeKey(item),
         detail: item.recordingLabel ? "Recording label · imported" : item.track === "context" ? "Context event" : "Instance label",
         status: item.status,
         confidence: Math.round(clamp(item.confidence, 0, 100)),
@@ -2150,6 +2182,7 @@ export default function Home() {
         id: item.id,
         time: item.time,
         label: item.label,
+        visibilityKey: recordingLabelTypeKey(item.label),
         detail: "File event",
         status: item.status,
         confidence: item.confidence,
@@ -2160,8 +2193,9 @@ export default function Home() {
   const filteredQueueEntries = useMemo(() => {
     const terms = queueSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return instanceQueueEntries.map((entry, index) => ({ entry, index }))
-      .filter(({ entry }) => terms.every((term) => `${entry.label} ${entry.detail} ${entry.status}`.toLowerCase().includes(term)));
-  }, [instanceQueueEntries, queueSearch]);
+      .filter(({ entry }) => !hiddenLabelTypes.has(entry.visibilityKey)
+        && terms.every((term) => `${entry.label} ${entry.detail} ${entry.status}`.toLowerCase().includes(term)));
+  }, [hiddenLabelTypes, instanceQueueEntries, queueSearch]);
   const activeQueueIndex = useMemo(() => {
     const selectedIndex = selectedAnnotationId
       ? instanceQueueEntries.findIndex((item) => item.kind === "annotation" && item.id === selectedAnnotationId)
@@ -2190,6 +2224,16 @@ export default function Home() {
     ? sourceHash
     : `${sourceHash.slice(0, 8)}…${sourceHash.slice(-4)}`;
   const reviewReady = hasRecording && !verifyingSource;
+
+  const changeHiddenLabelTypes = (hidden: Set<string>) => {
+    setHiddenLabelTypes(hidden);
+    setSelectedAnnotationId(null);
+    setSelectedAnnotationIds(new Set());
+    setAnnotationSelectionBox(null);
+    setAnnotationDragPreview(null);
+    annotationSelectionRef.current = null;
+    setQueueLimit(100);
+  };
 
   const cancelSourceVerification = useCallback(() => {
     const controller = sourceVerificationAbortRef.current;
@@ -4351,7 +4395,7 @@ export default function Home() {
         + rowHeight * (channelRowLayout.rowStartUnits[channel] - verticalUnitStart)
         - rowScrollOffset;
 
-      if (activeCandidateTime !== null && activeCandidateTime >= displayStart && activeCandidateTime <= displayEnd) {
+      if (activeCandidateVisible && activeCandidateTime !== null && activeCandidateTime >= displayStart && activeCandidateTime <= displayEnd) {
         const eventX = ((activeCandidateTime - displayStart) / timebase) * width;
         context.save();
         context.strokeStyle = "rgba(232, 240, 239, .9)";
@@ -4388,7 +4432,7 @@ export default function Home() {
         context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
       }
 
-      const waveformAnnotations = labelsVisible ? annotations : [];
+      const waveformAnnotations = labelsVisible ? displayAnnotations : [];
       if (timebase > 5 * 60 && waveformAnnotations.length > MAX_INTERACTIVE_TIMELINE_ANNOTATIONS) {
         const densityBins = clusterTimelineDensity(
           waveformAnnotations.filter((item) => annotationGeometry(item) !== "session"),
@@ -4598,7 +4642,7 @@ export default function Home() {
       waveDrawRef.current = () => {};
       performanceDiagnostics.removeCanvasSurface("waveform");
     };
-  }, [activeCandidateTime, activeSessionContentView, annotations, channelRowLayout, channelSelectionActive, display, displaySettingsKey, expandedChannels, focusedChannel, gain, labelsVisible, legacyRawCountDisplay, markOnset, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, activeCandidateVisible, displayAnnotations, channelRowLayout, channelSelectionActive, display, displaySettingsKey, expandedChannels, focusedChannel, gain, labelsVisible, legacyRawCountDisplay, markOnset, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -5433,6 +5477,7 @@ export default function Home() {
       interpretation = { ...interpretation, directory_session_path: relativeFilePath(file) };
     }
     const nextMeta = sourceMeta(source);
+    const projectReviewPreview = pendingProjectImportRef.current?.review;
     storeActiveSession();
     cancelPendingViewFrames();
     const previousSnapshot = sessionSnapshotsRef.current.get(targetSessionId);
@@ -5494,8 +5539,16 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setReviewer("");
-    annotationsRef.current = [];
-    setAnnotations([]);
+    const publishLabelPreview = () => {
+      if (verificationAbortController.signal.aborted || sourceRef.current !== source
+        || activeSessionIdRef.current !== targetSessionId || !sourceVerificationRef.current) return;
+      const preview = previewSourceAnnotations(source, importContext?.importedAnnotations ?? [], projectReviewPreview);
+      nextMeta.warnings = [...new Set([...nextMeta.warnings, ...source.meta.warnings, ...preview.warnings])];
+      annotationsRef.current = preview.annotations;
+      setAnnotations(preview.annotations);
+      setMeta({ ...nextMeta, warnings: [...nextMeta.warnings] });
+    };
+    publishLabelPreview();
     recordingLabelsImportedRef.current = false;
     setQueueSearch("");
     setQueueLimit(100);
@@ -5510,6 +5563,19 @@ export default function Home() {
     setToast("Preparing the first waveform view…");
     let contentHash: string;
     try {
+      // MAT/DAT and sidecar labels are already visible. EDF+ reads only its
+      // annotation ranges now, independently of waveform readiness and hashing.
+      if (source instanceof EDFSource) {
+        void source.loadAnnotations({ signal: verificationAbortController.signal }).then(
+          publishLabelPreview,
+          (error: unknown) => {
+            if (verificationAbortController.signal.aborted || !sourceVerificationRef.current || sourceRef.current !== source) return;
+            // The full verification pass can still extract EDF annotations.
+            nextMeta.warnings.push(`Early EDF label detection failed: ${error instanceof Error ? error.message : "Could not read annotation metadata."}`);
+            setMeta({ ...nextMeta, warnings: [...nextMeta.warnings] });
+          },
+        );
+      }
       // Let React mount the recording view and give its small, high-priority
       // window read a head start before the one-time full-file index scan.
       await new Promise<void>((resolve, reject) => {
@@ -5619,7 +5685,32 @@ export default function Home() {
         } else if (source instanceof RawDatSource) {
           const overviewChannelIndices = fullOverviewPlan?.channelIndices ?? [];
           const fullOverviewBuckets = fullOverviewPlan?.bucketCount ?? 1;
-          const result = await buildRawDatEnvelopeWindowOffThread({
+          const verifyCompanion = async () => {
+            const companion = importContext?.companionMatFile;
+            if (!companion) return null;
+            const read = performanceDiagnostics.beginSourceRead({
+              label: "Companion MAT verification", totalBytes: companion.size,
+              phase: "Hashing companion metadata in worker",
+            });
+            let previousBytes = 0;
+            try {
+              const result = await verifySourceOffThread(companion, {
+                signal: verificationAbortController.signal,
+                fallbackToMainThread: false,
+                onProgress: (bytesHashed, totalBytes) => {
+                  read.update({ completedBytes: bytesHashed, totalBytes,
+                    transientAllocatedBytes: Math.max(0, bytesHashed - previousBytes) });
+                  previousBytes = bytesHashed;
+                },
+              });
+              read.finish({ completedBytes: companion.size, totalBytes: companion.size });
+              return result.hash;
+            } catch (error) {
+              read[isAbortFailure(error) ? "cancel" : "fail"]();
+              throw error;
+            }
+          };
+          const [result, companionMatHash] = await Promise.all([buildRawDatEnvelopeWindowOffThread({
             ...source.envelopeWorkerSource,
             startSec: 0,
             durationSec: nextMeta.durationSec,
@@ -5638,7 +5729,10 @@ export default function Home() {
                 ? "Reading and hashing DAT frames"
                 : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
             ),
-          });
+          }), verifyCompanion()]);
+          if (importContext?.companionMatFile) {
+            interpretation = { ...interpretation, companion_mat_sha256: companionMatHash };
+          }
           const hash = result.integrity?.hash;
           if (!hash) throw new Error("DAT verification completed without a source hash.");
           verification = { hash };
@@ -6030,9 +6124,8 @@ export default function Home() {
         if (!opened) return;
         setPendingImportFiles([]);
         const hasAnnotationChannels = source.header.signals.some((signal) => signal.isAnnotation);
-        // loadSource extracted EDF+ TALs during the same exact pass used for
-        // hashing and the overview. Reuse that result instead of rereading the
-        // entire source solely for annotations.
+        // Reuse the verified EDF+ TALs; the early label preview does not need
+        // another read once full-file verification has finished.
         const importedCandidates = source.events
           .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
           .filter((event) => isLegacySeizureCandidate(event.label))
@@ -6547,38 +6640,6 @@ export default function Home() {
     importBusyRef.current = true;
     setImportBusy(true);
     try {
-      let companionMatHash: string | null = null;
-      if (pendingLegacyMatFile) {
-        const companionRead = performanceDiagnostics.beginSourceRead({
-          label: "Companion MAT verification",
-          totalBytes: pendingLegacyMatFile.size,
-          phase: "Hashing companion metadata in worker",
-        });
-        let companionReadProgress = 0;
-        try {
-          const companionVerification = await verifySourceOffThread(pendingLegacyMatFile, {
-            fallbackToMainThread: false,
-            onProgress: (bytesHashed, totalBytes) => {
-              const transientAllocatedBytes = Math.max(0, bytesHashed - companionReadProgress);
-              companionReadProgress = bytesHashed;
-              companionRead.update({
-                completedBytes: bytesHashed,
-                totalBytes,
-                phase: "Hashing companion metadata in worker",
-                transientAllocatedBytes,
-              });
-            },
-          });
-          companionMatHash = companionVerification.hash;
-          companionRead.finish({
-            completedBytes: pendingLegacyMatFile.size,
-            totalBytes: pendingLegacyMatFile.size,
-          });
-        } catch (error) {
-          companionRead[isAbortFailure(error) ? "cancel" : "fail"]();
-          throw error;
-        }
-      }
       const companionPath = portablePathParts(pendingLegacyMatFile?.webkitRelativePath || pendingLegacyMatFile?.name || "");
       const datPath = portablePathParts(pendingDat.webkitRelativePath || pendingDat.name);
       const verifiedPhysicalScale = datMapping.physicalScale === "" ? undefined : datMapping.physicalScale;
@@ -6605,7 +6666,7 @@ export default function Home() {
       });
       const interpretation = {
         kind: "raw-int16-le",
-        companion_mat_sha256: companionMatHash,
+        companion_mat_sha256: null,
         companion_mat_name: pendingLegacyMatFile?.name ?? null,
         companion_mat_path: legacyExportHints.matPath.trim() || companionPath.path || null,
         dat_file_name: pendingDat.name,
@@ -6628,6 +6689,7 @@ export default function Home() {
           ? pendingImportFiles
           : [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null),
       );
+      importContext.companionMatFile = pendingLegacyMatFile ?? undefined;
       const opened = await loadSource(source, pendingDat, interpretation, importContext, Boolean(directoryRequest));
       if (!opened) return;
       if (directoryRequest) updateDirectoryStatus(directoryRequest, { state: "loaded" });
@@ -7039,7 +7101,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const modalOpen = showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+    const modalOpen = showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -7079,7 +7141,7 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
+  }, [confirmCommit.length, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -7095,7 +7157,7 @@ export default function Home() {
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
       const editingTarget = target?.closest("input, textarea, select, [contenteditable='true']");
       if (target?.closest(".spectrogram-panel") && !clearShortcut && !historyShortcut) return;
-      const modalOpen = showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+      const modalOpen = showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
       if (modalOpen && zoomShortcut && !editingTarget && !target?.closest("[data-shortcut-scope]")) {
         event.preventDefault();
         event.stopPropagation();
@@ -7109,6 +7171,7 @@ export default function Home() {
           setConfirmCommit([]);
           setCommitAdvanceAfter(false);
         }
+        else if (showLabelVisibilityFilter) setShowLabelVisibilityFilter(false);
         else if (showEphysLabelPicker) setShowEphysLabelPicker(false);
         else if (showHelp) setShowHelp(false);
         else if (showSettings) setShowSettings(false);
@@ -7199,7 +7262,7 @@ export default function Home() {
           || (selectedAnnotation.id === activeCandidateAnnotation?.id
             && selectedAnnotation.candidateId === activeCandidateItem?.id
             && selectedAnnotation.labelId === "ictal");
-        if (activeCandidateItem
+        if (activeCandidateItem && activeCandidateVisible
           && !["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)
           && selectedBelongsToActiveCandidate) acceptActiveCandidate();
         else commitSelected();
@@ -7218,7 +7281,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
@@ -7246,7 +7309,7 @@ export default function Home() {
   const rightContextLabels = ["clinical", "medication", "note"]
     .map((id) => LABEL_BY_ID.get(id))
     .filter((label): label is LabelDefinition => label !== undefined && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
-  const sessionContextAnnotations = annotations.filter((item) => item.track === "context" && annotationGeometry(item) === "session");
+  const sessionContextAnnotations = displayAnnotations.filter((item) => item.track === "context" && annotationGeometry(item) === "session");
   const filteredChannelOptions = meta.channelLabels
     .map((name, index) => ({ name, index }))
     .filter(({ name }) => name.toLowerCase().includes(channelSearch.toLowerCase()));
@@ -7297,10 +7360,10 @@ export default function Home() {
   ];
   // Visibility affects rendering only; saved annotations and exports stay intact.
   const renderAnnotations = useMemo(() => !labelsVisible ? [] : annotationDragPreview
-    ? annotations.map((item) => annotationDragPreview.patches[item.id]
+    ? displayAnnotations.map((item) => annotationDragPreview.patches[item.id]
       ? normalizeAnnotationGeometry({ ...item, ...annotationDragPreview.patches[item.id] }, meta.durationSec)
       : item)
-    : annotations, [annotationDragPreview, annotations, labelsVisible, meta.durationSec]);
+    : displayAnnotations, [annotationDragPreview, displayAnnotations, labelsVisible, meta.durationSec]);
   const visibleAnnotations = useMemo(
     () => renderAnnotations.filter((item) => annotationOverlapsWindow(item, viewStart, viewStart + timebase)),
     [renderAnnotations, timebase, viewStart],
@@ -7359,7 +7422,7 @@ export default function Home() {
 
   /** Explicit, synchronous view actions only. Never choose files, labels, or save contents. */
   const assistTutorial = (action: TutorialAssistAction): boolean => {
-    const modalOpen = showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
+    const modalOpen = showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
       || showSessionMap || showPatientInfo || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
     if (modalOpen) return (action === "open-import" && showImport) || (action === "open-save" && showProjectSave)
       || (action === "open-settings" && showSettings)
@@ -7686,7 +7749,7 @@ export default function Home() {
               <button disabled={!filteredQueueEntries.length || activeFilteredQueueIndex >= filteredQueueEntries.length - 1} aria-label="Next event or instance" title="Next matching event or instance" onClick={() => selectInstanceQueueEntry(filteredQueueEntries[activeFilteredQueueIndex + 1].index)}>›</button>
             </div>
             <label className="queue-search"><span>Find labels / events</span><input type="search" value={queueSearch} placeholder="Label text, imported, seizure…" onChange={(event) => { setQueueSearch(event.target.value); setQueueLimit(100); }} /></label>
-            <div className="queue-result-count">{filteredQueueEntries.length} match{filteredQueueEntries.length === 1 ? "" : "es"} · {annotations.filter((item) => item.recordingLabel).length} imported recording labels</div>
+            <div className="queue-result-count">{filteredQueueEntries.length} match{filteredQueueEntries.length === 1 ? "" : "es"} · {annotations.filter((item) => item.recordingLabel).length} imported recording labels{hiddenLabelTypeCount > 0 ? ` · ${hiddenLabelTypeCount} types hidden` : ""}</div>
             <div className="queue-list">
               {filteredQueueEntries.length ? filteredQueueEntries.slice(0, queueLimit).map(({ entry, index }) => <div key={`${entry.kind}-${entry.id}`} className={`queue-item ${index === activeQueueIndex ? "active" : ""}`}>
                 <button className="queue-jump" onClick={() => selectInstanceQueueEntry(index)} aria-label={`Jump to ${entry.label}`} title={entry.label}>
@@ -7698,7 +7761,7 @@ export default function Home() {
                   <span>%</span>
                 </label>
                 <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
-              </div>) : <div className="empty-queue"><strong>{queueSearch ? "No matching labels" : "No events or instance labels"}</strong><p>{queueSearch ? "Try another search or clear the filter." : hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
+              </div>) : <div className="empty-queue"><strong>{queueSearch || hiddenLabelTypeCount ? "No matching labels" : "No events or instance labels"}</strong><p>{queueSearch || hiddenLabelTypeCount ? "Try another search or change Filter labels." : hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
               {filteredQueueEntries.length > queueLimit && <button className="queue-load-more" onClick={() => setQueueLimit((limit) => limit + 100)}>Show next {Math.min(100, filteredQueueEntries.length - queueLimit)} labels</button>}
             </div>
           </section>
@@ -7746,6 +7809,43 @@ export default function Home() {
               </div>
               <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
             </div>
+            <form
+              key={`${activeSessionId}:${sessionKey}`}
+              className="timestamp-jump"
+              aria-label="Jump to timestamp"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!hasRecording) return;
+                const input = event.currentTarget.elements.namedItem("timestamp") as HTMLInputElement;
+                const time = parseRecordingTimestamp(input.value);
+                if (time === null || time > meta.durationSec) {
+                  input.setCustomValidity(time === null
+                    ? "Enter seconds, mm:ss, or hh:mm:ss, such as 90.5 or 00:01:30.5."
+                    : `Enter a time between 0 and ${formatClock(meta.durationSec, true)} from the recording start.`);
+                  input.reportValidity();
+                  return;
+                }
+                setPlaying(false);
+                jumpTo(time);
+                setCursorLocked(true);
+                setToast(`Jumped to ${formatClock(time, true)} from recording start`);
+                notifyTutorialAction("transport-used");
+              }}
+            >
+              <label><span>Jump to</span><input
+                name="timestamp"
+                type="text"
+                aria-label="Jump timestamp"
+                placeholder="hh:mm:ss"
+                title="Time from recording start: hh:mm:ss, mm:ss, or seconds (decimals allowed)"
+                disabled={!hasRecording}
+                required
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => event.currentTarget.setCustomValidity("")}
+              /></label>
+              <button type="submit" disabled={!hasRecording}>Go</button>
+            </form>
               <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain">
                 <span>Gain</span>
                 <label className="gain-amount-field"><input
@@ -7819,7 +7919,7 @@ export default function Home() {
             <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to MATLAB</button>
           </div>}
 
-          {hasRecording && activeCandidateItem && <section className="candidate-review-bar" aria-label="Source event review" data-review-status={activeCandidateItem.status}>
+          {hasRecording && activeCandidateItem && activeCandidateVisible && <section className="candidate-review-bar" aria-label="Source event review" data-review-status={activeCandidateItem.status}>
             <div className="candidate-review-identity">
               <span>Source event {activeCandidate + 1}/{candidates.length}</span>
               <strong title={activeCandidateItem.label}>{activeCandidateItem.label}</strong>
@@ -7853,7 +7953,7 @@ export default function Home() {
             }}>
               <div className="overview-wave" aria-hidden="true">{sessionOverview.bars.map((bar, index) => <i key={index} className={`overview-bin ${bar.state}`} style={{ left: `${100 * bar.startSec / meta.durationSec}%`, width: `${100 * (bar.endSec - bar.startSec) / meta.durationSec}%`, height: bar.heightFraction === null ? "100%" : `${bar.heightFraction * 100}%` }} />)}</div>
               {sessionOverview.status !== "ready" && <span className="overview-status">{sessionOverview.status === "partial" ? sessionOverview.complete ? "Missing overview data shaded" : `Overview ${Math.floor(sessionOverview.coverageFraction * 100)}% · unindexed areas shaded` : sessionOverview.status === "loading" ? "Building recording overview…" : "Recording overview unavailable"}</span>}
-              {labelsVisible && annotations.filter((item) => item.labelId === "ictal").map((item) => <span key={item.id} className="overview-event" style={{ left: `${(item.start / meta.durationSec) * 100}%`, width: `${Math.max(0.2, ((item.end - item.start) / meta.durationSec) * 100)}%` }} />)}
+              {labelsVisible && displayAnnotations.filter((item) => item.labelId === "ictal").map((item) => <span key={item.id} className="overview-event" style={{ left: `${(item.start / meta.durationSec) * 100}%`, width: `${Math.max(0.2, ((item.end - item.start) / meta.durationSec) * 100)}%` }} />)}
               <div className="overview-viewport" style={{ left: `${overviewLeft}%`, width: `${Math.max(overviewWidth, 0.55)}%` }}><i /><i /></div>
             </div>
             <div className="overview-time"><span>00:00</span><span>{formatClock(meta.durationSec / 2)}</span><span>{formatClock(meta.durationSec)}</span></div>
@@ -8064,20 +8164,27 @@ export default function Home() {
         </section>
 
         <aside className="right-sidebar" data-tutorial={rightPanelView === "labels" ? "label-panel" : undefined}>
-          <button
-            type="button"
-            className="label-visibility-toggle"
-            data-tutorial="label-visibility"
-            aria-label={labelsVisible ? "Hide all labels" : "Show all labels"}
-            aria-pressed={!labelsVisible}
-            title="Toggle all session, context, ePhys window, and ePhys instance labels. Saved labels are not changed."
-            onClick={() => {
-              setLabelsVisible((visible) => !visible);
-              setSelectedAnnotationId(null);
-              setSelectedAnnotationIds(new Set());
-              setAnnotationSelectionBox(null);
-            }}
-          >{labelsVisible ? "Hide all labels" : "Show all labels"}</button>
+          <div className="label-visibility-controls">
+            <button
+              type="button"
+              className="label-visibility-toggle"
+              data-tutorial="label-visibility"
+              aria-label={labelsVisible ? "Hide all labels" : "Show all labels"}
+              aria-pressed={!labelsVisible}
+              title="Toggle all session, context, ePhys window, and ePhys instance labels. Saved labels are not changed."
+              onClick={() => {
+                setLabelsVisible((visible) => !visible);
+                setSelectedAnnotationId(null);
+                setSelectedAnnotationIds(new Set());
+                setAnnotationSelectionBox(null);
+              }}
+            >{labelsVisible ? "Hide all labels" : "Show all labels"}</button>
+            <button type="button" className={`label-filter-trigger ${hiddenLabelTypeCount ? "active" : ""}`}
+              aria-label="Filter labels" aria-haspopup="dialog" aria-expanded={showLabelVisibilityFilter}
+              onClick={() => setShowLabelVisibilityFilter(true)}>
+              Filter labels{hiddenLabelTypeCount ? ` (${hiddenLabelTypeCount})` : ""}
+            </button>
+          </div>
           {rightPanelView === "resources" ? <ResourceUsagePanel
             meta={meta}
             hasRecording={hasRecording}
@@ -8102,7 +8209,7 @@ export default function Home() {
             meta={meta}
             companionBundle={companionBundle}
             display={display}
-            annotations={annotations}
+            annotations={displayAnnotations}
             focusedChannel={focusedChannel}
             cursorTime={cursorTime}
             cursorReadout={cursorReadout}
@@ -8162,6 +8269,13 @@ export default function Home() {
           </>}
         </aside>
       </div>
+
+      {showLabelVisibilityFilter && <LabelVisibilityFilter
+        options={labelTypeOptions}
+        hiddenTypes={hiddenLabelTypes}
+        onChange={changeHiddenLabelTypes}
+        onClose={() => setShowLabelVisibilityFilter(false)}
+      />}
 
       {showEphysLabelPicker && <div className="modal-backdrop" onMouseDown={(event) => {
         if (event.target === event.currentTarget) setShowEphysLabelPicker(false);
@@ -8526,7 +8640,7 @@ export default function Home() {
 
       {showSessionMap && <SessionMap
         meta={meta}
-        annotations={annotations}
+        annotations={displayAnnotations}
         onClose={() => setShowSessionMap(false)}
         onOpenAnnotation={(item) => {
           setSelectedAnnotationId(item.id);

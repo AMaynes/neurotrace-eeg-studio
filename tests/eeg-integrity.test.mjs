@@ -79,3 +79,60 @@ test("omits unsafe mixed-rate bipolar arithmetic and falls back to recorded chan
   assert.equal(montage.data.length, 2);
   assert.match(montage.warnings.join("\n"), /cannot be subtracted without resampling/i);
 });
+
+test("EDF label discovery reads only sparse annotations, even for a multi-gigabyte recording", async () => {
+  const recordCount = 600;
+  const recordBytes = 8 * 1024 * 1024;
+  const annotationBytes = 64;
+  const headerBytes = 768;
+  const ranges = [];
+  // A virtual 4.7 GiB recording: any attempt to read EEG bytes fails, without
+  // allocating that payload in the regression test.
+  const file = { slice(start, end) {
+    const record = Math.floor((start - headerBytes) / recordBytes);
+    assert.equal(start, headerBytes + record * recordBytes + recordBytes - annotationBytes);
+    assert.equal(end - start, annotationBytes);
+    ranges.push([start, end]);
+    const bytes = new Uint8Array(annotationBytes);
+    bytes.set(new TextEncoder().encode(`+${record}\x14Marker β\x14\0`));
+    return new Blob([bytes]);
+  } };
+  const header = { headerBytes, dataRecordCount: recordCount, bytesPerDataRecord: recordBytes,
+    signals: [{ isAnnotation: false }, { isAnnotation: true, samplesPerRecord: annotationBytes / 2,
+      byteOffsetInRecord: recordBytes - annotationBytes }] };
+  const parsed = await parseEDFAnnotations(file, header);
+  assert.equal(parsed.events.length, recordCount);
+  assert.equal(parsed.events[0].label, "Marker β");
+  assert.equal(parsed.events.at(-1).timeSec, recordCount - 1);
+  assert.equal(ranges.reduce((sum, [start, end]) => sum + end - start, 0), 38_400);
+  assert.deepEqual(parsed.warnings, []);
+});
+
+test("batched EDF annotations retain record boundaries, deduplicate, and sort multiple channels", async () => {
+  const encoder = new TextEncoder();
+  const tal = (text) => {
+    const bytes = new Uint8Array(64);
+    bytes.set(encoder.encode(text));
+    return bytes;
+  };
+  const file = new Blob([
+    tal("+10\x14Repeated\x14\0+2\x152\x14Interval\x14\0"),
+    tal("+10\x14Repeated\x14\0+1\x14First\x14\0"),
+    tal("+0\x14\x14\0"), tal("+10\x14Repeated\x14\0"),
+  ]);
+  const header = { headerBytes: 0, dataRecordCount: 2, bytesPerDataRecord: 128,
+    signals: [0, 64].map((offset) => ({ isAnnotation: true, samplesPerRecord: 32, byteOffsetInRecord: offset })) };
+  const parsed = await parseEDFAnnotations(file, header);
+  assert.deepEqual(parsed.events.map((event) => [event.label, event.timeSec, event.durationSec]), [
+    ["First", 1, undefined], ["Interval", 2, 2], ["Repeated", 10, undefined],
+  ]);
+});
+
+test("EDF metadata reads honor cancellation and reject truncated annotations", async () => {
+  const header = { headerBytes: 0, dataRecordCount: 1, bytesPerDataRecord: 128,
+    signals: [{ isAnnotation: true, samplesPerRecord: 64, byteOffsetInRecord: 0 }] };
+  const controller = new AbortController();
+  const file = { slice() { controller.abort(); return new Blob([new Uint8Array(128)]); } };
+  await assert.rejects(parseEDFAnnotations(file, header, { signal: controller.signal }), { name: "AbortError" });
+  await assert.rejects(parseEDFAnnotations(new Blob([new Uint8Array(64)]), header), /annotation data is incomplete/);
+});

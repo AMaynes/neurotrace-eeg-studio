@@ -6,6 +6,7 @@
 
 import { parseEdfTalText, type SourceEvent } from "./eeg-core.ts";
 import { IncrementalSha256 } from "./source-integrity.ts";
+import type { ScanHashPipeline } from "./scan-hash-worker-client.ts";
 import {
   buildEDFEnvelopeWindow,
   type EDFEnvelopeBuildHooks,
@@ -43,25 +44,29 @@ function finalizeEvents(events: readonly SourceEvent[], annotationSignalCount: n
  */
 export async function executeEDFEnvelopeBuild(
   request: EDFEnvelopeBuildRequest,
-  hooks: Omit<EDFEnvelopeBuildHooks, "onSourceChunk" | "scanAllRecords" | "scanWholeBlob"> = {},
+  hooks: Omit<EDFEnvelopeBuildHooks, "onSourceChunk" | "scanAllRecords" | "scanWholeBlob"> & { hashPipeline?: ScanHashPipeline } = {},
 ): Promise<EDFEnvelopeBuildResult> {
   const wantsHash = request.integrity?.sha256 === true;
   const wantsAnnotations = request.integrity?.edfAnnotations === true;
   if (!wantsHash && !wantsAnnotations) return buildEDFEnvelopeWindow(request, hooks);
 
-  const sha256 = wantsHash ? new IncrementalSha256() : null;
+  const hashPipeline = wantsHash ? hooks.hashPipeline : undefined;
+  const sha256 = wantsHash && !hashPipeline ? new IncrementalSha256() : null;
   const annotationSignals = wantsAnnotations
     ? request.header.signals.filter((signal) => signal.isAnnotation)
     : [];
   const annotationEvents: SourceEvent[] = [];
   const decoder = new TextDecoder("utf-8");
+  let annotationMs = 0;
   let pendingCompleteProgress: EDFEnvelopeProgress | undefined;
-  const onSourceChunk = (chunk: EDFEnvelopeSourceChunk) => {
-    if (sha256) sha256.update(chunk.bytes);
+  const onSourceChunk = async (chunk: EDFEnvelopeSourceChunk) => {
+    if (hashPipeline) await hashPipeline.write(chunk.bytes);
+    else if (sha256) sha256.update(chunk.bytes);
     if (chunk.section !== "records"
       || chunk.firstRecord === undefined
       || chunk.recordCount === undefined
       || !annotationSignals.length) return;
+    const started = nowMs();
     for (let localRecord = 0; localRecord < chunk.recordCount; localRecord += 1) {
       const recordOffset = localRecord * request.header.bytesPerDataRecord;
       for (const signal of annotationSignals) {
@@ -70,6 +75,7 @@ export async function executeEDFEnvelopeBuild(
         annotationEvents.push(...parseEdfTalText(decoder.decode(chunk.bytes.subarray(start, end))));
       }
     }
+    annotationMs += nowMs() - started;
   };
 
   const result = await buildEDFEnvelopeWindow(request, {
@@ -84,12 +90,14 @@ export async function executeEDFEnvelopeBuild(
   });
   const finalizeStartedAt = nowMs();
   const integrity: EDFEnvelopeIntegrityResult = {};
-  if (sha256) integrity.hash = sha256.hexDigest();
+  if (hashPipeline) integrity.hash = await hashPipeline.hexDigest();
+  else if (sha256) integrity.hash = sha256.hexDigest();
   if (wantsAnnotations) {
     integrity.edfAnnotations = finalizeEvents(annotationEvents, annotationSignals.length);
   }
   const finalizeMs = nowMs() - finalizeStartedAt;
   result.metrics.integrityMs += finalizeMs;
+  if (hashPipeline) result.metrics.integrityMs = hashPipeline.workMs + annotationMs;
   result.metrics.elapsedMs += finalizeMs;
   if (pendingCompleteProgress) {
     hooks.onProgress?.({

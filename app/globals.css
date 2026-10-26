@@ -487,6 +487,14 @@ textarea:focus-visible {
 .window-step-buttons { display: flex; flex-direction: column; gap: 1px; }
 .time-window-control .window-step-buttons button { width: 21px; height: 15px; display: grid; place-items: center; font-size: 11px; line-height: 1; }
 
+.timestamp-jump { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 5px; padding: 0 5px 0 8px; border: 1px solid #263d45; border-radius: 5px; background: #102027; }
+.timestamp-jump label { display: flex; align-items: center; gap: 6px; }
+.timestamp-jump label > span { color: #71868c; font-size: 7px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.timestamp-jump input { width: 104px; height: 25px; padding: 0 5px; border: 1px solid #263e46; border-radius: 3px; background: #0d1b20; color: #d7e3e2; font: 10px ui-monospace, monospace; }
+.timestamp-jump input::placeholder { color: #71868c; }
+.timestamp-jump button { height: 25px; padding: 0 7px; border: 1px solid #315058; border-radius: 3px; background: #192b32; color: var(--mint); font-size: 10px; cursor: pointer; }
+.timestamp-jump button:not(:disabled):hover { border-color: var(--mint); }
+
 .filter-drawer {
   min-height: 48px;
   display: flex;

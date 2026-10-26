@@ -9,6 +9,7 @@ import {
 } from "./raw-dat-envelope.ts";
 import type { EnvelopeWindowData } from "./eeg-core";
 import { envelopeOverviewTransferList } from "./progressive-envelope.ts";
+import { createScanHashPipeline } from "./scan-hash-worker-client.ts";
 
 export type RawDatEnvelopeWorkerRequest = {
   type: "build";
@@ -29,18 +30,27 @@ const workerScope = self as unknown as {
 
 workerScope.onmessage = (event) => {
   const { requestId, request } = event.data;
-  void buildRawDatEnvelopeWindow(request, {
-    backend: "worker",
-    onProgress: (progress) => {
-      workerScope.postMessage({ type: "progress", requestId, progress });
-    },
-    onOverview: (window) => {
-      workerScope.postMessage(
-        { type: "overview", requestId, window },
-        envelopeOverviewTransferList(window),
-      );
-    },
-  }).then(
+  const build = async () => {
+    // The child owns one ordered hash stream; this worker decodes the same
+    // chunks concurrently. Terminating the parent also terminates its children.
+    const hashPipeline = request.integrity?.sha256 ? await createScanHashPipeline(request.blob.size) : undefined;
+    try {
+      return await buildRawDatEnvelopeWindow(request, {
+        backend: "worker",
+        hashPipeline,
+        onProgress: (progress) => {
+          workerScope.postMessage({ type: "progress", requestId, progress });
+        },
+        onOverview: (window) => {
+          workerScope.postMessage(
+            { type: "overview", requestId, window },
+            envelopeOverviewTransferList(window),
+          );
+        },
+      });
+    } finally { hashPipeline?.dispose(); }
+  };
+  void build().then(
     (result) => {
       workerScope.postMessage(
         { type: "complete", requestId, result },

@@ -87,7 +87,7 @@ function globalHarness(overrides = {}) {
   const canvas = { closest: () => null };
   const scope = {
     ...shortcuts, controlBindings: DEFAULT_CONTROLS, canvasRef: { current: canvas }, hasRecording: true,
-    showDirectorySessions: false, showEphysLabelPicker: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
+    showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
     showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
     queueDetailEntry: null, confirmCommit: [], cursorLocked: false, cursorTime: 10, markOnset: null, importBusy: false, projectSaveBusy: false,
     selectedAnnotationIds: new Set(), selectedAnnotation: null, activeCandidateItem: null,

@@ -9,6 +9,7 @@ import type { EnvelopeWindowData } from "./eeg-core";
 import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
 import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
 import { IncrementalSha256 } from "./source-integrity.ts";
+import type { ScanHashPipeline } from "./scan-hash-worker-client.ts";
 
 export const DEFAULT_RAW_DAT_ENVELOPE_CHUNK_BYTES = 4 * 1024 * 1024;
 
@@ -105,6 +106,8 @@ export interface RawDatEnvelopeBuildHooks {
   backend?: "worker" | "direct";
   /** Retains the portable decoder for parity tests and unusual environments. */
   decoder?: "auto" | "portable-data-view";
+  /** Caller-owned ordered hasher; permits CPU hashing to overlap sample decoding. */
+  hashPipeline?: ScanHashPipeline;
 }
 
 type ChannelAccumulator = {
@@ -333,7 +336,8 @@ export async function buildRawDatEnvelopeWindow(
     hooks.onOverview,
   );
   const wantsHash = request.integrity?.sha256 === true;
-  const sha256 = wantsHash ? new IncrementalSha256() : null;
+  const hashPipeline = wantsHash ? hooks.hashPipeline : undefined;
+  const sha256 = wantsHash && !hashPipeline ? new IncrementalSha256() : null;
   const plannedFrameCount = wantsHash
     ? totalSourceFrames
     : accumulators.length
@@ -369,7 +373,11 @@ export async function buildRawDatEnvelopeWindow(
     if (buffer.byteLength !== byteEnd - byteStart) {
       throw new Error(`Raw DAT source ended while reading bytes ${byteStart}–${byteEnd}.`);
     }
-    if (sha256) {
+    if (hashPipeline) {
+      await hashPipeline.write(new Uint8Array(buffer));
+      metrics.integrityMs = hashPipeline.workMs;
+      throwIfAborted(hooks.signal);
+    } else if (sha256) {
       const integrityStartedAt = nowMs();
       sha256.update(new Uint8Array(buffer));
       metrics.integrityMs += nowMs() - integrityStartedAt;
@@ -470,7 +478,11 @@ export async function buildRawDatEnvelopeWindow(
   for (const accumulator of accumulators) finishAccumulator(accumulator, hooks.signal);
   metrics.decodeMs += nowMs() - finalizeStartedAt;
   let integrity: RawDatEnvelopeIntegrityResult | undefined;
-  if (sha256) {
+  if (hashPipeline) {
+    integrity = { hash: await hashPipeline.hexDigest() };
+    metrics.integrityMs = hashPipeline.workMs;
+    throwIfAborted(hooks.signal);
+  } else if (sha256) {
     const integrityStartedAt = nowMs();
     integrity = { hash: sha256.hexDigest() };
     metrics.integrityMs += nowMs() - integrityStartedAt;

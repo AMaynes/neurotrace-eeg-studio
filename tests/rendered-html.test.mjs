@@ -670,7 +670,7 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
   assert.match(page, /enabledEphysLabelIds\.has\(item\.id\)/, "disabled types are filtered from the palette");
   assert.match(page, /className="modal ephys-label-picker" role="dialog" aria-modal="true"/, "the picker opens outside the sidebar as a modal");
   assert.ok(page.indexOf('id="ephys-label-picker"') > page.indexOf('</aside>'), "the picker is not clipped by the right panel");
-  assert.match(page, /const modalOpen = showEphysLabelPicker \|\|/, "the picker participates in focus trapping and background inertness");
+  assert.match(page, /const modalOpen = showLabelVisibilityFilter \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
   assert.match(page, /else if \(showEphysLabelPicker\) setShowEphysLabelPicker\(false\)/, "Escape closes the picker without clearing the waveform selection");
   assert.match(page, /aria-label="Close ePhys label picker"/);
   assert.match(css, /\.ephys-label-picker\s*\{[^}]*width:\s*min\(520px, calc\(100vw - 32px\)\)/, "the popup fits narrow viewports independently of the sidebar");
@@ -688,11 +688,11 @@ test("toggles all label types without deleting annotations or changing palette p
   assert.match(button, /setLabelsVisible\(\(visible\) => !visible\)/);
   assert.match(button, /setSelectedAnnotationIds\(new Set\(\)\)/, "hidden labels cannot remain selected for accidental deletion");
   assert.doesNotMatch(button, /setAnnotations|setEnabledEphysLabelIds|setBottomTracksOpen/, "visibility preserves saved data and independent display preferences");
-  assert.match(page, /const waveformAnnotations = labelsVisible \? annotations : \[\]/);
+  assert.match(page, /const waveformAnnotations = labelsVisible \? displayAnnotations : \[\]/);
   assert.match(page, /waveformAnnotations\.length > MAX_INTERACTIVE_TIMELINE_ANNOTATIONS/);
   assert.match(page, /for \(const item of waveformAnnotations\)/);
   assert.match(page, /const renderAnnotations = useMemo\(\(\) => !labelsVisible \? \[\]/, "all timeline tracks share the visibility switch");
-  assert.match(page, /labelsVisible && annotations\.filter\(\(item\) => item\.labelId === "ictal"\)/, "overview labels follow visibility");
+  assert.match(page, /labelsVisible && displayAnnotations\.filter\(\(item\) => item\.labelId === "ictal"\)/, "overview labels follow visibility");
   assert.match(page, /!labelsVisible \? <div className="empty-session-labels"/, "entire-session labels follow visibility too");
   assert.match(page, /const onTimelinePointerDown[^]*?if \(!labelsVisible\) return;/, "hidden timeline labels cannot be box-selected");
 });
@@ -865,7 +865,7 @@ test("keeps Session Map focused on whole-recording navigation", async () => {
   const invocationEnd = page.indexOf("/>}", invocationStart);
   assert.ok(invocationStart >= 0 && invocationEnd > invocationStart, "the Session Map dialog is wired from the workspace");
   const invocation = page.slice(invocationStart, invocationEnd);
-  assert.match(invocation, /annotations=\{annotations\}/);
+  assert.match(invocation, /annotations=\{displayAnnotations\}/, "the map respects label-type filters while retaining the full recording timeline");
   assert.doesNotMatch(invocation, /issues=|badChannels=|recoveryStatus=/);
 });
 

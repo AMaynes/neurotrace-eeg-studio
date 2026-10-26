@@ -693,36 +693,46 @@ export async function parseEDFAnnotations(
 ): Promise<{ events: SourceEvent[]; warnings: string[] }> {
   const annotationSignals = header.signals.filter((signal) => signal.isAnnotation);
   if (!annotationSignals.length) return { events: [], warnings: [] };
-  const events: SourceEvent[] = [];
-  const warnings: string[] = [];
-  const recordsPerChunk = Math.max(1, Math.floor((4 * 1024 * 1024) / Math.max(1, header.bytesPerDataRecord)));
+  const deduplicated = new Map<string, SourceEvent>();
+  const slices: Blob[] = [];
+  let batchBytes = 0;
   throwIfSignalReadAborted(options.signal);
 
-  for (let firstRecord = 0; firstRecord < header.dataRecordCount; firstRecord += recordsPerChunk) {
+  const flush = async () => {
+    if (!slices.length) return;
+    // Batch only annotation ranges. Reading whole EDF records here makes
+    // metadata discovery scale with the size of the waveform payload.
+    const bytes = new Uint8Array(await new Blob(slices).arrayBuffer());
     throwIfSignalReadAborted(options.signal);
-    const recordCount = Math.min(recordsPerChunk, header.dataRecordCount - firstRecord);
-    const byteStart = header.headerBytes + firstRecord * header.bytesPerDataRecord;
-    const byteEnd = byteStart + recordCount * header.bytesPerDataRecord;
-    const bytes = new Uint8Array(await file.slice(byteStart, byteEnd).arrayBuffer());
-    throwIfSignalReadAborted(options.signal);
-    for (let localRecord = 0; localRecord < recordCount; localRecord += 1) {
-      const recordOffset = localRecord * header.bytesPerDataRecord;
-      for (const signal of annotationSignals) {
-        const start = recordOffset + signal.byteOffsetInRecord;
-        const end = start + signal.samplesPerRecord * 2;
-        events.push(...parseEdfTalText(utf8Decoder.decode(bytes.subarray(start, end))));
+    if (bytes.length !== batchBytes) throw new SignalFileError("TRUNCATED_FILE", "EDF annotation data is incomplete.");
+    let offset = 0;
+    for (const slice of slices) {
+      // Trim only zero padding at the end of each record, retaining TAL boundaries.
+      let end = offset + slice.size;
+      while (end > offset && bytes[end - 1] === 0) end -= 1;
+      for (const event of parseEdfTalText(utf8Decoder.decode(bytes.subarray(offset, end)))) {
+        const key = `${event.timeSec.toFixed(9)}\0${event.durationSec ?? ""}\0${event.label}`;
+        if (!deduplicated.has(key)) deduplicated.set(key, event);
       }
+      offset += slice.size;
+    }
+    slices.length = 0;
+    batchBytes = 0;
+  };
+  for (let record = 0; record < header.dataRecordCount; record += 1) {
+    throwIfSignalReadAborted(options.signal);
+    for (const signal of annotationSignals) {
+      const size = signal.samplesPerRecord * 2;
+      if (slices.length >= 256 || batchBytes + size > 4 * 1024 * 1024) await flush();
+      const start = header.headerBytes + record * header.bytesPerDataRecord + signal.byteOffsetInRecord;
+      const slice = file.slice(start, start + size);
+      if (slice.size !== size) throw new SignalFileError("TRUNCATED_FILE", "EDF annotation data is incomplete.");
+      slices.push(slice);
+      batchBytes += size;
     }
   }
-
-  const deduplicated = new Map<string, SourceEvent>();
-  for (const event of events) {
-    const key = `${event.timeSec.toFixed(9)}\0${event.durationSec ?? ""}\0${event.label}`;
-    if (!deduplicated.has(key)) deduplicated.set(key, event);
-  }
-  if (!deduplicated.size) {
-    warnings.push("EDF+ annotation channel contained no non-timekeeping text annotations.");
-  }
+  await flush();
+  const warnings = deduplicated.size ? [] : ["EDF+ annotation channel contained no non-timekeeping text annotations."];
   return { events: [...deduplicated.values()].sort((a, b) => a.timeSec - b.timeSec || a.label.localeCompare(b.label)), warnings };
 }
 
@@ -797,7 +807,7 @@ function recommendEDFDisplayChannels(
 }
 
 export interface EDFSourceOptions {
-  /** Defaults to true. Large interactive imports can defer this full-file pass. */
+  /** Defaults to true. Interactive imports can read the header before annotation metadata. */
   parseAnnotations?: boolean;
 }
 

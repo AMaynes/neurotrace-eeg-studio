@@ -4,6 +4,7 @@ import { executeEDFEnvelopeBuild } from "./edf-envelope-integrity.ts";
 import { edfEnvelopeTransferList } from "./edf-envelope.ts";
 import type { EnvelopeWindowData } from "./eeg-core";
 import { envelopeOverviewTransferList } from "./progressive-envelope.ts";
+import { createScanHashPipeline } from "./scan-hash-worker-client.ts";
 import type {
   EDFEnvelopeBuildRequest,
   EDFEnvelopeBuildResult,
@@ -29,18 +30,25 @@ const workerScope = self as unknown as {
 
 workerScope.onmessage = (event) => {
   const { requestId, request } = event.data;
-  void executeEDFEnvelopeBuild(request, {
-    backend: "worker",
-    onProgress: (progress) => {
-      workerScope.postMessage({ type: "progress", requestId, progress });
-    },
-    onOverview: (window) => {
-      workerScope.postMessage(
-        { type: "overview", requestId, window },
-        envelopeOverviewTransferList(window),
-      );
-    },
-  }).then(
+  const build = async () => {
+    const hashPipeline = request.integrity?.sha256 ? await createScanHashPipeline(request.blob.size) : undefined;
+    try {
+      return await executeEDFEnvelopeBuild(request, {
+        backend: "worker",
+        hashPipeline,
+        onProgress: (progress) => {
+          workerScope.postMessage({ type: "progress", requestId, progress });
+        },
+        onOverview: (window) => {
+          workerScope.postMessage(
+            { type: "overview", requestId, window },
+            envelopeOverviewTransferList(window),
+          );
+        },
+      });
+    } finally { hashPipeline?.dispose(); }
+  };
+  void build().then(
     (result) => {
       workerScope.postMessage(
         { type: "complete", requestId, result },

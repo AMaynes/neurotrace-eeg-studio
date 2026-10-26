@@ -235,7 +235,7 @@ test("Ctrl/Cmd+Z and Shift+Z reach shared history from waveform, spectrogram, bu
       const onKey = compile(declaration("onKey"), {
         ...ui.scope, undo: ui.undo, redo: ui.redo,
         controlBindings: DEFAULT_CONTROLS, shortcutAction, canvasRef: { current: null }, markOnset: null,
-        showDirectorySessions: false, setShowDirectorySessions() {}, showEphysLabelPicker: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
+        showDirectorySessions: false, setShowDirectorySessions() {}, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
         showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
         queueDetailEntry: null, confirmCommit: [],
       }, "onKey");

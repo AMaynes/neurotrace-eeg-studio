@@ -46,7 +46,7 @@ function harness(display = fixture(), overrides = {}) {
     performanceDiagnostics: { beginRender: () => ({ finish() { finishes++; } }), recordCanvasSurface() {}, removeCanvasSurface() {} },
     display, displaySettingsKey: display.settingsKey, viewStart: 0, timebase: 3,
     measuredTimeGridInterval: () => 1, formatTimeGridClock: String,
-    activeCandidateTime: null, CHANNEL_RAIL_HEADER_HEIGHT: 28,
+    activeCandidateTime: null, activeCandidateVisible: false, CHANNEL_RAIL_HEADER_HEIGHT: 28,
     expandedChannels: true, channelRowLayout: buildChannelRowLayout(display.labels, false),
     waveformVerticalViewport: null, waveformScrollRef: { current: { scrollTop: 0 } },
     channelScrollOffsetRef: { current: 120 }, channelSelectionActive: false, focusedChannel: 0,
