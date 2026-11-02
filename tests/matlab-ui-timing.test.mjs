@@ -5,6 +5,7 @@ import test from "node:test";
 import ts from "typescript";
 import { edfRecordingLabels, recordingLabelAnnotations, validRecordingLabel } from "../app/recording-labels.ts";
 import { normalizeDisplayGain } from "../app/display-gain.ts";
+import { matlabAnnotationRows, serializeMatlabAnnotations, parseMatlabAnnotations } from "../app/matlab-annotations-csv.ts";
 
 const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -143,17 +144,14 @@ test("unsnapped intervals retain x-click precision; sample offsets do not alter 
   const [sampleExport] = jsonl([annotation]);
   assert.equal(sampleExport.start_sample, 9);
   assert.equal(sampleExport.end_sample, 31);
-  const candidate = { id: "candidate", status: "reviewed", time: .009, label: "seizure", reviewerInitials: "AR", legacyConfidence: "3" };
-  const csv = variable("matlabCompatibilityRows", { annotations: [annotation], candidates: [candidate],
-    patientId: "patient", reviewer: "AR", sourceInterpretation: null, meta: defaultMeta, sampleRate: 1000,
-    csvCell: pure.csvCell, normalizeChannelList: (text) => text, formatMatlabTimestamp: () => "timestamp" });
-  const [header, row] = csv.split("\n").map((line) => line.split(","));
-  const exported = Object.fromEntries(header.map((name, index) => [name, row[index]]));
-  assert.equal(exported.onset_absolute_sec, "0.010237");
-  assert.equal(exported.offset_absolute_sec, "0.032731");
-  assert.equal(exported.onset_relative_to_annotation_sec, "0.001237");
-  assert.equal(exported.offset_relative_to_annotation_sec, "0.023731");
-  assert.equal(exported.seizure_duration_sec, "0.022494");
+  const candidate = { id: "candidate", status: "reviewed", time: .009, label: "seizure", reviewerInitials: "AR", legacyConfidence: "3", reviewedAt: new Date().toISOString() };
+  const csv = serializeMatlabAnnotations(matlabAnnotationRows({ annotations: [annotation], candidates: [candidate],
+    sourceInterpretation: null, meta: defaultMeta }));
+  const [exported] = parseMatlabAnnotations(csv);
+  assert.equal(exported.onset_time_adjusted_sec, "0.010237");
+  assert.equal(exported.offset_time_adjusted_sec, "0.032731");
+  assert.equal(exported.onset_offset_sec, "0.001237");
+  assert.equal(exported.offset_offset_sec, "0.023731");
   assert.equal(exported.accepted, "1");
 });
 

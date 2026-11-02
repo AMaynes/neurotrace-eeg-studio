@@ -872,6 +872,9 @@ textarea:focus-visible {
 .project-save-footer > span { max-width: 270px; color: #657d81; font-size: 8px; line-height: 1.45; }
 .project-save-footer > span strong { color: #9cafac; }
 .project-save-footer .button { min-width: 174px; }
+.csv-save-fields { display: grid; gap: 10px; margin: 16px 0; }
+.csv-save-fields label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.csv-save-fields input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); color: var(--ink); }
 .dat-mapper { margin-top: 12px; padding: 11px; border: 1px solid #2b4b51; border-radius: 7px; background: #0a181d; }
 .dat-mapper > div:first-child { display: flex; align-items: center; gap: 8px; }
 .dat-mapper > div:first-child > div { display: flex; flex-direction: column; gap: 3px; }

@@ -161,7 +161,7 @@ test("the hub renders accessible topic tabs, step previews, and explicit prerequ
     assert.match(html, /role="dialog" aria-modal="true"/);
     assert.match(html, /role="tablist" aria-label="Tutorial topics"/);
     assert.match(html, new RegExp(`id="tutorial-tab-${topic.id}" role="tab" aria-selected="true"`));
-    assert.equal(ui.button("Start walkthrough →").props.disabled, !["start", "directories", "save"].includes(topic.id));
+    assert.equal(ui.button("Start walkthrough →").props.disabled, !["start", "directories"].includes(topic.id));
     const step = ui.find((node) => node.type === "button" && text(node).startsWith("2"));
     step.props.onClick(); ui.render();
     assert.ok(ui.markup().includes('aria-current="step"'));

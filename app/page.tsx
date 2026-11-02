@@ -141,13 +141,13 @@ import {
   type UploadedFileRecord,
 } from "./bids-companions";
 import {
-  createNeurotraceProjectArchive,
   importCustomToolFiles,
   mergeCustomToolAssets,
   readNeurotraceProjectArchive,
   type ImportedNeurotraceProject,
   type NeurotraceCustomToolAsset,
 } from "./neurotrace-project";
+import { matlabAnnotationRows, matlabAnnotationFilename, serializeMatlabAnnotations, writeMatlabAnnotations, MatlabReviewCsvCache, type MatlabCsvFileHandle } from "./matlab-annotations-csv";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -273,6 +273,8 @@ type Candidate = {
   uncertainty?: number;
   /** Optional MATLAB-review compatibility fields. */
   ictalChannels?: string;
+  /** MATLAB bad_channels: free text, independent of ictal channels. */
+  badChannels?: string;
   legacyConfidence?: "" | "1" | "2" | "3";
   reviewedAt?: string;
   reviewerInitials?: string;
@@ -324,28 +326,11 @@ type DirectoryCatalogWorkspace = {
   statuses: Record<string, DirectorySessionStatus>;
 };
 
-type ProjectSaveSelection = {
-  review: boolean;
-  workspace: boolean;
-  labelDefinitions: boolean;
-  customTools: boolean;
-  supportingFiles: boolean;
-  recording: boolean;
-};
-
-type ProjectFileHandle = {
-  createWritable(): Promise<{
-    write(data: Blob): Promise<void>;
-    close(): Promise<void>;
-    abort?(): Promise<void>;
-  }>;
-};
-
 type ProjectSavePicker = (options: {
   suggestedName: string;
   startIn: string;
   types: Array<{ description: string; accept: Record<string, string[]> }>;
-}) => Promise<ProjectFileHandle>;
+}) => Promise<MatlabCsvFileHandle>;
 
 type SourceImportContext = {
   primaryFile: File;
@@ -564,14 +549,6 @@ function annotationLabel(annotation: Annotation): LabelDefinition | undefined {
 function detectedRecordingLabels(source: SignalSource): readonly RecordingLabel[] {
   return source instanceof EDFSource ? edfRecordingLabels(source.events) : source.recordingLabels ?? [];
 }
-const DEFAULT_PROJECT_SAVE_SELECTION: ProjectSaveSelection = {
-  review: true,
-  workspace: true,
-  labelDefinitions: true,
-  customTools: true,
-  supportingFiles: true,
-  recording: false,
-};
 const CHANNEL_RAIL_HEADER_HEIGHT = 28;
 const DEFAULT_SPECTROGRAM_HEIGHT = 138;
 const MIN_SPECTROGRAM_HEIGHT = 96;
@@ -962,8 +939,9 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
     seenIds.add(candidate.id);
     return [{
       ...candidate,
-      label: candidate.label.trim(),
+      label: candidate.label,
       ictalChannels: typeof candidate.ictalChannels === "string" ? candidate.ictalChannels : "",
+      badChannels: typeof candidate.badChannels === "string" ? candidate.badChannels : "",
       legacyConfidence: ["1", "2", "3"].includes(candidate.legacyConfidence ?? "")
         ? candidate.legacyConfidence
         : "",
@@ -993,6 +971,7 @@ function reconcileCandidateQueue(imported: Candidate[], restored: Candidate[], r
       status: prior.status,
       confidence: prior.confidence,
       ictalChannels: prior.ictalChannels ?? "",
+      badChannels: prior.badChannels ?? "",
       legacyConfidence: prior.legacyConfidence ?? "",
       reviewedAt: prior.reviewedAt,
       reviewerInitials: prior.reviewerInitials ?? "",
@@ -1508,14 +1487,6 @@ function normalizeChannelList(value: string) {
     .join(",");
 }
 
-function formatMatlabTimestamp(value: string | undefined) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
 function portablePathParts(value: string) {
   const normalized = value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
   const parts = normalized.split("/").filter(Boolean);
@@ -1849,6 +1820,7 @@ export default function Home() {
   }, []);
   const sourceRef = useRef<SignalSource>(demoSource);
   const sessionSnapshotsRef = useRef<Map<string, SessionWorkspaceSnapshot>>(new Map());
+  const matlabCsvCacheRef = useRef(new MatlabReviewCsvCache());
   const activeSessionIdRef = useRef("initial-session");
   const importBusyRef = useRef(false);
   const directoryCatalogIdRef = useRef<string | null>(null);
@@ -2080,7 +2052,6 @@ export default function Home() {
   const [showProjectSave, setShowProjectSave] = useState(false);
   const [projectSaveBusy, setProjectSaveBusy] = useState(false);
   const [projectSaveError, setProjectSaveError] = useState("");
-  const [projectSaveSelection, setProjectSaveSelection] = useState<ProjectSaveSelection>(DEFAULT_PROJECT_SAVE_SELECTION);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [rightPanelView, setRightPanelView] = useState<"labels" | "inspect" | "resources">("labels");
@@ -2410,6 +2381,10 @@ export default function Home() {
       redo: redoRef.current,
     };
     if (snapshot.hasRecording && !sourceVerificationRef.current) {
+      const group = sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId ?? snapshot.sessionKey;
+      matlabCsvCacheRef.current.update(snapshot.sessionKey, group, matlabAnnotationRows({
+        ...snapshot, sourcePath: snapshot.primaryFile ? relativeFilePath(snapshot.primaryFile) : undefined,
+      }));
       try {
         localStorage.setItem(`neurotrace:draft:${snapshot.sessionKey}`, JSON.stringify(snapshot.annotations));
         localStorage.setItem(`neurotrace:project:${snapshot.sessionKey}`, JSON.stringify({
@@ -2431,7 +2406,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
+  }, [activeCandidate, activeSessionId, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -3281,6 +3256,7 @@ export default function Home() {
           reviewedAt: committedAt,
           reviewerInitials: commitReviewer,
           ictalChannels: normalizeChannelList(item.ictalChannels ?? ""),
+          badChannels: (item.badChannels ?? "").trim(),
         }
         : item));
     }
@@ -3316,7 +3292,7 @@ export default function Home() {
       } catch {
         setRecoveryStatus("error");
         setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId ? { ...tab, hasRecording: true, recoveryStatus: "error" } : tab));
-        setToast("Local recovery failed — export a bundle before closing this session");
+        setToast("Local recovery failed — save your annotations before closing this session");
       }
     }, 350);
     return () => window.clearTimeout(timer);
@@ -5339,7 +5315,7 @@ export default function Home() {
     jumpTo(candidates[index].time);
   }, [candidates, jumpTo]);
 
-  const updateActiveCandidateReview = useCallback((patch: Partial<Pick<Candidate, "ictalChannels" | "legacyConfidence" | "confidence">>) => {
+  const updateActiveCandidateReview = useCallback((patch: Partial<Pick<Candidate, "ictalChannels" | "badChannels" | "legacyConfidence" | "confidence">>) => {
     if (!activeCandidateItem || ["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)) return;
     setCandidates((items) => items.map((item) => item.id === activeCandidateItem.id ? { ...item, ...patch } : item));
   }, [activeCandidateItem]);
@@ -6585,7 +6561,7 @@ export default function Home() {
     filtersOpen: showFilters, boxZoom: boxZoomActive, spectrogramOpen,
     labelsPanelOpen: rightPanelOpen && rightPanelView === "labels",
     labelPickerOpen: showEphysLabelPicker, sessionLabelPickerOpen: showSessionContextPicker,
-    labelsVisible, saveOpen: showProjectSave, saveOptions: projectSaveSelection,
+    labelsVisible, saveOpen: showProjectSave,
   });
 
   const submitGuidedImport = async () => {
@@ -6861,68 +6837,16 @@ export default function Home() {
         linked.map((item) => (item.end - candidate.time).toFixed(6)).join("|"),
       ].map(tsvCell).join("\t");
     })].join("\n");
-    const matlabCompatibilityRows = [[
-      "patient_id",
-      "reviewer_initials",
-      "mat_path",
-      "data_dir",
-      "dat_file",
-      "event_label",
-      "event_time_original_sec",
-      "onset_relative_to_annotation_sec",
-      "onset_absolute_sec",
-      "offset_relative_to_annotation_sec",
-      "offset_absolute_sec",
-      "seizure_duration_sec",
-      "sampling_rate",
-      "n_channels",
-      "ictal_channels",
-      "confidence_score",
-      "review_status",
-      "review_timestamp",
-      "accepted",
-    ].join(","), ...candidates.filter((candidate) => candidate.status === "skipped" || (
-      candidate.status === "reviewed" && annotations.some((item) => item.candidateId === candidate.id && item.labelId === "ictal" && item.status === "committed")
-    )).map((candidate) => {
-      const linkedCandidates = [...annotations].reverse().filter((item) => item.candidateId === candidate.id && item.labelId === "ictal");
-      const linked = candidate.status === "reviewed"
-        ? linkedCandidates.find((item) => item.status === "committed")
-        : undefined;
-      const accepted = candidate.status === "reviewed" && linked?.status === "committed";
-      const reviewStatus = accepted ? "accepted" : "skipped";
-      const companionMatName = typeof sourceInterpretation?.companion_mat_path === "string" && sourceInterpretation.companion_mat_path
-        ? sourceInterpretation.companion_mat_path
-        : typeof sourceInterpretation?.companion_mat_name === "string"
-          ? sourceInterpretation.companion_mat_name
-          : "";
-      const sourceDataDirectory = typeof sourceInterpretation?.data_dir_hint === "string"
-        ? sourceInterpretation.data_dir_hint
-        : "";
-      const datFile = typeof sourceInterpretation?.dat_file_base === "string" && sourceInterpretation.dat_file_base
-        ? sourceInterpretation.dat_file_base
-        : meta.name.replace(/\.dat$/i, "");
-      return [
-        patientId,
-        candidate.reviewerInitials || linked?.reviewer || reviewer,
-        companionMatName,
-        sourceDataDirectory,
-        datFile,
-        candidate.label,
-        candidate.time.toFixed(6),
-        accepted && linked ? (linked.start - candidate.time).toFixed(6) : "NaN",
-        accepted && linked ? linked.start.toFixed(6) : "NaN",
-        accepted && linked ? (linked.end - candidate.time).toFixed(6) : "NaN",
-        accepted && linked ? linked.end.toFixed(6) : "NaN",
-        accepted && linked ? Math.max(0, linked.end - linked.start).toFixed(6) : "NaN",
-        sampleRate,
-        meta.channelLabels.length,
-        accepted ? normalizeChannelList(candidate.ictalChannels ?? "") || "NA" : "",
-        accepted ? candidate.legacyConfidence || "NA" : "",
-        reviewStatus,
-        formatMatlabTimestamp(candidate.reviewedAt ?? linked?.updatedAt),
-        accepted ? 1 : 0,
-      ].map(csvCell).join(",");
-    })].join("\n");
+    let matlabCompatibilityRows: string;
+    try {
+      matlabCompatibilityRows = serializeMatlabAnnotations(matlabAnnotationRows({
+        meta, sourceInterpretation, candidates, annotations,
+        sourcePath: primaryFile ? relativeFilePath(primaryFile) : undefined,
+      }));
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "MATLAB CSV could not be exported");
+      return;
+    }
     const recordingJson = JSON.stringify({
       patient_id: patientId,
       session_id: recordingId,
@@ -6962,7 +6886,7 @@ export default function Home() {
       });
     }).join("\n");
     const manifest = JSON.stringify({ schema: "neurotrace-forecasting-manifest/1.1", patient: patientId, recording_type: recordingType, session: recordingId, files: ["events.tsv", "candidate_events.tsv", "matlab_compatibility.csv", "channels.tsv", "recording.json", "annotations.jsonl", "windows.csv", "ontology.json"], leakage_guard: "Assign train/validation/test split by patient; current split is unassigned." }, null, 2);
-    const readme = "NeuroTrace model-ready annotation bundle\n\nRaw EEG is not included. Seconds are authoritative. Sample positions are only emitted when a universal or annotation-specific channel rate exists. Only committed labels appear in events.tsv; drafts and suggestions remain in annotations.jsonl for audit. candidate_events.tsv preserves source-event lineage and relative timing. matlab_compatibility.csv provides one row per completed source-event decision, including accepted/skipped status, event-relative marks, ictal-channel notes, and 1–3 confidence. Review recording.json before training. Group dataset splits by patient to prevent leakage.\n";
+    const readme = "NeuroTrace model-ready annotation bundle\n\nRaw EEG is not included. Seconds are authoritative. Sample positions are only emitted when a universal or annotation-specific channel rate exists. Only committed labels appear in events.tsv; drafts and suggestions remain in annotations.jsonl for audit. candidate_events.tsv preserves source-event lineage and relative timing. matlab_compatibility.csv uses the exact 14-column MATLAB savedT schema for accepted source-event reviews only, including bad_channels (not ictal channels). Review recording.json before training. Group dataset splits by patient to prevent leakage.\n";
     const zip = createStoredZip([
       { name: `${base}/events.tsv`, content: eventsTsv },
       { name: `${base}/candidate_events.tsv`, content: candidateEventsTsv },
@@ -6979,122 +6903,61 @@ export default function Home() {
     setToast(`Exported ${committed.length} committed labels + ${Math.ceil(meta.durationSec / 30)} training windows`);
   };
 
-  const supportingFileCandidates = uploadedFileInputs.filter((file) => {
-    if (!primaryFile) return true;
-    if (file === primaryFile) return false;
-    return relativeFilePath(file).toLowerCase() !== relativeFilePath(primaryFile).toLowerCase();
-  });
-  const projectTitle = hasRecording
-    ? recordingLabel(meta)
-    : sessionTabs.find((tab) => tab.id === activeSessionId)?.title ?? "NeuroTrace project";
-  const projectFileName = `${projectTitle.replace(/[^a-zA-Z0-9._ -]+/g, "_").replace(/\.[^.]+$/, "").trim() || "NeuroTrace project"}.neurotrace`;
-  const selectedProjectSectionCount = Object.entries(projectSaveSelection)
-    .filter(([key, selected]) => selected && (key !== "recording" || primaryFile !== null))
-    .length;
-  const saveNeurotraceProject = async () => {
-    if (projectSaveBusy) return;
-    setProjectSaveError("");
-
-    let fileHandle: ProjectFileHandle | null = null;
-    const picker = (window as Window & { showSaveFilePicker?: ProjectSavePicker }).showSaveFilePicker;
-    if (picker) {
-      try {
-        fileHandle = await picker.call(window, {
-          suggestedName: projectFileName,
-          startIn: "downloads",
-          types: [{
-            description: "NeuroTrace project",
-            accept: { "application/vnd.neurotrace.project+zip": [".neurotrace"] },
-          }],
-        });
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        const message = error instanceof Error ? error.message : "The save location could not be opened.";
-        setProjectSaveError(message);
-        setToast("Project save could not start");
-        return;
-      }
+  const csvDirectoryId = sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId;
+  const csvPatient = activeMatlabExportIdentity?.patientId || (csvDirectoryId
+    ? directoryHeaders.find((header) => header.catalogId === csvDirectoryId)?.label : undefined) || effectivePatientLabel;
+  const csvFileName = matlabAnnotationFilename(csvPatient, reviewer);
+  const collectCsvRows = () => {
+    const group = csvDirectoryId ?? sessionKey;
+    // Refresh open tabs; closed directory sessions remain as small export rows in the cache.
+    for (const tab of sessionTabs) {
+      if (tab.id === activeSessionId || !csvDirectoryId || tab.directoryId !== csvDirectoryId) continue;
+      const snapshot = sessionSnapshotsRef.current.get(tab.id);
+      if (snapshot?.hasRecording) matlabCsvCacheRef.current.update(snapshot.sessionKey, group, matlabAnnotationRows({
+        ...snapshot, sourcePath: snapshot.primaryFile ? relativeFilePath(snapshot.primaryFile) : undefined,
+      }));
     }
-
+    matlabCsvCacheRef.current.update(sessionKey, group, matlabAnnotationRows({
+      meta, sourceInterpretation, candidates, annotations,
+      sourcePath: primaryFile ? relativeFilePath(primaryFile) : undefined,
+    }));
+    return matlabCsvCacheRef.current.rows(group);
+  };
+  const saveAnnotationsCsv = async () => {
+    if (projectSaveBusy || !hasRecording || sourceVerificationRef.current || importBusyRef.current) return;
+    setProjectSaveError("");
+    if (!reviewer.trim()) {
+      setProjectSaveError("Enter reviewer initials before saving.");
+      return;
+    }
+    if (meta.details?.discontinuous === true) {
+      setProjectSaveError("EDF+D gaps need a discontinuous time-axis conversion before saving annotation times.");
+      return;
+    }
     setProjectSaveBusy(true);
     try {
-      const result = await createNeurotraceProjectArchive({
-        projectId: sessionKey,
-        title: projectTitle,
-        appVersion: "0.1.0",
-        recording: hasRecording ? {
-          name: primaryFile?.name ?? meta.name,
-          format: meta.format,
-          byteLength: primaryFile?.size ?? meta.byteLength ?? 0,
-          durationSec: meta.durationSec,
-          channelCount: meta.channelLabels.length,
-          sourceContentSha256: rawSourceHash,
-          sessionInterpretationSha256: sourceHash,
-        } : null,
-        review: projectSaveSelection.review ? {
-          schema: "neurotrace-review",
-          version: 1,
-          annotations,
-          recordingLabelsImported: recordingLabelsImportedRef.current,
-          candidates,
-          activeCandidate,
-          reviewer,
-          recordingType,
-          sourceInterpretation,
-          sourceContentSha256: rawSourceHash,
-          sessionInterpretationSha256: sourceHash,
-          history: { undo: undoRef.current, redo: redoRef.current },
-          savedAt: new Date().toISOString(),
-        } : undefined,
-        workspace: projectSaveSelection.workspace ? {
-          schema: "neurotrace-workspace",
-          version: 1,
-          viewStart,
-          timebase,
-          gain,
-          traceDisplayMode,
-          montage,
-          filters,
-          selectedChannels: [...selectedChannels],
-          focusedChannel,
-          cursor: { time: cursorTime, amplitude: cursorAmplitude, locked: cursorLocked },
-          snapMode,
-          spectrogramOpen,
-          expandedChannels,
-          controlBindings,
-          recordingMeta: hasRecording ? {
-            ...meta,
-            startedAt: meta.startedAt?.toISOString() ?? null,
-          } : null,
-        } : undefined,
-        labelDefinitions: projectSaveSelection.labelDefinitions
-          ? { schema: "neurotrace-labels", version: 1, labels: LABELS }
-          : undefined,
-        customTools: projectSaveSelection.customTools ? customTools : undefined,
-        supportingFiles: projectSaveSelection.supportingFiles ? supportingFileCandidates : undefined,
-        recordingFile: projectSaveSelection.recording ? primaryFile : null,
-      });
-
-      if (fileHandle) {
-        const writable = await fileHandle.createWritable();
-        try {
-          await writable.write(result.blob);
-          await writable.close();
-        } catch (error) {
-          await writable.abort?.().catch(() => {});
-          throw error;
-        }
+      const rows = collectCsvRows();
+      const csv = serializeMatlabAnnotations(rows);
+      const picker = (window as Window & { showSaveFilePicker?: ProjectSavePicker }).showSaveFilePicker;
+      let rowCount = rows.length;
+      if (picker) {
+        const handle = await picker.call(window, {
+          suggestedName: csvFileName,
+          startIn: "downloads",
+          types: [{ description: "MATLAB annotation CSV", accept: { "text/csv": [".csv"] } }],
+        });
+        rowCount = await writeMatlabAnnotations(handle, rows);
       } else {
-        downloadBlob(result.fileName, result.blob);
+        downloadBlob(csvFileName, new Blob([csv], { type: "text/csv;charset=utf-8" }));
       }
       setShowProjectSave(false);
-      setProjectSaveError("");
-      setToast(`Saved ${result.fileName} as one portable project file`);
-      notifyTutorialAction("project-saved");
+      setToast(`Saved ${rowCount} accepted review${rowCount === 1 ? "" : "s"} to CSV`);
+      notifyTutorialAction("annotations-saved");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "The project could not be saved.";
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      const message = error instanceof Error ? error.message : "The CSV could not be saved.";
       setProjectSaveError(message);
-      setToast("Project save failed");
+      setToast("CSV save failed");
     } finally {
       setProjectSaveBusy(false);
     }
@@ -7313,51 +7176,6 @@ export default function Home() {
   const filteredChannelOptions = meta.channelLabels
     .map((name, index) => ({ name, index }))
     .filter(({ name }) => name.toLowerCase().includes(channelSearch.toLowerCase()));
-  const projectSaveOptions: Array<{
-    key: keyof ProjectSaveSelection;
-    title: string;
-    detail: string;
-    amount: string;
-    disabled?: boolean;
-  }> = [
-    {
-      key: "review",
-      title: "Annotations & review decisions",
-      detail: "Labels, candidates, reviewer data, and undo history",
-      amount: `${annotations.length} label${annotations.length === 1 ? "" : "s"}`,
-    },
-    {
-      key: "workspace",
-      title: "Workspace setup",
-      detail: "Viewer position, montage, filters, gain, channels, spectrum, and controls",
-      amount: "Current view",
-    },
-    {
-      key: "labelDefinitions",
-      title: "Label definitions",
-      detail: "The built-in ontology used to interpret saved annotations",
-      amount: `${LABELS.length} labels`,
-    },
-    {
-      key: "customTools",
-      title: "Custom tools & definitions",
-      detail: "Imported dictionaries, equations, filters, labels, and channel groups",
-      amount: `${customTools.length} file${customTools.length === 1 ? "" : "s"}`,
-    },
-    {
-      key: "supportingFiles",
-      title: "Other uploaded files",
-      detail: "BIDS metadata and companion files uploaded with this session",
-      amount: `${supportingFileCandidates.length} · ${formatByteCount(supportingFileCandidates.reduce((sum, file) => sum + file.size, 0))}`,
-    },
-    {
-      key: "recording",
-      title: "Copy of the recording",
-      detail: "Makes the project self-contained, but can make the save much larger",
-      amount: primaryFile ? formatByteCount(primaryFile.size) : "No source file",
-      disabled: !primaryFile,
-    },
-  ];
   // Visibility affects rendering only; saved annotations and exports stay intact.
   const renderAnnotations = useMemo(() => !labelsVisible ? [] : annotationDragPreview
     ? displayAnnotations.map((item) => annotationDragPreview.patches[item.id]
@@ -7625,11 +7443,12 @@ export default function Home() {
           <button
             className="utility-button save-project-button"
             data-tutorial="save"
-            aria-label="Save NeuroTrace project"
+            aria-label="Save annotations CSV"
             aria-haspopup="dialog"
             aria-expanded={showProjectSave}
             aria-controls="project-save-dialog"
-            title={`Save one portable project file${customTools.length ? ` · ${customTools.length} custom definition${customTools.length === 1 ? "" : "s"}` : ""}`}
+            title="Save annotations CSV"
+            disabled={!hasRecording || verifyingSource || importBusy || projectSaveBusy}
             onClick={() => {
               setProjectSaveError("");
               setShowProjectSave(true);
@@ -7936,6 +7755,7 @@ export default function Home() {
               updateActiveCandidateReview({ legacyConfidence: value, confidence: value ? Number(value) * 33 + (value === "3" ? 1 : 0) : 0 });
             }}><option value="">NA · Not rated</option><option value="1">1 · Low</option><option value="2">2 · Medium</option><option value="3">3 · High</option></select></label>
             <label className="candidate-review-field ictal-channel-field"><span>Ictal channels (optional)</span><input disabled={candidateDecisionLocked} value={activeCandidateItem.ictalChannels ?? ""} placeholder="e.g. LA1-LA4" onChange={(event) => updateActiveCandidateReview({ ictalChannels: event.target.value })} /></label>
+            <label className="candidate-review-field ictal-channel-field"><span>Bad channels (optional)</span><input disabled={candidateDecisionLocked} value={activeCandidateItem.badChannels ?? ""} placeholder="e.g. LA5, LB2" onChange={(event) => updateActiveCandidateReview({ badChannels: event.target.value })} /></label>
             <div className="candidate-review-actions">
               <button className={`button secondary ${activeTool === "seizure" ? "active" : ""}`} onClick={beginActiveCandidateMarking}>{activeTool === "seizure" ? markOnset === null ? "Click onset" : "Click offset" : activeCandidateAnnotation?.status === "committed" ? "Revise marks" : activeCandidateAnnotation ? "Redo marks" : "Mark onset / offset"}</button>
               <button className="button primary" disabled={!activeCandidateAnnotation || activeCandidateItem.status === "skipped" || activeCandidateItem.status === "conflict"} onClick={acceptActiveCandidate}>Accept &amp; next</button>
@@ -8416,36 +8236,26 @@ export default function Home() {
       </div>}
 
       {showProjectSave && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !projectSaveBusy) setShowProjectSave(false); }}>
-        <div id="project-save-dialog" className="modal project-save-modal" data-tutorial="save-dialog" role="dialog" aria-modal="true" aria-label="Save NeuroTrace project" tabIndex={-1}>
-          <button className="modal-close" disabled={projectSaveBusy} onClick={() => setShowProjectSave(false)} aria-label="Close project save">×</button>
-          <span className="modal-eyebrow">SAVE PROJECT</span>
-          <h2>Keep the whole workspace in one file.</h2>
-          <p><strong>{projectFileName}</strong> is a versioned, ZIP-compatible NeuroTrace project. Choose exactly what belongs inside.</p>
-          <div className="project-save-options" data-tutorial="save-options">
-            {projectSaveOptions.map((option) => <label className={option.disabled ? "disabled" : ""} key={option.key}>
-              <input
-                type="checkbox"
-                disabled={option.disabled || projectSaveBusy}
-                checked={projectSaveSelection[option.key] && !option.disabled}
-                onChange={(event) => setProjectSaveSelection((current) => ({ ...current, [option.key]: event.target.checked }))}
-              />
-              <span><strong>{option.title}</strong><small>{option.detail}</small></span>
-              <b>{option.amount}</b>
-            </label>)}
+        <div id="project-save-dialog" className="modal project-save-modal" data-tutorial="save-dialog" role="dialog" aria-modal="true" aria-label="Save annotations CSV" tabIndex={-1}>
+          <button className="modal-close" disabled={projectSaveBusy} onClick={() => setShowProjectSave(false)} aria-label="Close CSV save">×</button>
+          <h2>Save annotations</h2>
+          <p><strong>{csvFileName}</strong></p>
+          <p>Accepted seizure reviews in the MATLAB CSV format. {csvDirectoryId ? "Includes reviewed sessions in this directory, including tabs closed during this visit." : "Includes the current recording."}</p>
+          <p>Drafts, skipped events, other label types, settings, and recording data are not included.</p>
+          <div className="csv-save-fields" data-tutorial="save-details">
+            <label><span>Reviewer initials</span><input disabled={projectSaveBusy} value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
+            {activeMatlabExportIdentity && <>
+              <label><span>Patient / top folder</span><input disabled={projectSaveBusy} value={activeMatlabExportIdentity.patientId} onChange={(event) => updateMatlabExportIdentity({ patientId: event.target.value })} /></label>
+              <label><span>MAT path</span><input disabled={projectSaveBusy} value={activeMatlabExportIdentity.matPath} onChange={(event) => updateMatlabExportIdentity({ matPath: event.target.value })} /></label>
+              <label><span>Data directory</span><input disabled={projectSaveBusy} value={activeMatlabExportIdentity.dataDirectory} onChange={(event) => updateMatlabExportIdentity({ dataDirectory: event.target.value })} /></label>
+              <label><span>DAT file (without .dat)</span><input disabled={projectSaveBusy} value={activeMatlabExportIdentity.datFile} onChange={(event) => updateMatlabExportIdentity({ datFile: event.target.value })} /></label>
+            </>}
           </div>
-          {customTools.length > 0 && <section className="project-tool-list">
-            <header><strong>Imported custom definitions</strong><span>Stored as inactive data</span></header>
-            <div>{customTools.map((tool) => <article key={tool.id}>
-              <span>{tool.kind.replaceAll("-", " ")}</span>
-              <strong title={tool.sourceName}>{tool.sourceName}</strong>
-              <small>{formatByteCount(tool.byteLength)}</small>
-              <button type="button" disabled={projectSaveBusy} aria-label={`Remove ${tool.sourceName}`} title="Remove from this session" onClick={() => setCustomTools((current) => current.filter((item) => item.id !== tool.id))}>×</button>
-            </article>)}</div>
-          </section>}
+          {activeMatlabExportIdentity && <p>To match MATLAB path values, enter the original full paths for each session. Browsers provide only filenames or relative paths.</p>}
           {projectSaveError && <div className="project-save-error" role="alert">{projectSaveError}</div>}
           <footer className="project-save-footer">
-            <span><strong>Downloads by default.</strong> Your system save dialog can choose any other folder.</span>
-            <button className="button primary" data-tutorial="save-confirm" disabled={projectSaveBusy || selectedProjectSectionCount === 0} onClick={() => void saveNeurotraceProject()}>{projectSaveBusy ? "Building project…" : "Choose location & save"}</button>
+            <span>Choose an existing MATLAB CSV to retain earlier rows and update matching events. Browsers without a save-location dialog download a new CSV.</span>
+            <button className="button primary" data-tutorial="save-confirm" disabled={projectSaveBusy || !hasRecording || verifyingSource || !reviewer.trim()} onClick={() => void saveAnnotationsCsv()}>{projectSaveBusy ? "Saving…" : "Save CSV"}</button>
           </footer>
         </div>
       </div>}

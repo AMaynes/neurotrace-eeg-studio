@@ -784,7 +784,7 @@ test("toggles live resource usage from the control left of Help and Settings", a
   const actionsStart = page.indexOf('<div className="top-actions utility-actions">');
   const actionsEnd = page.indexOf("</div>", actionsStart);
   const actions = page.slice(actionsStart, actionsEnd);
-  const savePosition = actions.indexOf("Save NeuroTrace project");
+  const savePosition = actions.indexOf("Save annotations CSV");
   const uploadPosition = actions.indexOf("Upload recording or companion files");
   const resourcePosition = actions.indexOf("Show resource usage");
   const helpPosition = actions.indexOf("Open Help");
@@ -831,24 +831,22 @@ test("toggles live resource usage from the control left of Help and Settings", a
   assert.match(css, /\.resource-glyph\s*\{/);
 });
 
-test("saves a selectable one-file project and accepts inert custom definitions", async () => {
+test("saves MATLAB CSV instead of a custom project and still accepts inert custom definitions", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
-  assert.match(page, /createNeurotraceProjectArchive\(\{/);
+  assert.match(page, /writeMatlabAnnotations\(handle, rows\)/);
+  assert.doesNotMatch(page, /createNeurotraceProjectArchive/);
   assert.match(page, /showSaveFilePicker\?: ProjectSavePicker/);
   assert.match(page, /startIn:\s*"downloads"/);
-  assert.match(page, /application\/vnd\.neurotrace\.project\+zip/);
-  for (const option of ["review", "workspace", "labelDefinitions", "customTools", "supportingFiles", "recording"]) {
-    assert.match(page, new RegExp(`key: "${option}"`), `${option} has an explicit save checkbox`);
-  }
-  assert.match(page, /Choose location &amp; save|Choose location & save/);
-  assert.match(page, /Downloads by default/);
+  assert.match(page, /"text\/csv": \["\.csv"\]/);
+  assert.doesNotMatch(page, /projectSaveOptions|projectSaveSelection/);
+  assert.match(page, /Save CSV/);
+  assert.match(page, /download a new CSV/);
   assert.match(page, /importCustomToolFiles\(files\)/);
   assert.match(page, /handleDroppedRecordingFiles\(event\.dataTransfer\)/);
   for (const kind of ["Dictionaries", "equations", "filters", "labels", "channel groups"]) {
     assert.match(page, new RegExp(kind, "i"));
   }
-  assert.match(page, /Stored as inactive data/);
 });
 
 test("keeps Session Map focused on whole-recording navigation", async () => {

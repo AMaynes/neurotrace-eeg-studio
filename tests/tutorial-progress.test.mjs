@@ -18,7 +18,7 @@ const initial = {
   directoryFilesReady: false, directoryListOpen: false, settingsOpen: false, biasLocks: false,
   channelsOpen: false, montage: "referential", gain: 1, clamp: "clamped", filtersOpen: false,
   boxZoom: false, spectrogramOpen: false, labelsPanelOpen: true, labelPickerOpen: false,
-  sessionLabelPickerOpen: false, labelsVisible: true, saveOpen: false, saveOptions: {},
+  sessionLabelPickerOpen: false, labelsVisible: true, saveOpen: false,
 };
 
 test("milestones ignore initial render, unchanged data, and session restoration", () => {
@@ -44,7 +44,7 @@ test("view and modal milestones distinguish desired open/close and zoom directio
     ["spectrogramOpen", true, "spectrogram-opened"], ["filtersOpen", true, "filters-opened"],
     ["gain", 1.25, "gain-changed"], ["montage", "average", "montage-changed"],
     ["clamp", "overlap", "clamp-changed"], ["labelsVisible", false, "labels-toggled"],
-    ["saveOpen", true, "save-opened"], ["saveOptions", { recording: true }, "save-options-changed"],
+    ["saveOpen", true, "save-opened"],
   ]) assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, [key]: value }), [action]);
   assert.deepEqual(tutorialMilestoneActions({ ...initial, boxZoom: true }, initial), ["waveform-zoom-disabled"]);
   assert.deepEqual(tutorialMilestoneActions({ ...initial, channelsOpen: true }, initial), ["channels-closed"]);
@@ -66,10 +66,10 @@ test("directory milestones require ready folder files or an open list, not a fil
 test("a subscription consumes one matching action and cleanup blocks all later events", () => {
   const target = new EventTarget(); let completed = 0;
   const emit = (action) => target.dispatchEvent(new CustomEvent("neurotrace:tutorial-action", { detail: action }));
-  const stop = subscribeTutorialActions(["project-saved"], () => completed++, target);
-  emit("save-opened"); emit("save-options-changed"); assert.equal(completed, 0);
-  emit("project-saved"); emit("project-saved"); assert.equal(completed, 1);
-  stop(); emit("project-saved"); assert.equal(completed, 1);
+  const stop = subscribeTutorialActions(["annotations-saved"], () => completed++, target);
+  emit("save-opened"); emit("labels-toggled"); assert.equal(completed, 0);
+  emit("annotations-saved"); emit("annotations-saved"); assert.equal(completed, 1);
+  stop(); emit("annotations-saved"); assert.equal(completed, 1);
   const cancel = subscribeTutorialActions(["import-files-ready"], () => completed++, target);
   cancel(); emit("import-files-ready"); assert.equal(completed, 1);
 });

@@ -168,13 +168,12 @@ export const tutorialLessons: readonly TutorialLesson[] = [
     ],
   },
   {
-    id: "save-project", topic: "save", title: "Save and reopen your workspace", duration: "2 min", requires: "workspace",
-    description: "Choose what goes into a portable NeuroTrace project.",
+    id: "save-project", topic: "save", title: "Save annotations to CSV", duration: "1 min", requires: "recording",
+    description: "Save accepted seizure reviews in the MATLAB format.",
     steps: [
-      { completeOn: ["save-opened"], assist: { action: "open-save", description: "Open save options; nothing is saved yet." }, title: "Open Save", target: "save", readyTarget: "save-dialog", instruction: "Click Save at the top right to open the project options.", unavailable: "Close any other dialog to reach Save." },
-      { completeOn: ["save-options-changed"], title: "Choose what to include", target: "save-options", fallback: "save", instruction: "Review the sections and their sizes. Include the recording data if the project needs to reopen without the original signal files.", unavailable: "Click Save to open the project options.", tip: "Included recordings and metadata can contain identifying information. Review the contents before sharing a project." },
-      { completeOn: ["project-saved"], title: "Save to your computer", target: "save-confirm", fallback: "save", instruction: "When ready, click Choose location & save. Keep the resulting .neurotrace file somewhere you can find it. The guide will not press Save for you.", unavailable: "Click Save to choose the project sections." },
-      { title: "Reopen a project", target: "upload", instruction: "Close Save. To reopen later, use Upload, choose NeuroTrace, click Files, and select your .neurotrace file. Use a blank session if you want to keep your current workspace separate.", unavailable: "Close the save dialog to reach Upload." },
+      { completeOn: ["save-opened"], assist: { action: "open-save", description: "Open Save; nothing is saved yet." }, title: "Open Save", target: "save", readyTarget: "save-dialog", instruction: "Click Save at the top right. The CSV contains accepted seizure reviews, using the same columns as the MATLAB viewer.", unavailable: "Close any other dialog to reach Save." },
+      { title: "Check the details", target: "save-details", fallback: "save", instruction: "Check reviewer initials and source paths. MATLAB stores full paths; the browser cannot supply those automatically. Bad channels come from the separate field in the source-event review bar. Drafts and skipped events are not saved to this CSV.", unavailable: "Click Save to check the details." },
+      { completeOn: ["annotations-saved"], title: "Save to your computer", target: "save-confirm", fallback: "save", instruction: "Click Save CSV. Choose an existing MATLAB annotation CSV to retain its earlier rows and update matching events. Browsers without a save-location dialog download a new file. The guide will not press Save for you.", unavailable: "Click Save to open the CSV dialog." },
     ],
   },
 ];

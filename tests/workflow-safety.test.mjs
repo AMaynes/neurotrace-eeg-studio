@@ -48,27 +48,30 @@ test("source-event decisions remain synchronized and export the MATLAB-compatibl
   assert.match(page, /updateAnnotation\(activeCandidateAnnotation\.id,\s*\{\s*status:\s*"draft"\s*\},\s*true,\s*true\)/);
   assert.match(page, /Accepted source-event marks are locked[\s\S]*?use Revise marks before dragging them/);
   assert.match(page, /selectedAnnotation\.candidateId\s*===\s*activeCandidateItem\?\.id/, "the global commit shortcut cannot accept a different selected annotation");
-  assert.match(page, /candidate\.status\s*===\s*"reviewed"\s*&&\s*linked\?\.status\s*===\s*"committed"/);
+  const csvModule = await readFile(new URL("../app/matlab-annotations-csv.ts", import.meta.url), "utf8");
+  assert.match(csvModule, /candidate.status !== "reviewed"/);
+  assert.match(csvModule, /annotation.status === "committed"/);
   assert.match(page, /patient_id_hint/);
   assert.match(page, /companion_mat_path/);
   assert.match(page, /data_dir_hint/);
   assert.match(page, /dat_file_base/);
   assert.match(page, /candidateDecisionLocked[\s\S]*?disabled=\{candidateDecisionLocked\}/);
-  assert.match(page, /candidate\.status\s*===\s*"skipped"\s*\|\|\s*\([\s\S]*?item\.status\s*===\s*"committed"/);
   for (const column of [
-    "patient_id",
-    "reviewer_initials",
     "mat_path",
     "data_dir",
+    "dat_file",
+    "event_label",
     "event_time_original_sec",
-    "onset_relative_to_annotation_sec",
-    "offset_relative_to_annotation_sec",
-    "seizure_duration_sec",
-    "ictal_channels",
-    "confidence_score",
-    "review_status",
+    "onset_offset_sec",
+    "onset_time_adjusted_sec",
+    "offset_offset_sec",
+    "offset_time_adjusted_sec",
+    "sampling_rate",
+    "n_channels",
+    "bad_channels",
+    "review_timestamp",
     "accepted",
-  ]) assert.match(page, new RegExp(`"${column}"`));
+  ]) assert.match(csvModule, new RegExp(`"${column}"`));
 });
 
 test("committed deletion is confirmed and canceled actions keep the editor open", async () => {
@@ -239,7 +242,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(page, /MAX_INTERACTIVE_TIMELINE_ANNOTATIONS\s*=\s*400/);
   assert.match(page, /clusterTimelineDensity\(/);
   assert.match(page, /timelineUsesDensity\s*\?/);
-  assert.doesNotMatch(page, /function QcPanel|qcIssues|badChannels/);
+  assert.doesNotMatch(page, /function QcPanel|qcIssues/);
   assert.match(refresh, /maximumRawDuration/);
   assert.match(refresh, /detectEnvelopeSynchronizedFlatlines/);
   assert.match(refresh, /const overviewColumnCount\s*=\s*waveformOverviewColumnBudget\(timebase, waveformWidth\)/);

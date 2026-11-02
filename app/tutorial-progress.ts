@@ -27,7 +27,6 @@ export type TutorialMilestones = {
   sessionLabelPickerOpen: boolean;
   labelsVisible: boolean;
   saveOpen: boolean;
-  saveOptions: object;
 };
 
 /** Session restoration and initial mounting are not actions in a walkthrough. */
@@ -59,7 +58,6 @@ export function tutorialMilestoneActions(before: TutorialMilestones | null, afte
   changed("sessionLabelPickerOpen", "session-label-picker-opened", after.sessionLabelPickerOpen);
   changed("labelsVisible", "labels-toggled");
   changed("saveOpen", "save-opened", after.saveOpen);
-  changed("saveOptions", "save-options-changed");
   return actions;
 }
 

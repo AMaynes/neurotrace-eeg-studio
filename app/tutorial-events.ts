@@ -14,7 +14,7 @@ export type TutorialAction =
   | "spectrogram-zoom-tool" | "spectrogram-zoomed" | "spectrogram-panned"
   | "label-panel-opened" | "time-selected" | "ephys-label-added" | "annotation-inspected"
   | "label-picker-opened" | "label-picker-closed" | "session-label-picker-opened"
-  | "labels-toggled" | "save-opened" | "save-options-changed" | "project-saved";
+  | "labels-toggled" | "save-opened" | "annotations-saved";
 
 /** Allowlisted view-only assistance. File, label, montage and save choices stay manual. */
 export type TutorialAssistAction =

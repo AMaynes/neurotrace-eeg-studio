@@ -320,7 +320,8 @@ test("viewer previews labels before verification, then restores saved review and
   assert.match(page, /recordingLabels: pendingLegacyMeta\?\.recordingLabels/);
   assert.match(load, /mergeRecordingLabels<Annotation>\(restored, detectedLabels.annotations, recordingLabelsImported\)/);
   assert.match(page, /recordingLabelsImported: snapshot.recordingLabelsImported/);
-  assert.ok((page.match(/recordingLabelsImported: recordingLabelsImportedRef.current/g) ?? []).length >= 3);
+  assert.ok((page.match(/recordingLabelsImported: recordingLabelsImportedRef.current/g) ?? []).length >= 2,
+    "session snapshots and local recovery retain import completion; CSV intentionally omits workspace state");
   assert.match(page, /filteredQueueEntries.slice\(0, queueLimit\)/);
   assert.match(page, /setQueueSearch\(event.target.value\)/);
   assert.match(page, /Original recording label/);
