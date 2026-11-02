@@ -3,7 +3,7 @@
 import { anatomicalChannelGroup, orderElectrodeChannelIndices } from "./eeg-core.ts";
 
 // Keep a small, permanent gap, split evenly across adjoining group edges.
-export const ELECTRODE_GROUP_GAP_ROWS = 1;
+export const ELECTRODE_GROUP_GAP_ROWS = 0.5;
 
 /** Preserve MATLAB's case-sensitive group identity, including our CAR display suffix. */
 export function matlabDisplayGroup(label: string): string | null {
@@ -36,6 +36,26 @@ export type ChannelRowLayout = {
   groups: Array<{ name: string; startRow: number; endRow: number }>;
   contactLabels: string[];
 };
+
+/** One geometry for drawing, labels, scrolling, hit tests, and box zoom. */
+export function channelPlotGeometry(
+  layout: ChannelRowLayout,
+  plotHeight: number,
+  expanded: boolean,
+  viewport: { top: number; bottom: number } | null = null,
+) {
+  const availableHeight = Math.max(1, plotHeight);
+  const unitStart = expanded ? 0 : (viewport?.top ?? 0) * layout.totalUnits;
+  const unitSpan = expanded ? layout.totalUnits
+    : Math.max(Number.EPSILON, ((viewport?.bottom ?? 1) - (viewport?.top ?? 0)) * layout.totalUnits);
+  const grouped = layout.groups.length > 0;
+  // Do not stretch sparse groups to fill a tall panel. Explicit box zoom still fills its selection.
+  const rowHeight = expanded ? (grouped ? 24 : 60)
+    : Math.min(availableHeight / unitSpan, grouped && !viewport ? 18 : Infinity);
+  const topPadding = grouped && (expanded || !viewport)
+    ? Math.max(0, (availableHeight - unitSpan * rowHeight) / 2) : 0;
+  return { rowHeight, topPadding, unitStart, contentHeight: Math.max(availableHeight, layout.totalUnits * rowHeight) };
+}
 
 /** Equal-height group sections with centered contacts and permanent padding on both edges. */
 export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean): ChannelRowLayout {
@@ -86,7 +106,8 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
 export function channelRowFromFraction(layout: ChannelRowLayout, fraction: number): number | null {
   if (!Number.isFinite(fraction) || fraction < 0 || fraction >= 1) return null;
   const unit = fraction * layout.totalUnits;
-  const row = layout.rowStartUnits.findIndex((start) => unit >= start && unit < start + 1);
+  const epsilon = Number.EPSILON * Math.max(1, layout.totalUnits) * 4;
+  const row = layout.rowStartUnits.findIndex((start) => unit >= start - epsilon && unit < start + 1 - epsilon);
   return row >= 0 ? row : null;
 }
 

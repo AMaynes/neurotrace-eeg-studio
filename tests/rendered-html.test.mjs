@@ -488,7 +488,7 @@ test("toggles each loaded tab between the recording and file structure analysis"
     "returning to the recording remounts canvas measurement, frame diagnostics, and wheel controls",
   );
   assert.match(page, /\[activeCandidateTime, activeSessionContentView,[^\]]+\]/, "returning to the recording redraws the waveform canvas");
-  assert.match(page, /\[activeSessionContentView, expandedChannels\]/, "returning to the recording restores channel viewport measurement");
+  assert.match(page, /\[activeSessionContentView, expandedChannels, hasRecording\]/, "loading or returning to a recording restores channel viewport measurement");
   const panelStart = page.indexOf("function FileStructurePanel");
   const panelEnd = page.indexOf("function GeneralInfoPanel", panelStart);
   const panel = page.slice(panelStart, panelEnd);
@@ -722,8 +722,8 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   assert.match(pointerHandlers, /if \(pending\.inspectionBox\) setInspectionRange\(pending\.inspectionBox\)/);
   assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end, verticalZoom\)/);
   assert.match(pointerHandlers, /waveformZoomForInspectionBox\(range, rect\)/);
-  assert.match(page, /composeVerticalViewport\(expandedChannels \? null : waveformVerticalViewport, selection\)/);
-  assert.match(page, /expandedChannels[\s\S]*?channelRowLayout\.totalUnits \* 60/, "expanded, scrolled channels use content-space box bounds");
+  assert.match(page, /verticalViewport: selection/);
+  assert.match(page, /scrollTop \+ position \* canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT - geometry.topPadding/, "box bounds account for scrolling and centered content");
   assert.doesNotMatch(pointerHandlers, /setInspectionRowRange|setSelectedChannels/, "box zoom preserves every enabled channel");
   assert.match(pointerHandlers, /setSelection\(\{ start: Math\.min\(pointer\.startTime, time\), end: Math\.max\(pointer\.startTime, time\) \}\)/);
   assert.match(pointerHandlers, /choose a label/);
@@ -735,7 +735,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   assert.match(page, /Use Box zoom in the toolbar to fit an exact time and channel area to the waveform view\./);
   assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
   assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
-  assert.match(page, /unprojectVerticalFraction\(screenFraction, waveformVerticalViewport\)/);
+  assert.match(page, /const unit = geometry.unitStart[\s\S]*?\/ geometry.rowHeight/);
   assert.match(page, /const selected = channelSelectionActive && channel === focusedChannel/);
   const panelSwitchStart = page.indexOf('const selectRightPanelTool = (view: "labels" | "inspect")');
   const panelSwitchEnd = page.indexOf("const activeDisplayViews", panelSwitchStart);
@@ -1091,10 +1091,9 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   const drawEnd = page.indexOf("if (markOnset !== null)", drawStart);
   const draw = page.slice(drawStart, drawEnd);
   assert.match(draw, /const plotTop\s*=\s*CHANNEL_RAIL_HEADER_HEIGHT/);
-  assert.match(draw, /const plotHeight\s*=\s*expandedChannels[\s\S]*?Math\.max\(1,\s*height\s*-\s*plotTop\)/);
-  assert.match(draw, /const verticalUnitStart\s*=\s*expandedChannels[\s\S]*?waveformVerticalViewport\?\.top/);
-  assert.match(draw, /const verticalUnitSpan\s*=\s*expandedChannels[\s\S]*?waveformVerticalViewport\?\.bottom/);
-  assert.match(draw, /const rowTopForChannel\s*=\s*\(channel: number\)\s*=>\s*plotTop[\s\S]*?channelRowLayout\.rowStartUnits\[channel\]\s*-\s*verticalUnitStart/);
+  assert.match(draw, /const plotHeight\s*=\s*Math\.max\(1,\s*height\s*-\s*plotTop\)/);
+  assert.match(draw, /channelPlotGeometry\(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport\)/);
+  assert.match(draw, /const rowTopForChannel\s*=\s*\(channel: number\)\s*=>\s*plotTop \+ topPadding[\s\S]*?channelRowLayout\.rowStartUnits\[channel\]\s*-\s*unitStart/);
   assert.match(draw, /const rowTop\s*=\s*rowTopForChannel\(channel\)/);
   assert.match(draw, /const center\s*=\s*rowTop\s*\+\s*rowHeight\s*\*\s*0\.5/);
   assert.match(draw, /if\s*\(confineTracesToRows\)\s*context\.rect\(0,\s*rowTop,\s*width,\s*rowHeight\)/, "clamped mode clips each channel to its exact row");
@@ -1124,8 +1123,8 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   const hitStart = page.indexOf("const channelRowFromClientY");
   const hitEnd = page.indexOf("const timeFromPointer", hitStart);
   const hit = page.slice(hitStart, hitEnd);
-  assert.match(hit, /liveScrollTop\s*\+\s*localY\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/);
-  assert.match(hit, /channelRowLayout\.totalUnits\s*\*\s*60/);
+  assert.match(hit, /scrollTop\s*\+\s*localY\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT\s*-\s*geometry.topPadding/);
+  assert.match(hit, /channelPlotGeometry\(channelRowLayout/);
   assert.match(hit, /rect\.height\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/);
   assert.match(page, /const row\s*=\s*channelRowFromClientY\(event\.clientY,\s*rect\)/);
 });

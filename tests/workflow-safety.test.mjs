@@ -301,7 +301,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
 
   const hitTesting = section(page, "const channelRowFromClientY", "const timeFromPointer");
   assert.match(hitTesting, /waveformScrollRef\.current\?\.scrollTop/);
-  assert.match(hitTesting, /channelRowLayout\.totalUnits\s*\*\s*60/);
+  assert.match(hitTesting, /channelPlotGeometry\(channelRowLayout/);
   assert.match(page, /readCursorReadout\(display, focusedChannel, cursorTime\)/,
     "cursor inspection delegates to the shared time-aware reader");
   const cursorDisplay = {

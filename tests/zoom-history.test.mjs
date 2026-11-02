@@ -6,7 +6,7 @@ import { recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
 import { composeVerticalViewport, projectVerticalFraction } from "../app/waveform-viewport.ts";
 import { DEFAULT_CONTROLS, shortcutAction } from "../app/shortcuts.ts";
 import { normalizeDisplayGain } from "../app/display-gain.ts";
-import { buildChannelRowLayout, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
+import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
 
 const initialView = () => ({
   viewStart: 30, timebase: 20, gain: 1, verticalViewport: null,
@@ -137,13 +137,79 @@ test("real grouping memo and toggle preserve focus and restore exactly the origi
 test("shared group labels align with row baselines in compact, expanded, and vertically zoomed views", () => {
   const channelRowLayout = buildChannelRowLayout(["LA3", "LA1", "RA10", "RA2"], true);
   const base = { channelRowLayout, channelViewportHeight: 828, CHANNEL_RAIL_HEADER_HEIGHT: 28,
-    expandedChannels: false, waveformVerticalViewport: null, projectVerticalFraction };
+    expandedChannels: false, waveformVerticalViewport: null, projectVerticalFraction, channelPlotGeometry };
   const style = (overrides = {}) => compile(declaration("channelGroupLabelStyle"), { ...base, ...overrides }, "channelGroupLabelStyle");
-  assert.deepEqual(style()(0, 1), { gridColumn: 1, gridRow: "2 / 4" });
-  assert.deepEqual(style({ expandedChannels: true })(2, 3), { gridColumn: 1, gridRow: "6 / 8" });
+  assert.equal(style()(0, 1).top, 405.5);
+  assert.equal(style({ expandedChannels: true })(2, 3).top, 458);
   assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(0, 1).top, 428);
   assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(2, 3), null);
   assert.equal(style({ waveformVerticalViewport: { top: .5, bottom: 1 } })(2, 3).top, 428);
+});
+
+test("compact group rows, hit tests, scroll, and box zoom share the actual displayed positions", () => {
+  const layout = buildChannelRowLayout(["LA1", "LA2", "LA3", "RA1", "RA2"], true);
+  const build = (height, expandedChannels, waveformVerticalViewport = null, scrollTop = 0) => {
+    const scope = { channelRowLayout: layout, channelViewportHeight: height, expandedChannels, waveformVerticalViewport,
+      CHANNEL_RAIL_HEADER_HEIGHT: 28, channelPlotGeometry, channelRowFromFraction,
+      waveformScrollRef: { current: { scrollTop } }, channelScrollOffsetRef: { current: scrollTop },
+      clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)), useCallback: (fn) => fn };
+    const names = ["channelRowFromClientY", "channelRailRowStyle", "waveformZoomForInspectionBox"];
+    return compile(names.map(declaration).join("\n"), scope, `{${names.join(",")}}`);
+  };
+  for (const height of [100, 400, 900]) for (const expanded of [false, true]) {
+    const scrollTop = expanded && height === 100 ? 60 : 0;
+    const ui = build(height, expanded, null, scrollTop);
+    const rect = { top: 20, height };
+    for (let row = 0; row < layout.rowStartUnits.length; row++) {
+      const style = ui.channelRailRowStyle(row);
+      if (!style) continue;
+      const y = style.top + style.height / 2 - scrollTop;
+      if (y < 28 || y >= height) continue;
+      assert.equal(ui.channelRowFromClientY(rect.top + y, rect), row, "clicking a visible label's baseline hits its own waveform");
+    }
+    if (!expanded && height >= 400) assert.equal(ui.channelRowFromClientY(rect.top + 29, rect), null, "centered outer whitespace cannot select a channel");
+  }
+  const ui = build(900, false);
+  const first = ui.channelRailRowStyle(0), last = ui.channelRailRowStyle(2);
+  assert.equal(first.height, 18);
+  const patch = ui.waveformZoomForInspectionBox({ top: first.top / 900, bottom: (last.top + last.height) / 900 }, { height: 900 });
+  const zoomed = build(900, false, patch.verticalViewport);
+  assert.ok(Math.abs(zoomed.channelRailRowStyle(0).top - 28) < 1e-9);
+  const zoomedLast = zoomed.channelRailRowStyle(2);
+  assert.ok(Math.abs(zoomedLast.top + zoomedLast.height - 900) < 1e-9, "box zoom fills exactly the selected rows despite outer padding");
+  const nested = zoomed.waveformZoomForInspectionBox({ top: 28 / 900, bottom: (28 + 436) / 900 }, { height: 900 });
+  assert.equal(nested.verticalViewport.top, patch.verticalViewport.top);
+  assert.ok(Math.abs(nested.verticalViewport.bottom - (patch.verticalViewport.top + patch.verticalViewport.bottom) / 2) < 1e-9);
+});
+
+test("first recording mount and panel resizes measure the actual waveform height for channel labels", () => {
+  let effect;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(syntax) === "useLayoutEffect"
+      && node.arguments[0]?.getText(syntax).includes("setChannelViewportHeight")
+      && node.arguments[0]?.getText(syntax).includes("ResizeObserver")) effect = node.getText(syntax);
+    ts.forEachChild(node, visit);
+  }
+  visit(syntax); assert.ok(effect);
+  let dependencies, cleanup, observerCallback, observed, measuredHeight = 245, canvasHeight = 490.5;
+  const container = { clientHeight: 491, scrollTop: 0 };
+  const scope = { activeSessionContentView: "recording", expandedChannels: false, hasRecording: false,
+    waveformScrollRef: { current: null }, channelScrollOffsetRef: { current: 0 },
+    canvasRef: { current: { getBoundingClientRect: () => ({ height: canvasHeight }) } },
+    waveDrawRef: { current() {} }, setChannelViewportHeight: (update) => { measuredHeight = update(measuredHeight); },
+    ResizeObserver: class { constructor(fn) { observerCallback = fn; } observe(el) { observed = el; } disconnect() {} },
+    useLayoutEffect(fn, deps) {
+      if (dependencies && deps.every((value, index) => value === dependencies[index])) return;
+      cleanup?.(); dependencies = deps; cleanup = fn();
+    } };
+  const render = () => compile(`${effect};`, scope, "undefined");
+  render(); assert.equal(observed, undefined);
+  scope.waveformScrollRef.current = container; scope.hasRecording = true; render();
+  assert.equal(observed, container, "loading the first recording attaches the observer");
+  assert.equal(measuredHeight, 490.5, "labels use waveform height rather than the initial 245px placeholder");
+  canvasHeight = 321.25; observerCallback(); assert.equal(measuredHeight, 321.25);
+  scope.expandedChannels = true; render(); assert.equal(measuredHeight, 491, "expanded canvas fits its scrolling viewport");
+  cleanup();
 });
 
 test("real undo/redo follows label → zoom → label chronologically without cross-restoring state", () => {
@@ -254,11 +320,11 @@ test("gain and frequency changes preserve staged window amounts and normal playb
 
 test("expanded waveform boxes retain the pre-zoom layout and scroll position for undo", () => {
   const scope = {
-    useCallback: (callback) => callback, composeVerticalViewport,
+    useCallback: (callback) => callback, composeVerticalViewport, channelPlotGeometry,
     clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
     expandedChannels: true, waveformVerticalViewport: null, CHANNEL_RAIL_HEADER_HEIGHT: 30,
     waveformScrollRef: { current: { scrollTop: 120 } }, channelScrollOffsetRef: { current: 120 },
-    channelRowLayout: { totalUnits: 10 },
+    channelRowLayout: { totalUnits: 10, groups: [] },
   };
   const fit = compile(declaration("waveformZoomForInspectionBox"), scope, "waveformZoomForInspectionBox");
   const patch = fit({ top: 0.2, bottom: 0.6 }, { height: 300 });

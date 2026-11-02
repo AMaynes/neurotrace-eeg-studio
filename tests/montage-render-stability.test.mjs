@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { buildMontage } from "../app/eeg-core.ts";
-import { buildChannelRowLayout } from "../app/channel-layout.ts";
+import { buildChannelRowLayout, channelPlotGeometry } from "../app/channel-layout.ts";
 import { centerDisplayWindow } from "../app/trace-centering.ts";
 
 // Execute the real canvas layout effect. Capture the signal geometry passed to
@@ -46,7 +46,7 @@ function harness(display = fixture(), overrides = {}) {
     display, displaySettingsKey: display.settingsKey, viewStart: 0, timebase: 3,
     measuredTimeGridInterval: () => 1, formatTimeGridClock: String,
     activeCandidateTime: null, activeCandidateVisible: false, CHANNEL_RAIL_HEADER_HEIGHT: 28,
-    expandedChannels: true, channelRowLayout: buildChannelRowLayout(display.labels, false),
+    expandedChannels: true, channelRowLayout: buildChannelRowLayout(display.labels, false), channelPlotGeometry,
     waveformVerticalViewport: null, waveformScrollRef: { current: { scrollTop: 0 } },
     channelScrollOffsetRef: { current: 120 }, channelSelectionActive: false, focusedChannel: 0,
     labelsVisible: false, annotations: [], traceDisplayMode: "clamped", legacyRawCountDisplay: false,
@@ -137,9 +137,8 @@ test("real paint centers unequal channel groups in equal sections across montage
       assert.ok(h.traces.every((trace) => trace.rowHeight === h.traces[0].rowHeight && trace.scale === h.traces[0].scale), "one shared scale for large and small groups");
       for (const [index, group] of layout.groups.entries()) {
         const first = h.traces[group.startRow], last = h.traces[group.endRow];
-        assert.equal((first.center + last.center) / 2, [73, 163][index]);
-        assert.ok(first.rowTop > 28 + index * 90, "space above every group");
-        assert.ok(last.rowTop + last.rowHeight < 28 + (index + 1) * 90, "space below every group");
+        assert.equal((first.center + last.center) / 2, montage === "bipolar" ? [86.5, 149.5][index] : [77.5, 158.5][index]);
+        assert.equal(first.rowHeight, 18, "sparse recordings use compact rows instead of stretching");
       }
       h.redraw();
       assert.deepEqual(h.traces.map((trace) => trace.values), display.data.map((values) => [...values]));

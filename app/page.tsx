@@ -91,7 +91,7 @@ import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { parseRecordingTimestamp } from "./recording-timestamp";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
-import { buildChannelRowLayout, channelRowFromFraction, matlabDisplayGroup, orderMatlabDisplayRows, remapDisplayFocus } from "./channel-layout";
+import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, orderMatlabDisplayRows, remapDisplayFocus } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
 import {
   RecordingOverviewCache,
@@ -123,10 +123,7 @@ import {
   waveformOverviewColumnBudget,
 } from "./waveform-geometry";
 import {
-  composeVerticalViewport,
   panVerticalViewport,
-  projectVerticalFraction,
-  unprojectVerticalFraction,
   type NormalizedVerticalViewport,
 } from "./waveform-viewport";
 import {
@@ -2135,6 +2132,7 @@ export default function Home() {
     () => buildChannelRowLayout(display.labels, anatomicalGroups),
     [display.labels, anatomicalGroups],
   );
+  const channelGeometry = channelPlotGeometry(channelRowLayout, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
   const activeCandidateOnset = activeCandidateAnnotation?.start ?? markOnset;
   const activeCandidateOffset = activeCandidateAnnotation?.end ?? null;
   const selectedAnnotation = annotations.find((item) => item.id === selectedAnnotationId) ?? null;
@@ -4364,27 +4362,15 @@ export default function Home() {
       }
 
       const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
-      const plotHeight = expandedChannels
-        ? Math.max(1, channelRowLayout.totalUnits * 60)
-        : Math.max(1, height - plotTop);
-      const verticalUnitStart = expandedChannels
-        ? 0
-        : (waveformVerticalViewport?.top ?? 0) * channelRowLayout.totalUnits;
-      const verticalUnitSpan = expandedChannels
-        ? channelRowLayout.totalUnits
-        : Math.max(
-            Number.EPSILON,
-            ((waveformVerticalViewport?.bottom ?? 1) - (waveformVerticalViewport?.top ?? 0))
-              * channelRowLayout.totalUnits,
-          );
-      const rowHeight = expandedChannels ? 60 : plotHeight / verticalUnitSpan;
+      const plotHeight = Math.max(1, height - plotTop);
+      const { rowHeight, topPadding, unitStart } = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
       // A changed montage can clamp scrollTop before its scroll event fires.
       // Match the channel rail and hit testing using the live offset each paint.
       const rowScrollOffset = expandedChannels
         ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current
         : 0;
-      const rowTopForChannel = (channel: number) => plotTop
-        + rowHeight * (channelRowLayout.rowStartUnits[channel] - verticalUnitStart)
+      const rowTopForChannel = (channel: number) => plotTop + topPadding
+        + rowHeight * (channelRowLayout.rowStartUnits[channel] - unitStart)
         - rowScrollOffset;
 
       if (activeCandidateVisible && activeCandidateTime !== null && activeCandidateTime >= displayStart && activeCandidateTime <= displayEnd) {
@@ -4658,7 +4644,7 @@ export default function Home() {
     channelScrollFrameRef.current = window.requestAnimationFrame(() => {
       channelScrollFrameRef.current = null;
       channelScrollOffsetRef.current = expandedChannels ? container.scrollTop : 0;
-      const nextHeight = Math.max(1, container.clientHeight);
+      const nextHeight = Math.max(1, expandedChannels ? container.clientHeight : canvasRef.current?.getBoundingClientRect().height ?? container.clientHeight);
       setChannelViewportHeight((current) => current === nextHeight ? current : nextHeight);
       // The sticky canvas must follow the channel rail, but scrolling does not
       // need a React commit. Paint directly from the live offset instead.
@@ -4672,7 +4658,7 @@ export default function Home() {
     if (!expandedChannels) container.scrollTop = 0;
     const update = () => {
       channelScrollOffsetRef.current = expandedChannels ? container.scrollTop : 0;
-      const nextHeight = Math.max(1, container.clientHeight);
+      const nextHeight = Math.max(1, expandedChannels ? container.clientHeight : canvasRef.current?.getBoundingClientRect().height ?? container.clientHeight);
       setChannelViewportHeight((current) => current === nextHeight ? current : nextHeight);
       waveDrawRef.current();
     };
@@ -4680,57 +4666,44 @@ export default function Home() {
     const observer = new ResizeObserver(update);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [activeSessionContentView, expandedChannels]);
+  }, [activeSessionContentView, expandedChannels, hasRecording]);
 
   const channelRowFromClientY = useCallback((clientY: number, rect: DOMRect) => {
     const localY = clientY - rect.top;
     if (localY < CHANNEL_RAIL_HEADER_HEIGHT || localY > rect.height) return null;
-    if (expandedChannels) {
-      const liveScrollTop = waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current;
-      const contentY = liveScrollTop + localY - CHANNEL_RAIL_HEADER_HEIGHT;
-      return channelRowFromFraction(
-        channelRowLayout,
-        contentY / Math.max(1, channelRowLayout.totalUnits * 60),
-      );
-    }
-    const screenFraction = (localY - CHANNEL_RAIL_HEADER_HEIGHT)
-      / Math.max(1, rect.height - CHANNEL_RAIL_HEADER_HEIGHT);
-    return channelRowFromFraction(
-      channelRowLayout,
-      unprojectVerticalFraction(screenFraction, waveformVerticalViewport),
-    );
+    const geometry = channelPlotGeometry(channelRowLayout, rect.height - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
+    const scrollTop = expandedChannels ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current : 0;
+    const unit = geometry.unitStart + (scrollTop + localY - CHANNEL_RAIL_HEADER_HEIGHT - geometry.topPadding) / geometry.rowHeight;
+    return channelRowFromFraction(channelRowLayout, unit / channelRowLayout.totalUnits);
   }, [channelRowLayout, expandedChannels, waveformVerticalViewport]);
 
   const channelRailRowStyle = useCallback((channel: number): React.CSSProperties | null => {
-    if (!waveformVerticalViewport || expandedChannels) {
+    if ((!waveformVerticalViewport || expandedChannels) && !channelRowLayout.groups.length) {
       return { gridColumn: 1, gridRow: `${channelRowLayout.rowGridLines[channel]} / span 1` };
     }
-    const contentTop = channelRowLayout.rowStartUnits[channel] / channelRowLayout.totalUnits;
-    const contentBottom = (channelRowLayout.rowStartUnits[channel] + 1) / channelRowLayout.totalUnits;
-    const screenTop = projectVerticalFraction(contentTop, waveformVerticalViewport);
-    const screenBottom = projectVerticalFraction(contentBottom, waveformVerticalViewport);
-    if (screenBottom <= 0 || screenTop >= 1) return null;
     const plotHeight = Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT);
-    const clippedTop = clamp(screenTop, 0, 1);
-    const clippedBottom = clamp(screenBottom, 0, 1);
+    const geometry = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
+    const top = geometry.topPadding + (channelRowLayout.rowStartUnits[channel] - geometry.unitStart) * geometry.rowHeight;
+    const bottom = top + geometry.rowHeight;
+    if (!expandedChannels && (bottom <= 0 || top >= plotHeight)) return null;
+    const clippedTop = expandedChannels ? top : clamp(top, 0, plotHeight);
+    const clippedBottom = expandedChannels ? bottom : clamp(bottom, 0, plotHeight);
     return {
       position: "absolute",
-      top: CHANNEL_RAIL_HEADER_HEIGHT + clippedTop * plotHeight,
+      top: CHANNEL_RAIL_HEADER_HEIGHT + clippedTop,
       right: 0,
       left: 0,
-      height: Math.max(1, (clippedBottom - clippedTop) * plotHeight),
+      height: Math.max(1, clippedBottom - clippedTop),
     };
   }, [channelRowLayout, channelViewportHeight, expandedChannels, waveformVerticalViewport]);
 
   const channelGroupLabelStyle = (startRow: number, endRow: number): React.CSSProperties | null => {
-    if (!waveformVerticalViewport || expandedChannels) {
-      return { gridColumn: 1, gridRow: `${channelRowLayout.rowGridLines[startRow]} / ${channelRowLayout.rowGridLines[endRow] + 1}` };
-    }
-    const midpoint = (channelRowLayout.rowStartUnits[startRow] + channelRowLayout.rowStartUnits[endRow] + 1)
-      / (2 * channelRowLayout.totalUnits);
-    const screenMidpoint = projectVerticalFraction(midpoint, waveformVerticalViewport);
-    if (screenMidpoint < 0 || screenMidpoint > 1) return null;
-    return { position: "absolute", top: CHANNEL_RAIL_HEADER_HEIGHT + screenMidpoint * Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT), transform: "translateY(-50%)" };
+    const plotHeight = Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT);
+    const geometry = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
+    const midpoint = (channelRowLayout.rowStartUnits[startRow] + channelRowLayout.rowStartUnits[endRow] + 1) / 2;
+    const screenMidpoint = geometry.topPadding + (midpoint - geometry.unitStart) * geometry.rowHeight;
+    if (!expandedChannels && (screenMidpoint < 0 || screenMidpoint > plotHeight)) return null;
+    return { position: "absolute", left: 0, top: CHANNEL_RAIL_HEADER_HEIGHT + screenMidpoint, transform: "translateY(-50%)" };
   };
 
   const timeFromPointer = useCallback((event: { clientX: number }, element: HTMLElement, row: number, bypass = false) => {
@@ -4781,28 +4754,18 @@ export default function Home() {
 
   const waveformZoomForInspectionBox = useCallback((range: InspectionBox, rect: DOMRect): Partial<ZoomView> => {
     const canvasHeight = Math.max(1, rect.height);
-    const plotTopFraction = clamp(CHANNEL_RAIL_HEADER_HEIGHT / canvasHeight, 0, 1);
-    const plotFractionSpan = Math.max(Number.EPSILON, 1 - plotTopFraction);
-    const selection = expandedChannels
-      ? (() => {
-          const scrollTop = waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current;
-          const contentHeight = Math.max(1, channelRowLayout.totalUnits * 60);
-          return {
-            top: clamp((scrollTop + range.top * canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT) / contentHeight, 0, 1),
-            bottom: clamp((scrollTop + range.bottom * canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT) / contentHeight, 0, 1),
-          };
-        })()
-      : {
-          top: clamp((range.top - plotTopFraction) / plotFractionSpan, 0, 1),
-          bottom: clamp((range.bottom - plotTopFraction) / plotFractionSpan, 0, 1),
-        };
+    const geometry = channelPlotGeometry(channelRowLayout, canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
+    const scrollTop = expandedChannels ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current : 0;
+    const fraction = (position: number) => clamp((geometry.unitStart
+      + (scrollTop + position * canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT - geometry.topPadding) / geometry.rowHeight) / channelRowLayout.totalUnits, 0, 1);
+    const selection = { top: fraction(range.top), bottom: fraction(range.bottom) };
     if (selection.bottom <= selection.top) return {};
     return {
-      verticalViewport: composeVerticalViewport(expandedChannels ? null : waveformVerticalViewport, selection),
+      verticalViewport: selection,
       expandedChannels: false,
       channelScrollTop: 0,
     };
-  }, [channelRowLayout.totalUnits, expandedChannels, waveformVerticalViewport]);
+  }, [channelRowLayout, expandedChannels, waveformVerticalViewport]);
 
   const inspectionMode = boxZoomActive;
 
@@ -7824,10 +7787,10 @@ export default function Home() {
             <div
               ref={waveformScrollRef}
               className={`waveform-wrap ${expandedChannels ? "channel-scroll-mode" : ""}`}
-              style={{ "--channel-content-height": `${Math.max(245, channelRowLayout.totalUnits * 60 + 28)}px` } as React.CSSProperties}
+              style={{ "--channel-content-height": `${channelRowLayout.groups.length ? channelGeometry.contentHeight + CHANNEL_RAIL_HEADER_HEIGHT : Math.max(245, channelRowLayout.totalUnits * 60 + CHANNEL_RAIL_HEADER_HEIGHT)}px` } as React.CSSProperties}
               onScroll={updateExpandedChannelViewport}
             >
-              <div className={`channel-rail ${anatomicalGroups ? "anatomical-groups" : ""} ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
+              <div className={`channel-rail ${channelRowLayout.groups.length ? "anatomical-groups" : ""} ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
                 <button className="channel-manager-button" data-tutorial="channels" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 <button
                   className={`channel-layout-button ${expandedChannels || waveformVerticalViewport ? "active" : ""}`}

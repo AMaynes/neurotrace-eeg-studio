@@ -74,11 +74,11 @@ test("sorting derived display rows does not recalculate bipolar pairs or reverse
 test("equal-height sections retain padded gaps with aligned CSS tracks, waveform positions, and hit regions", () => {
   const labels = ["LA1", "LA2", "RB1", "RB2", "Events"];
   const layout = buildChannelRowLayout(labels, true);
-  assert.equal(ELECTRODE_GROUP_GAP_ROWS, 1);
-  assert.equal(layout.totalUnits, 9);
+  assert.equal(ELECTRODE_GROUP_GAP_ROWS, .5);
+  assert.equal(layout.totalUnits, 7.5);
   assert.deepEqual([...layout.groupStarts], [2, 4]);
   assert.deepEqual(layout.rowGridLines, [2, 3, 6, 7, 10]);
-  assert.equal(layout.gridTemplateRows, "0.5fr 1fr 1fr 0.5fr 0.5fr 1fr 1fr 0.5fr 1fr 1fr 1fr");
+  assert.equal(layout.gridTemplateRows, "0.25fr 1fr 1fr 0.25fr 0.25fr 1fr 1fr 0.25fr 0.75fr 1fr 0.75fr");
   const tracks = layout.gridTemplateRows.split(" ").map(Number.parseFloat);
   for (const [row, line] of layout.rowGridLines.entries()) {
     const trackStart = tracks.slice(0, line - 1).reduce((sum, height) => sum + height, 0);
@@ -131,7 +131,7 @@ test("MATLAB labels use one shared group label, ordinal contacts, and actual bip
   const layout = buildChannelRowLayout(["LA10", "LA2", "RB6", "RB1", "RB3"], true);
   assert.deepEqual(layout.groups, [{ name: "LA", startRow: 0, endRow: 1 }, { name: "RB", startRow: 2, endRow: 4 }]);
   assert.deepEqual(layout.contactLabels, ["1", "2", "1", "2", "3"]);
-  assert.deepEqual(layout.rowStartUnits, [1, 2, 4.5, 5.5, 6.5]);
+  assert.deepEqual(layout.rowStartUnits, [.75, 1.75, 3.75, 4.75, 5.75]);
   assert.deepEqual(buildChannelRowLayout(["LA10-2", "RB6-1", "RB1-3"], true).contactLabels, ["10-2", "6-1", "1-3"]);
   assert.deepEqual(buildChannelRowLayout(["LA10 (CAR)", "LA2 (CAR)", "RB1 (CAR)"], true).contactLabels, ["1", "2", "1"]);
 });
@@ -149,7 +149,7 @@ test("unequal groups have evenly spaced centers, equal row heights, and reserved
       const sectionStart = index * layout.totalUnits / counts.length;
       const sectionEnd = (index + 1) * layout.totalUnits / counts.length;
       assert.equal(first - sectionStart, sectionEnd - end, "balanced padding above and below every group");
-      assert.ok(first - sectionStart >= .5, "padding remains even for the largest group");
+      assert.ok(first - sectionStart >= .25, "padding remains even for the largest group");
       for (let row = group.startRow; row < group.endRow; row++) assert.equal(layout.rowStartUnits[row + 1] - layout.rowStartUnits[row], 1);
     }
     for (let unit = 0; unit < layout.totalUnits; unit += .25) {
