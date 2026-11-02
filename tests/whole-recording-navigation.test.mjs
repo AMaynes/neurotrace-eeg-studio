@@ -85,7 +85,7 @@ test("existing zoom controls retain raw session-map indexing while default wavef
     "default waveform must be filtered from source samples, never from a cached raw envelope");
   assert.match(refresh, /buildMatlabDisplayWindow\(\{\s*source,\s*startSec:\s*signalViewStart,\s*durationSec:\s*timebase/,
     "full selected time range is retained, including hours-long requests");
-  assert.match(refresh, /fallbackToMainThread:\s*false,\s*maxChunkDurationSec:\s*30/);
+  assert.match(refresh, /fallbackToMainThread:\s*false,\s*maxChunkDurationSec:\s*120,\s*maxChunkBytes:\s*8\s*\*\s*1024\s*\*\s*1024/);
   assert.match(page, /if \(overviewAbortController\.signal\.aborted\) return;\s*if \(recordingOverviewCacheRef\.current\.put/);
   const overview = await readFile(new URL("../app/background-recording-overview.ts", import.meta.url), "utf8");
   assert.match(overview, /channelIndices: plan.channelIndices/);

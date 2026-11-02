@@ -2,7 +2,11 @@
 import { buildMontage, montageInputPolicy, type MontageMode, type SignalReadOptions, type SignalSource, type WindowData } from "./eeg-core.ts";
 import type { BipolarMontageKind } from "./bipolar-montage.ts";
 import { matlabDisplayChunkInputRange, matlabDisplayDecimationFactor, type MatlabDisplayFactor, type MatlabDisplaySamples } from "./matlab-display-processing.ts";
-import { createMatlabDisplayWorkerClient } from "./matlab-display-worker-client.ts";
+import { createMatlabDisplayWorkerPool } from "./matlab-display-worker-pool.ts";
+import { createMatlabRawFlatlineDetector, detectMatlabTileFlatlines } from "./matlab-raw-flatlines.ts";
+import { MATLAB_TILE_BASE, type MatlabDisplayTileCache } from "./matlab-display-tiles.ts";
+import { buildCachedMatlabDisplay } from "./matlab-cached-display.ts";
+export { createMatlabRawFlatlineDetector } from "./matlab-raw-flatlines.ts";
 
 export interface MatlabDisplayEnvelope {
   minima: Float64Array;
@@ -57,6 +61,11 @@ export interface MatlabDisplayWindowOptions extends SignalReadOptions {
   maxChunkBytes?: number;
   /** Explicit test/non-browser fallback only; browser processing requires a worker. */
   fallbackToMainThread?: boolean;
+  /** Bounded channel-parallel FIR workers; defaults to at most four. */
+  workerCount?: number;
+  cache?: MatlabDisplayTileCache;
+  /** Immutable completed prefix; missing bins remain NaN until calculated. */
+  onPartial?: (window: MatlabDisplayWindow, completedThroughSec: number) => void;
 }
 
 interface SourcePlan {
@@ -71,91 +80,6 @@ interface SourcePlan {
 
 function checkAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw signal.reason ?? new DOMException("MATLAB display view was superseded", "AbortError");
-}
-
-/**
- * Exact equal-rate raw flatline detection across overlapping read chunks. A
- * quarter-second delayed event ring permits retroactive qualification of a
- * channel's flat run without keeping the samples or all per-channel intervals.
- * NaNs break runs; the threshold denominator includes every selected channel.
- */
-export function createMatlabRawFlatlineDetector(channelCount: number, sampleRate: number, plottedStartSec: number) {
-  if (!Number.isSafeInteger(channelCount) || channelCount < 1 || !Number.isFinite(sampleRate) || sampleRate <= 0
-    || !Number.isFinite(plottedStartSec)) throw new Error("Invalid streamed raw flatline geometry.");
-  const minimumDuration = 0.25;
-  const lag = Math.max(1, Math.ceil(minimumDuration * sampleRate));
-  const ring = new Int32Array(lag + 2);
-  const previous = new Float64Array(channelCount).fill(NaN);
-  const runStarts = new Float64Array(channelCount).fill(-1);
-  const qualified = new Uint8Array(channelCount);
-  const regions: { startSec: number; endSec: number }[] = [];
-  let nextInput = 0;
-  let nextEvent = 0;
-  let activeChannels = 0;
-  let regionStart = -1;
-  let finished = false;
-  const requiredChannels = Math.ceil(channelCount * 0.8);
-  const emit = (endSample: number) => {
-    if (regionStart >= 0 && (endSample - regionStart) / sampleRate >= minimumDuration) {
-      regions.push({ startSec: plottedStartSec + regionStart / sampleRate, endSec: plottedStartSec + endSample / sampleRate });
-    }
-    regionStart = -1;
-  };
-  const processEvents = (through: number) => {
-    while (nextEvent <= through) {
-      const slot = nextEvent % ring.length;
-      activeChannels += ring[slot];
-      ring[slot] = 0;
-      if (activeChannels >= requiredChannels) {
-        if (regionStart < 0) regionStart = nextEvent;
-      } else if (regionStart >= 0) emit(nextEvent);
-      nextEvent++;
-    }
-  };
-  return {
-    push(data: readonly MatlabDisplaySamples[], inputStartIndex: number) {
-      if (finished) throw new Error("Cannot append to a finished raw flatline detector.");
-      if (data.length !== channelCount || data.some((values) => values.length !== data[0].length)
-        || !Number.isSafeInteger(inputStartIndex) || inputStartIndex < 0 || inputStartIndex > nextInput) {
-        throw new Error("Raw flatline chunks must be aligned and contiguous (overlap is allowed).");
-      }
-      const count = data[0].length;
-      for (let local = Math.max(0, nextInput - inputStartIndex); local < count; local++) {
-        const sample = inputStartIndex + local;
-        for (let channel = 0; channel < channelCount; channel++) {
-          const value = data[channel][local];
-          if (Number.isFinite(value) && Number.isFinite(previous[channel]) && value === previous[channel]) {
-            if (runStarts[channel] < 0) runStarts[channel] = sample - 1;
-            if (!qualified[channel] && (sample - runStarts[channel]) / sampleRate >= minimumDuration) {
-              ring[runStarts[channel] % ring.length]++;
-              qualified[channel] = 1;
-            }
-          } else {
-            if (qualified[channel]) ring[(sample - 1) % ring.length]--;
-            runStarts[channel] = -1;
-            qualified[channel] = 0;
-          }
-          previous[channel] = value;
-        }
-        nextInput = sample + 1;
-        processEvents(sample - lag);
-      }
-    },
-    finish() {
-      if (!finished) {
-        const lastSample = nextInput - 1;
-        if (lastSample >= 0) {
-          for (let channel = 0; channel < channelCount; channel++) {
-            if (qualified[channel]) ring[lastSample % ring.length]--;
-          }
-          processEvents(lastSample);
-          if (regionStart >= 0) emit(lastSample);
-        }
-        finished = true;
-      }
-      return regions;
-    },
-  };
 }
 
 /**
@@ -246,8 +170,11 @@ export async function buildMatlabDisplayWindow(
     bucketDurationSec: durationSec / bucketCount,
   } : null);
   const data = rowPlans.map((plan, row) => new Float64Array(envelopes[row] ? bucketCount : plan.outputCount).fill(NaN));
-  const finalize = (): MatlabDisplayWindow => {
-    envelopes.forEach((envelope) => {
+  const finalize = (partial = false): MatlabDisplayWindow => {
+    const outputData = partial ? data.map((values) => values.slice()) : data;
+    const outputEnvelopes = partial ? envelopes.map((envelope) => envelope ? { ...envelope,
+      minima: envelope.minima.slice(), maxima: envelope.maxima.slice(), gaps: envelope.gaps.slice() } : null) : envelopes;
+    outputEnvelopes.forEach((envelope) => {
       if (!envelope) return;
       for (let bucket = 0; bucket < bucketCount; bucket += 1) {
         if (!Number.isFinite(envelope.minima[bucket]) || !Number.isFinite(envelope.maxima[bucket])) {
@@ -258,7 +185,7 @@ export async function buildMatlabDisplayWindow(
       }
     });
     return {
-      data, envelopes, labels: template.labels,
+      data: outputData, envelopes: outputEnvelopes, labels: template.labels,
       units: template.primarySourceIndices.map((position) => units[position]),
       sampleRates: template.primarySourceIndices.map((position) => outputRates[position]),
       sourceSampleRates: template.primarySourceIndices.map((position) => sourceRates[position]),
@@ -268,7 +195,7 @@ export async function buildMatlabDisplayWindow(
       sourceIndices: template.sourceIndices.map((contributors) => contributors.map((position) => indices[position])),
       primarySourceIndices: template.primarySourceIndices.map((position) => indices[position]),
       warnings: [...warnings],
-      flatlineRegions: flatlines?.finish() ?? [],
+      flatlineRegions: partial ? [] : flatlines?.finish() ?? [],
       byteLength: data.reduce((sum, values) => sum + values.byteLength, 0)
         + envelopes.reduce((sum, envelope) => sum + (envelope ? envelope.minima.byteLength + envelope.maxima.byteLength + envelope.gaps.byteLength : 0), 0),
     };
@@ -295,10 +222,85 @@ export async function buildMatlabDisplayWindow(
     throw new Error("MATLAB display chunk limits must be positive, with at least 1024 bytes.");
   }
   const readWindow = options.readWindow ?? ((start, duration, channels, readOptions) => source.getWindow(start, duration, channels, readOptions));
-  const client = createMatlabDisplayWorkerClient({ signal: options.signal, fallbackToMainThread: options.fallbackToMainThread ?? false });
+  const client = createMatlabDisplayWorkerPool({ signal: options.signal, fallbackToMainThread: options.fallbackToMainThread ?? false, workerCount: options.workerCount, channelCount: activePlans.length });
   let completedSamples = 0;
+  let lastPartial = -Infinity;
   try {
     options.onProgress?.({ completedSamples, totalSamples, fraction: 0 });
+    const firstPlan = activePlans[0];
+    if (options.cache && sameRawGrid && firstPlan.factor === 2
+      && firstPlan.outputCount / pixelWidth >= MATLAB_TILE_BASE
+      && durationLimit * firstPlan.rate / 2 >= MATLAB_TILE_BASE
+      && byteLimit / (8 * activePlans.length) >= MATLAB_TILE_BASE * 2 + 64) {
+      const phase = firstPlan.firstSample % 2;
+      const firstGlobalOutput = (firstPlan.firstSample - phase) / 2;
+      const sourceLength = source.meta.durationSec * firstPlan.rate;
+      const roundedLength = Math.round(sourceLength);
+      const sourceEnd = Math.abs(sourceLength - roundedLength) <= Math.min(1e-6, Number.EPSILON * Math.max(1, sourceLength) * 4)
+        ? roundedLength : Math.floor(sourceLength);
+      const maximumTile = Math.max(MATLAB_TILE_BASE, Math.min(durationLimit * firstPlan.rate / 2,
+        (byteLimit / (8 * activePlans.length) - 64) / 2));
+      const tileSize = 2 ** Math.floor(Math.log2(maximumTile));
+      const scope = options.cache.scope(source, [indices, labels, units, montage, request.bipolarKind,
+        [...excludedPositions], montageOptions.allChannelLabels, firstPlan.rate, phase]);
+      return await buildCachedMatlabDisplay({ metadata: finalize(), cache: options.cache, scope,
+        firstSample: firstPlan.firstSample, outputCount: firstPlan.outputCount, rate: firstPlan.rate,
+        startSec, durationSec, pixelWidth, tileSize, options,
+        load: async (globalStart, count, stable) => {
+          checkAborted(options.signal);
+          const inputFirst = stable ? phase : firstPlan.firstSample;
+          const inputCount = stable ? sourceEnd - phase : firstPlan.inputCount;
+          const outputStart = stable ? globalStart : globalStart - firstGlobalOutput;
+          const range = matlabDisplayChunkInputRange(inputCount, 2, outputStart, count);
+          const coreFirst = phase + globalStart * 2;
+          const coreEnd = Math.min(inputFirst + inputCount - 1, coreFirst + count * 2);
+          // Two qualification intervals cover runs and synchronized-region
+          // duration on both sides of a tile; view boundaries still truncate.
+          const halo = 2 * Math.ceil(0.25 * firstPlan.rate) + 4;
+          const readFirst = Math.max(inputFirst, Math.min(inputFirst + range.firstSample, coreFirst - halo));
+          const readEnd = Math.min(inputFirst + inputCount, Math.max(inputFirst + range.endSample, coreEnd + halo + 1));
+          const window = await readWindow(readFirst / firstPlan.rate, (readEnd - readFirst + 1) / firstPlan.rate,
+            activePlans.map((entry) => entry.sourceIndex), { signal: options.signal });
+          checkAborted(options.signal);
+          const raw = activePlans.map((entry) => {
+            const position = window.channelIndices.indexOf(entry.sourceIndex);
+            if (position < 0 || Math.abs(window.sampleRates[position] - entry.rate) > 1e-9) {
+              throw new Error("Source read returned missing or incompatible MATLAB display channels.");
+            }
+            const offset = readFirst - Math.round(window.channelStartSecs[position] * entry.rate);
+            if (offset < 0 || offset + readEnd - readFirst > window.data[position].length) {
+              throw new Error("Source read did not cover the exact MATLAB display sample range.");
+            }
+            return window.data[position].subarray(offset, offset + readEnd - readFirst);
+          });
+          return async () => {
+            checkAborted(options.signal);
+            const tileFlatlines = detectMatlabTileFlatlines(raw, firstPlan.rate).map((region) => ({
+              startSample: Math.max(coreFirst, readFirst + region.startSample),
+              endSample: Math.min(coreEnd, readFirst + region.endSample),
+            })).filter((region) => region.endSample > region.startSample);
+            const filtered = await client.process(raw.map((values) => ({
+              data: values.subarray(inputFirst + range.firstSample - readFirst, inputFirst + range.endSample - readFirst),
+              options: { inputSampleCount: inputCount, factor: 2, inputStartIndex: range.firstSample,
+                outputStartIndex: outputStart, outputSampleCount: count },
+            })));
+            checkAborted(options.signal);
+            let rows: Float64Array[];
+            if (montage === "referential") rows = filtered.map((values) => values instanceof Float64Array ? values : Float64Array.from(values));
+            else {
+              const montageData = plans.map(() => new Float64Array());
+              filtered.forEach((values, position) => { montageData[activePlans[position].position] = Float64Array.from(values); });
+              const derived = buildMontage(montageData, labels, montage, excludedPositions, outputRates, firstTimes, montageOptions);
+              if (derived.labels.length !== template.labels.length || derived.labels.some((label, row) => label !== template.labels[row])) {
+                throw new Error("MATLAB montage changed identity between display chunks.");
+              }
+              rows = derived.data.map((values) => values instanceof Float64Array ? values : Float64Array.from(values));
+            }
+            return { rows, flatlines: tileFlatlines };
+          };
+        },
+      });
+    }
     for (const group of groups.values()) {
       const plan = group[0];
       const maximumOutputs = Math.max(1, Math.min(
@@ -373,6 +375,13 @@ export async function buildMatlabDisplayWindow(
         }
         completedSamples += count * group.length;
         options.onProgress?.({ completedSamples, totalSamples, fraction: totalSamples ? completedSamples / totalSamples : 1 });
+        checkAborted(options.signal);
+        if (options.onPartial && sameRawGrid && completedSamples < totalSamples && performance.now() - lastPartial >= 200) {
+          lastPartial = performance.now();
+          const through = (outputStart + count) * plan.factor / plan.rate;
+          const completedTime = envelopes[0] ? Math.floor(through / durationSec * bucketCount) * durationSec / bucketCount : through;
+          options.onPartial(finalize(true), startSec + completedTime);
+        }
       }
     }
   } finally {

@@ -110,7 +110,8 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
     displayAppliedRequestIdRef: { current: 0 }, displayPreviewReadyRef: { current: false }, displayRefreshPendingRef: { current: null }, displayRefreshActiveRef: { current: false },
     recordingOverviewCacheRef: { current: cache }, overviewBuildSourceRef: { current: verifying ? source : null },
     envelopeWindowCacheRef: { current: rawDetail ? [{ source, channelKey: "0,1", startSec: 0, endSec: duration, levels: [rawEnvelope(source, 40)], byteLength: 2048 * 2 * 17 }] : [] },
-    matlabWindowCacheRef: { current: [] }, setDisplay: (display) => displays.push(display), setLoadingSignal: (value) => loading.push(value),
+    matlabWindowCacheRef: { current: [] }, matlabTileCacheRef: { current: null }, createMatlabDisplayTileCache: () => ({}),
+    setDisplay: (display) => displays.push(display), setLoadingSignal: (value) => loading.push(value),
     setFocusedChannel: (update) => { focused = update(focused); }, setToast: (message) => toasts.push(message),
     filters: { enabled: false }, montage: "referential", selectedChannels: new Set([0, 1]), hasRecording: true, matlabAnatomicalLayout: false, anatomicalGroups: false, meta: source.meta,
     signalViewStart: 0, timebase: duration, waveformWidth: 1600, verifyingSource: verifying, recordingOverviewRevision: 0,
@@ -200,7 +201,7 @@ test("six-hour requests retain their full extent and never reuse unfiltered sess
   for (const coarse of [false, true]) {
     const h = await harness({ duration: 21600, coarse }); h.render();
     assert.equal(h.calls.length, 1); assert.equal(h.calls[0].request.durationSec, 21600); assert.equal(h.calls[0].request.startSec, 0);
-    assert.equal(h.calls[0].options.maxChunkDurationSec, 30); assert.equal(h.displays.length, 0);
+    assert.equal(h.calls[0].options.maxChunkDurationSec, 120); assert.equal(h.calls[0].options.maxChunkBytes, 8 * 1024 * 1024); assert.equal(h.displays.length, 0);
     h.calls[0].finish(45); await tick(); assert.equal(h.displays.at(-1).envelopes[0].bucketDurationSec * 64, 21600);
     assert.equal(h.displays.at(-1).data[0][0], 45); h.dispose();
   }
@@ -267,5 +268,35 @@ test("rapid montage switches cancel obsolete work and returning to recorded refe
   assert.equal(h.loading.at(-1), false);
   assert.deepEqual(h.toasts, []);
   assert.ok(h.readers.every((reader) => reader.disposeCount === 1));
+  h.dispose();
+});
+
+test("partial exact results remain provisional and cannot overwrite a newer view", async () => {
+  const h = await harness({ duration: 21600 }); h.render();
+  const first = h.calls[0];
+  const prefix = processedFixture(first.request, 12);
+  first.options.onPartial(prefix, 120);
+  assert.equal(h.displays.at(-1).processingThroughSec, 120);
+  assert.equal(h.displays.at(-1).unreadAfterSec, 120);
+  assert.equal(h.loading.at(-1), false);
+  assert.equal(h.env.matlabWindowCacheRef.current.length, 0, 'partial views are never completed cache entries');
+  h.render({ signalViewStart: 60 }); await tick();
+  const before = h.displays.length;
+  first.options.onPartial(prefix, 240);
+  assert.equal(h.displays.length, before);
+  h.calls[1].finish(); await tick();
+  assert.equal(h.displays.at(-1).processingThroughSec, undefined);
+  assert.equal(h.displays.at(-1).viewStart, 60);
+  assert.equal(h.env.matlabWindowCacheRef.current.length, 1);
+  h.dispose();
+});
+
+test("a read failure after partial display clears provisional progress and exposes the error", async () => {
+  const h = await harness(); h.render(); const call = h.calls[0];
+  call.options.onPartial(processedFixture(call.request, 12), 50);
+  call.fail(new Error('disk read failed')); await tick();
+  assert.equal(h.displays.at(-1).processingThroughSec, undefined);
+  assert.ok(h.displays.at(-1).warnings.some(w => w.includes('disk read failed')));
+  assert.equal(h.env.matlabWindowCacheRef.current.length, 0);
   h.dispose();
 });

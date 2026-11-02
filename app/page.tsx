@@ -80,6 +80,7 @@ import { computeFullWindowSpectrogramOffThread } from "./full-window-spectrogram
 import type { MatlabSpectrogramResult } from "./matlab-spectrogram";
 import { matlabSpectrogramInputPlan } from "./matlab-spectrogram-input";
 import { buildMatlabDisplayWindow, type MatlabDisplayWindow } from "./matlab-display-window";
+import { createMatlabDisplayTileCache, MATLAB_TILE_CACHE_BYTES } from "./matlab-display-tiles";
 import { createMatlabFileReader, type MatlabFileReader } from "./matlab-file-reader";
 import {
   PerformanceDiagnosticsCollector,
@@ -424,6 +425,7 @@ type DisplayWindow = {
   indexedThroughSec?: number;
   /** A coarse preview is usable while the requested finer grid is still loading. */
   refiningOverview?: boolean;
+  processingThroughSec?: number;
   /** Absolute start of the unread tail, never represented as a flat signal. */
   unreadAfterSec?: number;
 };
@@ -1131,7 +1133,7 @@ const INITIAL_PREVIEW_READ_BUDGET_BYTES = 16 * 1024 * 1024;
 // A full-width drag shifts less than one window so trackpad/mouse movement can
 // be precise without breaking the shared waveform/spectrogram time lock.
 const SPECTROGRAM_DRAG_PAN_SCALE = 0.3;
-const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES + RECORDING_OVERVIEW_CACHE_BYTES;
+const TOTAL_SIGNAL_CACHE_BUDGET_BYTES = RAW_WINDOW_CACHE_BUDGET_BYTES * 2 + ENVELOPE_CACHE_BUDGET_BYTES + RECORDING_OVERVIEW_CACHE_BYTES + MATLAB_TILE_CACHE_BYTES + 48 * 1024 * 1024;
 const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE = 64;
 // The waveform is continuously repainted while navigating. A HiDPI backing
 // store made a large desktop pane rasterize up to eight million pixels for
@@ -1872,6 +1874,7 @@ export default function Home() {
   const displayRefreshActiveRef = useRef(false);
   const rawWindowCacheRef = useRef<RawWindowCache[]>([]);
   const matlabWindowCacheRef = useRef<Array<{ source: SignalSource; key: string; value: MatlabDisplayWindow }>>([]);
+  const matlabTileCacheRef = useRef<ReturnType<typeof createMatlabDisplayTileCache> | null>(null);
   const processedWindowCacheRef = useRef<ProcessedWindowCache[]>([]);
   const envelopeWindowCacheRef = useRef<EnvelopeWindowCache[]>([]);
   const recordingOverviewCacheRef = useRef(new RecordingOverviewCache());
@@ -1909,8 +1912,9 @@ export default function Home() {
     rawBytes: rawWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0),
     rawEntries: rawWindowCacheRef.current.length,
     processedBytes: processedWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0)
-      + matlabWindowCacheRef.current.reduce((sum, entry) => sum + entry.value.byteLength, 0),
-    processedEntries: processedWindowCacheRef.current.length + matlabWindowCacheRef.current.length,
+      + matlabWindowCacheRef.current.reduce((sum, entry) => sum + entry.value.byteLength, 0)
+      + (matlabTileCacheRef.current?.byteLength ?? 0),
+    processedEntries: processedWindowCacheRef.current.length + matlabWindowCacheRef.current.length + (matlabTileCacheRef.current?.size ?? 0),
     envelopeBytes: envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0)
       + recordingOverviewCacheRef.current.byteLength,
     envelopeEntries: envelopeWindowCacheRef.current.length + recordingOverviewCacheRef.current.size,
@@ -3435,6 +3439,7 @@ export default function Home() {
           setDisplay(centered);
         };
         if (!filters.enabled) {
+          matlabTileCacheRef.current ??= createMatlabDisplayTileCache();
           const key = JSON.stringify([displaySettingsKey, signalViewStart, timebase, waveformWidth, indices]);
           let prepared = matlabWindowCacheRef.current.find((entry) => entry.source === source && entry.key === key)?.value;
           if (!prepared) {
@@ -3444,7 +3449,17 @@ export default function Home() {
               prepared = await buildMatlabDisplayWindow({ source, startSec: signalViewStart, durationSec: timebase,
                 pixelWidth: waveformWidth, channelIndices: indices, montage, allChannelLabels: meta.channelLabels,
                 bipolarKind: bipolarMontageKind(meta.channelLabels) }, {
-                signal: abortController.signal, fallbackToMainThread: false, maxChunkDurationSec: 30,
+                signal: abortController.signal, fallbackToMainThread: false, maxChunkDurationSec: 120, maxChunkBytes: 8 * 1024 * 1024,
+                cache: matlabTileCacheRef.current,
+                onPartial: (partial, through) => {
+                  if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
+                  displayAppliedRequestIdRef.current = requestId;
+                  publishDisplay({ ...partial, settingsKey: displaySettingsKey, traceBaselines: [],
+                    timingConvention: "matlab-window", viewStart: signalViewStart, viewDuration: timebase,
+                    processingThroughSec: through, unreadAfterSec: through });
+                  displayPreviewReadyRef.current = true;
+                  setLoadingSignal(false);
+                },
                 readWindow: (start, duration, channels, options) => readMatlabSourceWindow(source, start, duration, channels, options, reader),
               });
               operation.finish({ completedBytes: prepared.byteLength });
@@ -7681,7 +7696,7 @@ export default function Home() {
                   onDrop={onLabelDrop}
                   onDragLeave={() => setDragGhost(null)}
                 >
-                  <canvas ref={canvasRef} data-tutorial="waveform" tabIndex={0} role="img" aria-busy={loadingSignal} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to fit its time and channel area to the full view." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
+                  <canvas ref={canvasRef} data-tutorial="waveform" tabIndex={0} role="img" aria-busy={loadingSignal || display.processingThroughSec !== undefined} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to fit its time and channel area to the full view." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
                   {!inspectionMode && selection && <div className="wave-selection" style={{
                     left: `${((Math.max(viewStart, selection.start) - viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(viewStart + timebase, selection.end) - Math.max(viewStart, selection.start)) / timebase) * 100)}%`,
@@ -7694,13 +7709,15 @@ export default function Home() {
                   }} />}
                   {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
                   {loadingSignal && <div className="signal-loading" role="status"><span /> Preparing signal window…</div>}
-                  {!loadingSignal && (display.indexedThroughSec !== undefined || display.refiningOverview) && <>
+                  {!loadingSignal && (display.indexedThroughSec !== undefined || display.refiningOverview || display.processingThroughSec !== undefined) && <>
                     {display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase && <div
                       className="signal-indexing-pending"
                       style={{ left: `${clamp((display.unreadAfterSec - viewStart) / timebase, 0, 1) * 100}%` }}
-                    ><span>Not indexed yet</span></div>}
+                    ><span>{display.processingThroughSec !== undefined ? "Loading signal…" : "Not indexed yet"}</span></div>}
                     <div className="signal-indexing-status" role="status">
-                      {display.refiningOverview
+                      {display.processingThroughSec !== undefined
+                        ? `Loading signal · ${Math.min(100, Math.floor((display.processingThroughSec - viewStart) / timebase * 100))}%`
+                        : display.refiningOverview
                         ? "Overview shown · loading finer detail…"
                         : `Building overview · ${Math.min(100, Math.floor((display.indexedThroughSec ?? 0) / meta.durationSec * 100))}%`}
                       {verifyingSource ? " · Opening recording" : ""}

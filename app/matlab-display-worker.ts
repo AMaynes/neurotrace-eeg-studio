@@ -1,5 +1,5 @@
-import { filterMatlabDisplayChunk, type MatlabDisplaySamples } from "./matlab-display-processing";
-import type { MatlabDisplayWorkerChunk } from "./matlab-display-worker-client";
+import { filterMatlabDisplayChunk, type MatlabDisplaySamples } from "./matlab-display-processing.ts";
+import type { MatlabDisplayWorkerChunk } from "./matlab-display-worker-client.ts";
 
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<{ id: number; channels: MatlabDisplayWorkerChunk[] }>) => void) | null;
