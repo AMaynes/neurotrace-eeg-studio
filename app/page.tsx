@@ -4363,14 +4363,13 @@ export default function Home() {
 
       const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
       const plotHeight = Math.max(1, height - plotTop);
-      const { rowHeight, topPadding, unitStart } = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
+      const { rowHeight, yForUnit } = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
       // A changed montage can clamp scrollTop before its scroll event fires.
       // Match the channel rail and hit testing using the live offset each paint.
       const rowScrollOffset = expandedChannels
         ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current
         : 0;
-      const rowTopForChannel = (channel: number) => plotTop + topPadding
-        + rowHeight * (channelRowLayout.rowStartUnits[channel] - unitStart)
+      const rowTopForChannel = (channel: number) => plotTop + yForUnit(channelRowLayout.rowStartUnits[channel])
         - rowScrollOffset;
 
       if (activeCandidateVisible && activeCandidateTime !== null && activeCandidateTime >= displayStart && activeCandidateTime <= displayEnd) {
@@ -4673,7 +4672,7 @@ export default function Home() {
     if (localY < CHANNEL_RAIL_HEADER_HEIGHT || localY > rect.height) return null;
     const geometry = channelPlotGeometry(channelRowLayout, rect.height - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
     const scrollTop = expandedChannels ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current : 0;
-    const unit = geometry.unitStart + (scrollTop + localY - CHANNEL_RAIL_HEADER_HEIGHT - geometry.topPadding) / geometry.rowHeight;
+    const unit = geometry.unitForY(scrollTop + localY - CHANNEL_RAIL_HEADER_HEIGHT);
     return channelRowFromFraction(channelRowLayout, unit / channelRowLayout.totalUnits);
   }, [channelRowLayout, expandedChannels, waveformVerticalViewport]);
 
@@ -4683,7 +4682,7 @@ export default function Home() {
     }
     const plotHeight = Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT);
     const geometry = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
-    const top = geometry.topPadding + (channelRowLayout.rowStartUnits[channel] - geometry.unitStart) * geometry.rowHeight;
+    const top = geometry.yForUnit(channelRowLayout.rowStartUnits[channel]);
     const bottom = top + geometry.rowHeight;
     if (!expandedChannels && (bottom <= 0 || top >= plotHeight)) return null;
     const clippedTop = expandedChannels ? top : clamp(top, 0, plotHeight);
@@ -4701,7 +4700,7 @@ export default function Home() {
     const plotHeight = Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT);
     const geometry = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
     const midpoint = (channelRowLayout.rowStartUnits[startRow] + channelRowLayout.rowStartUnits[endRow] + 1) / 2;
-    const screenMidpoint = geometry.topPadding + (midpoint - geometry.unitStart) * geometry.rowHeight;
+    const screenMidpoint = geometry.yForUnit(midpoint);
     if (!expandedChannels && (screenMidpoint < 0 || screenMidpoint > plotHeight)) return null;
     return { position: "absolute", left: 0, top: CHANNEL_RAIL_HEADER_HEIGHT + screenMidpoint, transform: "translateY(-50%)" };
   };
@@ -4756,8 +4755,8 @@ export default function Home() {
     const canvasHeight = Math.max(1, rect.height);
     const geometry = channelPlotGeometry(channelRowLayout, canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
     const scrollTop = expandedChannels ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current : 0;
-    const fraction = (position: number) => clamp((geometry.unitStart
-      + (scrollTop + position * canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT - geometry.topPadding) / geometry.rowHeight) / channelRowLayout.totalUnits, 0, 1);
+    const fraction = (position: number) => clamp(geometry.unitForY(
+      scrollTop + position * canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT) / channelRowLayout.totalUnits, 0, 1);
     const selection = { top: fraction(range.top), bottom: fraction(range.bottom) };
     if (selection.bottom <= selection.top) return {};
     return {

@@ -139,11 +139,11 @@ test("shared group labels align with row baselines in compact, expanded, and ver
   const base = { channelRowLayout, channelViewportHeight: 828, CHANNEL_RAIL_HEADER_HEIGHT: 28,
     expandedChannels: false, waveformVerticalViewport: null, projectVerticalFraction, channelPlotGeometry };
   const style = (overrides = {}) => compile(declaration("channelGroupLabelStyle"), { ...base, ...overrides }, "channelGroupLabelStyle");
-  assert.equal(style()(0, 1).top, 405.5);
-  assert.equal(style({ expandedChannels: true })(2, 3).top, 458);
-  assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(0, 1).top, 428);
+  assert.ok(Math.abs(style()(0, 1).top - (28 + (800 - 72) / 3 + 18)) < 1e-9);
+  assert.ok(Math.abs(style({ expandedChannels: true })(2, 3).top - (28 + 2 * (800 - 96) / 3 + 72)) < 1e-9);
+  assert.ok(Math.abs(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(0, 1).top - (28 + 800 * 1.5 / 2.75)) < 1e-9);
   assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(2, 3), null);
-  assert.equal(style({ waveformVerticalViewport: { top: .5, bottom: 1 } })(2, 3).top, 428);
+  assert.ok(Math.abs(style({ waveformVerticalViewport: { top: .5, bottom: 1 } })(2, 3).top - (28 + 800 * 1.25 / 2.75)) < 1e-9);
 });
 
 test("compact group rows, hit tests, scroll, and box zoom share the actual displayed positions", () => {
@@ -167,7 +167,7 @@ test("compact group rows, hit tests, scroll, and box zoom share the actual displ
       if (y < 28 || y >= height) continue;
       assert.equal(ui.channelRowFromClientY(rect.top + y, rect), row, "clicking a visible label's baseline hits its own waveform");
     }
-    if (!expanded && height >= 400) assert.equal(ui.channelRowFromClientY(rect.top + 29, rect), null, "centered outer whitespace cannot select a channel");
+    if (!expanded && height >= 400) assert.equal(ui.channelRowFromClientY(rect.top + 29, rect), null, "outer whitespace cannot select a channel");
   }
   const ui = build(900, false);
   const first = ui.channelRailRowStyle(0), last = ui.channelRailRowStyle(2);

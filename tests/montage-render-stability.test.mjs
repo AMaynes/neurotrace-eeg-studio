@@ -127,7 +127,7 @@ test("overview traces and clipping ribbons use the same prepared baseline on eve
   h.cleanup();
 });
 
-test("real paint centers the stack with uniform group gaps across montages and trace modes", () => {
+test("real paint distributes groups across the viewport with equal outer and inner gaps", () => {
   for (const montage of ["referential", "average", "bipolar"]) {
     const display = fixture(montage, undefined, ["LA1", "LA2", "LA3", "LA4", "RA1", "RA2"]);
     const layout = buildChannelRowLayout(display.labels, true);
@@ -137,12 +137,13 @@ test("real paint centers the stack with uniform group gaps across montages and t
       assert.ok(h.traces.every((trace) => trace.rowHeight === h.traces[0].rowHeight && trace.scale === h.traces[0].scale), "one shared scale for large and small groups");
       const stackTop = h.traces[0].rowTop;
       const stackBottom = h.traces.at(-1).rowTop + h.traces.at(-1).rowHeight;
-      assert.equal(stackTop - 28, 208 - stackBottom, "the entire contact stack stays vertically centered");
+      const gap = stackTop - 28;
+      assert.ok(Math.abs(gap - (208 - stackBottom)) < 1e-9, "top and bottom match");
       for (const [index, group] of layout.groups.entries()) {
         const first = h.traces[group.startRow];
         if (index > 0) {
           const previousLast = h.traces[layout.groups[index - 1].endRow];
-          assert.equal(first.rowTop - previousLast.rowTop - previousLast.rowHeight, 9, "fixed gap regardless of contact count or montage");
+          assert.ok(Math.abs(first.rowTop - previousLast.rowTop - previousLast.rowHeight - gap) < 1e-9, "inner gaps match the outer gaps regardless of contact count or montage");
         }
         assert.equal(first.rowHeight, 18, "sparse recordings use compact rows instead of stretching");
       }

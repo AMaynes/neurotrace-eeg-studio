@@ -2,7 +2,7 @@
 
 import { anatomicalChannelGroup, orderElectrodeChannelIndices } from "./eeg-core.ts";
 
-// Keep a small, permanent gap, split evenly across adjoining group edges.
+// Minimum gap; spare viewport space is shared equally by all gaps, including the edges.
 export const ELECTRODE_GROUP_GAP_ROWS = 0.5;
 
 /** Preserve MATLAB's case-sensitive group identity, including our CAR display suffix. */
@@ -37,6 +37,18 @@ export type ChannelRowLayout = {
   contactLabels: string[];
 };
 
+/** Number of complete/fractional channel rows before a position; gaps contribute nothing. */
+function occupiedRows(position: number, starts: readonly number[], rowSize: number): number {
+  let low = 0, high = starts.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (starts[middle] <= position) low = middle + 1;
+    else high = middle;
+  }
+  if (low === 0) return 0;
+  return low - 1 + Math.min(1, Math.max(0, (position - starts[low - 1]) / rowSize));
+}
+
 /** One geometry for drawing, labels, scrolling, hit tests, and box zoom. */
 export function channelPlotGeometry(
   layout: ChannelRowLayout,
@@ -49,12 +61,35 @@ export function channelPlotGeometry(
   const unitSpan = expanded ? layout.totalUnits
     : Math.max(Number.EPSILON, ((viewport?.bottom ?? 1) - (viewport?.top ?? 0)) * layout.totalUnits);
   const grouped = layout.groups.length > 0;
-  // Do not stretch sparse groups to fill a tall panel. Explicit box zoom still fills its selection.
+  // Keep contacts compact and distribute spare space between whole groups.
+  // Explicit box zoom instead fills its selected range of canonical row units.
   const rowHeight = expanded ? (grouped ? 24 : 60)
     : Math.min(availableHeight / unitSpan, grouped && !viewport ? 18 : Infinity);
-  const topPadding = grouped && (expanded || !viewport)
-    ? Math.max(0, (availableHeight - unitSpan * rowHeight) / 2) : 0;
-  return { rowHeight, topPadding, unitStart, contentHeight: Math.max(availableHeight, layout.totalUnits * rowHeight) };
+  if (grouped && (expanded || !viewport)) {
+    const rowCount = layout.rowStartUnits.length;
+    const gapUnits = layout.totalUnits - rowCount;
+    const gapScale = Math.max(rowHeight, (availableHeight - rowCount * rowHeight) / gapUnits);
+    let rowTops: number[] | undefined;
+    return {
+      rowHeight,
+      contentHeight: rowCount * rowHeight + gapUnits * gapScale,
+      yForUnit(unit: number) {
+        const rows = occupiedRows(unit, layout.rowStartUnits, 1);
+        return rows * rowHeight + (unit - rows) * gapScale;
+      },
+      unitForY(y: number) {
+        rowTops ??= layout.rowStartUnits.map((start, row) => row * rowHeight + (start - row) * gapScale);
+        const rows = occupiedRows(y, rowTops, rowHeight);
+        return rows + (y - rows * rowHeight) / gapScale;
+      },
+    };
+  }
+  return {
+    rowHeight,
+    contentHeight: Math.max(availableHeight, layout.totalUnits * rowHeight),
+    yForUnit: (unit: number) => (unit - unitStart) * rowHeight,
+    unitForY: (y: number) => unitStart + y / rowHeight,
+  };
 }
 
 /** Shared channel spacing with fixed gaps between groups, regardless of contact count. */
@@ -80,9 +115,9 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
     units += size;
   };
   for (const block of blocks) {
-    // Adjacent half-gaps form the same full gap for every pair of groups.
+    // Adjacent half-gaps form a full gap; the outer edges each get a full gap too.
     const edgePadding = grouped ? ELECTRODE_GROUP_GAP_ROWS / 2 : 0;
-    padding(edgePadding);
+    padding(block.startRow === 0 ? edgePadding * 2 : edgePadding);
     if (grouped && block.startRow > 0) groupStarts.add(block.startRow);
     if (block.name) groups.push({ name: block.name, startRow: block.startRow, endRow: block.endRow });
     for (let index = block.startRow; index <= block.endRow; index++) {
@@ -94,7 +129,7 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
       const pair = /^(?:[A-Za-z]+)(\d+-\d+)$/.exec(labels[index].trim());
       contactLabels.push(block.name ? pair?.[1] ?? String(index - block.startRow + 1) : labels[index]);
     }
-    padding(edgePadding);
+    padding(block.endRow === labels.length - 1 ? edgePadding * 2 : edgePadding);
   }
   return { rowStartUnits, rowGridLines, gridTemplateRows: tracks.join(" ") || "1fr", totalUnits: Math.max(1, units), groupStarts, groups, contactLabels };
 }

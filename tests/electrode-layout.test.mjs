@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { buildMontage, displayElectrodeGroup, orderElectrodeChannelIndices } from "../app/eeg-core.ts";
-import { buildChannelRowLayout, channelRowFromFraction, ELECTRODE_GROUP_GAP_ROWS, orderElectrodeDisplayRows, matlabDisplayOrder, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
+import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, ELECTRODE_GROUP_GAP_ROWS, orderElectrodeDisplayRows, matlabDisplayOrder, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
 
 function displayRows(labels) {
   return {
@@ -75,10 +75,10 @@ test("uniform group gaps align CSS tracks, waveform positions, and hit regions",
   const labels = ["LA1", "LA2", "RB1", "RB2", "Events"];
   const layout = buildChannelRowLayout(labels, true);
   assert.equal(ELECTRODE_GROUP_GAP_ROWS, .5);
-  assert.equal(layout.totalUnits, 6.5);
+  assert.equal(layout.totalUnits, 7);
   assert.deepEqual([...layout.groupStarts], [2, 4]);
   assert.deepEqual(layout.rowGridLines, [2, 3, 6, 7, 10]);
-  assert.equal(layout.gridTemplateRows, "0.25fr 1fr 1fr 0.25fr 0.25fr 1fr 1fr 0.25fr 0.25fr 1fr 0.25fr");
+  assert.equal(layout.gridTemplateRows, "0.5fr 1fr 1fr 0.25fr 0.25fr 1fr 1fr 0.25fr 0.25fr 1fr 0.5fr");
   const tracks = layout.gridTemplateRows.split(" ").map(Number.parseFloat);
   for (const [row, line] of layout.rowGridLines.entries()) {
     const trackStart = tracks.slice(0, line - 1).reduce((sum, height) => sum + height, 0);
@@ -131,7 +131,7 @@ test("MATLAB labels use one shared group label, ordinal contacts, and actual bip
   const layout = buildChannelRowLayout(["LA10", "LA2", "RB6", "RB1", "RB3"], true);
   assert.deepEqual(layout.groups, [{ name: "LA", startRow: 0, endRow: 1 }, { name: "RB", startRow: 2, endRow: 4 }]);
   assert.deepEqual(layout.contactLabels, ["1", "2", "1", "2", "3"]);
-  assert.deepEqual(layout.rowStartUnits, [.25, 1.25, 2.75, 3.75, 4.75]);
+  assert.deepEqual(layout.rowStartUnits, [.5, 1.5, 3, 4, 5]);
   assert.deepEqual(buildChannelRowLayout(["LA10-2", "RB6-1", "RB1-3"], true).contactLabels, ["10-2", "6-1", "1-3"]);
   assert.deepEqual(buildChannelRowLayout(["LA10 (CAR)", "LA2 (CAR)", "RB1 (CAR)"], true).contactLabels, ["1", "2", "1"]);
 });
@@ -151,11 +151,34 @@ test("unequal groups have uniform boundary gaps, equal row heights, and balanced
       }
       for (let row = group.startRow; row < group.endRow; row++) assert.equal(layout.rowStartUnits[row + 1] - layout.rowStartUnits[row], 1);
     }
-    assert.equal(layout.rowStartUnits[0], .25);
-    assert.equal(layout.totalUnits - layout.rowStartUnits.at(-1) - 1, .25);
+    assert.equal(layout.rowStartUnits[0], .5);
+    assert.equal(layout.totalUnits - layout.rowStartUnits.at(-1) - 1, .5);
     for (let unit = 0; unit < layout.totalUnits; unit += .25) {
       const expected = layout.rowStartUnits.findIndex((start) => unit >= start && unit < start + 1);
       assert.equal(channelRowFromFraction(layout, unit / layout.totalUnits), expected < 0 ? null : expected);
+    }
+  }
+});
+
+test("groups fill the viewport with equal outer and inner gaps while contacts stay compact", () => {
+  for (const counts of [[1], [4, 1, 2, 3], [1, 6, 2], [8, 8, 8]]) {
+    const labels = counts.flatMap((count, group) => Array.from({ length: count }, (_, row) => `L${String.fromCharCode(65 + group)}${row + 1}`));
+    const layout = buildChannelRowLayout(labels, true);
+    for (const height of [100, 400, 900]) for (const expanded of [false, true]) {
+      const geometry = channelPlotGeometry(layout, height, expanded);
+      const rowTop = (row) => geometry.yForUnit(layout.rowStartUnits[row]);
+      const gap = rowTop(0);
+      for (let group = 1; group < layout.groups.length; group++) {
+        const previous = layout.groups[group - 1], next = layout.groups[group];
+        assert.ok(Math.abs(rowTop(next.startRow) - rowTop(previous.endRow) - geometry.rowHeight - gap) < 1e-9, "all inner gaps match the top gap");
+      }
+      assert.ok(Math.abs(geometry.contentHeight - rowTop(labels.length - 1) - geometry.rowHeight - gap) < 1e-9, "bottom gap matches all other gaps");
+      assert.ok(Math.abs(geometry.contentHeight - Math.max(height, layout.totalUnits * geometry.rowHeight)) < 1e-9);
+      if (height >= layout.totalUnits * (expanded ? 24 : 18)) assert.equal(geometry.rowHeight, expanded ? 24 : 18);
+      for (let unit = 0; unit <= layout.totalUnits; unit += .125) {
+        const roundTrip = geometry.unitForY(geometry.yForUnit(unit));
+        assert.ok(Math.abs(roundTrip - unit) < 1e-9, "hit testing and box zoom invert the actual spacing, including gaps");
+      }
     }
   }
 });
