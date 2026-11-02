@@ -668,7 +668,7 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
   assert.match(page, /enabledEphysLabelIds\.has\(item\.id\)/, "disabled types are filtered from the palette");
   assert.match(page, /className="modal ephys-label-picker" role="dialog" aria-modal="true"/, "the picker opens outside the sidebar as a modal");
   assert.ok(page.indexOf('id="ephys-label-picker"') > page.indexOf('</aside>'), "the picker is not clipped by the right panel");
-  assert.match(page, /const modalOpen = showLabelVisibilityFilter \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
+  assert.match(page, /const modalOpen = olderReviews !== null \|\| showLabelVisibilityFilter \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
   assert.match(page, /else if \(showEphysLabelPicker\) setShowEphysLabelPicker\(false\)/, "Escape closes the picker without clearing the waveform selection");
   assert.match(page, /aria-label="Close ePhys label picker"/);
   assert.match(css, /\.ephys-label-picker\s*\{[^}]*width:\s*min\(520px, calc\(100vw - 32px\)\)/, "the popup fits narrow viewports independently of the sidebar");

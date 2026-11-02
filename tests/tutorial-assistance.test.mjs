@@ -23,7 +23,7 @@ function fixture(overrides = {}) {
   const values = { labelsVisible: true };
   const state = {
     MAX_DISPLAY_GAIN, stepDisplayGain,
-    showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showSettings: false, showChannels: false, showImport: false,
+    olderReviews: null, showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showSettings: false, showChannels: false, showImport: false,
     showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
     queueDetailEntry: null, confirmCommit: [], hasRecording: true, activeSessionContentView: "recording",
     meta: { durationSec: 90 }, viewStartRef: { current: 0 }, viewStart: 0, timebase: 20, gain: 1,
@@ -58,7 +58,7 @@ test("assistance opens dialogs without any loading/saving side effects or hidden
 });
 
 test("assistance cannot operate behind another dialog, in file-structure view, or without a recording", () => {
-  for (const override of [{ showDirectorySessions: true }, { showSettings: true }, { hasRecording: false }, { activeSessionContentView: "structure" }]) {
+  for (const override of [{ olderReviews: [] }, { showDirectorySessions: true }, { showSettings: true }, { hasRecording: false }, { activeSessionContentView: "structure" }]) {
     const ui = fixture(override);
     assert.equal(ui.assist("select-time-window"), false);
     assert.equal(ui.assist("increase-gain"), false);

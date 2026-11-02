@@ -6,7 +6,7 @@ import { recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
 import { composeVerticalViewport, projectVerticalFraction } from "../app/waveform-viewport.ts";
 import { DEFAULT_CONTROLS, shortcutAction } from "../app/shortcuts.ts";
 import { normalizeDisplayGain } from "../app/display-gain.ts";
-import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
+import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, matlabDisplayOrder, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
 
 const initialView = () => ({
   viewStart: 30, timebase: 20, gain: 1, verticalViewport: null,
@@ -144,6 +144,25 @@ test("shared group labels align with row baselines in compact, expanded, and ver
   assert.ok(Math.abs(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(0, 1).top - (28 + 800 * 1.5 / 2.75)) < 1e-9);
   assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(2, 3), null);
   assert.ok(Math.abs(style({ waveformVerticalViewport: { top: .5, bottom: 1 } })(2, 3).top - (28 + 800 * 1.25 / 2.75)) < 1e-9);
+});
+
+test("channel changes clamp focus to visible grouped rows while empty loading views retain session focus", () => {
+  let focused = 4, published;
+  const zoomViewRef = { current: { anatomicalGroups: true } };
+  const publish = compile(declaration("publishDisplay"), {
+    zoomViewRef, matlabDisplayOrder, centerDisplayWindow: (view) => view,
+    clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
+    setFocusedChannel: (update) => { focused = update(focused); }, setDisplay: (view) => { published = view; },
+  }, "publishDisplay");
+  const next = { labels: ["LA1", "LA2", "ECG1", "ECG2", "ECG3"] };
+  publish(next);
+  assert.equal(focused, 1, "hidden auxiliary rows cannot leave focus outside the visible channel list");
+  assert.equal(published, next, "grouping never discards prepared samples");
+  focused = 7; publish({ labels: [] });
+  assert.equal(focused, 7, "clearing old buffers while switching sessions must not reset saved focus");
+  focused = 4; zoomViewRef.current.anatomicalGroups = false; publish(next);
+  assert.equal(focused, 4, "publication follows the latest grouping choice during an in-flight read");
+
 });
 
 test("compact group rows, hit tests, scroll, and box zoom share the actual displayed positions", () => {
@@ -347,7 +366,7 @@ test("Ctrl/Cmd+Z and Shift+Z reach shared history from waveform, spectrogram, bu
       const onKey = compile(declaration("onKey"), {
         ...ui.scope, undo: ui.undo, redo: ui.redo,
         controlBindings: DEFAULT_CONTROLS, shortcutAction, canvasRef: { current: null }, markOnset: null,
-        showDirectorySessions: false, setShowDirectorySessions() {}, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
+        olderReviews: null, showDirectorySessions: false, setShowDirectorySessions() {}, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
         showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
         queueDetailEntry: null, confirmCommit: [],
       }, "onKey");

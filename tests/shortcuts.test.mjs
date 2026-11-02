@@ -87,14 +87,14 @@ function globalHarness(overrides = {}) {
   const canvas = { closest: () => null };
   const scope = {
     ...shortcuts, controlBindings: DEFAULT_CONTROLS, canvasRef: { current: canvas }, hasRecording: true,
-    showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
+    olderReviews: null, showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
     showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
     queueDetailEntry: null, confirmCommit: [], cursorLocked: false, cursorTime: 10, markOnset: null, importBusy: false, projectSaveBusy: false,
     selectedAnnotationIds: new Set(), selectedAnnotation: null, activeCandidateItem: null,
     dragAnnotationRef: {}, pendingAnnotationDragRef: {}, annotationSelectionRef: {},
     filteredQueueEntries: [], activeFilteredQueueIndex: 0, timebase: 10, LABEL_BY_ID: new Map([["ictal", { id: "ictal" }]]),
   };
-  for (const name of ["undo", "redo", "zoomTimeWindow", "moveSelectedAnnotations", "commitSelected", "placePaletteLabel", "setViewStartSafe", "notifyTutorialAction", "setToast", "setShowSettings", "setShowHelp", "setShowDirectorySessions", "setAnnotationDragPreview", "setAnnotationSelectionBox", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setSelection", "setInspectionRange", "setMarkOnset", "setCursorLocked", "setChannelSelectionActive", "setDragGhost", "setShowSessionContextPicker", "setActiveTool", "setBoxZoomActive"]) scope[name] = (...args) => calls.push([name, ...args]);
+  for (const name of ["undo", "redo", "zoomTimeWindow", "moveSelectedAnnotations", "commitSelected", "placePaletteLabel", "setViewStartSafe", "notifyTutorialAction", "setToast", "setShowSettings", "setOlderReviews", "setShowHelp", "setShowDirectorySessions", "setAnnotationDragPreview", "setAnnotationSelectionBox", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setSelection", "setInspectionRange", "setMarkOnset", "setCursorLocked", "setChannelSelectionActive", "setDragGhost", "setShowSessionContextPicker", "setActiveTool", "setBoxZoomActive"]) scope[name] = (...args) => calls.push([name, ...args]);
   Object.assign(scope, overrides);
   const expression = nodes.find((node) => ts.isVariableDeclaration(node) && node.name.getText(syntax) === "onKey").initializer.getText(syntax);
   const handler = compileHandler(expression, scope);
@@ -155,6 +155,18 @@ test("directory modal blocks viewer shortcuts and only dismisses when idle", () 
   assert.deepEqual(remapped.calls, []);
   remapped.press("F2");
   assert.deepEqual(remapped.calls, [["setShowDirectorySessions", false]]);
+});
+
+test("older-review restore blocks background editing, history and navigation, and Escape closes it", () => {
+  for (const olderReviews of [[], [{ key: "saved-review" }]]) {
+    const ui = globalHarness({ olderReviews, selectedAnnotationIds: new Set(["selected"]),
+      deleteSelectedAnnotations: () => assert.fail("restore dialog must protect current annotations") });
+    for (const [value, options] of [["ArrowRight"], ["s"], ["Enter"], ["Delete"], ["z", { ctrlKey: true }]]) ui.press(value, options);
+    assert.equal(ui.press("=", { ctrlKey: true }).prevented, true);
+    assert.deepEqual(ui.calls, []);
+    ui.press("Escape");
+    assert.deepEqual(ui.calls, [["setOlderReviews", null]]);
+  }
 });
 
 test("queue shortcuts follow filtered labels while preserving original queue indices", () => {

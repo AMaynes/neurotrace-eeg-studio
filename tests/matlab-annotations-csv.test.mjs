@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
+import { detectRecordingChannelModality } from "../app/bids-companions.ts";
 import {
   MATLAB_ANNOTATION_COLUMNS, matlabAnnotationRows, matlabCsvNumber, formatMatlabTimestamp,
   serializeMatlabAnnotations, parseMatlabAnnotations, mergeMatlabAnnotationRows,
@@ -203,4 +204,42 @@ test("bad-channel notes survive real local-recovery migration and queue reconcil
   assert.equal(migrated[0].badChannels, "  A1, A7  ");
   const restored = reconcileCandidateQueue([{ ...candidate, badChannels: "" }], migrated, 0);
   assert.equal(restored.candidates[0].badChannels, "  A1, A7  ");
+});
+
+test("model-ready export retains mixed-rate reviews and lists only the files it can represent", () => {
+  for (const mixed of [false, true]) {
+    const data = input();
+    Object.assign(data.meta, { id: "review", format: "edf+", durationSec: 200, channelUnits: Array(128).fill("µV") });
+    if (mixed) data.meta.sampleRates[127] = 200;
+    Object.assign(data.annotations[0], { id: "accepted", geometry: "interval", track: "instance", confidence: 100,
+      channels: [0], origin: "manual", reviewer: "AM", notes: "Accepted review", channelScope: { primarySourceIndex: 0, sourceIndices: [0], montage: "referential" } });
+    let files, downloaded, toast;
+    const env = { ...data, sourceVerificationRef: { current: false }, companionBundle: { channels: [] },
+      primaryFile: null, sourceHash: "local-v1:test", rawSourceHash: "", recordingType: "EEG", montage: "referential",
+      filters: {}, gain: 1, snapMode: "none", traceDisplayMode: "clamped",
+      detectRecordingChannelModality, matlabAnnotationRows, serializeMatlabAnnotations,
+      createStoredZip: (entries) => { files = new Map(entries.map(({ name, content }) => [name.replace("review/", ""), content])); return "archive"; },
+      downloadBlob: (name, blob) => { downloaded = [name, blob]; }, setToast: (message) => { toast = message; },
+    };
+    const helpers = ["primarySampleRate", "patientLabel", "recordingLabel", "annotationLabel", "annotationGeometry",
+      "annotationOverlapsWindow", "tsvCell", "csvCell"].map((name) => functions.get(name).getText(ast)).join("\n");
+    const code = `const LABELS = ${variables.get("LABELS").getText(ast)};\nconst LABEL_BY_ID = new Map(LABELS.map(label => [label.id, label]));\n${helpers}\nconst run = ${variables.get("exportBundle").getText(ast)};`;
+    evaluate(code, "run", env)();
+    assert.deepEqual(downloaded, ["review_model_ready.zip", "archive"], toast);
+    assert.match(files.get("events.tsv"), /accepted\t98\.125000/);
+    const [candidateHeader, candidateValues] = files.get("candidate_events.tsv").split("\n").map(line => line.split("\t"));
+    assert.equal(candidateValues[candidateHeader.indexOf("bad_channels")], "  A1, A7  ");
+    const annotation = JSON.parse(files.get("annotations.jsonl"));
+    assert.equal(annotation.start_sample, 98125);
+    assert.equal(annotation.sample_rate_basis_hz, 1000);
+    assert.equal(JSON.parse(files.get("recording.json")).sampling_frequency, mixed ? null : 1000);
+    const manifest = JSON.parse(files.get("manifest.json"));
+    assert.equal(manifest.files.includes("matlab_compatibility.csv"), !mixed);
+    assert.equal(files.has("matlab_compatibility.csv"), !mixed);
+    assert.ok(manifest.files.every(name => files.has(name)));
+    if (mixed) {
+      assert.match(files.get("README.txt"), /omitted because the source has multiple sampling rates/);
+      assert.match(toast, /MATLAB CSV omitted/);
+    } else assert.equal(parseMatlabAnnotations(files.get("matlab_compatibility.csv")).length, 1);
+  }
 });

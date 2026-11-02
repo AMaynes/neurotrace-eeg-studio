@@ -355,6 +355,7 @@ async function loadHarness({ recovered, projectReview, edf = false } = {}) {
     ...recovery, EDFSource, RawDatSource, localRecordingIdentity, recordingLabelAnnotations, mergeRecordingLabels,
     activeSessionId: "active", activeSessionIdRef: { current: "active" },
     pendingProjectImportRef: { current: projectReview ? { review: projectReview } : null },
+    pendingEdfReviewNavigationRef: { current: null }, zoomViewRef: { current: { timebase: 20 } },
     sourceVerificationAbortRef: { current: null }, sourceVerificationRef: { current: false },
     displayPreviewReadyRef: { current: false }, sourceRef: { current: previous.source },
     sessionSnapshotsRef: { current: new Map([["active", previous]]) },
@@ -363,7 +364,7 @@ async function loadHarness({ recovered, projectReview, edf = false } = {}) {
     undoRef: { current: [] }, redoRef: { current: [] }, zoomGestureRef: { current: {} }, pendingZoomScrollRef: { current: 0 },
     DEFAULT_FILTERS: { enabled: false }, EMPTY_DISPLAY: {},
     useCallback: (callback) => callback, storeActiveSession() {}, cancelPendingViewFrames() {},
-    commitViewStart() {}, detachDirectorySession() {}, shortFileName: (name) => name,
+    commitViewStart(value) { state.viewStart = value; }, detachDirectorySession() {}, shortFileName: (name) => name,
     emptyBidsCompanionBundle: () => ({}), recordingOverviewPlan: () => null,
     clamp: (n, min, max) => Math.min(max, Math.max(min, n)),
     performanceDiagnostics: { beginSourceRead: diagnostics, beginDecode: diagnostics },
@@ -426,7 +427,7 @@ test("EDF opens for editing while its annotation metadata remains pending", asyn
   assert.equal(h.scope.recordingLabelsImportedRef.current, false, "metadata can be imported later without losing labels");
 });
 
-function startBackground(h) {
+function startBackground(h, overrides = {}) {
   let callback;
   function visit(node) {
     if (ts.isCallExpression(node) && node.expression.getText(syntax) === "useEffect"
@@ -440,7 +441,7 @@ function startBackground(h) {
     buildBackgroundRecordingOverview: () => assert.fail("background timer has not fired"),
     setMeta: (update) => { h.state.setMeta = update(h.state.setMeta); },
     setAnnotations: (next) => { h.state.setAnnotations = next; },
-    setCandidates: (next) => { h.state.setCandidates = next; }, setActiveCandidate() {},
+    setCandidates: (next) => { h.state.setCandidates = next; }, setActiveCandidate() {}, ...overrides,
   };
   const js = ts.transpileModule(`const effect = ${callback};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   return new Function(...Object.keys(scope), `${js}; return effect();`)(...Object.values(scope));
@@ -471,6 +472,41 @@ test("closing or switching a recording rejects its late label publications", asy
   h.labelRead.resolve([{ label: "Late marker", timeSec: 2, source: "edf+" }]);
   await tick();
   assert.deepEqual(h.state.setAnnotations, [{ id: "other-review" }]);
+});
+
+test("new EDF recordings resume the active source event after delayed label discovery", async () => {
+  const h = await loadHarness({ edf: true });
+  await h.operation;
+  h.source.meta.durationSec = 1000;
+  const restored = [
+    { id: "edf-cand-0-120000", time: 120, label: "Seizure", status: "reviewed" },
+    { id: "edf-cand-1-600000", time: 600, label: "Seizure", status: "active" },
+  ];
+  const cleanup = startBackground(h, { candidatesRef: { current: restored }, activeCandidateIndexRef: { current: 1 } });
+  h.labelRead.resolve([{ label: "Seizure", timeSec: 120 }, { label: "Seizure", timeSec: 600 }]);
+  await tick();
+  assert.equal(h.state.viewStart, 590);
+  assert.equal(h.state.setCursorTime, 600);
+  assert.equal(h.state.setCursorLocked, true);
+  assert.equal(h.scope.pendingEdfReviewNavigationRef.current, null);
+  cleanup();
+});
+
+test("late EDF discovery preserves a user-changed view and a restored tab's position", async () => {
+  for (const restoredTab of [false, true]) {
+    const h = await loadHarness({ edf: true });
+    await h.operation;
+    h.source.meta.durationSec = 1000;
+    if (restoredTab) h.scope.pendingEdfReviewNavigationRef.current = null;
+    const cleanup = startBackground(h);
+    h.state.viewStart = 40;
+    if (!restoredTab) h.scope.zoomViewRef.current = { timebase: 20, viewStart: 40 };
+    h.labelRead.resolve([{ label: "Seizure", timeSec: 600 }]);
+    await tick();
+    assert.equal(h.state.viewStart, 40);
+    assert.equal(h.state.setCandidates.length, 1);
+    cleanup();
+  }
 });
 
 test("explicit old-review recovery backs up the current review and never deletes the old entry", () => {
