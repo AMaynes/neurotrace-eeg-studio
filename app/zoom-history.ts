@@ -9,6 +9,7 @@ export type ZoomView = {
   gain: number;
   verticalViewport: NormalizedVerticalViewport | null;
   expandedChannels: boolean;
+  anatomicalGroups?: boolean;
   channelScrollTop: number;
   frequencyRange: SpectrogramFrequencyRange;
 };
@@ -23,6 +24,7 @@ export function sameZoomView(a: ZoomView, b: ZoomView): boolean {
   return a.viewStart === b.viewStart && a.timebase === b.timebase && a.gain === b.gain
     && a.verticalViewport?.top === b.verticalViewport?.top && a.verticalViewport?.bottom === b.verticalViewport?.bottom
     && a.expandedChannels === b.expandedChannels && a.channelScrollTop === b.channelScrollTop
+    && Boolean(a.anatomicalGroups) === Boolean(b.anatomicalGroups)
     && a.frequencyRange.min === b.frequencyRange.min && a.frequencyRange.max === b.frequencyRange.max;
 }
 

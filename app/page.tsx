@@ -91,7 +91,7 @@ import { verifySourceOffThread } from "./source-integrity-worker-client";
 import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { parseRecordingTimestamp } from "./recording-timestamp";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
-import { buildChannelRowLayout, channelRowFromFraction, orderElectrodeDisplayRows } from "./channel-layout";
+import { buildChannelRowLayout, channelRowFromFraction, matlabDisplayGroup, orderMatlabDisplayRows, remapDisplayFocus } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
 import {
   RecordingOverviewCache,
@@ -491,6 +491,7 @@ type SessionWorkspaceSnapshot = {
   snapMode: SnapMode;
   spectrogramOpen: boolean;
   expandedChannels: boolean;
+  anatomicalGroups: boolean;
   candidates: Candidate[];
   activeCandidate: number;
   sourceHash: string;
@@ -1670,6 +1671,7 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     snapMode: "none",
     spectrogramOpen: false,
     expandedChannels: false,
+    anatomicalGroups: false,
     waveformVerticalViewport: null,
     channelScrollTop: 0,
     spectrogramFrequencyRange: { min: 0, max: 150 },
@@ -1946,7 +1948,10 @@ export default function Home() {
   const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set());
   const [focusedChannel, setFocusedChannel] = useState(0);
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
-  const [display, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
+  const [anatomicalGroups, setAnatomicalGroups] = useState(false);
+  const [preparedDisplay, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
+  const display = useMemo(() => anatomicalGroups ? orderMatlabDisplayRows(preparedDisplay) : preparedDisplay,
+    [anatomicalGroups, preparedDisplay]);
   const [spectrogramState, setSpectrogramState] = useState<{
     requestKey: string;
     result: MatlabSpectrogramResult | null;
@@ -1989,10 +1994,10 @@ export default function Home() {
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
   const [expandedChannels, setExpandedChannels] = useState(false);
   const [spectrogramFrequencyRange, setSpectrogramFrequencyRange] = useState<SpectrogramFrequencyRange>({ min: 0, max: 150 });
-  const zoomViewRef = useRef<ZoomView>({ viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: 0, frequencyRange: spectrogramFrequencyRange });
+  const zoomViewRef = useRef<ZoomView>({ viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, anatomicalGroups, channelScrollTop: 0, frequencyRange: spectrogramFrequencyRange });
   useLayoutEffect(() => {
-    zoomViewRef.current = { viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, channelScrollTop: channelScrollOffsetRef.current, frequencyRange: spectrogramFrequencyRange };
-  }, [viewStart, timebase, gain, waveformVerticalViewport, expandedChannels, spectrogramFrequencyRange]);
+    zoomViewRef.current = { viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, anatomicalGroups, channelScrollTop: channelScrollOffsetRef.current, frequencyRange: spectrogramFrequencyRange };
+  }, [viewStart, timebase, gain, waveformVerticalViewport, expandedChannels, anatomicalGroups, spectrogramFrequencyRange]);
   useLayoutEffect(() => {
     const scrollTop = pendingZoomScrollRef.current;
     if (scrollTop === null || !waveformScrollRef.current) return;
@@ -2110,6 +2115,8 @@ export default function Home() {
   const matlabAnatomicalLayout = meta.format === "raw-int16-le"
     || recordingType === "SEEG / iEEG"
     || recordingType === "Simultaneous scalp + iEEG";
+  const anatomicalGroupsAvailable = (matlabAnatomicalLayout || bipolarMontageKind(meta.channelLabels) === "anatomical")
+    && meta.channelLabels.some((label) => matlabDisplayGroup(label) !== null);
   const legacyRawCountDisplay = meta.format === "raw-int16-le"
     && sourceInterpretation?.display_amplitude_mode === "legacy-raw-counts";
   const datPhysicalScaleValid = datMapping.physicalScale === ""
@@ -2125,8 +2132,8 @@ export default function Home() {
   }, [datChannelNamesText, datMapping.channelCount]);
   const datLayout = pendingDat ? describeRawDatLayout(pendingDat.size, datMapping.channelCount, datMapping.sampleRate) : null;
   const channelRowLayout = useMemo(
-    () => buildChannelRowLayout(display.labels, matlabAnatomicalLayout),
-    [display.labels, matlabAnatomicalLayout],
+    () => buildChannelRowLayout(display.labels, anatomicalGroups),
+    [display.labels, anatomicalGroups],
   );
   const activeCandidateOnset = activeCandidateAnnotation?.start ?? markOnset;
   const activeCandidateOffset = activeCandidateAnnotation?.end ?? null;
@@ -2368,6 +2375,7 @@ export default function Home() {
       snapMode,
       spectrogramOpen,
       expandedChannels,
+      anatomicalGroups,
       waveformVerticalViewport,
       channelScrollTop: pendingZoomScrollRef.current ?? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current,
       spectrogramFrequencyRange,
@@ -2406,7 +2414,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
+  }, [activeCandidate, activeSessionId, anatomicalGroups, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2484,6 +2492,7 @@ export default function Home() {
     setSnapMode(snapshot.snapMode);
     setSpectrogramOpen(snapshot.spectrogramOpen);
     setExpandedChannels(snapshot.expandedChannels ?? false);
+    setAnatomicalGroups(snapshot.anatomicalGroups ?? false);
     setCandidates(snapshot.candidates);
     setActiveCandidate(snapshot.activeCandidate);
     setSourceHash(snapshot.sourceHash);
@@ -2643,6 +2652,13 @@ export default function Home() {
 
   const applyZoomView = useCallback((view: ZoomView) => {
     view = { ...view, gain: normalizeDisplayGain(view.gain) };
+    if (Boolean(view.anatomicalGroups) !== anatomicalGroups) {
+      const nextDisplay = view.anatomicalGroups ? orderMatlabDisplayRows(preparedDisplay) : preparedDisplay;
+      const nextFocus = remapDisplayFocus(display, nextDisplay, focusedChannel);
+      setFocusedChannel(Math.max(0, nextFocus));
+      if (nextFocus < 0) setChannelSelectionActive(false);
+      setAnatomicalGroups(Boolean(view.anatomicalGroups));
+    }
     cancelPendingViewFrames();
     if (view.timebase !== zoomViewRef.current.timebase) setWindowDraftValue(null);
     zoomViewRef.current = view;
@@ -2655,7 +2671,7 @@ export default function Home() {
     setSpectrogramFrequencyRange(view.frequencyRange);
     setInspectionRange(null);
     setInspectionDragging(false);
-  }, [cancelPendingViewFrames, commitViewStart]);
+  }, [anatomicalGroups, cancelPendingViewFrames, commitViewStart, display, focusedChannel, preparedDisplay]);
 
   const changeZoomView = useCallback((patch: Partial<ZoomView>, group?: string) => {
     if (!hasRecording) return;
@@ -3350,7 +3366,7 @@ export default function Home() {
       try {
         const publishDisplay = (next: DisplayWindow) => {
           const centered = centerDisplayWindow(next);
-          setDisplay(matlabAnatomicalLayout ? orderElectrodeDisplayRows(centered) : centered);
+          setDisplay(centered);
         };
         if (!filters.enabled) {
           const key = JSON.stringify([displaySettingsKey, signalViewStart, timebase, waveformWidth, indices]);
@@ -4694,7 +4710,7 @@ export default function Home() {
 
   const channelRailRowStyle = useCallback((channel: number): React.CSSProperties | null => {
     if (!waveformVerticalViewport || expandedChannels) {
-      return { gridRow: `${channelRowLayout.rowGridLines[channel]} / span 1` };
+      return { gridColumn: 1, gridRow: `${channelRowLayout.rowGridLines[channel]} / span 1` };
     }
     const contentTop = channelRowLayout.rowStartUnits[channel] / channelRowLayout.totalUnits;
     const contentBottom = (channelRowLayout.rowStartUnits[channel] + 1) / channelRowLayout.totalUnits;
@@ -4712,6 +4728,17 @@ export default function Home() {
       height: Math.max(1, (clippedBottom - clippedTop) * plotHeight),
     };
   }, [channelRowLayout, channelViewportHeight, expandedChannels, waveformVerticalViewport]);
+
+  const channelGroupLabelStyle = (startRow: number, endRow: number): React.CSSProperties | null => {
+    if (!waveformVerticalViewport || expandedChannels) {
+      return { gridColumn: 1, gridRow: `${channelRowLayout.rowGridLines[startRow]} / ${channelRowLayout.rowGridLines[endRow] + 1}` };
+    }
+    const midpoint = (channelRowLayout.rowStartUnits[startRow] + channelRowLayout.rowStartUnits[endRow] + 1)
+      / (2 * channelRowLayout.totalUnits);
+    const screenMidpoint = projectVerticalFraction(midpoint, waveformVerticalViewport);
+    if (screenMidpoint < 0 || screenMidpoint > 1) return null;
+    return { position: "absolute", top: CHANNEL_RAIL_HEADER_HEIGHT + screenMidpoint * Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT), transform: "translateY(-50%)" };
+  };
 
   const timeFromPointer = useCallback((event: { clientX: number }, element: HTMLElement, row: number, bypass = false) => {
     const rect = element.getBoundingClientRect();
@@ -5496,6 +5523,7 @@ export default function Home() {
     commitViewStart(0);
     setGain(1);
     setMontage("referential");
+    setAnatomicalGroups(false);
     setFilters({ ...DEFAULT_FILTERS });
     setCursorTime(0);
     setCursorLocked(false);
@@ -6026,6 +6054,7 @@ export default function Home() {
       }
       if (typeof workspace.spectrogramOpen === "boolean") setSpectrogramOpen(workspace.spectrogramOpen);
       if (typeof workspace.expandedChannels === "boolean") setExpandedChannels(workspace.expandedChannels);
+      if (typeof workspace.anatomicalGroups === "boolean") setAnatomicalGroups(workspace.anatomicalGroups);
       if (workspace.controlBindings && typeof workspace.controlBindings === "object" && !Array.isArray(workspace.controlBindings)) {
         setControlBindings(normalizeControlBindings(workspace.controlBindings));
       }
@@ -7604,6 +7633,14 @@ export default function Home() {
             <span className="toolbar-kicker">Signal tools</span>
             <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} data-tutorial="spectrogram-toggle" aria-label="Spectrogram" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
             <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">{bipolarMontageLabel(meta.channelLabels)}</option></select></label>
+            <button
+              className={`compact-toggle ${anatomicalGroups ? "active" : ""}`}
+              aria-label="Anatomical channel groups"
+              aria-pressed={anatomicalGroups}
+              disabled={!hasRecording || (!anatomicalGroups && !anatomicalGroupsAvailable)}
+              title={anatomicalGroups ? "Show channels without grouping" : anatomicalGroupsAvailable ? "Group anatomical channels as in MATLAB" : "No anatomical channel groups available"}
+              onClick={() => changeZoomView({ anatomicalGroups: !anatomicalGroups, verticalViewport: null, channelScrollTop: 0 })}
+            >Groups</button>
             <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
             <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
               <span className="window-control-label">Window</span>
@@ -7797,7 +7834,7 @@ export default function Home() {
               style={{ "--channel-content-height": `${Math.max(245, channelRowLayout.totalUnits * 60 + 28)}px` } as React.CSSProperties}
               onScroll={updateExpandedChannelViewport}
             >
-              <div className={`channel-rail ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
+              <div className={`channel-rail ${anatomicalGroups ? "anatomical-groups" : ""} ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
                 <button className="channel-manager-button" data-tutorial="channels" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
                 <button
                   className={`channel-layout-button ${expandedChannels || waveformVerticalViewport ? "active" : ""}`}
@@ -7826,13 +7863,18 @@ export default function Home() {
                     className={`${focused ? "focused" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
                     style={rowStyle}
                     aria-pressed={focused}
-                    title={!displayReadoutReady ? "Signal readout unavailable" : formatCursorAmplitude(rowReadout)}
+                    aria-label={anatomicalGroups ? label : undefined}
+                    title={`${anatomicalGroups ? `${label} · ` : ""}${!displayReadoutReady ? "Signal readout unavailable" : formatCursorAmplitude(rowReadout)}`}
                     onClick={() => {
                       setFocusedChannel(index);
                       setChannelSelectionActive(true);
                       notifyTutorialAction("channel-focused");
                     }}
-                  ><strong>{formatDisplayChannelLabel(label)}</strong><span>{!displayReadoutReady ? "—" : rowReadout.kind === "range" ? "Overview range" : formatCursorAmplitude(rowReadout)}</span></button>;
+                  ><strong>{anatomicalGroups ? channelRowLayout.contactLabels[index] : formatDisplayChannelLabel(label)}</strong>{!anatomicalGroups && <span>{!displayReadoutReady ? "—" : rowReadout.kind === "range" ? "Overview range" : formatCursorAmplitude(rowReadout)}</span>}</button>;
+                })}
+                {channelRowLayout.groups.map(({ name, startRow, endRow }) => {
+                  const style = channelGroupLabelStyle(startRow, endRow);
+                  return style && <div key={`${name}-${startRow}`} className="channel-group-label" style={style} aria-hidden="true">{name}</div>;
                 })}
               </div>
               <div className="canvas-column">

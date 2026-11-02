@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
-import { composeVerticalViewport } from "../app/waveform-viewport.ts";
+import { composeVerticalViewport, projectVerticalFraction } from "../app/waveform-viewport.ts";
 import { DEFAULT_CONTROLS, shortcutAction } from "../app/shortcuts.ts";
 import { normalizeDisplayGain } from "../app/display-gain.ts";
+import { buildChannelRowLayout, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
 
 const initialView = () => ({
   viewStart: 30, timebase: 20, gain: 1, verticalViewport: null,
@@ -81,7 +82,8 @@ function workspace(overrides = {}) {
   };
   const changes = [], canceled = [];
   const scope = {
-    ...refs, recordZoomChange, normalizeDisplayGain, useCallback: (callback) => callback,
+    ...refs, recordZoomChange, normalizeDisplayGain, orderMatlabDisplayRows, remapDisplayFocus, useCallback: (callback) => callback,
+    anatomicalGroups: false, preparedDisplay: null, display: null, focusedChannel: 0,
     hasRecording: true, meta: { durationSec: 300 }, minimumRenderableWindow: 0.1,
     timebase: 20, WINDOW_ZOOM_STEP_SECONDS: 0.1,
     clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
@@ -91,7 +93,7 @@ function workspace(overrides = {}) {
     notifyTutorialAction: () => {}, ...overrides,
   };
   for (const name of ["setPlaying", "setTimebase", "setWindowDraftValue", "setGain", "setWaveformVerticalViewport",
-    "setExpandedChannels", "setSpectrogramFrequencyRange", "setInspectionRange", "setInspectionDragging",
+    "setExpandedChannels", "setAnatomicalGroups", "setFocusedChannel", "setChannelSelectionActive", "setSpectrogramFrequencyRange", "setInspectionRange", "setInspectionDragging",
     "setAnnotations", "setCandidates", "setActiveCandidate", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setToast"]) {
     scope[name] = (value) => changes.push([name, value]);
   }
@@ -99,6 +101,50 @@ function workspace(overrides = {}) {
   const api = compile(names.map(declaration).join("\n"), scope, `{${names.join(",")}}`);
   return { ...api, refs, scope, changes, canceled };
 }
+
+test("real grouping memo and toggle preserve focus and restore exactly the original prepared display", () => {
+  const labels = ["RA10", "LA3", "RA2", "LA1", "ECG1"];
+  const preparedDisplay = { labels,
+    data: labels.map((_, i) => new Float64Array([i, i + .5])),
+    traceBaselines: labels.map((_, i) => i), envelopes: labels.map(() => null),
+    sampleRates: labels.map(() => 100), sourceSampleRates: labels.map(() => 200),
+    startSecs: labels.map(() => .005), units: labels.map(() => "uV"),
+    sourceIndices: labels.map((_, i) => [i]), primarySourceIndices: labels.map((_, i) => i) };
+  const render = (anatomicalGroups) => compile(declaration("display"), { useMemo: (fn) => fn(), anatomicalGroups, preparedDisplay, orderMatlabDisplayRows }, "display");
+  const grouped = render(true);
+  assert.deepEqual(grouped.labels, ["LA3", "LA1", "RA10", "RA2"]);
+  assert.equal(render(false), preparedDisplay, "off restores the same object and sample buffers");
+  for (const [enabled, focusedChannel, expectedFocus] of [[true, 0, 2], [false, 2, 0], [true, 4, 0]]) {
+    const ui = workspace({ anatomicalGroups: !enabled, preparedDisplay, display: enabled ? preparedDisplay : grouped, focusedChannel });
+    ui.refs.zoomViewRef.current = { ...initialView(), anatomicalGroups: !enabled };
+    ui.changeZoomView({ anatomicalGroups: enabled, verticalViewport: null, channelScrollTop: 0 });
+    assert.ok(ui.changes.some(([name, value]) => name === "setAnatomicalGroups" && value === enabled));
+    assert.ok(ui.changes.some(([name, value]) => name === "setFocusedChannel" && value === expectedFocus));
+    assert.equal(ui.changes.some(([name]) => name === "setChannelSelectionActive"), focusedChannel === 4);
+  }
+  const ui = workspace({ preparedDisplay, display: preparedDisplay });
+  ui.refs.zoomViewRef.current = { ...initialView(), anatomicalGroups: false, verticalViewport: { top: .2, bottom: .5 }, channelScrollTop: 240 };
+  ui.refs.channelScrollOffsetRef.current = 240;
+  ui.changeZoomView({ anatomicalGroups: true, verticalViewport: null, channelScrollTop: 0 });
+  assert.equal(ui.refs.undoRef.current.length, 1);
+  ui.undo();
+  assert.equal(ui.readZoomView().anatomicalGroups, false);
+  assert.deepEqual(ui.readZoomView().verticalViewport, { top: .2, bottom: .5 });
+  assert.equal(ui.refs.pendingZoomScrollRef.current, 240);
+  ui.redo(); assert.equal(ui.readZoomView().anatomicalGroups, true);
+});
+
+test("shared group labels align with row baselines in compact, expanded, and vertically zoomed views", () => {
+  const channelRowLayout = buildChannelRowLayout(["LA3", "LA1", "RA10", "RA2"], true);
+  const base = { channelRowLayout, channelViewportHeight: 828, CHANNEL_RAIL_HEADER_HEIGHT: 28,
+    expandedChannels: false, waveformVerticalViewport: null, projectVerticalFraction };
+  const style = (overrides = {}) => compile(declaration("channelGroupLabelStyle"), { ...base, ...overrides }, "channelGroupLabelStyle");
+  assert.deepEqual(style()(0, 1), { gridColumn: 1, gridRow: "1 / 3" });
+  assert.deepEqual(style({ expandedChannels: true })(2, 3), { gridColumn: 1, gridRow: "4 / 6" });
+  assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .25 } })(0, 1).top, 428);
+  assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .25 } })(2, 3), null);
+  assert.equal(style({ waveformVerticalViewport: { top: .75, bottom: 1 } })(2, 3).top, 428);
+});
 
 test("real undo/redo follows label → zoom → label chronologically without cross-restoring state", () => {
   const ui = workspace();
@@ -262,7 +308,7 @@ test("Ctrl/Cmd+Z and Shift+Z reach shared history from waveform, spectrogram, bu
 test("session snapshots preserve zoom axes with their own histories; new recordings reset both", () => {
   const store = declaration("storeActiveSession");
   const restore = declaration("applySessionSnapshot");
-  for (const field of ["waveformVerticalViewport", "spectrogramFrequencyRange", "channelScrollTop"]) {
+  for (const field of ["waveformVerticalViewport", "spectrogramFrequencyRange", "channelScrollTop", "anatomicalGroups"]) {
     assert.ok(store.includes(field), `${field} stored per session`);
     assert.ok(restore.includes(`snapshot.${field}`), `${field} restored per session`);
   }

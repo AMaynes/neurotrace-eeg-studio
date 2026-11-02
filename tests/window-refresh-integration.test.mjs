@@ -112,7 +112,7 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
     envelopeWindowCacheRef: { current: rawDetail ? [{ source, channelKey: "0,1", startSec: 0, endSec: duration, levels: [rawEnvelope(source, 40)], byteLength: 2048 * 2 * 17 }] : [] },
     matlabWindowCacheRef: { current: [] }, setDisplay: (display) => displays.push(display), setLoadingSignal: (value) => loading.push(value),
     setFocusedChannel: (update) => { focused = update(focused); }, setToast: (message) => toasts.push(message),
-    filters: { enabled: false }, montage: "referential", selectedChannels: new Set([0, 1]), hasRecording: true, matlabAnatomicalLayout: false, meta: source.meta,
+    filters: { enabled: false }, montage: "referential", selectedChannels: new Set([0, 1]), hasRecording: true, matlabAnatomicalLayout: false, anatomicalGroups: false, meta: source.meta,
     signalViewStart: 0, timebase: duration, waveformWidth: 1600, verifyingSource: verifying, recordingOverviewRevision: 0,
   };
   const execute = new Function(...Object.keys(env), effectCode);
@@ -165,6 +165,16 @@ test("publishing a prepared window centers it without rereading or rebuilding", 
   assert.equal(h.readers.length, 1);
   assert.equal(h.displays.length, 1);
   assert.deepEqual(h.toasts, []);
+  h.dispose();
+});
+
+test("grouping on/off does not cancel processing, read data again, or recompute the prepared window", async () => {
+  const h = await harness(); h.render(); const request = h.calls[0];
+  h.render({ anatomicalGroups: true });
+  assert.equal(request.options.signal.aborted, false); assert.equal(h.calls.length, 1);
+  request.finish(50); await tick(); const display = h.displays.at(-1);
+  for (const anatomicalGroups of [false, true, false]) h.render({ anatomicalGroups });
+  assert.equal(h.calls.length, 1); assert.equal(h.readers.length, 1); assert.equal(h.displays.at(-1), display);
   h.dispose();
 });
 

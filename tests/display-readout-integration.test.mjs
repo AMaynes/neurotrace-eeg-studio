@@ -71,7 +71,7 @@ function harness(overrides = {}) {
     useMemo: (compute) => compute(), display: display(), focusedChannel: 0, cursorTime: 10.25,
     meta: { id: "test-recording" }, montage: "referential", filters: { enabled: false }, selectedChannels: new Set([0]),
     loadingSignal: false, cursorAmplitude: 999999, signalViewStart: 10, timebase: 1,
-    channelSelectionActive: true, inspectionDragging: false, inspectionRange: null,
+    channelSelectionActive: true, inspectionDragging: false, inspectionRange: null, anatomicalGroups: false,
     channelRailRowStyle: () => ({}), channelRowLayout: { groupStarts: new Set() },
     setFocusedChannel() {}, setChannelSelectionActive() {}, notifyTutorialAction() {},
     ...overrides,
@@ -233,12 +233,13 @@ test("progressive overview, refined overview, and exact samples all publish thei
 
 test("cursor readout dependencies are initialized before first-render evaluation", () => {
   const readoutPosition = variables.get("cursorReadout").pos;
-  for (const name of ["display", "focusedChannel", "loadingSignal", "cursorTime"]) {
+  for (const name of ["preparedDisplay", "anatomicalGroups", "focusedChannel", "loadingSignal", "cursorTime"]) {
     const dependency = calls.find((call) => call.parent && ts.isVariableDeclaration(call.parent)
       && ts.isArrayBindingPattern(call.parent.name)
       && call.parent.name.elements.some((element) => ts.isBindingElement(element) && element.name.getText(syntax) === name));
     assert.ok(dependency?.pos < readoutPosition, `${name} state is initialized before the derived readout`);
   }
+  assert.ok(variables.get("display").pos < readoutPosition, "grouped display memo exists before readout evaluation");
   assert.ok(variables.get("displaySettingsKey").pos < variables.get("displayReadoutReady").pos);
   assert.ok(variables.get("displayReadoutReady").pos < readoutPosition);
   const empty = harness({ cursorTime: 0, display: display({ data: [], labels: [], units: [], envelopes: [] }) });
