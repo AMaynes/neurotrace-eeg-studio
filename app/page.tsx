@@ -8,7 +8,7 @@
  * Architectural Relationships
  * Called by: The root application route through app/layout.tsx.
  * Calls: Browser signal sources in eeg-core.ts plus display-processing and
- * source-integrity workers for CPU-heavy clinical preparation and hashing.
+ * background workers for signal preparation and overview indexing.
  *
  * External Resources
  * Browser File/Blob APIs, localStorage, Canvas 2D, and public/og.png via layout metadata.
@@ -83,11 +83,11 @@ import { buildMatlabDisplayWindow, type MatlabDisplayWindow } from "./matlab-dis
 import { createMatlabFileReader, type MatlabFileReader } from "./matlab-file-reader";
 import {
   PerformanceDiagnosticsCollector,
-  type DiagnosticsOperationHandle,
   type PerformanceDiagnosticsSnapshot,
 } from "./performance-diagnostics";
-import { sha256Blob } from "./source-integrity";
-import { verifySourceOffThread } from "./source-integrity-worker-client";
+import { localRecordingIdentity, recordingReferenceMatches } from "./local-recording-identity";
+import { buildBackgroundRecordingOverview } from "./background-recording-overview";
+import { listOlderBrowserReviews, type BrowserReviewEntry } from "./legacy-browser-recovery";
 import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { parseRecordingTimestamp } from "./recording-timestamp";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
@@ -1076,7 +1076,7 @@ function parseRecoveryProject(raw: string, durationSec: number, channelCount: nu
   };
 }
 
-/** Read-only label preview; verified recovery remains authoritative after hashing. */
+/** Initial source labels; saved review edits and deletions remain authoritative. */
 function previewSourceAnnotations(source: SignalSource, imported: readonly Annotation[], projectReview: unknown) {
   const { durationSec, channelLabels } = source.meta;
   const detected = recordingLabelAnnotations(detectedRecordingLabels(source), durationSec, channelLabels);
@@ -1777,14 +1777,14 @@ function sourceReadProfile(format: RecordingMeta["format"], hasRecording: boolea
     return {
       origin: "Local browser file",
       access: "Worker-indexed EDF record slices",
-      detail: "The integrity pass also builds a reusable full-session extrema index; finer uncached views read only bounded record slices.",
+      detail: "A background task builds the full-session overview; finer uncached views read only bounded record slices.",
     };
   }
   if (format === "raw-int16-le") {
     return {
       origin: "Local browser file",
       access: "Worker-indexed DAT frame slices",
-      detail: "The integrity pass also builds a reusable full-session extrema index; finer uncached views read only bounded frame slices.",
+      detail: "A background task builds the full-session overview; finer uncached views read only bounded frame slices.",
     };
   }
   if (format === "mat-v5") {
@@ -1832,6 +1832,7 @@ export default function Home() {
   const directoryImportRunnerRef = useRef<(files: File[], format: DirectoryImportFormat) => Promise<DirectorySessionStatus | undefined>>(async () => undefined);
   const sourceVerificationRef = useRef(false);
   const sourceVerificationAbortRef = useRef<AbortController | null>(null);
+  const overviewBuildSourceRef = useRef<SignalSource | null>(null);
   const flushSessionRef = useRef<() => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const waveformWidthRef = useRef(1);
@@ -2074,6 +2075,9 @@ export default function Home() {
   const [reviewer, setReviewer] = useState("");
   const [sourceHash, setSourceHash] = useState("");
   const [rawSourceHash, setRawSourceHash] = useState("");
+  const [olderReviews, setOlderReviews] = useState<BrowserReviewEntry[] | null>(null);
+  const [olderReviewKey, setOlderReviewKey] = useState("");
+  const [olderReviewError, setOlderReviewError] = useState("");
   const [sourceInterpretation, setSourceInterpretation] = useState<Record<string, unknown> | null>(null);
   const [recoveryStatus, setRecoveryStatus] = useState<"saved" | "error">("saved");
   const [controlBindings, setControlBindings] = useState<ControlBindings>(DEFAULT_CONTROLS);
@@ -2195,7 +2199,7 @@ export default function Home() {
     : null;
   const queueDetailLabel = queueDetailAnnotation ? annotationLabel(queueDetailAnnotation) : null;
   const sourceHashDisplay = verifyingSource
-    ? "Verifying…"
+    ? "Opening…"
     : sourceHash.startsWith("demo:")
     ? sourceHash
     : `${sourceHash.slice(0, 8)}…${sourceHash.slice(-4)}`;
@@ -2214,8 +2218,8 @@ export default function Home() {
   const cancelSourceVerification = useCallback(() => {
     const controller = sourceVerificationAbortRef.current;
     if (!controller) return;
-    controller.abort(new DOMException("Source verification canceled", "AbortError"));
-    setToast("Canceling source verification…");
+    controller.abort(new DOMException("Recording load canceled", "AbortError"));
+    setToast("Canceling recording load…");
   }, []);
 
   useLayoutEffect(() => {
@@ -2755,7 +2759,7 @@ export default function Home() {
 
   const commitMutation = useCallback((mutator: (current: Annotation[]) => Annotation[]) => {
     if (sourceVerificationRef.current) {
-      setToast("Source verification is still running — browsing is available, review edits unlock when it completes");
+      setToast("The recording is still opening");
       return;
     }
     const current = annotationsRef.current;
@@ -2845,7 +2849,7 @@ export default function Home() {
       return;
     }
     if (sourceVerificationRef.current) {
-      setToast("Source verification is still running — review edits unlock when it completes");
+      setToast("The recording is still opening");
       return;
     }
     const samplingRate = sourceRateForDisplayRow(display, meta, targetRow);
@@ -3169,7 +3173,7 @@ export default function Home() {
 
   const commitAnnotation = useCallback((targetAnnotation: Annotation | null, force = false, advanceAfter = false) => {
     if (sourceVerificationRef.current) {
-      setToast("Source verification must finish before a revision can be committed");
+      setToast("The recording must finish opening before a revision can be committed");
       return false;
     }
     if (!targetAnnotation) return false;
@@ -3339,6 +3343,70 @@ export default function Home() {
     });
   }, [activeRecordingOverview, hasRecording, meta, selectedChannels, verifyingSource]);
 
+  // Optional work belongs to the active recording, not the import transaction.
+  // Switching/closing tabs cancels it; review edits and export stay available.
+  useEffect(() => {
+    if (!hasRecording || verifyingSource) return;
+    const source = sourceRef.current;
+    const overviewAbortController = new AbortController();
+    overviewBuildSourceRef.current = recordingOverviewCacheRef.current.get(source)?.complete ? null : source;
+    const isCurrent = () => !overviewAbortController.signal.aborted && sourceRef.current === source;
+    const publishRecordingOverview = (window: EnvelopeWindowData, complete = false) => {
+      if (overviewAbortController.signal.aborted) return;
+      if (recordingOverviewCacheRef.current.put(source, window, { complete }) && sourceRef.current === source) {
+        setActiveRecordingOverview(recordingOverviewCacheRef.current.get(source));
+        setRecordingOverviewRevision((revision) => revision + 1);
+      }
+    };
+    if (source instanceof EDFSource) {
+      // Only annotation ranges are needed. A failed/canceled old attempt can be
+      // retried when a tab becomes active again, without scanning EEG samples.
+      const loadLabels = () => source.loadAnnotations({ signal: overviewAbortController.signal });
+      void loadLabels().catch((error: unknown) => {
+        if (isCurrent() && isAbortFailure(error)) return loadLabels();
+        throw error;
+      }).then(() => {
+        if (!isCurrent()) return;
+        const detected = recordingLabelAnnotations(detectedRecordingLabels(source), source.meta.durationSec, source.meta.channelLabels);
+        const next = mergeRecordingLabels<Annotation>(annotationsRef.current, detected.annotations, recordingLabelsImportedRef.current);
+        recordingLabelsImportedRef.current = true;
+        annotationsRef.current = next;
+        setAnnotations(next);
+        const importedCandidates = source.events
+          .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec && isLegacySeizureCandidate(event.label))
+          .map((event, index): Candidate => ({ id: `edf-cand-${index}-${Math.round(event.timeSec * 1000)}`,
+            time: event.timeSec, label: event.label, source: "bronze", status: "queued", confidence: 0,
+            ictalChannels: "", legacyConfidence: "", reviewerInitials: "" }));
+        const queue = reconcileCandidateQueue(importedCandidates, candidatesRef.current, activeCandidateIndexRef.current);
+        candidatesRef.current = queue.candidates;
+        setCandidates(queue.candidates);
+        setActiveCandidate(queue.activeIndex);
+        setMeta((current) => ({ ...current, warnings: [...new Set([...current.warnings, ...source.meta.warnings, ...detected.warnings])] }));
+      }).catch((error: unknown) => {
+        if (!isCurrent()) return;
+        setMeta((current) => ({ ...current, warnings: [...new Set([...current.warnings,
+          `Recording labels could not be read: ${error instanceof Error ? error.message : "Unknown error"}`])] }));
+      });
+    }
+    const timer = window.setTimeout(() => {
+      if (recordingOverviewCacheRef.current.get(source)?.complete) return;
+      void buildBackgroundRecordingOverview(source, overviewAbortController.signal, publishRecordingOverview, performanceDiagnostics)
+        .catch((error: unknown) => {
+          if (!isCurrent() || isAbortFailure(error)) return;
+          setToast("The session overview could not finish. The recording remains open for review.");
+        }).finally(() => {
+          if (!isCurrent()) return;
+          overviewBuildSourceRef.current = null;
+          setRecordingOverviewRevision((revision) => revision + 1);
+        });
+    }, 500);
+    return () => {
+      window.clearTimeout(timer);
+      overviewAbortController.abort();
+      if (overviewBuildSourceRef.current === source) overviewBuildSourceRef.current = null;
+    };
+  }, [activeSessionId, hasRecording, sessionKey, verifyingSource]);
+
   useEffect(() => {
     displayAbortRef.current?.abort();
     const abortController = new AbortController();
@@ -3472,10 +3540,10 @@ export default function Home() {
         const envelopeReadBudget = sourceVerificationRef.current
           ? INITIAL_PREVIEW_READ_BUDGET_BYTES
           : SOURCE_READ_AHEAD_BUDGET_BYTES;
-        if (overviewDisplayPolicy === "final" && sourceVerificationRef.current) {
+        if (overviewDisplayPolicy === "final" && overviewBuildSourceRef.current === source) {
           // Only a view fully served by the background index waits for its
           // first prefix. Finer windows read their selected region immediately;
-          // they must not wait for unrelated hours of whole-file validation.
+          // they must not wait for unrelated hours of overview construction.
           return;
         }
         const decodedWindowBudget = source instanceof EDFSource || source instanceof RawDatSource
@@ -5439,21 +5507,21 @@ export default function Home() {
     storeActiveSession();
     cancelPendingViewFrames();
     const previousSnapshot = sessionSnapshotsRef.current.get(targetSessionId);
-    sourceVerificationAbortRef.current?.abort(new DOMException("Source verification superseded", "AbortError"));
+    sourceVerificationAbortRef.current?.abort(new DOMException("Recording load superseded", "AbortError"));
     const verificationAbortController = new AbortController();
     sourceVerificationAbortRef.current = verificationAbortController;
     const ensureVerificationActive = () => {
       if (!verificationAbortController.signal.aborted) return;
       throw verificationAbortController.signal.reason
-        ?? new DOMException("Source verification canceled", "AbortError");
+        ?? new DOMException("Recording load canceled", "AbortError");
     };
     const recommendedChannels = (Array.isArray(nextMeta.recommendedDisplayChannels)
       ? nextMeta.recommendedDisplayChannels
       : nextMeta.channelLabels.slice(0, 18).map((_, index) => index))
       .filter((index) => Number.isInteger(index) && index >= 0 && index < nextMeta.channelLabels.length);
 
-    // Install a read-only preview immediately. The exact content identity and
-    // any matching recovery project attach only after the worker finishes.
+    // Install the source and restore local drafts before allowing edits. This
+    // short setup does not read the full recording or wait for its overview.
     sourceVerificationRef.current = true;
     displayPreviewReadyRef.current = false;
     setVerifyingSource(true);
@@ -5464,7 +5532,7 @@ export default function Home() {
     setUploadedFileInputs(importContext?.uploadedFileInputs ?? [file]);
     setCompanionBundle(importContext?.companionBundle ?? emptyBidsCompanionBundle());
     setMeta(nextMeta);
-    setSessionKey(`verifying:${nextMeta.id}`);
+    setSessionKey(`opening:${nextMeta.id}`);
     setRawSourceHash("");
     setSourceHash("");
     setSourceInterpretation(interpretation ?? null);
@@ -5518,243 +5586,15 @@ export default function Home() {
     setSpectrogramFrequencyRange({ min: 0, max: 150 });
     setShowImport(false);
 
-    let lastProgressBucket = -1;
-    setToast("Preparing the first waveform view…");
-    let contentHash: string;
+    setToast("Opening recording…");
     try {
-      // MAT/DAT and sidecar labels are already visible. EDF+ reads only its
-      // annotation ranges now, independently of waveform readiness and hashing.
-      if (source instanceof EDFSource) {
-        void source.loadAnnotations({ signal: verificationAbortController.signal }).then(
-          publishLabelPreview,
-          (error: unknown) => {
-            if (verificationAbortController.signal.aborted || !sourceVerificationRef.current || sourceRef.current !== source) return;
-            // The full verification pass can still extract EDF annotations.
-            nextMeta.warnings.push(`Early EDF label detection failed: ${error instanceof Error ? error.message : "Could not read annotation metadata."}`);
-            setMeta({ ...nextMeta, warnings: [...nextMeta.warnings] });
-          },
-        );
-      }
-      // Let React mount the recording view and give its small, high-priority
-      // window read a head start before the one-time full-file index scan.
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        let frame = 0;
-        const finish = (callback: () => void) => {
-          if (settled) return;
-          settled = true;
-          window.clearTimeout(timeout);
-          window.cancelAnimationFrame(frame);
-          verificationAbortController.signal.removeEventListener("abort", onAbort);
-          callback();
-        };
-        const onAbort = () => finish(() => reject(
-          verificationAbortController.signal.reason
-            ?? new DOMException("Source verification canceled", "AbortError"),
-        ));
-        const check = () => {
-          if (displayPreviewReadyRef.current) finish(resolve);
-          else frame = window.requestAnimationFrame(check);
-        };
-        const timeout = window.setTimeout(() => finish(resolve), 5_000);
-        verificationAbortController.signal.addEventListener("abort", onAbort, { once: true });
-        frame = window.requestAnimationFrame(check);
-      });
-      setToast(displayPreviewReadyRef.current
-        ? "Waveform preview ready — indexing and verifying in the background…"
-        : "Indexing and verifying the recording in the background…");
-      const verificationRead = performanceDiagnostics.beginSourceRead({
-        label: source instanceof EDFSource
-          ? "EDF verification + overview"
-          : source instanceof RawDatSource
-            ? "DAT verification + overview"
-            : "Source verification",
-        totalBytes: file.size,
-        phase: "Reading local source",
-      });
-      let verificationDecode: DiagnosticsOperationHandle | null = source instanceof EDFSource || source instanceof RawDatSource
-        ? performanceDiagnostics.beginDecode({
-          label: "Full-session overview",
-          totalBytes: file.size,
-          phase: "Hashing and reducing source samples",
-        })
-        : null;
-      let lastVerifiedBytes = 0;
-      const reportVerificationProgress = (bytesRead: number, totalBytes: number, phase: string) => {
-        const transientBytes = Math.max(0, bytesRead - lastVerifiedBytes);
-        lastVerifiedBytes = bytesRead;
-        verificationRead.update({
-          completedBytes: bytesRead,
-          totalBytes,
-          phase,
-          transientAllocatedBytes: transientBytes,
-        });
-        verificationDecode?.update({ completedBytes: bytesRead, totalBytes, phase });
-        const bucket = totalBytes ? Math.floor((bytesRead / totalBytes) * 10) : 10;
-        if (bucket !== lastProgressBucket) {
-          lastProgressBucket = bucket;
-          setToast(`Waveform ready · indexing and verifying… ${Math.min(100, bucket * 10)}%`);
-        }
-      };
-      const fullOverviewPlan = recordingOverviewPlan(nextMeta);
-      const publishRecordingOverview = (window: EnvelopeWindowData, complete = false) => {
-        if (verificationAbortController.signal.aborted) return;
-        if (recordingOverviewCacheRef.current.put(source, window, { complete })
-          && sourceRef.current === source) {
-          setActiveRecordingOverview(recordingOverviewCacheRef.current.get(source));
-          setRecordingOverviewRevision((revision) => revision + 1);
-        }
-      };
-      let verification: Awaited<ReturnType<typeof verifySourceOffThread>>;
-      try {
-        if (source instanceof EDFSource) {
-          const overviewChannelIndices = fullOverviewPlan?.channelIndices ?? [];
-          const fullOverviewBuckets = fullOverviewPlan?.bucketCount ?? 1;
-          const result = await buildEDFEnvelopeWindowOffThread({
-            blob: file,
-            header: source.header,
-            startSec: 0,
-            durationSec: nextMeta.durationSec,
-            bucketCount: fullOverviewBuckets,
-            channelIndices: overviewChannelIndices,
-            overviewIntervalMs: 500,
-            integrity: { sha256: true, edfAnnotations: true },
-          }, {
-            signal: verificationAbortController.signal,
-            fallbackToMainThread: false,
-            onOverview: publishRecordingOverview,
-            onProgress: (progress) => reportVerificationProgress(
-              progress.bytesRead,
-              progress.totalBytes,
-              progress.phase === "reading"
-                ? "Reading and hashing local source"
-                : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
-            ),
-          });
-          const hash = result.integrity?.hash;
-          if (!hash) throw new Error("EDF verification completed without a source hash.");
-          verification = {
-            hash,
-            edfAnnotations: result.integrity?.edfAnnotations,
-          };
-          publishRecordingOverview(result.window, true);
-          verificationRead.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
-          verificationDecode?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
-          verificationDecode = null;
-        } else if (source instanceof RawDatSource) {
-          const overviewChannelIndices = fullOverviewPlan?.channelIndices ?? [];
-          const fullOverviewBuckets = fullOverviewPlan?.bucketCount ?? 1;
-          const verifyCompanion = async () => {
-            const companion = importContext?.companionMatFile;
-            if (!companion) return null;
-            const read = performanceDiagnostics.beginSourceRead({
-              label: "Companion MAT verification", totalBytes: companion.size,
-              phase: "Hashing companion metadata in worker",
-            });
-            let previousBytes = 0;
-            try {
-              const result = await verifySourceOffThread(companion, {
-                signal: verificationAbortController.signal,
-                fallbackToMainThread: false,
-                onProgress: (bytesHashed, totalBytes) => {
-                  read.update({ completedBytes: bytesHashed, totalBytes,
-                    transientAllocatedBytes: Math.max(0, bytesHashed - previousBytes) });
-                  previousBytes = bytesHashed;
-                },
-              });
-              read.finish({ completedBytes: companion.size, totalBytes: companion.size });
-              return result.hash;
-            } catch (error) {
-              read[isAbortFailure(error) ? "cancel" : "fail"]();
-              throw error;
-            }
-          };
-          const [result, companionMatHash] = await Promise.all([buildRawDatEnvelopeWindowOffThread({
-            ...source.envelopeWorkerSource,
-            startSec: 0,
-            durationSec: nextMeta.durationSec,
-            bucketCount: fullOverviewBuckets,
-            channelIndices: overviewChannelIndices,
-            overviewIntervalMs: 500,
-            integrity: { sha256: true },
-          }, {
-            signal: verificationAbortController.signal,
-            fallbackToMainThread: false,
-            onOverview: publishRecordingOverview,
-            onProgress: (progress) => reportVerificationProgress(
-              progress.bytesRead,
-              progress.totalBytes,
-              progress.phase === "reading"
-                ? "Reading and hashing DAT frames"
-                : `Reducing ${progress.samplesDecoded.toLocaleString()} samples`,
-            ),
-          }), verifyCompanion()]);
-          if (importContext?.companionMatFile) {
-            interpretation = { ...interpretation, companion_mat_sha256: companionMatHash };
-          }
-          const hash = result.integrity?.hash;
-          if (!hash) throw new Error("DAT verification completed without a source hash.");
-          verification = { hash };
-          publishRecordingOverview(result.window, true);
-          verificationRead.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.readMs });
-          verificationDecode?.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs + result.metrics.integrityMs });
-          verificationDecode = null;
-        } else {
-          // MAT already has an envelope reader. Build its compact all-channel
-          // index once alongside hashing, rather than starting hours-wide scans
-          // whenever the user later changes the zoom or enabled channels.
-          const overviewPromise = fullOverviewPlan && source.getEnvelopeWindow
-            ? source.getEnvelopeWindow(0, nextMeta.durationSec, fullOverviewPlan.bucketCount,
-              fullOverviewPlan.channelIndices, {
-                signal: verificationAbortController.signal,
-                overviewIntervalMs: 500,
-                onOverview: publishRecordingOverview,
-              }).then((window) => publishRecordingOverview(window, true))
-            : Promise.resolve();
-          const verificationPromise = verifySourceOffThread(file, {
-            signal: verificationAbortController.signal,
-            fallbackToMainThread: false,
-            onProgress: (bytesHashed, totalBytes) => reportVerificationProgress(
-              bytesHashed,
-              totalBytes,
-              "Reading and hashing local source",
-            ),
-          });
-          [verification] = await Promise.all([verificationPromise, overviewPromise]);
-          verificationRead.finish({ completedBytes: file.size, totalBytes: file.size });
-        }
-      } catch (error) {
-        verificationAbortController.abort(error);
-        const finish = isAbortFailure(error) ? "cancel" : "fail";
-        verificationRead[finish]();
-        verificationDecode?.[finish]();
-        throw error;
-      }
-      ensureVerificationActive();
-      contentHash = verification.hash;
-      if (source instanceof EDFSource && verification.edfAnnotations) {
-        source.applyVerifiedAnnotations(
-          verification.edfAnnotations.events,
-          verification.edfAnnotations.warnings,
-        );
-      }
-    const identityInterpretation = sourceIdentityInterpretation(interpretation);
-    const interpretationMaterial = identityInterpretation ? JSON.stringify(identityInterpretation) : undefined;
-    const interpretationHash = interpretationMaterial
-      ? await sha256Blob(new Blob([`neurotrace-interpretation-v1\n${contentHash}\n${interpretationMaterial}`]))
-      : contentHash;
+    // Local file metadata and the chosen interpretation identify browser drafts.
+    // No recording bytes are hashed, and the overview is not part of this load.
+    const interpretationHash = localRecordingIdentity(file, {
+      ...sourceIdentityInterpretation(interpretation), signal_source: nextMeta.id,
+    }, importContext?.companionMatFile);
     ensureVerificationActive();
-    const nextKey = interpretationHash.slice(0, 32);
-    let legacyRecoveryKey: string | null = null;
-    if (identityInterpretation?.kind === "raw-int16-le"
-      && identityInterpretation.physical_scale_uv_per_count === null) {
-      const legacyIdentity = { ...identityInterpretation, physical_scale_uv_per_count: 1 };
-      const legacyHash = await sha256Blob(new Blob([
-        `neurotrace-interpretation-v1\n${contentHash}\n${JSON.stringify(legacyIdentity)}`,
-      ]));
-      ensureVerificationActive();
-      legacyRecoveryKey = legacyHash.slice(0, 32);
-    }
+    const nextKey = interpretationHash;
     // Directory entries represent distinct session paths, even if their sample
     // bytes are identical. Do not merge another entry's companions or labels.
     // Embedded projects must finish loading into this tab before their saved
@@ -5808,15 +5648,11 @@ export default function Home() {
     let restoredMatlabExportIdentity: MatlabExportIdentity | null = null;
     let recordingLabelsImported = false;
     let recoveryWarning: string | null = null;
-    let usedLegacyRecoveryKey = false;
     const draftKey = `neurotrace:draft:${nextKey}`;
     const restoreDraft = () => {
-      const keys = [draftKey, legacyRecoveryKey ? `neurotrace:draft:${legacyRecoveryKey}` : null].filter((key): key is string => Boolean(key));
-      for (const key of keys) {
-        const cached = localStorage.getItem(key);
-        if (!cached) continue;
+      const cached = localStorage.getItem(draftKey);
+      if (cached) {
         restored = parseRecoveryDraft(cached, nextMeta.durationSec, nextMeta.channelLabels.length);
-        usedLegacyRecoveryKey = key !== draftKey;
         return true;
       }
       return false;
@@ -5833,10 +5669,6 @@ export default function Home() {
     let recoveryReadable = true;
     try {
       projectJson = localStorage.getItem(`neurotrace:project:${nextKey}`);
-      if (!projectJson && legacyRecoveryKey) {
-        projectJson = localStorage.getItem(`neurotrace:project:${legacyRecoveryKey}`);
-        usedLegacyRecoveryKey = Boolean(projectJson);
-      }
     } catch {
       recoveryReadable = false;
       recoveryWarning = "Local recovery is unavailable in this browser. This recording opened without recovered labels.";
@@ -5874,9 +5706,6 @@ export default function Home() {
         recoveryWarning = `Saved draft labels could not be verified${preserved ? " and were preserved for support" : ""}. This recording opened without recovered labels.`;
       }
     }
-    if (usedLegacyRecoveryKey && !recoveryWarning) {
-      recoveryWarning = "Recovered prior DAT review state and migrated it to the unscaled raw-count display.";
-    }
     const detectedLabels = recordingLabelAnnotations(detectedRecordingLabels(source), nextMeta.durationSec, nextMeta.channelLabels);
     restored = mergeRecordingLabels<Annotation>(restored, detectedLabels.annotations, recordingLabelsImported);
     nextMeta.warnings = [...new Set([...nextMeta.warnings, ...detectedLabels.warnings])];
@@ -5900,13 +5729,13 @@ export default function Home() {
       ? { ...tab, title: shortFileName(nextMeta.name.replace(/\.[^.]+$/, ""), 22), hasRecording: true, recoveryStatus: "saved" }
       : tab));
     setSessionKey(nextKey);
-    setRawSourceHash(contentHash);
+    setRawSourceHash("");
     setSourceHash(interpretationHash);
     setSourceInterpretation(applyMatlabExportIdentity(interpretation, restoredMatlabExportIdentity) ?? null);
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
     setReviewer(restoredReviewer ?? "");
-    recordingLabelsImportedRef.current = true;
+    recordingLabelsImportedRef.current = source instanceof EDFSource ? recordingLabelsImported : true;
     annotationsRef.current = restored;
     setAnnotations(restored);
     setMeta({ ...nextMeta, warnings: [...nextMeta.warnings] });
@@ -5924,6 +5753,45 @@ export default function Home() {
       throw error;
     }
   }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, detachDirectorySession, setShowImport, storeActiveSession]);
+
+  const openOlderReviews = () => {
+    setOlderReviewKey("");
+    setOlderReviewError("");
+    try { setOlderReviews(listOlderBrowserReviews(localStorage)); }
+    catch { setOlderReviews([]); setOlderReviewError("Browser recovery storage is unavailable."); }
+    setShowSettings(false);
+  };
+
+  const restoreOlderReview = () => {
+    if (!reviewReady || !olderReviews?.some((entry) => entry.key === olderReviewKey)) return;
+    try {
+      const raw = localStorage.getItem(olderReviewKey);
+      if (!raw) throw new Error("This saved review is no longer available.");
+      const project = parseRecoveryProject(raw, meta.durationSec, meta.channelLabels.length);
+      // Keep both the selected old entry and the current review, even if the
+      // reviewer picked the wrong source. Nothing is silently overwritten.
+      localStorage.setItem(`neurotrace:review-backup:${sessionKey}:${Date.now()}`, JSON.stringify({
+        version: 2, recordingName: meta.name, annotations: annotationsRef.current,
+        candidates: candidatesRef.current, activeCandidate: activeCandidateIndexRef.current, reviewer,
+        recordingLabelsImported: recordingLabelsImportedRef.current,
+        matlabExportIdentity: matlabExportIdentityFromInterpretation(sourceInterpretation), savedAt: new Date().toISOString(),
+      }));
+      const detected = recordingLabelAnnotations(detectedRecordingLabels(sourceRef.current), meta.durationSec, meta.channelLabels);
+      const next = mergeRecordingLabels<Annotation>(project.annotations, detected.annotations, project.recordingLabelsImported);
+      commitMutation(() => next);
+      candidatesRef.current = project.candidates;
+      activeCandidateIndexRef.current = project.activeCandidate;
+      setCandidates(project.candidates);
+      setActiveCandidate(project.activeCandidate);
+      setReviewer(project.reviewer ?? "");
+      recordingLabelsImportedRef.current = project.recordingLabelsImported;
+      setSourceInterpretation(applyMatlabExportIdentity(sourceInterpretation ?? undefined, project.matlabExportIdentity) ?? null);
+      setOlderReviews(null);
+      setToast("Saved review restored. The previous review was kept as a browser backup.");
+    } catch (error) {
+      setOlderReviewError(error instanceof Error ? error.message : "This review could not be restored.");
+    }
+  };
 
   const applyImportedProjectState = useCallback((project: ImportedNeurotraceProject) => {
     const durationSec = sourceRef.current.meta.durationSec;
@@ -6083,37 +5951,7 @@ export default function Home() {
         const opened = await loadSource(source, incomingPrimary, undefined, importContext, Boolean(expectedFormat) || keepSeparateSession);
         if (!opened) return;
         setPendingImportFiles([]);
-        const hasAnnotationChannels = source.header.signals.some((signal) => signal.isAnnotation);
-        // Reuse the verified EDF+ TALs; the early label preview does not need
-        // another read once full-file verification has finished.
-        const importedCandidates = source.events
-          .filter((event) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
-          .filter((event) => isLegacySeizureCandidate(event.label))
-          .map((event, index): Candidate => ({
-            id: `edf-cand-${index}-${Math.round(event.timeSec * 1000)}`,
-            time: event.timeSec,
-            label: event.label,
-            source: "bronze",
-            status: "queued",
-            confidence: 0,
-            ictalChannels: "",
-            legacyConfidence: "",
-            reviewerInitials: "",
-          }));
-        if (importedCandidates.length) {
-          const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
-          const resumeCandidate = queue.candidates[queue.activeIndex];
-          setCandidates(queue.candidates);
-          setActiveCandidate(queue.activeIndex);
-          commitViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
-          setCursorTime(resumeCandidate.time);
-          setCursorLocked(true);
-          setToast(`${source.events.length} recording labels detected · ${importedCandidates.length} seizure events ready for review`);
-        } else if (hasAnnotationChannels) {
-          setToast(`${source.events.length} recording labels detected · no seizure-keyword events found`);
-        } else if (importContext.companionBundle.files.length > 1) {
-          setToast(`${source.meta.format.toUpperCase()} ready · ${importContext.companionBundle.files.filter((file) => file.status === "applied").length} companions applied · ${importContext.companionBundle.events.length} BIDS events imported`);
-        }
+        // EDF+ labels load independently after the recording opens.
       } else {
         const resolved = await resolveMatDatImport(
           incomingPrimary,
@@ -6189,7 +6027,7 @@ export default function Home() {
   const completeDirectoryReplacement = useCallback((sessionId: string | undefined) => {
     if (!sessionId) return;
     // The outgoing review was saved before navigation. Keep it open until the
-    // incoming file is verified (including any MAT/DAT mapping confirmation).
+    // incoming file is opened (including any MAT/DAT mapping confirmation).
     detachDirectorySession(sessionId);
     sessionSnapshotsRef.current.delete(sessionId);
     setSessionTabs((current) => current.filter((tab) => tab.id !== sessionId));
@@ -6448,7 +6286,8 @@ export default function Home() {
 
     if (!project.recordingFile) {
       const expectedHash = project.manifest.recording?.sourceContentSha256;
-      if (expectedHash && rawSourceHash && expectedHash !== rawSourceHash) {
+      if (!recordingReferenceMatches(project.manifest.recording, sourceRef.current.meta)
+        || (expectedHash && rawSourceHash && expectedHash !== rawSourceHash)) {
         setUploadError({
           title: "Different recording is open",
           message: "Open the recording referenced by this NeuroTrace project, then try the project again.",
@@ -6720,7 +6559,7 @@ export default function Home() {
 
   const exportBundle = () => {
     if (sourceVerificationRef.current) {
-      setToast("Source verification must finish before export");
+      setToast("The recording must finish opening before export");
       return;
     }
     if (meta.details?.discontinuous === true) {
@@ -6841,10 +6680,11 @@ export default function Home() {
       channel_sampling_frequencies: meta.sampleRates,
       start_time: meta.startedAt ? meta.startedAt.toISOString().replace(/Z$/, "") : undefined,
       start_time_timezone: meta.format === "edf" || meta.format === "edf+" ? "unspecified in EDF source" : "source-defined or unspecified",
-      source_content_sha256: rawSourceHash,
-      session_interpretation_sha256: sourceHash,
+      source_content_sha256: rawSourceHash || null,
+      session_interpretation_sha256: rawSourceHash ? sourceHash : null,
+      local_recording_id: sourceHash,
       source_hash: sourceHash,
-      source_hash_method: "full-file SHA-256; session identity additionally includes raw interpretation when applicable",
+      source_hash_method: "local file metadata and interpretation; no full-file checksum",
       source_interpretation: sourceInterpretation,
       display_snapshot: { montage, filters, gain, snapMode, traceDisplayMode },
       local_processing: true,
@@ -6864,8 +6704,9 @@ export default function Home() {
         end_sample: annotationRate ? Math.max(0, Math.round((item.end - (item.sourceTimeOffsetSec ?? 0)) * annotationRate)) : null,
         source_time_offset_sec: item.sourceTimeOffsetSec ?? 0,
         sample_rate_basis_hz: annotationRate ?? null,
-        source_content_sha256: rawSourceHash,
-        session_interpretation_sha256: sourceHash,
+        source_content_sha256: rawSourceHash || null,
+        session_interpretation_sha256: rawSourceHash ? sourceHash : null,
+        local_recording_id: sourceHash,
         source_hash: sourceHash,
       });
     }).join("\n");
@@ -7493,7 +7334,7 @@ export default function Home() {
               <strong>Session Labels</strong>
               <span>{sessionContextAnnotations.length}</span>
               <div className="session-context-menu-wrap">
-                <button className="sidebar-add-button" disabled={!reviewReady} aria-label="Add session label" title={verifyingSource ? "Review edits unlock after source verification" : "Add entire-session context"} onClick={() => setShowSessionContextPicker((value) => !value)}>＋</button>
+                <button className="sidebar-add-button" disabled={!reviewReady} aria-label="Add session label" title={verifyingSource ? "Opening recording" : "Add entire-session context"} onClick={() => setShowSessionContextPicker((value) => !value)}>＋</button>
                 {showSessionContextPicker && <div className="session-context-picker" role="menu" aria-label="Entire-session context labels">
                   <strong>Add entire-session context</strong>
                   {entireSessionContexts.map((label) => <button key={label.id} role="menuitem" onClick={() => {
@@ -7852,9 +7693,7 @@ export default function Home() {
                     height: `${Math.max(0, inspectionRange.bottom - inspectionRange.top) * 100}%`,
                   }} />}
                   {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
-                  {loadingSignal && <div className="signal-loading" role="status"><span /> {verifyingSource
-                    ? "Preparing signal window… The file is also still being validated, so this may take longer than usual."
-                    : "Preparing signal window…"}</div>}
+                  {loadingSignal && <div className="signal-loading" role="status"><span /> Preparing signal window…</div>}
                   {!loadingSignal && (display.indexedThroughSec !== undefined || display.refiningOverview) && <>
                     {display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase && <div
                       className="signal-indexing-pending"
@@ -7864,7 +7703,7 @@ export default function Home() {
                       {display.refiningOverview
                         ? "Overview shown · loading finer detail…"
                         : `Building overview · ${Math.min(100, Math.floor((display.indexedThroughSec ?? 0) / meta.durationSec * 100))}%`}
-                      {verifyingSource ? " · File validation is also in progress" : ""}
+                      {verifyingSource ? " · Opening recording" : ""}
                     </div>
                   </>}
                   {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
@@ -8309,10 +8148,28 @@ export default function Home() {
         }}
       />
 
+      {olderReviews !== null && <div className="modal-backdrop">
+        <div className="modal" role="dialog" aria-modal="true" aria-label="Restore older browser review" tabIndex={-1}>
+          <button className="modal-close" aria-label="Close older reviews" onClick={() => setOlderReviews(null)}>×</button>
+          <h2>Restore older browser review</h2>
+          <p>Choose a review belonging to <strong>{meta.name}</strong>. Older entries may not include a filename. Restoring replaces the current labels; a browser backup is kept.</p>
+          <label>Saved review<select aria-label="Saved browser review" value={olderReviewKey} onChange={(event) => setOlderReviewKey(event.target.value)}>
+            <option value="">Choose a saved review</option>
+            {olderReviews.map((entry) => <option key={entry.key} value={entry.key}>{entry.name} · {entry.savedAt} · {entry.reviewer || "No initials"} · {entry.labels} labels · {entry.events} events</option>)}
+          </select></label>
+          {!olderReviews.length && <p>No older reviews found in this browser.</p>}
+          {olderReviewError && <p role="alert">{olderReviewError}</p>}
+          <div className="modal-actions"><button className="button secondary" onClick={() => setOlderReviews(null)}>Cancel</button><button className="button primary" disabled={!reviewReady || !olderReviewKey} onClick={restoreOlderReview}>Restore selected review</button></div>
+        </div>
+      </div>}
+
       {showSettings && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowSettings(false); }}>
         <div className="modal settings-modal" data-tutorial="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1}>
           <button className="modal-close" onClick={() => setShowSettings(false)} aria-label="Close Settings">×</button>
           <h2>Settings</h2>
+          <section className="settings-section">
+            <button className="button secondary" disabled={!reviewReady} onClick={openOlderReviews}>Restore older browser review…</button>
+          </section>
           <section className="settings-section bias-locks-settings" data-tutorial="bias-locks">
             <div><strong id="bias-locks-label">Bias Locks</strong><p id="bias-locks-description">Disable the directory Previous button to prevent backward navigation. Next stays available.</p></div>
             <button type="button" role="switch" className="bias-locks-toggle" aria-checked={biasLocks}
@@ -8340,7 +8197,7 @@ export default function Home() {
             <div><span>Patient</span><strong>{effectivePatientLabel}</strong></div>
             <div><span>Session</span><strong>{recordingLabel(meta)}</strong></div>
             <div><span>Recording start</span><strong>{formatSessionStart(meta.startedAt)}</strong></div>
-            <div><span>Source integrity</span><strong className="hash-text" title={verifyingSource ? "Full source SHA-256 verification is in progress" : sourceHash}>{sourceHashDisplay}</strong></div>
+            <div><span>Local recording ID</span><strong className="hash-text" title={verifyingSource ? "Opening recording" : sourceHash}>{sourceHashDisplay}</strong></div>
             <div><span>Source channels</span><strong>{meta.channelLabels.length}</strong></div>
             <label><span>Reviewer initials</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
             {activeMatlabExportIdentity && <>
@@ -9171,7 +9028,7 @@ function FileStructurePanel({
     ...meta.warnings.map((text) => ({ kind: "warning", text })),
     ...(meta.assumptions ?? []).map((text) => ({ kind: "assumption", text })),
   ];
-  const integrity = verifyingSource ? "Verifying source" : sourceHash ? "Source verified" : "Metadata parsed";
+  const integrity = verifyingSource ? "Opening recording" : sourceHash ? "Ready" : "Metadata parsed";
 
   return <section className="file-structure-panel" aria-label="File structure analysis">
     <header className="file-structure-heading">
@@ -9432,9 +9289,9 @@ function ResourceUsagePanel({
   const integrityStatus = !hasRecording
     ? "Idle"
     : verifyingSource
-      ? "Verifying source"
+      ? "Opening recording"
       : sourceHash
-        ? "Source verified"
+        ? "Ready"
         : "Preview available";
   const activeOperation = performanceUsage.activeOperations[0] ?? null;
   const mainThreadPercent = performanceUsage.mainThread.utilizationEstimate * 100;
@@ -9443,7 +9300,7 @@ function ResourceUsagePanel({
     performanceUsage.allocations.observedHeapGrowthBytes,
   );
   const processingStatus = activeOperation?.phase
-    ?? (verifyingSource ? "Source verification" : loadingSignal ? "Preparing signal window" : "Ready");
+    ?? (verifyingSource ? "Opening recording" : loadingSignal ? "Preparing signal window" : "Ready");
 
   return <section className="resource-panel" aria-label="Resource usage">
     <header className="resource-panel-heading">
@@ -9540,7 +9397,7 @@ function ResourceUsagePanel({
         <div><dt>Access</dt><dd>{profile.access}</dd></div>
         <div><dt>Visible window</dt><dd>{hasRecording ? `${formatClock(viewStart, true)}–${formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}` : "—"}</dd></div>
         <div><dt>Channels</dt><dd>{hasRecording ? `${visibleChannelCount} shown · ${selectedChannelCount} selected` : "—"}</dd></div>
-        <div><dt>Integrity</dt><dd>{integrityStatus}</dd></div>
+        <div><dt>Recording status</dt><dd>{integrityStatus}</dd></div>
         <div><dt>Network</dt><dd>Recording data is not uploaded</dd></div>
       </dl>
       <p>{profile.detail} Browsers expose the file name, not its full local path.</p>

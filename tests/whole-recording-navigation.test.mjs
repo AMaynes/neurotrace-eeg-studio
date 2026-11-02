@@ -86,10 +86,12 @@ test("existing zoom controls retain raw session-map indexing while default wavef
   assert.match(refresh, /buildMatlabDisplayWindow\(\{\s*source,\s*startSec:\s*signalViewStart,\s*durationSec:\s*timebase/,
     "full selected time range is retained, including hours-long requests");
   assert.match(refresh, /fallbackToMainThread:\s*false,\s*maxChunkDurationSec:\s*30/);
-  assert.match(page, /if \(verificationAbortController\.signal\.aborted\) return;\s*if \(recordingOverviewCacheRef\.current\.put/);
-  assert.match(page, /fullOverviewPlan\?\.channelIndices\s*\?\?\s*\[\]/);
-  assert.match(page, /onOverview:\s*publishRecordingOverview/);
-  assert.match(page, /publishRecordingOverview\(result\.window, true\)/);
+  assert.match(page, /if \(overviewAbortController\.signal\.aborted\) return;\s*if \(recordingOverviewCacheRef\.current\.put/);
+  const overview = await readFile(new URL("../app/background-recording-overview.ts", import.meta.url), "utf8");
+  assert.match(overview, /channelIndices: plan.channelIndices/);
+  assert.match(overview, /onOverview: publish/);
+  assert.match(overview, /publish\(result.window, true\)/);
+  assert.doesNotMatch(overview, /sha256: true|verifySourceOffThread/);
   assert.match(page, /Not indexed yet/);
-  assert.match(page, /File validation is also in progress/);
+  assert.match(page, /Opening recording/);
 });

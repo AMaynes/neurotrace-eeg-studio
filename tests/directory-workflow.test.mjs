@@ -1,3 +1,4 @@
+import { recordingReferenceMatches } from "../app/local-recording-identity.ts";
 /** Execute the page's real handlers/effect with patient-free files and state spies. */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -922,10 +923,11 @@ test("embedded EDF imports preserve the requested project-session isolation", as
 function projectHarness(overrides = {}) {
   const archive = fileAt("root/review.neurotrace");
   const project = { recordingFile: new File([new Uint8Array(256)], "signal.edf"), supportingFiles: [], customToolFiles: [],
-    manifest: { title: "Synthetic review", recording: {} } };
+    manifest: { title: "Synthetic review", recording: { name: "signal.edf", format: "edf", byteLength: 256, channelCount: 2, durationSec: 10 } } };
   const calls = { imports: [], applied: [] };
   const entry = { sessionId: "project-tab", files: [archive] };
   const env = {
+    recordingReferenceMatches, sourceRef: { current: { meta: { ...project.manifest.recording } } },
     importBusyRef: { current: false }, hasRecording: false, rawSourceHash: "synthetic-hash", activeSessionId: "project-tab",
     pendingProjectImportRef: { current: null }, projectFileImportRef: { current: false },
     directorySessionTabsRef: { current: new Map([["project", entry]]) },

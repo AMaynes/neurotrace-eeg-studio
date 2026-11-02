@@ -171,7 +171,7 @@ test("background overview publications cannot replace another active source or p
   let revision = 0;
   const scope = {
     source: first.source, sourceRef: { current: first.source },
-    verificationAbortController: abortController, recordingOverviewCacheRef: { current: cache },
+    overviewAbortController: abortController, recordingOverviewCacheRef: { current: cache },
     setActiveRecordingOverview: (entry) => entries.push(entry),
     setRecordingOverviewRevision: (update) => { revision = update(revision); },
   };

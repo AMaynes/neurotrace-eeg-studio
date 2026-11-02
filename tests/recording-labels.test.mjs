@@ -7,7 +7,7 @@ import { EDFSource, inspectMatRecording, parseLegacyMatMetadata, RawDatSource } 
 import { resolveMatDatImport } from "../app/mat-import.ts";
 import { createNeurotraceProjectArchive, readNeurotraceProjectArchive } from "../app/neurotrace-project.ts";
 import { matWriter, standaloneMatFile } from "./fixtures/legacy-mat.mjs";
-import { sha256Blob } from "../app/source-integrity.ts";
+import { localRecordingIdentity } from "../app/local-recording-identity.ts";
 
 function eventFixture({ littleEndian = true, compressed = false, standalone = false } = {}) {
   const w = matWriter(littleEndian);
@@ -223,6 +223,7 @@ const recovery = compile([
   "migrateAnnotationList", "migrateCandidateList", "hasValidRecoveryBounds", "parseRecoveryProject",
   "detectedRecordingLabels", "previewSourceAnnotations",
   "sourceMeta", "sourceIdentityInterpretation", "applyMatlabExportIdentity", "parseRecoveryDraft", "isAbortFailure",
+  "LEGACY_SEIZURE_EVENT_TERMS", "isLegacySeizureCandidate", "reconcileCandidateQueue",
 ], { EDFSource, edfRecordingLabels, recordingLabelAnnotations, mergeRecordingLabels,
   validRecordingLabel, clamp: (value, min, max) => Math.min(max, Math.max(min, value)) });
 
@@ -314,9 +315,8 @@ test("filtered queue navigation selects the original annotation without expandin
 
 test("viewer previews labels before verification, then restores saved review and bounds/searches the queue", async () => {
   const load = page.slice(page.indexOf("const loadSource"), page.indexOf("const applyImportedProjectState"));
-  assert.ok(load.indexOf("publishLabelPreview();") < load.indexOf("await new Promise<void>"));
-  assert.ok(load.indexOf("source.loadAnnotations") < load.indexOf("await new Promise<void>"));
-  assert.ok(load.indexOf("source.applyVerifiedAnnotations") < load.indexOf("const detectedLabels = recordingLabelAnnotations(detectedRecordingLabels(source)"));
+  assert.ok(load.indexOf("publishLabelPreview();") < load.indexOf("localRecordingIdentity(file"));
+  assert.doesNotMatch(load, /source.loadAnnotations|source.applyVerifiedAnnotations|verifySourceOffThread/);
   assert.match(page, /recordingLabels: pendingLegacyMeta\?\.recordingLabels/);
   assert.match(load, /mergeRecordingLabels<Annotation>\(restored, detectedLabels.annotations, recordingLabelsImported\)/);
   assert.match(page, /recordingLabelsImported: snapshot.recordingLabelsImported/);
@@ -352,7 +352,7 @@ async function loadHarness({ recovered, projectReview, edf = false } = {}) {
   const previous = { hasRecording: false, annotations: [], source: { meta: { name: "previous" } } };
   const diagnostics = () => ({ update() {}, finish() {}, cancel() {}, fail() {} });
   const scope = {
-    ...recovery, EDFSource, RawDatSource, sha256Blob, recordingLabelAnnotations, mergeRecordingLabels,
+    ...recovery, EDFSource, RawDatSource, localRecordingIdentity, recordingLabelAnnotations, mergeRecordingLabels,
     activeSessionId: "active", activeSessionIdRef: { current: "active" },
     pendingProjectImportRef: { current: projectReview ? { review: projectReview } : null },
     sourceVerificationAbortRef: { current: null }, sourceVerificationRef: { current: false },
@@ -403,46 +403,96 @@ async function loadHarness({ recovered, projectReview, edf = false } = {}) {
   };
 }
 
-test("MAT+DAT labels publish before the waveform, companion hash, or full DAT scan; recovery still wins", async () => {
+test("MAT+DAT opens and restores edits without waiting for waveform, hash or overview workers", async () => {
   const detected = recordingLabelAnnotations((await parseLegacyMatMetadata(eventFixture())).recordingLabels, 10, ["SYN1", "SYN2"]).annotations;
   const edited = { ...detected[0], start: 1.5, end: 1.5, notes: "Saved review", status: "committed" };
   const h = await loadHarness({ recovered: { version: 2, annotations: [edited], recordingLabelsImported: true } });
-  assert.equal(h.state.setAnnotations.length, 6, "all parsed labels display before any worker starts");
-  assert.equal(h.scope.sourceVerificationRef.current, true);
-  assert.equal(h.state.setSourceHash, "");
-  assert.deepEqual(h.reads, []);
-  await h.waveformReady();
-  assert.deepEqual(h.reads.map((read) => read.kind), ["dat", "companion"], "both hashes start together after the preview");
-  assert.equal(h.state.setAnnotations.length, 6, "labels remain visible while verification is held open");
-  await h.finish();
+  await h.operation;
+  assert.deepEqual(h.reads, [], "no overview, source hash, or companion hash is started by loading");
   assert.equal(h.state.setAnnotations.length, 1, "completed-import deletions are restored");
   assert.equal(h.state.setAnnotations[0].notes, "Saved review");
-  assert.equal(h.state.setAnnotations[0].start, 1.5);
   assert.equal(h.scope.sourceVerificationRef.current, false);
-  const expected = await sha256Blob(new Blob([`neurotrace-interpretation-v1\n${"a".repeat(64)}\n${JSON.stringify({ kind: "raw-int16-le", companion_mat_sha256: "b".repeat(64) })}`]));
-  assert.equal(h.state.setSourceHash, expected, "moving companion verification retains the same recovery identity");
+  assert.equal(h.state.setRawSourceHash, "", "never claim to know the full-file checksum");
+  assert.match(h.state.setSourceHash, /^local-v1:/);
 });
 
-test("EDF labels arrive independently while the first waveform and full-file scan are still pending", async () => {
+test("EDF opens for editing while its annotation metadata remains pending", async () => {
   const h = await loadHarness({ edf: true });
+  await h.operation;
   assert.deepEqual(h.state.setAnnotations, []);
-  h.labelRead.resolve([{ label: "Early marker", timeSec: 2, source: "edf+" }]);
-  await tick();
-  assert.equal(h.state.setAnnotations[0].recordingLabel.label, "Early marker");
-  assert.deepEqual(h.reads, [], "metadata discovery does not wait for the waveform or start a full-file read");
-  await h.waveformReady();
-  await h.finish(h.source.events);
-  assert.equal(h.state.setAnnotations.length, 1, "verification does not duplicate previewed labels");
+  assert.deepEqual(h.reads, []);
+  assert.equal(h.scope.sourceVerificationRef.current, false);
+  assert.match(h.state.setSessionKey, /^local-v1:/);
+  assert.equal(h.scope.recordingLabelsImportedRef.current, false, "metadata can be imported later without losing labels");
 });
 
-test("late label reads cannot replace labels in another session", async () => {
+function startBackground(h) {
+  let callback;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(syntax) === "useEffect"
+      && node.arguments[0]?.getText(syntax).includes("const overviewAbortController =")) callback = node.arguments[0].getText(syntax);
+    ts.forEachChild(node, visit);
+  }
+  visit(syntax);
+  assert.ok(callback);
+  const scope = { ...h.scope, ...recovery, hasRecording: true, verifyingSource: false,
+    overviewBuildSourceRef: { current: null }, candidatesRef: { current: [] }, activeCandidateIndexRef: { current: 0 },
+    buildBackgroundRecordingOverview: () => assert.fail("background timer has not fired"),
+    setMeta: (update) => { h.state.setMeta = update(h.state.setMeta); },
+    setAnnotations: (next) => { h.state.setAnnotations = next; },
+    setCandidates: (next) => { h.state.setCandidates = next; }, setActiveCandidate() {},
+  };
+  const js = ts.transpileModule(`const effect = ${callback};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return new Function(...Object.keys(scope), `${js}; return effect();`)(...Object.values(scope));
+}
+
+test("delayed EDF labels preserve edits made while metadata loads and populate the event queue", async () => {
   const h = await loadHarness({ edf: true });
-  const canceled = assert.rejects(h.operation, { name: "AbortError" });
-  h.scope.activeSessionIdRef.current = "other-session";
-  h.state.setAnnotations = [{ id: "other-session-label" }];
-  h.scope.sourceVerificationAbortRef.current.abort(new DOMException("Session changed", "AbortError"));
-  h.labelRead.resolve([{ label: "Late marker", timeSec: 2, source: "edf+" }]);
-  await canceled;
+  await h.operation;
+  const cleanup = startBackground(h);
+  h.scope.annotationsRef.current = [{ id: "new-review", notes: "Made during loading" }];
+  h.labelRead.resolve([{ label: "Seizure marker", timeSec: 2, source: "edf+" }]);
   await tick();
-  assert.deepEqual(h.state.setAnnotations, [{ id: "other-session-label" }]);
+  assert.equal(h.state.setAnnotations.length, 2);
+  assert.equal(h.state.setAnnotations[0].notes, "Made during loading");
+  assert.equal(h.state.setCandidates.length, 1);
+  assert.equal(h.state.setCandidates[0].time, 2);
+  assert.equal(h.scope.sourceVerificationRef.current, false);
+  cleanup();
+});
+
+test("closing or switching a recording rejects its late label publications", async () => {
+  const h = await loadHarness({ edf: true });
+  await h.operation;
+  const cleanup = startBackground(h);
+  cleanup();
+  h.scope.sourceRef.current = { meta: { name: "other" } };
+  h.state.setAnnotations = [{ id: "other-review" }];
+  h.labelRead.resolve([{ label: "Late marker", timeSec: 2, source: "edf+" }]);
+  await tick();
+  assert.deepEqual(h.state.setAnnotations, [{ id: "other-review" }]);
+});
+
+test("explicit old-review recovery backs up the current review and never deletes the old entry", () => {
+  const label = recordingLabelAnnotations(edfRecordingLabels([{ label: "Saved marker", timeSec: 2 }]), 10, ["A"]).annotations[0];
+  const oldKey = `neurotrace:project:${"a".repeat(32)}`;
+  const raw = JSON.stringify({ version: 2, annotations: [label], candidates: [], reviewer: "AB", recordingLabelsImported: true });
+  const storage = new Map([[oldKey, raw]]);
+  let restored;
+  const scope = { ...recovery, reviewReady: true, olderReviews: [{ key: oldKey }], olderReviewKey: oldKey,
+    localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
+    meta: { name: "current.edf", durationSec: 10, channelLabels: ["A"] }, sessionKey: "local-v1:current",
+    sourceRef: { current: { recordingLabels: [], meta: { durationSec: 10, channelLabels: ["A"] } } },
+    annotationsRef: { current: [{ id: "new-review" }] }, candidatesRef: { current: [] }, activeCandidateIndexRef: { current: 0 },
+    recordingLabelsImportedRef: { current: true }, sourceInterpretation: null, reviewer: "CD",
+    matlabExportIdentityFromInterpretation: () => null, recordingLabelAnnotations, mergeRecordingLabels,
+    commitMutation: (update) => { restored = update([]); }, setCandidates() {}, setActiveCandidate() {}, setReviewer() {},
+    setSourceInterpretation() {}, setOlderReviews() {}, setToast() {}, setOlderReviewError: (message) => assert.fail(message),
+  };
+  compile(["restoreOlderReview"], scope).restoreOlderReview();
+  assert.equal(storage.get(oldKey), raw);
+  assert.equal(storage.size, 2);
+  const backup = [...storage.entries()].find(([key]) => key.startsWith("neurotrace:review-backup:"));
+  assert.equal(JSON.parse(backup[1]).annotations[0].id, "new-review");
+  assert.equal(restored[0].recordingLabel.label, "Saved marker");
 });

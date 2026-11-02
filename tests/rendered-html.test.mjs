@@ -80,7 +80,7 @@ test("ships product source without starter preview artifacts", async () => {
   assert.match(page, /source_content_sha256/);
   assert.match(page, /entire_session_context/);
   assert.match(page, /timed_context/);
-  assert.match(page, /sha256Blob/);
+  assert.match(page, /localRecordingIdentity/);
   assert.match(page, /status === "committed"/);
   assert.doesNotMatch(page, /fileFingerprint/);
   assert.doesNotMatch(page, /> Cursor<\/button>|> Select<\/button>|Manage ontology/);
@@ -364,14 +364,11 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(load, /tab\.id\s*===\s*targetSessionId/);
   assert.match(load, /title:\s*shortFileName/);
   const previewIndex = load.indexOf("sourceRef.current = source");
-  const verificationIndex = load.indexOf("await buildEDFEnvelopeWindowOffThread");
-  assert.ok(previewIndex >= 0 && verificationIndex > previewIndex, "a read-only waveform preview opens before full source verification finishes");
-  assert.match(load, /sourceVerificationRef\.current\s*=\s*true/);
-  assert.match(load, /buildEDFEnvelopeWindowOffThread[\s\S]*?integrity:\s*\{\s*sha256:\s*true,\s*edfAnnotations:\s*true\s*\}/);
-  assert.match(load, /buildRawDatEnvelopeWindowOffThread[\s\S]*?integrity:\s*\{\s*sha256:\s*true\s*\}/);
-  assert.match(load, /signal:\s*verificationAbortController\.signal/);
-  assert.ok(load.indexOf("setSourceHash(interpretationHash)") > verificationIndex, "verified source identity attaches only after the worker completes");
-  assert.ok(load.indexOf("setSessionTabs((current)") > verificationIndex, "tab identity is not replaced until verification succeeds");
+  assert.ok(previewIndex >= 0);
+  assert.match(load, /localRecordingIdentity\(file/);
+  assert.doesNotMatch(load, /verifySourceOffThread|await buildEDFEnvelopeWindowOffThread|await buildRawDatEnvelopeWindowOffThread|sha256Blob/);
+  assert.match(load, /setRawSourceHash\(""\)/);
+  assert.match(load, /sourceVerificationRef\.current\s*=\s*false/);
   assert.match(load, /activeSessionIdRef\.current\s*!==\s*targetSessionId/);
   assert.match(load, /duplicateEntry[\s\S]*?applySessionSnapshot\(duplicateSnapshot\)[\s\S]*?return false/);
 
@@ -379,7 +376,8 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   const windowLoaderEnd = page.indexOf("</div>}", windowLoaderStart);
   const windowLoader = page.slice(windowLoaderStart, windowLoaderEnd);
   assert.match(windowLoader, /role="status"/);
-  assert.match(windowLoader, /verifyingSource[\s\S]*?file is also still being validated[\s\S]*?longer than usual/i);
+  assert.match(windowLoader, /Preparing signal window/);
+  assert.doesNotMatch(windowLoader, /validated|verification/i);
 
   const closeStart = page.indexOf("const closeSession");
   const closeEnd = page.indexOf("const updateControlBinding", closeStart);

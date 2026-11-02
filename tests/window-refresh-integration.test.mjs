@@ -108,7 +108,7 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
     performanceDiagnostics: { beginSourceRead: operation("read"), beginDecode: operation("decode"), recordDecode() {} }, primarySampleRate: (meta) => meta.sampleRate,
     sourceRef: { current: source }, sourceVerificationRef: { current: verifying }, displayAbortRef: { current: null }, displayRequestIdRef: { current: 0 },
     displayAppliedRequestIdRef: { current: 0 }, displayPreviewReadyRef: { current: false }, displayRefreshPendingRef: { current: null }, displayRefreshActiveRef: { current: false },
-    recordingOverviewCacheRef: { current: cache },
+    recordingOverviewCacheRef: { current: cache }, overviewBuildSourceRef: { current: verifying ? source : null },
     envelopeWindowCacheRef: { current: rawDetail ? [{ source, channelKey: "0,1", startSec: 0, endSec: duration, levels: [rawEnvelope(source, 40)], byteLength: 2048 * 2 * 17 }] : [] },
     matlabWindowCacheRef: { current: [] }, setDisplay: (display) => displays.push(display), setLoadingSignal: (value) => loading.push(value),
     setFocusedChannel: (update) => { focused = update(focused); }, setToast: (message) => toasts.push(message),

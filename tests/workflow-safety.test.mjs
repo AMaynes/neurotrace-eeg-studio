@@ -145,9 +145,10 @@ test("recovery validates saved structures, preserves unreadable data, and falls 
   assert.match(page, /function sourceIdentityInterpretation[\s\S]*?patient_id_hint[\s\S]*?data_dir_hint/);
   assert.match(page, /function sourceIdentityInterpretation[\s\S]*?display_amplitude_mode/);
   assert.match(load, /sourceIdentityInterpretation\(interpretation\)/);
-  assert.match(load, /physical_scale_uv_per_count\s*===\s*null[\s\S]*?physical_scale_uv_per_count:\s*1[\s\S]*?legacyRecoveryKey/);
-  assert.match(load, /neurotrace:project:\$\{legacyRecoveryKey\}[\s\S]*?usedLegacyRecoveryKey/);
-  assert.match(load, /Recovered prior DAT review state and migrated it to the unscaled raw-count display/);
+  assert.match(load, /localRecordingIdentity\(file/);
+  assert.doesNotMatch(load, /legacyRecoveryKey/, "old hash-only reviews are never guessed onto a source");
+  assert.match(page, /listOlderBrowserReviews\(localStorage\)/);
+  assert.match(page, /neurotrace:review-backup:/);
   assert.match(page, /matlabExportIdentity:\s*matlabExportIdentityFromInterpretation\(sourceInterpretation\)/);
   assert.match(load, /applyMatlabExportIdentity\(interpretation,\s*restoredMatlabExportIdentity\)/);
   assert.match(page, /Editable without changing the recording recovery key/);
@@ -231,7 +232,7 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(refresh, /buildRawDatFileWindowOffThread/);
   assert.match(refresh, /pyramidMinimumBucketCount:\s*buildPyramid\s*\?\s*64\s*:\s*undefined/);
   assert.match(refresh, /fallbackToMainThread:\s*false/);
-  assert.match(refresh, /if \(overviewDisplayPolicy === "final" && sourceVerificationRef\.current\)/,
+  assert.match(refresh, /if \(overviewDisplayPolicy === "final" && overviewBuildSourceRef\.current === source\)/,
     "only views fully served by the background index may await its first prefix");
   assert.doesNotMatch(refresh, /requiredDuration\s*>\s*maximumEnvelopeReadDuration/,
     "foreground detail must not wait for unrelated whole-file verification");
@@ -362,7 +363,7 @@ test("measures the waveform after a recording mounts or returns from file info",
   assert.match(page, /const MIN_WAVEFORM_WIDTH_FOR_ENVELOPE\s*=\s*64/);
 });
 
-test("large source verification stays off the UI thread and combines EDF hashing with TAL extraction", async () => {
+test("opening skips source verification while optional workers remain off the UI thread", async () => {
   const page = await pageSource();
   const client = await readFile(new URL("../app/source-integrity-worker-client.ts", import.meta.url), "utf8");
   const worker = await readFile(new URL("../app/source-hash-worker.ts", import.meta.url), "utf8");
@@ -380,14 +381,14 @@ test("large source verification stays off the UI thread and combines EDF hashing
   assert.match(worker, /hash:\s*sha256\.hexDigest\(\)/);
   assert.match(page, /sourceVerificationAbortRef\.current/);
   assert.match(page, /className="verification-cancel"/);
-  assert.match(page, /verifySourceOffThread\(companion,\s*\{\s*signal:\s*verificationAbortController.signal/);
+  assert.doesNotMatch(page, /verifySourceOffThread|sha256Blob|integrity: \{ sha256: true/);
   assert.match(page, /importContext.companionMatFile = pendingLegacyMatFile/);
   assert.match(displayClient, /new Worker\(new URL\("\.\/display-processing-worker\.ts",\s*import\.meta\.url\)/);
   assert.match(displayClient, /options\.signal\?\.addEventListener\("abort"/);
   assert.match(displayClient, /fallbackToDirect[\s\S]*?processDirectly/);
   assert.match(displayWorker, /applyDisplayFilters/);
   assert.match(displayWorker, /prepareClinicalDisplaySignals/);
-  assert.match(page, /source\.loadAnnotations\(\{ signal: verificationAbortController.signal \}\)/,
+  assert.match(page, /source\.loadAnnotations\(\{ signal: overviewAbortController.signal \}\)/,
     "early label discovery is cancellable and independent of the full-file verification pass");
   const applySnapshot = section(page, "const applySessionSnapshot", "const switchSession");
   assert.doesNotMatch(applySnapshot, /(?:rawWindow|processedWindow|envelopeWindow)CacheRef\.current\s*=\s*\[\]/, "switching tabs retains source-keyed signal indexes");
