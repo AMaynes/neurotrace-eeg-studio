@@ -5750,7 +5750,7 @@ export default function Home() {
     if (activeSessionIdRef.current !== targetSessionId) {
       throw new Error("The active session changed while the recording was opening. Load it again in the intended tab.");
     }
-    pendingEdfReviewNavigationRef.current = source instanceof EDFSource ? source : null;
+    pendingEdfReviewNavigationRef.current = source instanceof EDFSource && !pendingProjectImportRef.current ? source : null;
     sourceVerificationRef.current = false;
     if (sourceVerificationAbortRef.current === verificationAbortController) {
       sourceVerificationAbortRef.current = null;
@@ -5863,6 +5863,7 @@ export default function Home() {
       ? project.workspace as Record<string, unknown>
       : null;
     if (workspace) {
+      pendingEdfReviewNavigationRef.current = null;
       const restoredTimebase = typeof workspace.timebase === "number" && Number.isFinite(workspace.timebase)
         ? clamp(workspace.timebase, MIN_TIME_WINDOW_SECONDS, Math.max(MIN_TIME_WINDOW_SECONDS, durationSec))
         : Math.min(20, Math.max(5, durationSec));

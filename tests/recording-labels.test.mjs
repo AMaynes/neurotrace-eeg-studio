@@ -492,18 +492,23 @@ test("new EDF recordings resume the active source event after delayed label disc
   cleanup();
 });
 
-test("late EDF discovery preserves a user-changed view and a restored tab's position", async () => {
-  for (const restoredTab of [false, true]) {
-    const h = await loadHarness({ edf: true });
+test("late EDF discovery preserves user navigation, restored tabs, and saved project views", async () => {
+  for (const mode of ["navigated", "restored-tab", "saved-project", "reference-project"]) {
+    const h = await loadHarness({ edf: true, projectReview: mode === "saved-project" ? {} : undefined });
     await h.operation;
     h.source.meta.durationSec = 1000;
-    if (restoredTab) h.scope.pendingEdfReviewNavigationRef.current = null;
+    if (mode === "restored-tab") h.scope.pendingEdfReviewNavigationRef.current = null;
+    if (mode === "saved-project") assert.equal(h.scope.pendingEdfReviewNavigationRef.current, null);
     const cleanup = startBackground(h);
     h.state.viewStart = 40;
-    if (!restoredTab) h.scope.zoomViewRef.current = { timebase: 20, viewStart: 40 };
+    if (mode === "navigated") h.scope.zoomViewRef.current = { timebase: 20, viewStart: 40 };
+    if (mode === "reference-project") {
+      compile(["applyImportedProjectState"], { ...h.scope, MIN_TIME_WINDOW_SECONDS: 0.1 })
+        .applyImportedProjectState({ workspace: { viewStart: 0, timebase: 20 } });
+    }
     h.labelRead.resolve([{ label: "Seizure", timeSec: 600 }]);
     await tick();
-    assert.equal(h.state.viewStart, 40);
+    assert.equal(h.state.viewStart, mode === "reference-project" ? 0 : 40);
     assert.equal(h.state.setCandidates.length, 1);
     cleanup();
   }
