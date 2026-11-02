@@ -2,8 +2,8 @@
 
 import { anatomicalChannelGroup, orderElectrodeChannelIndices } from "./eeg-core.ts";
 
-// Reserve at least MATLAB's four-row separation, split across adjoining group edges.
-export const ELECTRODE_GROUP_GAP_ROWS = 4;
+// Keep a small, permanent gap, split evenly across adjoining group edges.
+export const ELECTRODE_GROUP_GAP_ROWS = 1;
 
 /** Preserve MATLAB's case-sensitive group identity, including our CAR display suffix. */
 export function matlabDisplayGroup(label: string): string | null {

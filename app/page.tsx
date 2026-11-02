@@ -4405,13 +4405,6 @@ export default function Home() {
         const rowTop = rowTopForChannel(channel);
         const center = rowTop + rowHeight * 0.5;
         if (rowTop + rowHeight < plotTop || rowTop > height) continue;
-        if (channelRowLayout.groupStarts.has(channel)) {
-          context.save();
-          context.strokeStyle = "rgba(90, 169, 255, .5)";
-          context.lineWidth = 2;
-          context.beginPath(); context.moveTo(0, rowTop + 1); context.lineTo(width, rowTop + 1); context.stroke();
-          context.restore();
-        }
         if (channelSelectionActive && channel === focusedChannel) {
           context.fillStyle = "rgba(90, 169, 255, .065)";
           context.fillRect(0, rowTop, width, rowHeight);
@@ -7860,7 +7853,7 @@ export default function Home() {
                   const rowReadout = readCursorReadout(display, index, cursorTime);
                   return <button
                     key={`${label}-${index}`}
-                    className={`${focused ? "focused" : ""} ${channelRowLayout.groupStarts.has(index) ? "group-start" : ""}`}
+                    className={focused ? "focused" : ""}
                     style={rowStyle}
                     aria-pressed={focused}
                     aria-label={anatomicalGroups ? label : undefined}
