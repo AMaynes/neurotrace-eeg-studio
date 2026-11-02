@@ -22,8 +22,7 @@ const effectCode = ts.transpileModule(`const paint = ${paintEffect.getText(synta
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText + "\nreturn paint();";
 
-function fixture(mode = "referential", source) {
-  const labels = ["LA1", "LA2", "LA3", "RA1", "RA2", "RA3"];
+function fixture(mode = "referential", source, labels = ["LA1", "LA2", "LA3", "RA1", "RA2", "RA3"]) {
   source ??= labels.map((_, index) => Float64Array.from({ length: 300 }, (_, sample) =>
     500 * (index + 1) + 20 * Math.sin(sample * (index + 1) * .1)));
   const montage = buildMontage(source, labels, mode, new Set(), labels.map(() => 100), labels.map(() => 0));
@@ -126,4 +125,25 @@ test("overview traces and clipping ribbons use the same prepared baseline on eve
   assert.equal(h.traces[0].offset, .5);
   for (let i = 0; i < h.traces.length; i++) assert.equal(h.ribbons[i].baseline, h.traces[i].baseline);
   h.cleanup();
+});
+
+test("real paint centers unequal channel groups in equal sections across montages and trace modes", () => {
+  for (const montage of ["referential", "average", "bipolar"]) {
+    const display = fixture(montage, undefined, ["LA1", "LA2", "LA3", "LA4", "RA1", "RA2"]);
+    const layout = buildChannelRowLayout(display.labels, true);
+    for (const traceDisplayMode of ["clamped", "overlap"]) {
+      const h = harness(display, { expandedChannels: false, channelRowLayout: layout, traceDisplayMode });
+      assert.equal(h.traces.length, display.labels.length, "all channels remain visible inside their sections");
+      assert.ok(h.traces.every((trace) => trace.rowHeight === h.traces[0].rowHeight && trace.scale === h.traces[0].scale), "one shared scale for large and small groups");
+      for (const [index, group] of layout.groups.entries()) {
+        const first = h.traces[group.startRow], last = h.traces[group.endRow];
+        assert.equal((first.center + last.center) / 2, [73, 163][index]);
+        assert.ok(first.rowTop > 28 + index * 90, "space above every group");
+        assert.ok(last.rowTop + last.rowHeight < 28 + (index + 1) * 90, "space below every group");
+      }
+      h.redraw();
+      assert.deepEqual(h.traces.map((trace) => trace.values), display.data.map((values) => [...values]));
+      h.cleanup();
+    }
+  }
 });

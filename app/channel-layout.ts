@@ -2,7 +2,7 @@
 
 import { anatomicalChannelGroup, orderElectrodeChannelIndices } from "./eeg-core.ts";
 
-// MATLAB adds GROUP_SPACING = CH_SPACING * 4 after each group's last row increment.
+// Reserve at least MATLAB's four-row separation, split across adjoining group edges.
 export const ELECTRODE_GROUP_GAP_ROWS = 4;
 
 /** Preserve MATLAB's case-sensitive group identity, including our CAR display suffix. */
@@ -37,7 +37,7 @@ export type ChannelRowLayout = {
   contactLabels: string[];
 };
 
-/** Builds matching fractional waveform coordinates and valid integer CSS grid placements. */
+/** Equal-height group sections with centered contacts and permanent padding on both edges. */
 export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean): ChannelRowLayout {
   const rowStartUnits: number[] = [];
   const rowGridLines: number[] = [];
@@ -45,29 +45,40 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
   const groupStarts = new Set<number>();
   const groups: ChannelRowLayout["groups"] = [];
   const contactLabels: string[] = [];
-  let units = 0;
-  let previousGroup: string | null = null;
+  const blocks: Array<{ name: string | null; startRow: number; endRow: number }> = [];
   labels.forEach((label, index) => {
-    const group = electrodeSpacing ? matlabDisplayGroup(label) : null;
-    if (index > 0 && group !== previousGroup && (group || previousGroup)) {
-      tracks.push(`${ELECTRODE_GROUP_GAP_ROWS}fr`);
-      units += ELECTRODE_GROUP_GAP_ROWS;
-      groupStarts.add(index);
-    }
-    rowGridLines.push(tracks.length + 1);
-    tracks.push("1fr");
-    rowStartUnits.push(units);
-    units += 1;
-    if (group) {
-      if (group !== previousGroup || !groups.length) groups.push({ name: group, startRow: index, endRow: index });
-      const block = groups[groups.length - 1];
-      block.endRow = index;
-      // MATLAB's referential labels are ordinals within the visible group; bipolar labels use the pair.
-      const pair = /^(?:[A-Za-z]+)(\d+-\d+)$/.exec(label.trim());
-      contactLabels.push(pair?.[1] ?? String(index - block.startRow + 1));
-    } else contactLabels.push(label);
-    previousGroup = group;
+    const name = electrodeSpacing ? matlabDisplayGroup(label) : null;
+    const previous = blocks.at(-1);
+    if (previous && previous.name === name) previous.endRow = index;
+    else blocks.push({ name, startRow: index, endRow: index });
   });
+  const grouped = blocks.some((block) => block.name !== null);
+  const largestGroup = blocks.reduce((largest, block) => Math.max(largest, block.endRow - block.startRow + 1), 0);
+  let units = 0;
+  const padding = (size: number) => {
+    if (size <= 0) return;
+    tracks.push(`${size}fr`);
+    units += size;
+  };
+  for (const block of blocks) {
+    const count = block.endRow - block.startRow + 1;
+    // Keep one shared channel scale. Smaller groups receive more blank space,
+    // rather than stretching their rows or changing their apparent amplitude.
+    const edgePadding = grouped ? (largestGroup - count + ELECTRODE_GROUP_GAP_ROWS) / 2 : 0;
+    padding(edgePadding);
+    if (grouped && block.startRow > 0) groupStarts.add(block.startRow);
+    if (block.name) groups.push({ name: block.name, startRow: block.startRow, endRow: block.endRow });
+    for (let index = block.startRow; index <= block.endRow; index++) {
+      rowGridLines.push(tracks.length + 1);
+      tracks.push("1fr");
+      rowStartUnits.push(units);
+      units += 1;
+      // MATLAB's referential labels are ordinals; bipolar labels retain the pair.
+      const pair = /^(?:[A-Za-z]+)(\d+-\d+)$/.exec(labels[index].trim());
+      contactLabels.push(block.name ? pair?.[1] ?? String(index - block.startRow + 1) : labels[index]);
+    }
+    padding(edgePadding);
+  }
   return { rowStartUnits, rowGridLines, gridTemplateRows: tracks.join(" ") || "1fr", totalUnits: Math.max(1, units), groupStarts, groups, contactLabels };
 }
 

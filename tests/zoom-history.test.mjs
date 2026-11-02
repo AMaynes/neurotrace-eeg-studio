@@ -139,11 +139,11 @@ test("shared group labels align with row baselines in compact, expanded, and ver
   const base = { channelRowLayout, channelViewportHeight: 828, CHANNEL_RAIL_HEADER_HEIGHT: 28,
     expandedChannels: false, waveformVerticalViewport: null, projectVerticalFraction };
   const style = (overrides = {}) => compile(declaration("channelGroupLabelStyle"), { ...base, ...overrides }, "channelGroupLabelStyle");
-  assert.deepEqual(style()(0, 1), { gridColumn: 1, gridRow: "1 / 3" });
-  assert.deepEqual(style({ expandedChannels: true })(2, 3), { gridColumn: 1, gridRow: "4 / 6" });
-  assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .25 } })(0, 1).top, 428);
-  assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .25 } })(2, 3), null);
-  assert.equal(style({ waveformVerticalViewport: { top: .75, bottom: 1 } })(2, 3).top, 428);
+  assert.deepEqual(style()(0, 1), { gridColumn: 1, gridRow: "2 / 4" });
+  assert.deepEqual(style({ expandedChannels: true })(2, 3), { gridColumn: 1, gridRow: "6 / 8" });
+  assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(0, 1).top, 428);
+  assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(2, 3), null);
+  assert.equal(style({ waveformVerticalViewport: { top: .5, bottom: 1 } })(2, 3).top, 428);
 });
 
 test("real undo/redo follows label → zoom → label chronologically without cross-restoring state", () => {
