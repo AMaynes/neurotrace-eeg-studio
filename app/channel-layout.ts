@@ -57,7 +57,7 @@ export function channelPlotGeometry(
   return { rowHeight, topPadding, unitStart, contentHeight: Math.max(availableHeight, layout.totalUnits * rowHeight) };
 }
 
-/** Equal-height group sections with centered contacts and permanent padding on both edges. */
+/** Shared channel spacing with fixed gaps between groups, regardless of contact count. */
 export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean): ChannelRowLayout {
   const rowStartUnits: number[] = [];
   const rowGridLines: number[] = [];
@@ -73,7 +73,6 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
     else blocks.push({ name, startRow: index, endRow: index });
   });
   const grouped = blocks.some((block) => block.name !== null);
-  const largestGroup = blocks.reduce((largest, block) => Math.max(largest, block.endRow - block.startRow + 1), 0);
   let units = 0;
   const padding = (size: number) => {
     if (size <= 0) return;
@@ -81,10 +80,8 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
     units += size;
   };
   for (const block of blocks) {
-    const count = block.endRow - block.startRow + 1;
-    // Keep one shared channel scale. Smaller groups receive more blank space,
-    // rather than stretching their rows or changing their apparent amplitude.
-    const edgePadding = grouped ? (largestGroup - count + ELECTRODE_GROUP_GAP_ROWS) / 2 : 0;
+    // Adjacent half-gaps form the same full gap for every pair of groups.
+    const edgePadding = grouped ? ELECTRODE_GROUP_GAP_ROWS / 2 : 0;
     padding(edgePadding);
     if (grouped && block.startRow > 0) groupStarts.add(block.startRow);
     if (block.name) groups.push({ name: block.name, startRow: block.startRow, endRow: block.endRow });

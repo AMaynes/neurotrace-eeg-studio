@@ -71,14 +71,14 @@ test("sorting derived display rows does not recalculate bipolar pairs or reverse
   }
 });
 
-test("equal-height sections retain padded gaps with aligned CSS tracks, waveform positions, and hit regions", () => {
+test("uniform group gaps align CSS tracks, waveform positions, and hit regions", () => {
   const labels = ["LA1", "LA2", "RB1", "RB2", "Events"];
   const layout = buildChannelRowLayout(labels, true);
   assert.equal(ELECTRODE_GROUP_GAP_ROWS, .5);
-  assert.equal(layout.totalUnits, 7.5);
+  assert.equal(layout.totalUnits, 6.5);
   assert.deepEqual([...layout.groupStarts], [2, 4]);
   assert.deepEqual(layout.rowGridLines, [2, 3, 6, 7, 10]);
-  assert.equal(layout.gridTemplateRows, "0.25fr 1fr 1fr 0.25fr 0.25fr 1fr 1fr 0.25fr 0.75fr 1fr 0.75fr");
+  assert.equal(layout.gridTemplateRows, "0.25fr 1fr 1fr 0.25fr 0.25fr 1fr 1fr 0.25fr 0.25fr 1fr 0.25fr");
   const tracks = layout.gridTemplateRows.split(" ").map(Number.parseFloat);
   for (const [row, line] of layout.rowGridLines.entries()) {
     const trackStart = tracks.slice(0, line - 1).reduce((sum, height) => sum + height, 0);
@@ -131,12 +131,12 @@ test("MATLAB labels use one shared group label, ordinal contacts, and actual bip
   const layout = buildChannelRowLayout(["LA10", "LA2", "RB6", "RB1", "RB3"], true);
   assert.deepEqual(layout.groups, [{ name: "LA", startRow: 0, endRow: 1 }, { name: "RB", startRow: 2, endRow: 4 }]);
   assert.deepEqual(layout.contactLabels, ["1", "2", "1", "2", "3"]);
-  assert.deepEqual(layout.rowStartUnits, [.75, 1.75, 3.75, 4.75, 5.75]);
+  assert.deepEqual(layout.rowStartUnits, [.25, 1.25, 2.75, 3.75, 4.75]);
   assert.deepEqual(buildChannelRowLayout(["LA10-2", "RB6-1", "RB1-3"], true).contactLabels, ["10-2", "6-1", "1-3"]);
   assert.deepEqual(buildChannelRowLayout(["LA10 (CAR)", "LA2 (CAR)", "RB1 (CAR)"], true).contactLabels, ["1", "2", "1"]);
 });
 
-test("unequal groups have evenly spaced centers, equal row heights, and reserved outer and inner padding", () => {
+test("unequal groups have uniform boundary gaps, equal row heights, and balanced outer padding", () => {
   for (const counts of [[1], [3], [1, 6, 2], [5, 1, 3, 2], [2, 2, 2]]) {
     const labels = counts.flatMap((count, group) => Array.from({ length: count }, (_, row) => `${String.fromCharCode(76 + group)}A${row + 1}`));
     const layout = buildChannelRowLayout(labels, true);
@@ -144,14 +144,15 @@ test("unequal groups have evenly spaced centers, equal row heights, and reserved
     for (const [index, group] of layout.groups.entries()) {
       const first = layout.rowStartUnits[group.startRow];
       const end = layout.rowStartUnits[group.endRow] + 1;
-      const center = (first + end) / (2 * layout.totalUnits);
-      assert.ok(Math.abs(center - (index + .5) / counts.length) < 1e-12, "each contact block is centered in its equal-height section");
-      const sectionStart = index * layout.totalUnits / counts.length;
-      const sectionEnd = (index + 1) * layout.totalUnits / counts.length;
-      assert.equal(first - sectionStart, sectionEnd - end, "balanced padding above and below every group");
-      assert.ok(first - sectionStart >= .25, "padding remains even for the largest group");
+      assert.equal(end - first, counts[index], "group height follows its contact count without extra padding");
+      if (index > 0) {
+        const previousEnd = layout.rowStartUnits[layout.groups[index - 1].endRow] + 1;
+        assert.equal(first - previousEnd, .5, "every boundary has the same half-row gap");
+      }
       for (let row = group.startRow; row < group.endRow; row++) assert.equal(layout.rowStartUnits[row + 1] - layout.rowStartUnits[row], 1);
     }
+    assert.equal(layout.rowStartUnits[0], .25);
+    assert.equal(layout.totalUnits - layout.rowStartUnits.at(-1) - 1, .25);
     for (let unit = 0; unit < layout.totalUnits; unit += .25) {
       const expected = layout.rowStartUnits.findIndex((start) => unit >= start && unit < start + 1);
       assert.equal(channelRowFromFraction(layout, unit / layout.totalUnits), expected < 0 ? null : expected);
@@ -159,17 +160,19 @@ test("unequal groups have evenly spaced centers, equal row heights, and reserved
   }
 });
 
-test("group centers and reserved padding persist through recorded, CAR and bipolar layouts", () => {
+test("uniform group gaps persist through recorded, CAR and bipolar layouts", () => {
   const layouts = [
     ["LA1", "LA2", "LA3", "RA1", "RA2"],
     ["LA1 (CAR)", "LA2 (CAR)", "LA3 (CAR)", "RA1 (CAR)", "RA2 (CAR)"],
     ["LA1-2", "LA2-3", "RA1-2"],
   ].map((labels) => buildChannelRowLayout(labels, true));
+  assert.deepEqual(layouts[0], layouts[1], "CAR preserves the recorded layout");
   for (const layout of layouts) {
-    assert.deepEqual(layout.groups.map(({ startRow, endRow }) =>
-      (layout.rowStartUnits[startRow] + layout.rowStartUnits[endRow] + 1) / (2 * layout.totalUnits)), [.25, .75]);
+    const previousEnd = layout.rowStartUnits[layout.groups[0].endRow] + 1;
+    const nextStart = layout.rowStartUnits[layout.groups[1].startRow];
+    assert.equal(nextStart - previousEnd, .5);
     assert.equal(channelRowFromFraction(layout, 0), null);
-    assert.equal(channelRowFromFraction(layout, .5), null);
+    assert.equal(channelRowFromFraction(layout, (previousEnd + nextStart) / (2 * layout.totalUnits)), null);
     assert.equal(channelRowFromFraction(layout, .999), null);
   }
 });
