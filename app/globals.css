@@ -1213,9 +1213,9 @@ textarea:focus-visible {
 
 .session-tab:hover { color: #c7d7d7; background: #102127; }
 .session-tab.active {
-  border-color: #31544f;
-  background: #11231f;
-  color: #e1eeeb;
+  border-color: #3d648d;
+  background: #132941;
+  color: #e8f3ff;
   box-shadow: inset 0 -2px 0 var(--mint);
 }
 
