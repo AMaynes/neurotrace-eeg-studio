@@ -6,7 +6,8 @@ import { recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
 import { composeVerticalViewport, projectVerticalFraction } from "../app/waveform-viewport.ts";
 import { DEFAULT_CONTROLS, shortcutAction } from "../app/shortcuts.ts";
 import { normalizeDisplayGain } from "../app/display-gain.ts";
-import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, matlabDisplayOrder, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
+import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, channelGroupOrder, matlabDisplayGroup, orderGroupedDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
+import { bipolarMontageKind } from "../app/bipolar-montage.ts";
 
 const initialView = () => ({
   viewStart: 30, timebase: 20, gain: 1, verticalViewport: null,
@@ -82,8 +83,8 @@ function workspace(overrides = {}) {
   };
   const changes = [], canceled = [];
   const scope = {
-    ...refs, recordZoomChange, normalizeDisplayGain, orderMatlabDisplayRows, remapDisplayFocus, useCallback: (callback) => callback,
-    anatomicalGroups: false, preparedDisplay: null, display: null, focusedChannel: 0,
+    ...refs, recordZoomChange, normalizeDisplayGain, orderGroupedDisplayRows, remapDisplayFocus, useCallback: (callback) => callback,
+    anatomicalGroups: false, channelGroupingMode: "matlab", preparedDisplay: null, display: null, focusedChannel: 0,
     hasRecording: true, meta: { durationSec: 300 }, minimumRenderableWindow: 0.1,
     timebase: 20, WINDOW_ZOOM_STEP_SECONDS: 0.1,
     clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
@@ -110,7 +111,7 @@ test("real grouping memo and toggle preserve focus and restore exactly the origi
     sampleRates: labels.map(() => 100), sourceSampleRates: labels.map(() => 200),
     startSecs: labels.map(() => .005), units: labels.map(() => "uV"),
     sourceIndices: labels.map((_, i) => [i]), primarySourceIndices: labels.map((_, i) => i) };
-  const render = (anatomicalGroups) => compile(declaration("display"), { useMemo: (fn) => fn(), anatomicalGroups, preparedDisplay, orderMatlabDisplayRows }, "display");
+  const render = (anatomicalGroups) => compile(declaration("display"), { useMemo: (fn) => fn(), anatomicalGroups, channelGroupingMode: "matlab", preparedDisplay, orderGroupedDisplayRows }, "display");
   const grouped = render(true);
   assert.deepEqual(grouped.labels, ["LA3", "LA1", "RA10", "RA2"]);
   assert.equal(render(false), preparedDisplay, "off restores the same object and sample buffers");
@@ -134,6 +135,34 @@ test("real grouping memo and toggle preserve focus and restore exactly the origi
   ui.redo(); assert.equal(ui.readZoomView().anatomicalGroups, true);
 });
 
+test("EDF and EDF+ enable name grouping for scalp, prefixed, auxiliary and unknown channel names", () => {
+  for (const format of ["edf", "edf+"]) for (const channelLabels of [["Fp1", "C3", "Fz"], ["EEG LA1-REF", "SEEG LA2-LE"], ["ECG1", "Respiration"], ["Unusual name"]]) {
+    const result = compile([declaration("channelGroupingMode"), declaration("anatomicalGroupsAvailable")].join("\n"), {
+      meta: { format, channelLabels }, matlabAnatomicalLayout: false, bipolarMontageKind, matlabDisplayGroup,
+    }, "({ mode: channelGroupingMode, available: anatomicalGroupsAvailable })");
+    assert.deepEqual(result, { mode: "name", available: true });
+  }
+});
+
+test("EDF name grouping restores the same source buffers and keeps auxiliary focus through toggles and undo", () => {
+  const labels = ["EEG LA1-REF", "ECG1", "EEG LA2-REF", "ECG2"];
+  const preparedDisplay = { labels, data: labels.map((_, i) => new Float64Array([i])),
+    traceBaselines: labels.map(() => 0), envelopes: labels.map(() => null), units: labels.map(() => "µV"),
+    sampleRates: labels.map(() => 100), sourceSampleRates: labels.map(() => 100), startSecs: labels.map(() => 0),
+    sourceIndices: labels.map((_, i) => [i]), primarySourceIndices: labels.map((_, i) => i) };
+  const render = (anatomicalGroups) => compile(declaration("display"), {
+    useMemo: (fn) => fn(), anatomicalGroups, preparedDisplay, channelGroupingMode: "name", orderGroupedDisplayRows,
+  }, "display");
+  assert.deepEqual(render(true).labels, [labels[0], labels[2], labels[1], labels[3]]);
+  assert.equal(render(false), preparedDisplay);
+  const ui = workspace({ channelGroupingMode: "name", preparedDisplay, display: preparedDisplay, focusedChannel: 1 });
+  ui.changeZoomView({ anatomicalGroups: true });
+  assert.ok(ui.changes.some(([name, value]) => name === "setFocusedChannel" && value === 2));
+  assert.ok(!ui.changes.some(([name]) => name === "setChannelSelectionActive"));
+  ui.undo(); assert.equal(ui.readZoomView().anatomicalGroups, undefined);
+  ui.redo(); assert.equal(ui.readZoomView().anatomicalGroups, true);
+});
+
 test("shared group labels align with row baselines in compact, expanded, and vertically zoomed views", () => {
   const channelRowLayout = buildChannelRowLayout(["LA3", "LA1", "RA10", "RA2"], true);
   const base = { channelRowLayout, channelViewportHeight: 828, CHANNEL_RAIL_HEADER_HEIGHT: 28,
@@ -150,7 +179,7 @@ test("channel changes clamp focus to visible grouped rows while empty loading vi
   let focused = 4, published;
   const zoomViewRef = { current: { anatomicalGroups: true } };
   const publish = compile(declaration("publishDisplay"), {
-    zoomViewRef, matlabDisplayOrder, centerDisplayWindow: (view) => view,
+    zoomViewRef, channelGroupOrder, source: { meta: { format: "raw-int16-le" } }, centerDisplayWindow: (view) => view,
     clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
     setFocusedChannel: (update) => { focused = update(focused); }, setDisplay: (view) => { published = view; },
   }, "publishDisplay");

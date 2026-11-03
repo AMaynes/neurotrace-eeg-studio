@@ -92,7 +92,7 @@ import { listOlderBrowserReviews, type BrowserReviewEntry } from "./legacy-brows
 import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { parseRecordingTimestamp } from "./recording-timestamp";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
-import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, matlabDisplayOrder, orderMatlabDisplayRows, remapDisplayFocus } from "./channel-layout";
+import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, channelGroupOrder, orderGroupedDisplayRows, remapDisplayFocus } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
 import {
   RecordingOverviewCache,
@@ -1953,8 +1953,9 @@ export default function Home() {
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
   const [anatomicalGroups, setAnatomicalGroups] = useState(false);
   const [preparedDisplay, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
-  const display = useMemo(() => anatomicalGroups ? orderMatlabDisplayRows(preparedDisplay) : preparedDisplay,
-    [anatomicalGroups, preparedDisplay]);
+  const channelGroupingMode = meta.format === "edf" || meta.format === "edf+" ? "name" : "matlab";
+  const display = useMemo(() => anatomicalGroups ? orderGroupedDisplayRows(preparedDisplay, channelGroupingMode) : preparedDisplay,
+    [anatomicalGroups, channelGroupingMode, preparedDisplay]);
   const [spectrogramState, setSpectrogramState] = useState<{
     requestKey: string;
     result: MatlabSpectrogramResult | null;
@@ -2121,8 +2122,9 @@ export default function Home() {
   const matlabAnatomicalLayout = meta.format === "raw-int16-le"
     || recordingType === "SEEG / iEEG"
     || recordingType === "Simultaneous scalp + iEEG";
-  const anatomicalGroupsAvailable = (matlabAnatomicalLayout || bipolarMontageKind(meta.channelLabels) === "anatomical")
-    && meta.channelLabels.some((label) => matlabDisplayGroup(label) !== null);
+  const anatomicalGroupsAvailable = channelGroupingMode === "name" ? meta.channelLabels.length > 0
+    : (matlabAnatomicalLayout || bipolarMontageKind(meta.channelLabels) === "anatomical")
+      && meta.channelLabels.some((label) => matlabDisplayGroup(label) !== null);
   const legacyRawCountDisplay = meta.format === "raw-int16-le"
     && sourceInterpretation?.display_amplitude_mode === "legacy-raw-counts";
   const datPhysicalScaleValid = datMapping.physicalScale === ""
@@ -2138,8 +2140,8 @@ export default function Home() {
   }, [datChannelNamesText, datMapping.channelCount]);
   const datLayout = pendingDat ? describeRawDatLayout(pendingDat.size, datMapping.channelCount, datMapping.sampleRate) : null;
   const channelRowLayout = useMemo(
-    () => buildChannelRowLayout(display.labels, anatomicalGroups),
-    [display.labels, anatomicalGroups],
+    () => buildChannelRowLayout(display.labels, anatomicalGroups, channelGroupingMode),
+    [display.labels, anatomicalGroups, channelGroupingMode],
   );
   const channelGeometry = channelPlotGeometry(channelRowLayout, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
   const activeCandidateOnset = activeCandidateAnnotation?.start ?? markOnset;
@@ -2661,7 +2663,7 @@ export default function Home() {
   const applyZoomView = useCallback((view: ZoomView) => {
     view = { ...view, gain: normalizeDisplayGain(view.gain) };
     if (Boolean(view.anatomicalGroups) !== anatomicalGroups) {
-      const nextDisplay = view.anatomicalGroups ? orderMatlabDisplayRows(preparedDisplay) : preparedDisplay;
+      const nextDisplay = view.anatomicalGroups ? orderGroupedDisplayRows(preparedDisplay, channelGroupingMode) : preparedDisplay;
       const nextFocus = remapDisplayFocus(display, nextDisplay, focusedChannel);
       setFocusedChannel(Math.max(0, nextFocus));
       if (nextFocus < 0) setChannelSelectionActive(false);
@@ -2679,7 +2681,7 @@ export default function Home() {
     setSpectrogramFrequencyRange(view.frequencyRange);
     setInspectionRange(null);
     setInspectionDragging(false);
-  }, [anatomicalGroups, cancelPendingViewFrames, commitViewStart, display, focusedChannel, preparedDisplay]);
+  }, [anatomicalGroups, cancelPendingViewFrames, channelGroupingMode, commitViewStart, display, focusedChannel, preparedDisplay]);
 
   const changeZoomView = useCallback((patch: Partial<ZoomView>, group?: string) => {
     if (!hasRecording) return;
@@ -3454,7 +3456,8 @@ export default function Home() {
           // Grouping may change while processing is in flight. Use its current
           // value and clamp focus to visible rows, including progressive views.
           const visibleRows = zoomViewRef.current.anatomicalGroups
-            ? matlabDisplayOrder(centered.labels).length : centered.labels.length;
+            ? channelGroupOrder(centered.labels, source.meta.format === "edf" || source.meta.format === "edf+" ? "name" : "matlab").length
+            : centered.labels.length;
           if (visibleRows) setFocusedChannel((current) => clamp(current, 0, visibleRows - 1));
           setDisplay(centered);
         };
@@ -7474,10 +7477,12 @@ export default function Home() {
             <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">{bipolarMontageLabel(meta.channelLabels)}</option></select></label>
             <button
               className={`compact-toggle ${anatomicalGroups ? "active" : ""}`}
-              aria-label="Anatomical channel groups"
+              aria-label="Channel groups"
               aria-pressed={anatomicalGroups}
               disabled={!hasRecording || (!anatomicalGroups && !anatomicalGroupsAvailable)}
-              title={anatomicalGroups ? "Show channels without grouping" : anatomicalGroupsAvailable ? "Group anatomical channels as in MATLAB" : "No anatomical channel groups available"}
+              title={anatomicalGroups ? "Show channels without grouping" : anatomicalGroupsAvailable
+                ? channelGroupingMode === "name" ? "Group channels by name" : "Group anatomical channels as in MATLAB"
+                : "No channel name groups available"}
               onClick={() => changeZoomView({ anatomicalGroups: !anatomicalGroups, verticalViewport: null, channelScrollTop: 0 })}
             >Groups</button>
             <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>

@@ -7,7 +7,7 @@ import { EDFSource, RawDatSource, mergeNearbyFlatlineRegions } from "../app/eeg-
 import { bipolarMontageKind } from "../app/bipolar-montage.ts";
 import { recordingOverviewDisplayPolicy } from "../app/overview-display-policy.ts";
 import { RecordingOverviewCache, recordingOverviewPlan } from "../app/recording-overview.ts";
-import { matlabDisplayOrder } from "../app/channel-layout.ts";
+import { channelGroupOrder } from "../app/channel-layout.ts";
 import { centerDisplayWindow } from "../app/trace-centering.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
@@ -103,7 +103,7 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
       cleanup?.(); dependencies = nextDependencies; cleanup = callback();
     },
     EDFSource, RawDatSource, bipolarMontageKind, mergeNearbyFlatlineRegions,
-    recordingOverviewDisplayPolicy, recordingOverviewPlan, centerDisplayWindow, matlabDisplayOrder, zoomViewRef: { current: { anatomicalGroups: false } },
+    recordingOverviewDisplayPolicy, recordingOverviewPlan, centerDisplayWindow, channelGroupOrder, zoomViewRef: { current: { anatomicalGroups: false } },
     buildMatlabDisplayWindow: builder, createMatlabFileReader: createReader,
     buildEDFFileWindowOffThread: fileWorker, buildRawDatFileWindowOffThread: fileWorker,
     performanceDiagnostics: { beginSourceRead: operation("read"), beginDecode: operation("decode"), recordDecode() {} }, primarySampleRate: (meta) => meta.sampleRate,

@@ -4,6 +4,29 @@ import { anatomicalChannelGroup, orderElectrodeChannelIndices } from "./eeg-core
 
 // Minimum gap; spare viewport space is shared equally by all gaps, including the edges.
 export const ELECTRODE_GROUP_GAP_ROWS = 0.5;
+export type ChannelGroupingMode = "matlab" | "name";
+
+/** Parse display names only; source labels and montage pairing remain unchanged. */
+function namedChannel(label: string): { group: string; contact: string } {
+  const plain = label.trim().replace(/\s+\(CAR\)$/i, "")
+    .replace(/^(?:EEG|SEEG|ECOG|IEEG|POL)[\s:_-]+/i, "");
+  const core = plain.replace(/[-_\s]+(?:REF|LE|AR|AVG|CAR)$/i, "").trim();
+  const suffix = plain.slice(core.length);
+  const pair = /^([A-Za-z]+)[ _]*(\d+)\s*-\s*(?:([A-Za-z]+)[ _]*)?(\d+)$/.exec(core);
+  if (pair) {
+    const first = pair[1].toUpperCase(), second = (pair[3] ?? pair[1]).toUpperCase();
+    return { group: first === second ? first : `${first}-${second}`, contact: `${pair[2]}-${pair[4]}${suffix}` };
+  }
+  const contact = /^([A-Za-z]+)[ _-]*(\d+)$/.exec(core)
+    ?? /^(Fp|AF|F|FC|FT|C|CP|T|TP|P|PO|O|A|M)(z)$/i.exec(core);
+  if (contact) return { group: contact[1].toUpperCase(), contact: `${contact[2]}${suffix}` };
+  // Unnumbered/unknown names remain explicit groups, never silently hidden.
+  return { group: core.toUpperCase() || "Other", contact: plain || label || "Unnamed" };
+}
+
+export function channelNameGroup(label: string): string {
+  return namedChannel(label).group;
+}
 
 /** Preserve MATLAB's case-sensitive group identity, including our CAR display suffix. */
 export function matlabDisplayGroup(label: string): string | null {
@@ -24,6 +47,19 @@ export function matlabDisplayOrder(labels: readonly string[]): number[] {
   if (!groups.size) return labels.map((_, index) => index);
   const side = (group: string) => group[0].toUpperCase() === "L" ? 0 : group[0].toUpperCase() === "R" ? 1 : 2;
   return [...groups].sort(([a], [b]) => side(a) - side(b)).flatMap(([, rows]) => rows);
+}
+
+/** Name groups retain first-occurrence group order and acquisition order within each group. */
+export function channelGroupOrder(labels: readonly string[], mode: ChannelGroupingMode): number[] {
+  if (mode === "matlab") return matlabDisplayOrder(labels);
+  const groups = new Map<string, number[]>();
+  labels.forEach((label, index) => {
+    const group = channelNameGroup(label);
+    const rows = groups.get(group) ?? [];
+    rows.push(index);
+    groups.set(group, rows);
+  });
+  return [...groups.values()].flat();
 }
 
 export type ChannelRowLayout = {
@@ -93,7 +129,7 @@ export function channelPlotGeometry(
 }
 
 /** Shared channel spacing with fixed gaps between groups, regardless of contact count. */
-export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean): ChannelRowLayout {
+export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean, mode: ChannelGroupingMode = "matlab"): ChannelRowLayout {
   const rowStartUnits: number[] = [];
   const rowGridLines: number[] = [];
   const tracks: string[] = [];
@@ -102,7 +138,7 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
   const contactLabels: string[] = [];
   const blocks: Array<{ name: string | null; startRow: number; endRow: number }> = [];
   labels.forEach((label, index) => {
-    const name = electrodeSpacing ? matlabDisplayGroup(label) : null;
+    const name = electrodeSpacing ? mode === "name" ? channelNameGroup(label) : matlabDisplayGroup(label) : null;
     const previous = blocks.at(-1);
     if (previous && previous.name === name) previous.endRow = index;
     else blocks.push({ name, startRow: index, endRow: index });
@@ -127,7 +163,8 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
       units += 1;
       // MATLAB's referential labels are ordinals; bipolar labels retain the pair.
       const pair = /^(?:[A-Za-z]+)(\d+-\d+)$/.exec(labels[index].trim());
-      contactLabels.push(block.name ? pair?.[1] ?? String(index - block.startRow + 1) : labels[index]);
+      contactLabels.push(block.name ? mode === "name" ? namedChannel(labels[index]).contact
+        : pair?.[1] ?? String(index - block.startRow + 1) : labels[index]);
     }
     padding(block.endRow === labels.length - 1 ? edgePadding * 2 : edgePadding);
   }
@@ -165,6 +202,10 @@ export function orderElectrodeDisplayRows<T extends ElectrodeDisplayRows>(displa
 /** Display-only grouping: never derive pairs, change a sample, or mutate the source selection. */
 export function orderMatlabDisplayRows<T extends ElectrodeDisplayRows>(display: T): T {
   return reorderDisplayRows(display, matlabDisplayOrder(display.labels));
+}
+
+export function orderGroupedDisplayRows<T extends ElectrodeDisplayRows>(display: T, mode: ChannelGroupingMode): T {
+  return reorderDisplayRows(display, channelGroupOrder(display.labels, mode));
 }
 
 function reorderDisplayRows<T extends ElectrodeDisplayRows>(display: T, order: number[]): T {

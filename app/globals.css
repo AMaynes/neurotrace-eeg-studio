@@ -1704,7 +1704,7 @@ textarea:focus-visible {
   color: #d9efff;
   box-shadow: inset -3px 0 0 var(--mint), inset 0 0 0 1px rgba(90, 169, 255, .16);
 }
-.channel-rail .channel-group-label { align-self: center; justify-self: start; width: 38px; padding-left: 3px; overflow: hidden; text-overflow: ellipsis; color: #4dd9ff; font: bold 10px ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; z-index: 1; }
+.channel-rail .channel-group-label { align-self: center; justify-self: start; width: 30px; padding-left: 3px; overflow: hidden; text-overflow: ellipsis; color: #4dd9ff; font: bold 10px ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; z-index: 1; }
 .channel-rail.anatomical-groups { display: block; }
 .channel-rail.anatomical-groups button:not(.channel-manager-button):not(.channel-layout-button) strong { max-width: 31px; }
 

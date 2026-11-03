@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { buildMontage, displayElectrodeGroup, orderElectrodeChannelIndices } from "../app/eeg-core.ts";
-import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, ELECTRODE_GROUP_GAP_ROWS, orderElectrodeDisplayRows, matlabDisplayOrder, orderMatlabDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
+import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, channelNameGroup, channelGroupOrder, ELECTRODE_GROUP_GAP_ROWS, orderElectrodeDisplayRows, matlabDisplayOrder, orderMatlabDisplayRows, orderGroupedDisplayRows, remapDisplayFocus } from "../app/channel-layout.ts";
 
 function displayRows(labels) {
   return {
@@ -20,6 +20,46 @@ function displayRows(labels) {
     warnings: ["preserved"], viewStart: 17, flatlineRegions: [],
   };
 }
+
+test("EDF name groups accept signal prefixes, reference suffixes, scalp names and existing bipolar derivations", () => {
+  for (const label of ["LA1", " EEG LA1-REF ", "seeg la_02-le", "ECOG LA-3-AR", "iEEG:LA4-AVG", "POL LA5 (CAR)", "EEG LA1-LA2-REF", "LA1-2"]) {
+    assert.equal(channelNameGroup(label), "LA", label);
+  }
+  for (const label of ["EEG Fp1-REF", "Fp2", "Fpz (CAR)"]) assert.equal(channelNameGroup(label), "FP");
+  assert.equal(channelNameGroup("EEG Fp1-F7"), "FP-F");
+  assert.equal(channelNameGroup("LA1-RA2-REF"), "LA-RA");
+  assert.equal(channelNameGroup("ECG1"), "ECG");
+  assert.equal(channelNameGroup("EEG C3-REF"), "C");
+  assert.equal(channelNameGroup("Respiration"), "RESPIRATION");
+  assert.equal(channelNameGroup(""), "Other");
+});
+
+test("EDF grouping retains all selected rows, exact buffers, source identities and acquisition order", () => {
+  const original = displayRows(["EEG LA10-REF", "Fp2", "seeg la2-LE", "ECG1", "Fp1", "Respiration", "ECG2", "Fz", "F3"]);
+  const grouped = orderGroupedDisplayRows(original, "name");
+  const order = [0, 2, 1, 4, 3, 6, 5, 7, 8];
+  assert.deepEqual(grouped.labels, order.map(i => original.labels[i]));
+  assert.deepEqual(channelGroupOrder(original.labels, "name"), order);
+  assert.equal(grouped.labels.length, original.labels.length, "auxiliary and unknown names remain visible");
+  for (const [row, sourceIndex] of order.entries()) {
+    for (const field of ["data", "labels", "traceBaselines", "envelopes", "units", "sampleRates", "sourceSampleRates", "sourceStartSampleIndices", "startSecs", "sourceIndices", "primarySourceIndices"]) {
+      assert.equal(grouped[field][row], original[field][sourceIndex], field);
+    }
+    assert.equal(remapDisplayFocus(original, grouped, sourceIndex), row);
+    assert.equal(remapDisplayFocus(grouped, original, row), sourceIndex);
+  }
+  const layout = buildChannelRowLayout(grouped.labels, true, "name");
+  assert.deepEqual(layout.groups.map(g => g.name), ["LA", "FP", "ECG", "RESPIRATION", "F"]);
+  assert.deepEqual(layout.contactLabels, ["10-REF", "2-LE", "2", "1", "1", "2", "Respiration", "z", "3"]);
+  for (const height of [150, 700]) for (const expanded of [false, true]) {
+    const geometry = channelPlotGeometry(layout, height, expanded);
+    layout.rowStartUnits.forEach((start, row) => {
+      const y = geometry.yForUnit(start) + geometry.rowHeight / 2;
+      assert.equal(channelRowFromFraction(layout, geometry.unitForY(y) / layout.totalUnits), row);
+    });
+  }
+  assert.deepEqual(original.labels, ["EEG LA10-REF", "Fp2", "seeg la2-LE", "ECG1", "Fp1", "Respiration", "ECG2", "Fz", "F3"]);
+});
 
 test("electrode groups are contiguous and contacts use numeric order rather than acquisition order", () => {
   const labels = ["RHB10", "RHA2", "LA10", "RHB6", "RHC1", "RHB2", "LA2", "RHA1", "X35", "DC01", "Events", "EKG"];
@@ -109,7 +149,7 @@ test("viewer groups prepared rows independently from waveform processing and sha
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.equal(page.match(/publishDisplay\(nextDisplay\)/g)?.length, 4);
   assert.match(page, /const publishDisplay = \(next: DisplayWindow\) => \{[\s\S]*?centerDisplayWindow\(next\)[\s\S]*?setDisplay\(centered\)/);
-  assert.match(page, /const display = useMemo\(\(\) => anatomicalGroups \? orderMatlabDisplayRows\(preparedDisplay\) : preparedDisplay/);
+  assert.match(page, /const display = useMemo\(\(\) => anatomicalGroups \? orderGroupedDisplayRows\(preparedDisplay, channelGroupingMode\) : preparedDisplay/);
   assert.match(page, /const indices = matlabAnatomicalLayout && montage !== "referential"/);
   assert.match(page, /gridTemplateRows: channelRowLayout\.gridTemplateRows/);
   assert.match(page, /gridRow: `\$\{channelRowLayout\.rowGridLines\[channel\]\}/);
