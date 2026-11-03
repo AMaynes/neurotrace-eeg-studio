@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import { formatClock, formatDisplayChannelLabel } from "../app/eeg-core.ts";
+import { playbackWindowReady } from "../app/playback.ts";
 import { readCursorReadout } from "../app/cursor-readout.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
@@ -67,10 +68,10 @@ function display(overrides = {}) {
 }
 function harness(overrides = {}) {
   const env = {
-    ...formatters, formatClock, formatDisplayChannelLabel, readCursorReadout,
+    ...formatters, formatClock, formatDisplayChannelLabel, readCursorReadout, playbackWindowReady,
     useMemo: (compute) => compute(), display: display(), focusedChannel: 0, cursorTime: 10.25,
-    meta: { id: "test-recording" }, montage: "referential", filters: { enabled: false }, selectedChannels: new Set([0]),
-    loadingSignal: false, cursorAmplitude: 999999, signalViewStart: 10, timebase: 1,
+    meta: { id: "test-recording", durationSec: 100 }, montage: "referential", filters: { enabled: false }, selectedChannels: new Set([0]),
+    playing: false, viewStart: 10, loadingSignal: false, cursorAmplitude: 999999, signalViewStart: 10, timebase: 1,
     channelSelectionActive: true, inspectionDragging: false, inspectionRange: null, anatomicalGroups: false,
     channelRailRowStyle: () => ({}), channelRowLayout: { groupStarts: new Set() },
     setFocusedChannel() {}, setChannelSelectionActive() {}, notifyTutorialAction() {},
@@ -102,6 +103,15 @@ test("actual footer labels overview ranges and bucket times without invented sam
   assert.match(rendered, /Range 0\.00 µV – 100 µV/);
   assert.match(rendered, /Overview 00:00:10\.000–00:00:11\.000 · zoom in for samples/);
   assert.doesNotMatch(rendered, /25\.0 µV|999999|source sample|display sample/);
+});
+
+test("playback keeps valid readouts for the old visible page while buffering a future page", () => {
+  const ui = harness({ playing: true, loadingSignal: true, signalViewStart: 11, viewStart: 10 });
+  assert.equal(ui.env.displayReadoutReady, true);
+  assert.match(text(ui.footer()), /Range 0\.00 µV – 100 µV/);
+  assert.equal(harness({ display: display({ playbackBuffer: true, viewDuration: 2 }), viewStart: 10.5 }).env.displayReadoutReady, true, "pausing within a wider buffer retains valid readouts");
+  assert.equal(harness({ playing: true, loadingSignal: true, signalViewStart: 11, viewStart: 12 }).env.displayReadoutReady, false);
+  assert.equal(harness({ playing: false, loadingSignal: true, signalViewStart: 11, viewStart: 10 }).env.displayReadoutReady, false);
 });
 
 test("actual footer shows the selected exact sample's time and correctly aligned source index", () => {

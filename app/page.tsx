@@ -91,6 +91,7 @@ import { buildBackgroundRecordingOverview } from "./background-recording-overvie
 import { listOlderBrowserReviews, type BrowserReviewEntry } from "./legacy-browser-recovery";
 import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { parseRecordingTimestamp } from "./recording-timestamp";
+import { nextPlaybackStep, playbackWindowReady } from "./playback";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
 import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, channelGroupOrder, orderGroupedDisplayRows, remapDisplayFocus } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
@@ -392,6 +393,8 @@ type PerformanceWithMemory = Performance & {
 };
 
 type DisplayWindow = {
+  /** Wider prepared data used by continuously scrolling playback. */
+  playbackBuffer?: boolean;
   /** Processing identity prevents old values appearing under newly selected controls. */
   settingsKey?: string;
   data: SignalSamples[];
@@ -1838,6 +1841,11 @@ export default function Home() {
   const pendingEdfReviewNavigationRef = useRef<SignalSource | null>(null);
   const flushSessionRef = useRef<() => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveformFrameRef = useRef<HTMLCanvasElement | null>(null);
+  const playbackStateRef = useRef({ timeSec: 0, playing: false });
+  const playbackPendingViewRef = useRef<{ source: SignalSource; startSec: number; durationSec: number } | null>(null);
+  const playbackBufferRangeRef = useRef<typeof playbackPendingViewRef.current>(null);
+  const playbackDisplayRef = useRef<DisplayWindow>(EMPTY_DISPLAY);
   const waveformWidthRef = useRef(1);
   const waveformScrollRef = useRef<HTMLDivElement>(null);
   const channelScrollOffsetRef = useRef(0);
@@ -1964,7 +1972,11 @@ export default function Home() {
   } | null>(null);
   const [waveformWidth, setWaveformWidth] = useState(1);
   const [channelViewportHeight, setChannelViewportHeight] = useState(245);
+  const [playing, setPlaying] = useState(false);
+  const [playbackBuffering, setPlaybackBuffering] = useState(false);
+  const [playbackRequestRevision, setPlaybackRequestRevision] = useState(0);
   const [loadingSignal, setLoadingSignal] = useState(false);
+  const signalLoadingVisible = loadingSignal && (!playing || playbackBuffering);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const recordingLabelsImportedRef = useRef(false);
   const [queueSearch, setQueueSearch] = useState("");
@@ -1983,8 +1995,10 @@ export default function Home() {
   const displaySettingsKey = useMemo(() => JSON.stringify([
     meta.id, montage, filters.enabled ? filters : { enabled: false }, [...selectedChannels].sort((a, b) => a - b),
   ]), [meta.id, montage, filters, selectedChannels]);
-  const displayReadoutReady = !loadingSignal && display.settingsKey === displaySettingsKey
-    && display.viewStart === signalViewStart && display.viewDuration === timebase;
+  const displayReadoutReady = display.settingsKey === displaySettingsKey
+    && (playing || display.playbackBuffer
+      ? (!loadingSignal || playing) && playbackWindowReady(display, viewStart, timebase, meta.durationSec)
+      : display.viewDuration === timebase && !loadingSignal && display.viewStart === signalViewStart);
   const cursorReadout = useMemo<CursorReadout>(() => !displayReadoutReady
     ? { kind: "unavailable", unit: display.units[focusedChannel] || "a.u.", reason: "no-data" }
     : readCursorReadout(display, focusedChannel, cursorTime), [cursorTime, display, focusedChannel, displayReadoutReady]);
@@ -1994,7 +2008,10 @@ export default function Home() {
   const [activeTool, setActiveTool] = useState<"cursor" | "seizure">("cursor");
   const [markOnset, setMarkOnset] = useState<number | null>(null);
   const [snapMode, setSnapMode] = useState<SnapMode>("none");
-  const [playing, setPlaying] = useState(false);
+  useLayoutEffect(() => {
+    playbackStateRef.current = { timeSec: cursorTime, playing };
+  }, [cursorTime, playing]);
+  useLayoutEffect(() => { playbackDisplayRef.current = display; }, [display]);
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
   const [expandedChannels, setExpandedChannels] = useState(false);
   const [spectrogramFrequencyRange, setSpectrogramFrequencyRange] = useState<SpectrogramFrequencyRange>({ min: 0, max: 150 });
@@ -2096,11 +2113,20 @@ export default function Home() {
   }, []);
 
   const commitViewStart = useCallback((nextStart: number) => {
+    if (playbackPendingViewRef.current || displayAbortRef.current?.signal.aborted) {
+      setPlaybackRequestRevision((value) => value + 1);
+    }
+    if (playbackPendingViewRef.current) displayAbortRef.current?.abort();
+    playbackPendingViewRef.current = null;
+    playbackBufferRangeRef.current = null;
+    setPlaybackBuffering(false);
     clearWheelPanSettle();
     viewStartRef.current = nextStart;
     wheelPanTargetRef.current = nextStart;
     setViewStart(nextStart);
-    setSignalViewStart(nextStart);
+    // Centered playback can leave empty space before the recording starts.
+    // Restoring that viewport must still request a valid source offset.
+    setSignalViewStart(Math.max(0, nextStart));
   }, [clearWheelPanSettle]);
 
   const activeCandidateItem = candidates[activeCandidate] ?? null;
@@ -2618,6 +2644,11 @@ export default function Home() {
   }, [commitViewStart, meta.durationSec, timebase]);
 
   const previewViewStartSafe = useCallback((next: number | ((value: number) => number)) => {
+    playbackBufferRangeRef.current = null;
+    if (playbackPendingViewRef.current) {
+      playbackPendingViewRef.current = null;
+      displayAbortRef.current?.abort();
+    }
     const value = typeof next === "function" ? next(viewStartRef.current) : next;
     const bounded = clamp(value, 0, Math.max(0, meta.durationSec - timebase));
     viewStartRef.current = bounded;
@@ -3441,8 +3472,17 @@ export default function Home() {
       ? orderAnatomicalChannelIndices(meta.channelLabels, selectedIndices)
       : selectedIndices;
     const channelKey = indices.join(",");
+    const visibleDuration = timebase;
+    const visibleWidth = waveformWidth;
     const refreshWindow = async () => {
+      const playbackRead = playbackBufferRangeRef.current;
+      const timebase = playbackRead?.source === source && playbackRead.startSec === signalViewStart
+        ? playbackRead.durationSec : visibleDuration;
+      const waveformWidth = Math.min(Math.max(visibleWidth, 16_384), Math.ceil(visibleWidth * timebase / visibleDuration));
       if (!hasRecording || !indices.length) {
+        playbackPendingViewRef.current = null;
+        playbackBufferRangeRef.current = null;
+        setPlaying(false);
         displayAppliedRequestIdRef.current = requestId;
         setDisplay({ ...EMPTY_DISPLAY, viewStart: signalViewStart });
         if (hasRecording) displayPreviewReadyRef.current = true;
@@ -3452,7 +3492,13 @@ export default function Home() {
       setLoadingSignal(true);
       try {
         const publishDisplay = (next: DisplayWindow) => {
+          const pending = playbackPendingViewRef.current;
+          const playbackPage = playbackBufferRangeRef.current === playbackRead && playbackRead?.source === source && playbackRead.startSec === next.viewStart;
+          if (playbackPage && (next.processingThroughSec !== undefined || next.refiningOverview || next.indexedThroughSec !== undefined)) {
+            return false;
+          }
           const centered = centerDisplayWindow(next);
+          if (playbackPage) centered.playbackBuffer = true;
           // Grouping may change while processing is in flight. Use its current
           // value and clamp focus to visible rows, including progressive views.
           const visibleRows = zoomViewRef.current.anatomicalGroups
@@ -3460,6 +3506,14 @@ export default function Home() {
             : centered.labels.length;
           if (visibleRows) setFocusedChannel((current) => clamp(current, 0, visibleRows - 1));
           setDisplay(centered);
+          if (playbackPage) {
+            // The viewport keeps scrolling within the previous complete buffer.
+            // A prefetched replacement overlaps that viewport and extends ahead.
+            playbackDisplayRef.current = centered;
+            if (pending === playbackRead) playbackPendingViewRef.current = null;
+            setPlaybackBuffering(false);
+          }
+          return true;
         };
         if (!filters.enabled) {
           matlabTileCacheRef.current ??= createMatlabDisplayTileCache();
@@ -3476,10 +3530,10 @@ export default function Home() {
                 cache: matlabTileCacheRef.current,
                 onPartial: (partial, through) => {
                   if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
-                  displayAppliedRequestIdRef.current = requestId;
-                  publishDisplay({ ...partial, settingsKey: displaySettingsKey, traceBaselines: [],
+                  if (!publishDisplay({ ...partial, settingsKey: displaySettingsKey, traceBaselines: [],
                     timingConvention: "matlab-window", viewStart: signalViewStart, viewDuration: timebase,
-                    processingThroughSec: through, unreadAfterSec: through });
+                    processingThroughSec: through, unreadAfterSec: through })) return;
+                  displayAppliedRequestIdRef.current = requestId;
                   displayPreviewReadyRef.current = true;
                   setLoadingSignal(false);
                 },
@@ -3540,8 +3594,8 @@ export default function Home() {
             ),
             ...status,
           };
+          if (!publishDisplay(nextDisplay)) return;
           displayAppliedRequestIdRef.current = requestId;
-          publishDisplay(nextDisplay);
           displayPreviewReadyRef.current = true;
           setLoadingSignal(false);
         };
@@ -4265,6 +4319,13 @@ export default function Home() {
         displayAppliedRequestIdRef.current = requestId;
         setLoadingSignal(false);
         const message = error instanceof Error ? error.message : "Could not read this signal window";
+        if (playbackPendingViewRef.current?.source === source && playbackPendingViewRef.current.startSec === signalViewStart) {
+          playbackPendingViewRef.current = null;
+          setPlaying(false);
+          setPlaybackBuffering(false);
+          setToast(message);
+          return;
+        }
         setDisplay({ ...EMPTY_DISPLAY, viewStart: signalViewStart, warnings: [message] });
         setToast(message);
       }
@@ -4283,7 +4344,7 @@ export default function Home() {
       void pumpLatestWindow();
     }
     return () => abortController.abort();
-  }, [displaySettingsKey, overviewDisplayPolicy, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
+  }, [displaySettingsKey, overviewDisplayPolicy, filters, hasRecording, matlabAnatomicalLayout, meta, montage, overviewRefreshRevision, playbackRequestRevision, selectedChannels, signalViewStart, timebase, verifyingSource, waveformWidth]);
 
   // A waveform refresh creates new display arrays without changing the raw
   // contact being analyzed. Depend on that contact, not the array identity, so
@@ -4360,19 +4421,32 @@ export default function Home() {
 
   useEffect(() => {
     if (!hasRecording || !playing) return;
+    let previousTick = performance.now();
     const timer = window.setInterval(() => {
-      setCursorTime((value) => {
-        const next = value + 0.1;
-        if (next > viewStart + timebase) setViewStartSafe((start) => start + timebase * 0.8);
-        if (next >= meta.durationSec) {
-          setPlaying(false);
-          return meta.durationSec;
-        }
-        return next;
-      });
-    }, 100);
+      const now = performance.now();
+      const prepared = playbackDisplayRef.current;
+      const coverage = prepared.settingsKey === displaySettingsKey ? prepared : undefined;
+      const step = nextPlaybackStep(playbackStateRef.current.timeSec, timebase, meta.durationSec, coverage, (now - previousTick) / 1000);
+      // Time spent waiting for data never becomes a catch-up jump.
+      previousTick = now;
+      playbackStateRef.current.timeSec = step.timeSec;
+      setCursorTime(step.timeSec);
+      setPlaybackBuffering(step.buffering);
+      if (step.viewStartSec !== undefined) {
+        viewStartRef.current = step.viewStartSec;
+        wheelPanTargetRef.current = step.viewStartSec;
+        setViewStart(step.viewStartSec);
+      }
+      if (step.request && !playbackPendingViewRef.current) {
+        playbackPendingViewRef.current = { source: sourceRef.current, ...step.request };
+        playbackBufferRangeRef.current = playbackPendingViewRef.current;
+        setSignalViewStart(step.request.startSec);
+        setPlaybackRequestRevision((value) => value + 1);
+      }
+      if (step.finished) setPlaying(false);
+    }, 1000 / 30);
     return () => window.clearInterval(timer);
-  }, [hasRecording, meta.durationSec, playing, setViewStartSafe, timebase, viewStart]);
+  }, [displaySettingsKey, hasRecording, meta.durationSec, playing, timebase]);
 
   useEffect(() => {
     if (!hasRecording || activeSessionContentView !== "recording") return;
@@ -4387,15 +4461,23 @@ export default function Home() {
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      if (waveformFrameRef.current) {
+        waveformFrameRef.current.width = 0;
+        waveformFrameRef.current.height = 0;
+        waveformFrameRef.current = null;
+      }
+      return;
+    }
     const draw = () => {
       const rect = canvas.getBoundingClientRect();
       const canvasScale = boundedCanvasScale(rect.width, rect.height, window.devicePixelRatio || 1);
       const backingWidth = Math.max(1, Math.floor(rect.width * canvasScale));
       const backingHeight = Math.max(1, Math.floor(rect.height * canvasScale));
-      if (canvas.width !== backingWidth) canvas.width = backingWidth;
-      if (canvas.height !== backingHeight) canvas.height = backingHeight;
-      const context = canvas.getContext("2d", { alpha: false, desynchronized: true });
+      const frame = waveformFrameRef.current ??= document.createElement("canvas");
+      if (frame.width !== backingWidth) frame.width = backingWidth;
+      if (frame.height !== backingHeight) frame.height = backingHeight;
+      const context = frame.getContext("2d", { alpha: false });
       if (!context) return;
       const renderSpan = performanceDiagnostics.beginRender();
       performanceDiagnostics.recordCanvasSurface(
@@ -4403,6 +4485,16 @@ export default function Home() {
         { width: backingWidth, height: backingHeight },
         { gpuSurfaceCopies: 2 },
       );
+      performanceDiagnostics.recordCanvasSurface("waveform-frame", { width: backingWidth, height: backingHeight });
+      const presentFrame = () => {
+        const output = canvas.getContext("2d", { alpha: false });
+        if (!output) { renderSpan.finish(); return; }
+        if (canvas.width !== backingWidth) canvas.width = backingWidth;
+        if (canvas.height !== backingHeight) canvas.height = backingHeight;
+        output.setTransform(1, 0, 0, 1, 0, 0);
+        output.drawImage(frame, 0, 0);
+        renderSpan.finish();
+      };
       context.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
       context.lineJoin = "bevel";
       context.lineCap = "butt";
@@ -4417,7 +4509,7 @@ export default function Home() {
       // A montage/filter change invalidates the old traces immediately. Neither
       // scrolling nor resizing may repaint them under the newly selected mode.
       if (display.settingsKey !== displaySettingsKey) {
-        renderSpan.finish();
+        presentFrame();
         return;
       }
 
@@ -4438,6 +4530,7 @@ export default function Home() {
       for (let gridIndex = firstGridIndex; ; gridIndex += 1) {
         const second = gridAnchor + gridIndex * secondsPerGrid;
         if (second > displayEnd + 1e-9) break;
+        if (second < 0 || second > meta.durationSec) continue;
         const x = ((second - displayStart) / timebase) * width;
         context.strokeStyle = gridIndex % 5 === 0 ? "rgba(133,171,181,.20)" : "rgba(133,171,181,.09)";
         context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
@@ -4706,15 +4799,16 @@ export default function Home() {
         context.beginPath(); context.moveTo(onsetX, 0); context.lineTo(onsetX, height); context.stroke();
         context.setLineDash([]);
       }
-      renderSpan.finish();
+      presentFrame();
     };
     waveDrawRef.current = draw;
     draw();
     return () => {
       waveDrawRef.current = () => {};
       performanceDiagnostics.removeCanvasSurface("waveform");
+      performanceDiagnostics.removeCanvasSurface("waveform-frame");
     };
-  }, [activeCandidateTime, activeSessionContentView, activeCandidateVisible, displayAnnotations, channelRowLayout, channelSelectionActive, display, displaySettingsKey, expandedChannels, focusedChannel, gain, labelsVisible, legacyRawCountDisplay, markOnset, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, activeCandidateVisible, displayAnnotations, channelRowLayout, channelSelectionActive, display, displaySettingsKey, expandedChannels, focusedChannel, gain, labelsVisible, legacyRawCountDisplay, markOnset, meta.durationSec, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -4875,6 +4969,7 @@ export default function Home() {
     const rect = event.currentTarget.getBoundingClientRect();
     const row = channelRowFromClientY(event.clientY, rect);
     if (row === null) return;
+    if (playing) setPlaying(false);
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     pointerRef.current = {
       pointerId: event.pointerId,
@@ -7017,8 +7112,8 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
-  const overviewLeft = (viewStart / Math.max(1, meta.durationSec)) * 100;
-  const overviewWidth = Math.min(100, (timebase / Math.max(1, meta.durationSec)) * 100);
+  const overviewLeft = (Math.max(0, viewStart) / Math.max(1, meta.durationSec)) * 100;
+  const overviewWidth = Math.min(100, ((Math.min(meta.durationSec, viewStart + timebase) - Math.max(0, viewStart)) / Math.max(1, meta.durationSec)) * 100);
   const activeLabelGroups = [
     { label: "Sz", ids: ["preictal", "ictal", "postictal"] },
     { label: "IIIC", ids: ["gpd", "lpd", "bipd", "grda", "lrda", "gsw"] },
@@ -7723,7 +7818,7 @@ export default function Home() {
               </div>
               <div className="canvas-column">
                 <div
-                  className={`canvas-shell ${inspectionMode ? "inspection-mode" : ""}`}
+                  className={`canvas-shell ${inspectionMode ? "inspection-mode" : ""} ${playing ? "playing" : ""}`}
                   style={expandedChannels ? { height: channelViewportHeight } : undefined}
                   onDragOver={onLabelDragOver}
                   onDrop={onLabelDrop}
@@ -7740,8 +7835,8 @@ export default function Home() {
                     top: `${inspectionRange.top * 100}%`,
                     height: `${Math.max(0, inspectionRange.bottom - inspectionRange.top) * 100}%`,
                   }} />}
-                  {cursorLocked && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
-                  {loadingSignal && <div className="signal-loading" role="status"><span /> Preparing signal window…</div>}
+                  {(playing || cursorLocked) && cursorTime >= viewStart && cursorTime <= viewStart + timebase && <div className="wave-cursor pinned" style={{ left: `${((cursorTime - viewStart) / timebase) * 100}%` }}><span>{formatClock(cursorTime, true)}</span></div>}
+                  {signalLoadingVisible && <div className="signal-loading" role="status"><span /> Preparing signal window…</div>}
                   {!loadingSignal && (display.indexedThroughSec !== undefined || display.refiningOverview || display.processingThroughSec !== undefined) && <>
                     {display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase && <div
                       className="signal-indexing-pending"

@@ -295,7 +295,8 @@ test("large-window memory and missing-data rendering stay bounded and explicit",
   assert.match(clippingRibbon, /gaussianClippingHaloIntensity/);
   assert.match(clippingRibbon, /context\.fillRect\(left,\s*ribbonTop/);
   assert.match(page, /MAX_WAVEFORM_CANVAS_SCALE\s*=\s*1/);
-  assert.match(page, /getContext\("2d",\s*\{\s*alpha:\s*false,\s*desynchronized:\s*true\s*\}\)/);
+  assert.match(page, /frame\.getContext\("2d",\s*\{\s*alpha:\s*false\s*\}\)/);
+  assert.match(page, /output\.drawImage\(frame, 0, 0\)/);
   assert.match(page, /context\.lineJoin\s*=\s*"bevel"/);
   assert.match(page, /channelScrollOffsetRef\.current[\s\S]*?waveDrawRef\.current\(\)/);
   assert.doesNotMatch(page, /setChannelScrollOffset/, "vertical channel scrolling repaints imperatively without a React render per frame");

@@ -32,15 +32,17 @@ function fixture(mode = "referential", source, labels = ["LA1", "LA2", "LA3", "R
 }
 
 function harness(display = fixture(), overrides = {}) {
-  const traces = [], ribbons = [];
+  const traces = [], ribbons = [], presentations = [];
   let clears = 0, finishes = 0;
   const context = new Proxy({
     measureText: () => ({ width: 30 }),
     fillRect() { clears++; },
   }, { get: (target, key) => key in target ? target[key] : () => {} });
   const env = {
+    waveformFrameRef: { current: null }, meta: { durationSec: 100 },
+    document: { createElement: () => ({ width: 0, height: 0, getContext: () => context }) },
     canvasRef: { current: { width: 800, height: 208,
-      getBoundingClientRect: () => ({ width: 800, height: 208 }), getContext: () => context } },
+      getBoundingClientRect: () => ({ width: 800, height: 208 }), getContext: () => ({ setTransform() {}, drawImage(frame) { presentations.push({ frame, traces: traces.length, clears }); } }) } },
     boundedCanvasScale: () => 1, window: { devicePixelRatio: 1 },
     performanceDiagnostics: { beginRender: () => ({ finish() { finishes++; } }), recordCanvasSurface() {}, removeCanvasSurface() {} },
     display, displaySettingsKey: display.settingsKey, viewStart: 0, timebase: 3,
@@ -63,7 +65,7 @@ function harness(display = fixture(), overrides = {}) {
     markOnset: null, waveDrawRef: { current: () => {} }, ...overrides,
   };
   const cleanup = new Function(...Object.keys(env), effectCode)(...Object.values(env));
-  return { env, traces, ribbons, cleanup, get clears() { return clears; }, get finishes() { return finishes; },
+  return { env, traces, ribbons, presentations, cleanup, get clears() { return clears; }, get finishes() { return finishes; },
     redraw(scrollTop) {
       traces.length = 0; ribbons.length = 0;
       if (scrollTop !== undefined) env.waveformScrollRef.current.scrollTop = scrollTop;
@@ -83,6 +85,20 @@ test("real paint uses live clamped scrollTop, not a stale offset after montage r
   h.redraw(0);
   assert.deepEqual(h.traces, initial, "scrolling down and back restores identical samples and geometry");
   for (let i = 0; i < h.traces.length; i++) assert.equal(h.ribbons[i].baseline, h.traces[i].baseline);
+  h.cleanup();
+});
+
+test("waveforms are presented in one operation only after the entire frame is drawn", () => {
+  const display = fixture(), h = harness(display);
+  assert.equal(h.presentations.length, 1);
+  assert.equal(h.presentations[0].traces, h.traces.length);
+  assert.ok(h.presentations[0].traces > 0);
+  const frame = h.presentations[0].frame;
+  assert.equal(frame.width, 800); assert.equal(frame.height, 208);
+  h.redraw(60);
+  assert.equal(h.presentations.length, 2);
+  assert.equal(h.presentations[1].frame, frame, "reuse one bounded staging surface across redraws");
+  assert.equal(h.presentations[1].traces, h.traces.length);
   h.cleanup();
 });
 

@@ -372,7 +372,7 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(load, /activeSessionIdRef\.current\s*!==\s*targetSessionId/);
   assert.match(load, /duplicateEntry[\s\S]*?applySessionSnapshot\(duplicateSnapshot\)[\s\S]*?return false/);
 
-  const windowLoaderStart = page.indexOf("{loadingSignal && <div className=\"signal-loading\"");
+  const windowLoaderStart = page.indexOf("{signalLoadingVisible && <div className=\"signal-loading\"");
   const windowLoaderEnd = page.indexOf("</div>}", windowLoaderStart);
   const windowLoader = page.slice(windowLoaderStart, windowLoaderEnd);
   assert.match(windowLoader, /role="status"/);
@@ -726,7 +726,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   assert.match(pointerHandlers, /setSelection\(\{ start: Math\.min\(pointer\.startTime, time\), end: Math\.max\(pointer\.startTime, time\) \}\)/);
   assert.match(pointerHandlers, /choose a label/);
 
-  assert.match(page, /className=\{`canvas-shell \$\{inspectionMode \? "inspection-mode" : ""\}`\}/);
+  assert.match(page, /className=\{`canvas-shell \$\{inspectionMode \? "inspection-mode" : ""\} \$\{playing \? "playing" : ""\}`\}/);
   assert.match(page, /className="wave-inspection-range"/);
   assert.match(page, /top: `\$\{inspectionRange\.top \* 100\}%`/);
   assert.match(page, /height: `\$\{Math\.max\(0, inspectionRange\.bottom - inspectionRange\.top\) \* 100\}%`/);

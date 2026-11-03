@@ -179,7 +179,7 @@ test("channel changes clamp focus to visible grouped rows while empty loading vi
   let focused = 4, published;
   const zoomViewRef = { current: { anatomicalGroups: true } };
   const publish = compile(declaration("publishDisplay"), {
-    zoomViewRef, channelGroupOrder, source: { meta: { format: "raw-int16-le" } }, centerDisplayWindow: (view) => view,
+    playbackBufferRangeRef: { current: null }, playbackRead: null, playbackPendingViewRef: { current: null }, zoomViewRef, channelGroupOrder, source: { meta: { format: "raw-int16-le" } }, centerDisplayWindow: (view) => view,
     clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
     setFocusedChannel: (update) => { focused = update(focused); }, setDisplay: (view) => { published = view; },
   }, "publishDisplay");

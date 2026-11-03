@@ -107,6 +107,9 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
     buildMatlabDisplayWindow: builder, createMatlabFileReader: createReader,
     buildEDFFileWindowOffThread: fileWorker, buildRawDatFileWindowOffThread: fileWorker,
     performanceDiagnostics: { beginSourceRead: operation("read"), beginDecode: operation("decode"), recordDecode() {} }, primarySampleRate: (meta) => meta.sampleRate,
+    playbackBufferRangeRef: { current: null }, playbackDisplayRef: { current: null }, setPlaybackBuffering() {}, playbackRequestRevision: 0, playbackPendingViewRef: { current: null }, playbackStateRef: { current: { timeSec: 0, playing: false } }, viewStartRef: { current: 0 },
+    commitViewStart(start) { env.viewStartRef.current = start; env.playbackPendingViewRef.current = null; env.playbackBufferRangeRef.current = null; }, setCursorTime(time) { env.playbackStateRef.current.timeSec = time; },
+    setPlaying(playing) { env.playbackStateRef.current.playing = playing; }, setSignalViewStart(start) { env.signalViewStart = start; },
     sourceRef: { current: source }, sourceVerificationRef: { current: verifying }, displayAbortRef: { current: null }, displayRequestIdRef: { current: 0 },
     displayAppliedRequestIdRef: { current: 0 }, displayPreviewReadyRef: { current: false }, displayRefreshPendingRef: { current: null }, displayRefreshActiveRef: { current: false },
     recordingOverviewCacheRef: { current: cache }, overviewBuildSourceRef: { current: verifying ? source : null },
@@ -119,7 +122,7 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
   };
   const execute = new Function(...Object.keys(env), effectCode);
   return { env, source, cache, calls, displays, loading, toasts, fileCalls, legacyFileCalls, readers, diagnostics,
-    render(changes = {}) { Object.assign(env, changes); execute(...Object.values(env)); }, dispose() { cleanup?.(); } };
+    render(changes = {}) { Object.assign(env, changes); if (env.playbackPendingViewRef.current) env.playbackBufferRangeRef.current = env.playbackPendingViewRef.current; execute(...Object.values(env)); }, dispose() { cleanup?.(); } };
 }
 
 test("5/15-minute default views start exact MATLAB processing without awaiting file validation", async () => {
@@ -299,5 +302,86 @@ test("a read failure after partial display clears provisional progress and expos
   assert.equal(h.displays.at(-1).processingThroughSec, undefined);
   assert.ok(h.displays.at(-1).warnings.some(w => w.includes('disk read failed')));
   assert.equal(h.env.matlabWindowCacheRef.current.length, 0);
+  h.dispose();
+});
+
+test("playback retains complete samples through partial loads, then extends its buffer without moving the viewport", async () => {
+  const h = await harness({ duration: 20 }); h.render(); h.calls[0].finish(40); await tick();
+  const old = h.displays.at(-1), publications = h.displays.length;
+  h.env.playbackStateRef.current = { timeSec: 20, playing: true };
+  h.env.playbackPendingViewRef.current = { source: h.source, startSec: 10, durationSec: 25 };
+  h.render({ signalViewStart: 10 }); await tick();
+  const request = h.calls.at(-1);
+  request.options.onPartial(processedFixture(request.request, 12), 18);
+  assert.equal(h.displays.length, publications, "a prefix cannot replace the complete page during playback");
+  assert.equal(h.displays.at(-1), old);
+  assert.equal(h.env.viewStartRef.current, 0); assert.equal(h.loading.at(-1), true);
+  request.finish(60); await tick();
+  assert.equal(h.displays.at(-1).viewStart, 10);
+  assert.equal(h.displays.at(-1).viewDuration, 25);
+  assert.equal(h.displays.at(-1).playbackBuffer, true);
+  assert.equal(h.env.viewStartRef.current, 0, "prefetch never moves the visible time axis");
+  assert.equal(h.env.playbackStateRef.current.timeSec, 20);
+  assert.equal(h.env.playbackPendingViewRef.current, null);
+  assert.equal(h.loading.at(-1), false);
+  h.dispose();
+});
+
+test("pausing during buffering preserves cursor time when the requested page becomes ready", async () => {
+  const h = await harness({ duration: 20 }); h.render(); h.calls[0].finish(); await tick();
+  h.env.playbackStateRef.current = { timeSec: 20, playing: false };
+  h.env.playbackPendingViewRef.current = { source: h.source, startSec: 10, durationSec: 25 };
+  h.render({ signalViewStart: 10 }); await tick(); h.calls.at(-1).finish(); await tick();
+  assert.equal(h.env.viewStartRef.current, 0, "prefetch never moves the visible time axis");
+  assert.equal(h.env.playbackStateRef.current.timeSec, 20);
+  assert.equal(h.env.playbackStateRef.current.playing, false);
+  h.dispose();
+});
+
+test("a failed playback read stops the clock and keeps the old waveform at its original times", async () => {
+  const h = await harness({ duration: 20 }); h.render(); h.calls[0].finish(); await tick();
+  const old = h.displays.at(-1);
+  h.env.playbackStateRef.current = { timeSec: 20, playing: true };
+  h.env.playbackPendingViewRef.current = { source: h.source, startSec: 10, durationSec: 25 };
+  h.render({ signalViewStart: 10 }); await tick(); h.calls.at(-1).fail(new Error("disk unavailable")); await tick();
+  assert.equal(h.displays.at(-1), old);
+  assert.equal(h.env.playbackStateRef.current.playing, false);
+  assert.equal(h.env.playbackPendingViewRef.current, null);
+  assert.equal(h.env.signalViewStart, 10);
+  assert.deepEqual(h.toasts, ["disk unavailable"]);
+  h.dispose();
+});
+
+test("a user seek cancels pending playback publication, including a late worker response", async () => {
+  const h = await harness({ duration: 20 }); h.render(); h.calls[0].finish(); await tick();
+  h.env.playbackStateRef.current = { timeSec: 20, playing: true };
+  h.env.playbackPendingViewRef.current = { source: h.source, startSec: 10, durationSec: 25 };
+  h.render({ signalViewStart: 10 }); await tick(); const obsolete = h.calls.at(-1); obsolete.ignoreAbort = true;
+  h.env.commitViewStart(100); h.env.playbackStateRef.current.timeSec = 100;
+  h.render({ signalViewStart: 100 }); obsolete.finish(99); await tick();
+  assert.equal(h.displays.at(-1).viewStart, 0);
+  h.calls.at(-1).finish(70); await tick();
+  assert.equal(h.displays.at(-1).viewStart, 100);
+  assert.equal(h.env.viewStartRef.current, 100);
+  assert.equal(h.env.playbackStateRef.current.timeSec, 100);
+  h.dispose();
+});
+
+test("background verification completion preserves the wider playback buffer and suppresses partial replacements", async () => {
+  const h = await harness({ duration: 20 });
+  h.env.playbackPendingViewRef.current = { source: h.source, startSec: 10, durationSec: 25 };
+  h.render({ signalViewStart: 10 }); h.calls[0].finish(); await tick();
+  assert.equal(h.env.playbackPendingViewRef.current, null);
+  const publications = h.displays.length;
+  h.env.matlabWindowCacheRef.current = [];
+  h.render({ verifyingSource: false }); await tick();
+  const request = h.calls.at(-1);
+  assert.equal(h.calls.length, 2);
+  assert.equal(request.request.durationSec, 25);
+  request.options.onPartial(processedFixture(request.request, 12), 18);
+  assert.equal(h.displays.length, publications);
+  request.finish(); await tick();
+  assert.equal(h.displays.at(-1).viewDuration, 25);
+  assert.equal(h.displays.length, publications + 1);
   h.dispose();
 });
