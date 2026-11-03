@@ -23,7 +23,7 @@ function fixture(overrides = {}) {
   const values = { labelsVisible: true };
   const state = {
     MAX_DISPLAY_GAIN, stepDisplayGain,
-    olderReviews: null, showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showSettings: false, showChannels: false, showImport: false,
+    directoryCatalog: null, olderReviews: null, showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showSettings: false, showChannels: false, showImport: false,
     showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
     queueDetailEntry: null, confirmCommit: [], hasRecording: true, activeSessionContentView: "recording",
     meta: { durationSec: 90 }, viewStartRef: { current: 0 }, viewStart: 0, timebase: 20, gain: 1,
@@ -35,7 +35,7 @@ function fixture(overrides = {}) {
     "setLeftPanelOpen", "selectRightPanelTool", "setBottomTracksOpen", "setTimeWindow", "setWindowDraftValue",
     "setShowChannels", "changeZoomView", "setShowFilters", "setSpectrogramOpen", "setChannelSelectionActive",
     "setBoxZoomActive", "setActiveTool", "setMarkOnset", "setSelection", "setCursorTime", "setCursorLocked",
-    "setShowEphysLabelPicker", "setShowSessionContextPicker", "setLabelsVisible"]) {
+    "setShowEphysLabelPicker", "setShowSessionContextPicker", "setLabelsVisible", "setRightPanelOpen", "setShowLabelVisibilityFilter"]) {
     state[name] = (value) => changes.push([name, typeof value === "function" ? value(values.labelsVisible) : value]);
   }
   const assist = new Function(...Object.keys(state), `${compiled}\nreturn assistTutorial;`)(...Object.values(state));
@@ -137,4 +137,20 @@ test("gain tutorial stays actionable at both new gain limits", () => {
     assert.equal(ui.assist("increase-gain"), true);
     assert.deepEqual(ui.changes, [["changeZoomView", { gain: expected }]]);
   }
+});
+
+test("new assistance reveals resume and label-filter controls without selecting files, filters, or reviews", () => {
+  const missing = fixture({ hasRecording: false });
+  assert.equal(missing.assist("open-directory-list"), false);
+  assert.deepEqual(missing.changes, []);
+  const catalog = fixture({ hasRecording: false, directoryCatalog: {} });
+  assert.equal(catalog.assist("open-directory-list"), true);
+  assert.deepEqual(catalog.changes, [["setShowDirectorySessions", true]]);
+  const labels = fixture();
+  assert.equal(labels.assist("open-label-filter"), true);
+  assert.deepEqual(labels.changes, [["setRightPanelOpen", true], ["setShowLabelVisibilityFilter", true]]);
+  const modal = fixture({ showLabelVisibilityFilter: true });
+  assert.equal(modal.assist("open-label-filter"), true);
+  assert.equal(modal.assist("open-directory-list"), false);
+  assert.deepEqual(modal.changes, []);
 });

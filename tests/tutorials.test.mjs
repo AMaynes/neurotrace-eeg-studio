@@ -12,6 +12,7 @@ import { subscribeTutorialActions } from "../app/tutorial-events.ts";
 const componentSource = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const directorySessions = await readFile(new URL("../app/directory-sessions.tsx", import.meta.url), "utf8");
+const extraSurfaces = (await Promise.all(["directory-review-controls.tsx", "label-visibility-filter.tsx"].map(name => readFile(new URL(`../app/${name}`, import.meta.url), "utf8")))).join("\n");
 const syntax = ts.createSourceFile("tutorial-center.tsx", componentSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = syntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "TutorialCenter");
 assert.ok(component);
@@ -128,7 +129,7 @@ test("every tutorial topic has unique lessons, valid steps, and real workspace a
   const ids = catalog.tutorialLessons.map((lesson) => lesson.id);
   assert.equal(new Set(ids).size, ids.length);
   const anchors = new Set();
-  const pageSyntax = ts.createSourceFile("workspace.tsx", `${page}\n${directorySessions}`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const pageSyntax = ts.createSourceFile("workspace.tsx", `${page}\n${directorySessions}\n${extraSurfaces}`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   function collect(node) {
     if (ts.isJsxAttribute(node) && node.name.getText(pageSyntax) === "data-tutorial") {
       const collectStrings = (value) => {
@@ -167,7 +168,7 @@ test("the hub renders accessible topic tabs, step previews, and explicit prerequ
     assert.ok(ui.markup().includes('aria-current="step"'));
   }
   const labeling = harness({ topic: "labels", canAnnotate: false });
-  assert.match(labeling.markup(), /Wait for file validation/);
+  assert.match(labeling.markup(), /Finish opening the recording/);
   assert.equal(labeling.button("Start walkthrough →").props.disabled, true);
 });
 
@@ -674,4 +675,37 @@ test("remapped tutorial topic, move, reset, and close shortcuts work in their ow
   assert.ok(ui.coach());
   ui.coach().props.onKeyDown(event("F2")); ui.render();
   assert.equal(ui.markup(), "");
+});
+
+test("recent workflow lessons progress on matching outcomes while reading steps stay manual", () => {
+  const ids = ["resume-directory-review", "jump-timestamp", "continuous-playback", "channel-groups", "filter-label-display", "review-source-event", "recover-browser-review"];
+  for (const id of ids) {
+    const lesson = catalog.tutorialLessons.find(lesson => lesson.id === id);
+    assert.ok(lesson, id);
+    const ui = harness({ topic: lesson.topic });
+    const choose = ui.find(node => node.type === "button" && nodes(node).some(child => child.type === "strong" && text(child) === lesson.title));
+    choose.props.onClick(); ui.render(); ui.click("Start walkthrough →");
+    for (let index = 0; index < lesson.steps.length; index++) {
+      const step = lesson.steps[index];
+      ui.emit("ephys-label-added");
+      assert.match(ui.markup(), new RegExp(`STEP ${index + 1} OF ${lesson.steps.length}`), `${id}: unrelated actions do not advance ${step.title}`);
+      if (step.completeOn) ui.emit(step.completeOn[0]); else ui.click("Next →");
+    }
+    assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
+    assert.deepEqual(ui.actions, [], `${id}: the coach never chooses files, marks, playback, or saves`);
+    ui.dispose();
+  }
+});
+
+test("recent tutorials explain CSV boundaries and keep private or review-changing operations manual", () => {
+  const manual = ["resume-directory-review", "review-source-event", "recover-browser-review"];
+  const safe = new Set(["open-directory-list", "open-settings"]);
+  for (const id of manual) for (const step of catalog.tutorialLessons.find(lesson => lesson.id === id).steps) {
+    assert.ok(!step.assist || safe.has(step.assist.action), `${id}: ${step.title}`);
+  }
+  const save = catalog.tutorialLessons.find(lesson => lesson.id === "save-project");
+  assert.match(save.steps.map(step => step.instruction).join(" "), /14 column headers/);
+  const source = catalog.tutorialLessons.find(lesson => lesson.id === "review-source-event");
+  assert.match(source.steps.at(-1).instruction, /does not itself write the CSV/);
+  assert.doesNotMatch(catalog.tutorialBlockReason(source, true, false), /validation/);
 });

@@ -6,7 +6,9 @@
 export type TutorialAction =
   | "import-opened" | "import-format-chosen" | "import-files-ready" | "recording-opened"
   | "directory-files-ready" | "directory-list-opened" | "settings-opened" | "bias-locks-changed"
+  | "review-csvs-loaded" | "directory-review-found" | "older-review-opened" | "older-review-restored"
   | "overview-jumped" | "waveform-panned" | "transport-used" | "window-applied"
+  | "timestamp-jumped" | "playback-started" | "playback-stopped" | "groups-changed"
   | "waveform-zoom-enabled" | "waveform-zoom-disabled" | "waveform-zoomed"
   | "channels-opened" | "channels-closed" | "montage-changed" | "gain-changed"
   | "clamp-changed" | "filters-opened" | "spectrogram-opened" | "channel-focused"
@@ -14,7 +16,8 @@ export type TutorialAction =
   | "spectrogram-zoom-tool" | "spectrogram-zoomed" | "spectrogram-panned"
   | "label-panel-opened" | "time-selected" | "ephys-label-added" | "annotation-inspected"
   | "label-picker-opened" | "label-picker-closed" | "session-label-picker-opened"
-  | "labels-toggled" | "save-opened" | "annotations-saved";
+  | "labels-toggled" | "label-filter-opened" | "label-filter-closed" | "label-filter-changed"
+  | "source-review-accepted" | "save-opened" | "annotations-saved";
 
 /** Allowlisted view-only assistance. File, label, montage and save choices stay manual. */
 export type TutorialAssistAction =
@@ -23,7 +26,8 @@ export type TutorialAssistAction =
   | "enable-waveform-zoom" | "disable-waveform-zoom" | "zoom-waveform" | "open-channels"
   | "increase-gain" | "toggle-clamp" | "open-filters" | "open-spectrogram"
   | "clear-channel-focus" | "spectrogram-browse" | "spectrogram-zoom-tool" | "spectrogram-reset"
-  | "select-time-window" | "open-label-picker" | "open-session-label-picker" | "toggle-labels";
+  | "select-time-window" | "open-label-picker" | "open-session-label-picker" | "toggle-labels"
+  | "open-directory-list" | "open-label-filter";
 
 const EVENT_NAME = "neurotrace:tutorial-action";
 

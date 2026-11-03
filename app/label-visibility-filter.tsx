@@ -17,7 +17,7 @@ export function LabelVisibilityFilter({ options, hiddenTypes, onChange, onClose 
   const matches = options.filter((option) => option.name.toLowerCase().includes(query));
   const hiddenCount = options.filter((option) => hiddenTypes.has(option.key)).length;
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className="modal label-display-filter" role="dialog" aria-modal="true" aria-label="Filter labels" tabIndex={-1}>
+    <div className="modal label-display-filter" data-tutorial="label-filter-dialog" role="dialog" aria-modal="true" aria-label="Filter labels" tabIndex={-1}>
       <button className="modal-close" type="button" aria-label="Close label filter" onClick={onClose}>×</button>
       <header><h2>Filter labels</h2><span>{hiddenCount} of {options.length} types hidden</span></header>
       <p>Uncheck types to hide them from the viewer, timelines, and queues. Saved labels and exports are preserved.</p>
@@ -26,7 +26,7 @@ export function LabelVisibilityFilter({ options, hiddenTypes, onChange, onClose 
         setLimit(100);
       }} />
       <div className="label-display-filter-actions">
-        <button type="button" onClick={() => onChange(new Set())}>Show all types</button>
+        <button type="button" data-tutorial="label-filter-reset" onClick={() => onChange(new Set())}>Show all types</button>
         <button type="button" onClick={() => onChange(new Set([...hiddenTypes, ...options.map((option) => option.key)]))}>Hide all types</button>
       </div>
       <div className="label-display-filter-list">

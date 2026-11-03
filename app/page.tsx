@@ -2273,6 +2273,7 @@ export default function Home() {
   const reviewReady = hasRecording && !verifyingSource;
 
   const changeHiddenLabelTypes = (hidden: Set<string>) => {
+    if (hidden.size !== hiddenLabelTypes.size || [...hidden].some(key => !hiddenLabelTypes.has(key))) notifyTutorialAction("label-filter-changed");
     setHiddenLabelTypes(hidden);
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
@@ -3357,6 +3358,7 @@ export default function Home() {
     setToast(next
       ? `Saved by ${commitReviewer} · next event: ${next.label}`
       : `Revision committed by ${commitReviewer}`);
+    if (targetAnnotation.candidateId) notifyTutorialAction("source-review-accepted");
     return true;
   }, [advanceFromCandidate, annotations, filters, gain, meta, montage, rawSourceHash, reviewer, selectedChannels, snapMode, sourceHash, sourceInterpretation, traceDisplayMode, updateAnnotation]);
 
@@ -5631,6 +5633,7 @@ export default function Home() {
       } : item));
       const next = advanceFromCandidate(activeCandidateItem.id);
       setToast(next ? `Accepted · next event: ${next.label}` : "Accepted · no unresolved source events remain");
+      notifyTutorialAction("source-review-accepted");
       return;
     }
     commitAnnotation(activeCandidateAnnotation, false, true);
@@ -5965,6 +5968,7 @@ export default function Home() {
       setSourceInterpretation(applyMatlabExportIdentity(sourceInterpretation ?? undefined, project.matlabExportIdentity) ?? null);
       setOlderReviews(null);
       setToast("Saved review restored. The previous review was kept as a browser backup.");
+      notifyTutorialAction("older-review-restored");
     } catch (error) {
       setOlderReviewError(error instanceof Error ? error.message : "This review could not be restored.");
     }
@@ -6592,6 +6596,7 @@ export default function Home() {
     directoryFilesReady: guidedImportReady && importPickerKind === "directory",
     directoryListOpen: showDirectorySessions && Boolean(directoryCatalog), settingsOpen: showSettings, biasLocks,
     channelsOpen: showChannels, montage, gain, clamp: traceDisplayMode,
+    groups: anatomicalGroups, playing, labelFilterOpen: showLabelVisibilityFilter, olderReviewOpen: olderReviews !== null,
     filtersOpen: showFilters, boxZoom: boxZoomActive, spectrogramOpen,
     labelsPanelOpen: rightPanelOpen && rightPanelView === "labels",
     labelPickerOpen: showEphysLabelPicker, sessionLabelPickerOpen: showSessionContextPicker,
@@ -7298,10 +7303,15 @@ export default function Home() {
       || showSessionMap || showPatientInfo || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
     if (modalOpen) return (action === "open-import" && showImport) || (action === "open-save" && showProjectSave)
       || (action === "open-settings" && showSettings)
-      || (action === "open-channels" && showChannels) || (action === "open-label-picker" && showEphysLabelPicker);
+      || (action === "open-channels" && showChannels) || (action === "open-label-picker" && showEphysLabelPicker)
+      || (action === "open-directory-list" && showDirectorySessions) || (action === "open-label-filter" && showLabelVisibilityFilter);
     if (action === "open-import") { setShowImport(true); return true; }
     if (action === "open-save") { setProjectSaveError(""); setShowProjectSave(true); return true; }
     if (action === "open-settings") { setShowSettings(true); return true; }
+    if (action === "open-directory-list") {
+      if (!directoryCatalog) return false;
+      setShowDirectorySessions(true); return true;
+    }
     if (!hasRecording || activeSessionContentView !== "recording") return false;
     const clickControl = (anchor: string) => {
       const button = document.querySelector<HTMLButtonElement>(`button[data-tutorial="${anchor}"]`);
@@ -7334,6 +7344,7 @@ export default function Home() {
       case "enable-waveform-zoom": return boxZoomActive || clickControl("waveform-zoom");
       case "disable-waveform-zoom": return !boxZoomActive || clickControl("waveform-zoom");
       case "open-channels": setShowChannels(true); return true;
+      case "open-label-filter": setRightPanelOpen(true); setShowLabelVisibilityFilter(true); return true;
       case "increase-gain": changeZoomView({ gain: stepDisplayGain(gain, gain >= MAX_DISPLAY_GAIN ? -1 : 1) }); return true;
       case "toggle-clamp": return clickControl("clamp");
       case "open-filters": setShowFilters(true); return true;
@@ -7660,6 +7671,7 @@ export default function Home() {
             <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">{bipolarMontageLabel(meta.channelLabels)}</option></select></label>
             <button
               className={`compact-toggle ${anatomicalGroups ? "active" : ""}`}
+              data-tutorial="channel-groups"
               aria-label="Channel groups"
               aria-pressed={anatomicalGroups}
               disabled={!hasRecording || (!anatomicalGroups && !anatomicalGroupsAvailable)}
@@ -7695,6 +7707,7 @@ export default function Home() {
             <form
               key={`${activeSessionId}:${sessionKey}`}
               className="timestamp-jump"
+              data-tutorial="timestamp-jump"
               aria-label="Jump to timestamp"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -7712,6 +7725,7 @@ export default function Home() {
                 jumpTo(time);
                 setCursorLocked(true);
                 setToast(`Jumped to ${formatClock(time, true)} from recording start`);
+                notifyTutorialAction("timestamp-jumped");
                 notifyTutorialAction("transport-used");
               }}
             >
@@ -7802,7 +7816,7 @@ export default function Home() {
             <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to MATLAB</button>
           </div>}
 
-          {hasRecording && activeCandidateItem && activeCandidateVisible && <section className="candidate-review-bar" aria-label="Source event review" data-review-status={activeCandidateItem.status}>
+          {hasRecording && activeCandidateItem && activeCandidateVisible && <section className="candidate-review-bar" data-tutorial="source-review" aria-label="Source event review" data-review-status={activeCandidateItem.status}>
             <div className="candidate-review-identity">
               <span>Source event {activeCandidate + 1}/{candidates.length}</span>
               <strong title={activeCandidateItem.label}>{activeCandidateItem.label}</strong>
@@ -7813,7 +7827,7 @@ export default function Home() {
               <i />
               <span>OFFSET <b>{activeCandidateOffset === null ? "—" : formatRelativeTime(activeCandidateOffset - activeCandidateItem.time)}</b></span>
             </div>
-            <label className="candidate-review-field reviewer-field"><span>Reviewer</span><input value={reviewer} maxLength={12} placeholder="Initials" onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
+            <label className="candidate-review-field reviewer-field" data-tutorial="source-review-fields"><span>Reviewer</span><input value={reviewer} maxLength={12} placeholder="Initials" onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
             <label className="candidate-review-field confidence-score"><span>Confidence</span><select disabled={candidateDecisionLocked} value={activeCandidateItem.legacyConfidence ?? ""} onChange={(event) => {
               const value = event.target.value as Candidate["legacyConfidence"];
               updateActiveCandidateReview({ legacyConfidence: value, confidence: value ? Number(value) * 33 + (value === "3" ? 1 : 0) : 0 });
@@ -7821,8 +7835,8 @@ export default function Home() {
             <label className="candidate-review-field ictal-channel-field"><span>Ictal channels (optional)</span><input disabled={candidateDecisionLocked} value={activeCandidateItem.ictalChannels ?? ""} placeholder="e.g. LA1-LA4" onChange={(event) => updateActiveCandidateReview({ ictalChannels: event.target.value })} /></label>
             <label className="candidate-review-field ictal-channel-field"><span>Bad channels (optional)</span><input disabled={candidateDecisionLocked} value={activeCandidateItem.badChannels ?? ""} placeholder="e.g. LA5, LB2" onChange={(event) => updateActiveCandidateReview({ badChannels: event.target.value })} /></label>
             <div className="candidate-review-actions">
-              <button className={`button secondary ${activeTool === "seizure" ? "active" : ""}`} onClick={beginActiveCandidateMarking}>{activeTool === "seizure" ? markOnset === null ? "Click onset" : "Click offset" : activeCandidateAnnotation?.status === "committed" ? "Revise marks" : activeCandidateAnnotation ? "Redo marks" : "Mark onset / offset"}</button>
-              <button className="button primary" disabled={!activeCandidateAnnotation || activeCandidateItem.status === "skipped" || activeCandidateItem.status === "conflict"} onClick={acceptActiveCandidate}>Accept &amp; next</button>
+              <button className={`button secondary ${activeTool === "seizure" ? "active" : ""}`} data-tutorial="source-review-mark" onClick={beginActiveCandidateMarking}>{activeTool === "seizure" ? markOnset === null ? "Click onset" : "Click offset" : activeCandidateAnnotation?.status === "committed" ? "Revise marks" : activeCandidateAnnotation ? "Redo marks" : "Mark onset / offset"}</button>
+              <button className="button primary" disabled={!activeCandidateAnnotation || activeCandidateItem.status === "skipped" || activeCandidateItem.status === "conflict"} data-tutorial="source-review-accept" onClick={acceptActiveCandidate}>Accept &amp; next</button>
               <button className="button quiet" disabled={candidateDecisionLocked} onClick={skipActiveCandidate}>Skip</button>
             </div>
           </section>}
@@ -8069,6 +8083,7 @@ export default function Home() {
               }}
             >{labelsVisible ? "Hide all labels" : "Show all labels"}</button>
             <button type="button" className={`label-filter-trigger ${hiddenLabelTypeCount ? "active" : ""}`}
+              data-tutorial="label-filter"
               aria-label="Filter labels" aria-haspopup="dialog" aria-expanded={showLabelVisibilityFilter}
               onClick={() => setShowLabelVisibilityFilter(true)}>
               Filter labels{hiddenLabelTypeCount ? ` (${hiddenLabelTypeCount})` : ""}
@@ -8386,17 +8401,17 @@ export default function Home() {
       />
 
       {olderReviews !== null && <div className="modal-backdrop">
-        <div className="modal" role="dialog" aria-modal="true" aria-label="Restore older browser review" tabIndex={-1}>
+        <div className="modal" data-tutorial="older-review-dialog" role="dialog" aria-modal="true" aria-label="Restore older browser review" tabIndex={-1}>
           <button className="modal-close" aria-label="Close older reviews" onClick={() => setOlderReviews(null)}>×</button>
           <h2>Restore older browser review</h2>
           <p>Choose a review belonging to <strong>{meta.name}</strong>. Older entries may not include a filename. Restoring replaces the current labels; a browser backup is kept.</p>
-          <label>Saved review<select aria-label="Saved browser review" value={olderReviewKey} onChange={(event) => setOlderReviewKey(event.target.value)}>
+          <label>Saved review<select data-tutorial="older-review-picker" aria-label="Saved browser review" value={olderReviewKey} onChange={(event) => setOlderReviewKey(event.target.value)}>
             <option value="">Choose a saved review</option>
             {olderReviews.map((entry) => <option key={entry.key} value={entry.key}>{entry.name} · {entry.savedAt} · {entry.reviewer || "No initials"} · {entry.labels} labels · {entry.events} events</option>)}
           </select></label>
           {!olderReviews.length && <p>No older reviews found in this browser.</p>}
           {olderReviewError && <p role="alert">{olderReviewError}</p>}
-          <div className="modal-actions"><button className="button secondary" onClick={() => setOlderReviews(null)}>Cancel</button><button className="button primary" disabled={!reviewReady || !olderReviewKey} onClick={restoreOlderReview}>Restore selected review</button></div>
+          <div className="modal-actions"><button className="button secondary" onClick={() => setOlderReviews(null)}>Cancel</button><button className="button primary" disabled={!reviewReady || !olderReviewKey} data-tutorial="older-review-restore" onClick={restoreOlderReview}>Restore selected review</button></div>
         </div>
       </div>}
 
@@ -8405,7 +8420,7 @@ export default function Home() {
           <button className="modal-close" onClick={() => setShowSettings(false)} aria-label="Close Settings">×</button>
           <h2>Settings</h2>
           <section className="settings-section">
-            <button className="button secondary" disabled={!reviewReady} onClick={openOlderReviews}>Restore older browser review…</button>
+            <button className="button secondary" disabled={!reviewReady} data-tutorial="older-review-open" onClick={openOlderReviews}>Restore older browser review…</button>
           </section>
           <section className="settings-section bias-locks-settings" data-tutorial="bias-locks">
             <div><strong id="bias-locks-label">Bias Locks</strong><p id="bias-locks-description">Disable the directory Previous button to prevent backward navigation. Next stays available.</p></div>

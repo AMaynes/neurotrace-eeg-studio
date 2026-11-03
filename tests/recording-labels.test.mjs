@@ -528,7 +528,7 @@ test("explicit old-review recovery backs up the current review and never deletes
     recordingLabelsImportedRef: { current: true }, sourceInterpretation: null, reviewer: "CD",
     matlabExportIdentityFromInterpretation: () => null, recordingLabelAnnotations, mergeRecordingLabels,
     commitMutation: (update) => { restored = update([]); }, setCandidates() {}, setActiveCandidate() {}, setReviewer() {},
-    setSourceInterpretation() {}, setOlderReviews() {}, setToast() {}, setOlderReviewError: (message) => assert.fail(message),
+    notifyTutorialAction() {}, setSourceInterpretation() {}, setOlderReviews() {}, setToast() {}, setOlderReviewError: (message) => assert.fail(message),
   };
   compile(["restoreOlderReview"], scope).restoreOlderReview();
   assert.equal(storage.get(oldKey), raw);

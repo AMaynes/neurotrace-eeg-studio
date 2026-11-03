@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DirectoryImportPlan, DirectoryRecording } from "./directory-import";
 import { directoryReviewCache, findNextDirectoryReview, isReviewCsv, loadDirectoryReviewCsvs } from "./directory-review-resume";
+import { notifyTutorialAction } from "./tutorial-events";
 
 /** Saved reviews may live beside recordings or in a separately selected output folder. */
 export function DirectoryReviewControls({ plan, busy, onResume, onBusyChange, onPrepareResume }: {
@@ -21,25 +22,34 @@ export function DirectoryReviewControls({ plan, busy, onResume, onBusyChange, on
   useEffect(() => {
     if (!supported) return;
     const controller = new AbortController();
+    const previousFiles = cache.files.size;
     operation.current = controller;
     void Promise.resolve().then(() => {
       controller.signal.throwIfAborted();
       setWorking(true); onBusyChange(true);
       return loadDirectoryReviewCsvs(plan, plan.supportingFiles.filter(isReviewCsv), controller.signal);
     })
-      .then(() => { if (!controller.signal.aborted) refresh(value => value + 1); })
+      .then(() => {
+        if (controller.signal.aborted) return;
+        refresh(value => value + 1);
+        if (cache.files.size > previousFiles) notifyTutorialAction("review-csvs-loaded");
+      })
       .catch(error => { if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : "Could not read saved reviews."); })
       .finally(() => { if (!controller.signal.aborted) { setWorking(false); onBusyChange(false); } });
     return () => { controller.abort(); operation.current?.abort(); onBusyChange(false); };
-  }, [onBusyChange, plan, supported]);
+  }, [cache, onBusyChange, plan, supported]);
 
   const loadFiles = async (files: File[]) => {
     if (working || busy || !files.length) return;
     const controller = new AbortController(); operation.current = controller;
+    const previousFiles = cache.files.size;
     setWorking(true); onBusyChange(true); setMessage("");
     try {
       await loadDirectoryReviewCsvs(plan, files, controller.signal);
-      if (!controller.signal.aborted) refresh(value => value + 1);
+      if (!controller.signal.aborted) {
+        refresh(value => value + 1);
+        if (cache.files.size > previousFiles) notifyTutorialAction("review-csvs-loaded");
+      }
     } catch (error) { if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : "Could not read saved reviews.");
     } finally { if (!controller.signal.aborted) { setWorking(false); onBusyChange(false); } }
   };
@@ -50,7 +60,7 @@ export function DirectoryReviewControls({ plan, busy, onResume, onBusyChange, on
     try {
       onPrepareResume?.();
       const next = await findNextDirectoryReview(plan, controller.signal, file => setMessage(`Checking ${file}…`));
-      if (next) onResume(next.recording);
+      if (next) { onResume(next.recording); notifyTutorialAction("directory-review-found"); }
       else setMessage("All supported seizure events in this folder have been reviewed, or no seizure events were found.");
     } catch (error) { if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : "Could not resume review."); }
     finally { if (!controller.signal.aborted) { setWorking(false); onBusyChange(false); } }
@@ -60,10 +70,10 @@ export function DirectoryReviewControls({ plan, busy, onResume, onBusyChange, on
   return <section className="directory-review-resume" aria-label="Resume saved review">
     <strong>Continue reviewing</strong>
     <p>{cache.files.size ? `${matched} accepted reviews matched to this folder${cache.rows.length > matched ? ` · ${cache.rows.length - matched} rows unmatched or ambiguous` : ""}.` : "Saved annotation CSVs in this folder load automatically. Select CSVs or your output folder if they are stored elsewhere."}</p>
-    <div className="directory-review-actions">
+    <div className="directory-review-actions" data-tutorial="directory-review-files">
       <button type="button" className="button secondary" disabled={working || busy} onClick={() => csvInput.current?.click()}>Load saved CSVs</button>
       <button type="button" className="button secondary" disabled={working || busy} onClick={() => folderInput.current?.click()}>Choose reviews folder</button>
-      <button type="button" className="button primary" disabled={working || busy} onClick={() => void resume()}>Resume first unfinished event</button>
+      <button type="button" className="button primary" data-tutorial="directory-review-resume" disabled={working || busy} onClick={() => void resume()}>Resume first unfinished event</button>
       {working && <button type="button" className="button secondary" onClick={() => { operation.current?.abort(); setWorking(false); onBusyChange(false); setMessage("Resume canceled. No recording was opened."); }}>Cancel</button>}
     </div>
     <input ref={csvInput} type="file" accept=".csv" multiple hidden aria-label="Saved annotation CSVs" onChange={event => { const files = [...(event.currentTarget.files ?? [])]; event.currentTarget.value = ""; void loadFiles(files); }} />

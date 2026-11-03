@@ -158,7 +158,7 @@ test("hidden types disappear from timed views, session labels and queues while s
 
 test("changing a type filter clears annotation selection without editing annotations", () => {
   const state = {};
-  const scope = { annotationSelectionRef: { current: { selectedIds: new Set(["hidden"]) } } };
+  const scope = { hiddenLabelTypes: new Set(), notifyTutorialAction() {}, annotationSelectionRef: { current: { selectedIds: new Set(["hidden"]) } } };
   for (const name of ["setHiddenLabelTypes", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setAnnotationSelectionBox", "setAnnotationDragPreview", "setQueueLimit"]) {
     scope[name] = (value) => { state[name] = value; };
   }

@@ -76,7 +76,7 @@ test("submitting a timestamp pauses, pins the cursor, and centers without changi
   assert.equal(ui.inputProps.required, true);
   assert.equal(ui.submit("01:30.5").error, "");
   assert.deepEqual(ui.state, { viewStart: 80.5, cursor: 90.5, playing: false, locked: true,
-    toast: "Jumped to 00:01:30.500 from recording start", actions: ["transport-used"] });
+    toast: "Jumped to 00:01:30.500 from recording start", actions: ["timestamp-jumped", "transport-used"] });
 });
 
 test("jumps at recording boundaries keep the view inside the recording", () => {

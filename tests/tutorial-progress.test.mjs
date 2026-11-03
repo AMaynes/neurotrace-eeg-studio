@@ -16,7 +16,7 @@ const { tutorialMilestoneActions } = exports;
 const initial = {
   scope: "one", stateKey: "initial", recording: null, importOpen: false, importFormat: null, filesReady: false,
   directoryFilesReady: false, directoryListOpen: false, settingsOpen: false, biasLocks: false,
-  channelsOpen: false, montage: "referential", gain: 1, clamp: "clamped", filtersOpen: false,
+  groups: false, playing: false, labelFilterOpen: false, olderReviewOpen: false, channelsOpen: false, montage: "referential", gain: 1, clamp: "clamped", filtersOpen: false,
   boxZoom: false, spectrogramOpen: false, labelsPanelOpen: true, labelPickerOpen: false,
   sessionLabelPickerOpen: false, labelsVisible: true, saveOpen: false,
 };
@@ -154,4 +154,15 @@ test("attention uses a slow opacity pulse with a reduced-motion opt-out and no p
   assert.match(css, /tutorial-attention 2\.8s ease-in-out infinite/);
   assert.match(css, /prefers-reduced-motion: reduce[^}]+\.tutorial-spotlight[^}]+animation: none/);
   assert.match(css, /\.tutorial-spotlight[^}]+pointer-events: none/);
+});
+
+test("groups, playback, visibility filters and recovery advance only on committed state changes", () => {
+  for (const [key, action] of [["groups", "groups-changed"], ["playing", "playback-started"], ["labelFilterOpen", "label-filter-opened"], ["olderReviewOpen", "older-review-opened"]]) {
+    assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, [key]: true }), [action]);
+    assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, stateKey: "restored", [key]: true }), [], `${key}: restoration is not a tutorial action`);
+    assert.deepEqual(tutorialMilestoneActions(initial, { ...initial, scope: "other", [key]: true }), [], `${key}: tab changes are not tutorial actions`);
+  }
+  assert.deepEqual(tutorialMilestoneActions({ ...initial, playing: true }, initial), ["playback-stopped"]);
+  assert.deepEqual(tutorialMilestoneActions({ ...initial, labelFilterOpen: true }, initial), ["label-filter-closed"]);
+  assert.deepEqual(tutorialMilestoneActions({ ...initial, olderReviewOpen: true }, initial), [], "closing recovery does not mean a review was restored");
 });

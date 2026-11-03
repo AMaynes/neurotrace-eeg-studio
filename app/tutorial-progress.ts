@@ -17,6 +17,10 @@ export type TutorialMilestones = {
   biasLocks: boolean;
   channelsOpen: boolean;
   montage: string;
+  groups: boolean;
+  playing: boolean;
+  labelFilterOpen: boolean;
+  olderReviewOpen: boolean;
   gain: number;
   clamp: string;
   filtersOpen: boolean;
@@ -45,9 +49,13 @@ export function tutorialMilestoneActions(before: TutorialMilestones | null, afte
   // Loading/restoring a recording can reset many controls without a user action.
   if (before.recording !== after.recording || before.stateKey !== after.stateKey) return actions;
   changed("settingsOpen", "settings-opened", after.settingsOpen);
+  changed("olderReviewOpen", "older-review-opened", after.olderReviewOpen);
   changed("biasLocks", "bias-locks-changed");
   changed("channelsOpen", after.channelsOpen ? "channels-opened" : "channels-closed");
   changed("montage", "montage-changed");
+  changed("groups", "groups-changed");
+  changed("playing", after.playing ? "playback-started" : "playback-stopped");
+  changed("labelFilterOpen", after.labelFilterOpen ? "label-filter-opened" : "label-filter-closed");
   changed("gain", "gain-changed");
   changed("clamp", "clamp-changed");
   changed("filtersOpen", "filters-opened", after.filtersOpen);
