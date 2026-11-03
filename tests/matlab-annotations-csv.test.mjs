@@ -171,7 +171,7 @@ test("production directory save gathers closed, open and active reviews without 
   const open = { ...input(), hasRecording: true, sessionKey: "open", sourceInterpretation: { companion_mat_path: "open.mat" } };
   const data = input(); data.candidates[0].badChannels = "LATEST";
   const collect = evaluate(`const collect = ${variables.get("collectCsvRows").getText(ast)};`, "collect", {
-    ...data, csvDirectoryId: "directory", sessionKey: "active", activeSessionId: "active-tab", primaryFile: null,
+    directoryCatalogs: [], mergeMatlabAnnotationRows, ...data, csvDirectoryId: "directory", sessionKey: "active", activeSessionId: "active-tab", primaryFile: null,
     sessionTabs: [{ id: "open-tab", directoryId: "directory" }, { id: "active-tab", directoryId: "directory" }, { id: "unrelated-tab", directoryId: "other" }],
     sessionSnapshotsRef: { current: new Map([["open-tab", open], ["active-tab", open]]) }, matlabCsvCacheRef: { current: cache }, matlabAnnotationRows,
   });

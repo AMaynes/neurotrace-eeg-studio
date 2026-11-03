@@ -1882,6 +1882,19 @@ export async function indexMatRecordingLabels(file: File) {
   return { labels: [...labels], warnings };
 }
 
+/** Resume scans read event timing and acquisition scalars, never waveform matrices. */
+export async function indexMatReviewEvents(file: File) {
+  let context: MatParseContext | undefined;
+  await visitMatEventLabelMatrices(file, async (bytes, prefix, littleEndian) => {
+    context ??= { littleEndian, numeric: [], strings: [], structures: [], warnings: [] };
+    await parseMatMatrix(bytes, context, prefix, 0);
+  }, { reviewTiming: true });
+  if (!context) throw new Error("No supported MAT event metadata was found.");
+  const metadata = legacyMetadataFromContext(context);
+  return { events: metadata.events, sampleRate: metadata.sampleRate, channelCount: metadata.channelCount,
+    warnings: metadata.warnings };
+}
+
 /**
  * Recognizes the legacy sessionInfo container before any numeric signal is
  * selected. Returns null for other MAT schemas (including standalone EEG and

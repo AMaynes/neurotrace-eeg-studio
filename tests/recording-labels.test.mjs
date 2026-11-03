@@ -437,7 +437,7 @@ function startBackground(h, overrides = {}) {
   visit(syntax);
   assert.ok(callback);
   const scope = { ...h.scope, ...recovery, hasRecording: true, verifyingSource: false,
-    overviewBuildSourceRef: { current: null }, candidatesRef: { current: [] }, activeCandidateIndexRef: { current: 0 },
+    sourceReviewCsvRowsRef: { current: new WeakMap() }, overviewBuildSourceRef: { current: null }, candidatesRef: { current: [] }, activeCandidateIndexRef: { current: 0 },
     buildBackgroundRecordingOverview: () => assert.fail("background timer has not fired"),
     setMeta: (update) => { h.state.setMeta = update(h.state.setMeta); },
     setAnnotations: (next) => { h.state.setAnnotations = next; },

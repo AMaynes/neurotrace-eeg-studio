@@ -154,6 +154,10 @@
 
 .directory-sessions-pagination span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .directory-sessions-note { flex-shrink: 0; margin: 12px 0; color: var(--faint); font-size: 10px; line-height: 1.55; }
+.directory-review-resume { flex-shrink: 0; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.directory-review-resume > strong { color: var(--ink); font-size: 12px; }
+.directory-review-resume p, .directory-review-resume summary { margin: 7px 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.directory-review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .directory-sessions-footer { display: flex; flex-shrink: 0; justify-content: space-between; align-items: center; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .directory-sessions-footer > span { max-width: 330px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 

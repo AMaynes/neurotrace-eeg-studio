@@ -150,7 +150,7 @@ test("recovery validates saved structures, preserves unreadable data, and falls 
   assert.match(page, /listOlderBrowserReviews\(localStorage\)/);
   assert.match(page, /neurotrace:review-backup:/);
   assert.match(page, /matlabExportIdentity:\s*matlabExportIdentityFromInterpretation\(sourceInterpretation\)/);
-  assert.match(load, /applyMatlabExportIdentity\(interpretation,\s*restoredMatlabExportIdentity\)/);
+  assert.match(load, /applyMatlabExportIdentity\(interpretation,\s*restoredMatlabExportIdentity\s*\?\?\s*csvIdentity\)/);
   assert.match(page, /Editable without changing the recording recovery key/);
 });
 

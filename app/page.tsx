@@ -64,6 +64,7 @@ import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
 import { DirectoryImportError, directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
 import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
+import { addDirectoryReviewRows, directoryReviewCache, indexReviewRows, reviewRowMatches } from "./directory-review-resume";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./import-selection";
 import { edfRecordingLabels, mergeRecordingLabels, recordingLabelAnnotations, validRecordingLabel, type RecordingLabel } from "./recording-labels";
@@ -146,7 +147,7 @@ import {
   type ImportedNeurotraceProject,
   type NeurotraceCustomToolAsset,
 } from "./neurotrace-project";
-import { matlabAnnotationRows, matlabAnnotationFilename, serializeMatlabAnnotations, writeMatlabAnnotations, MatlabReviewCsvCache, type MatlabCsvFileHandle } from "./matlab-annotations-csv";
+import { matlabAnnotationRows, matlabAnnotationFilename, serializeMatlabAnnotations, writeMatlabAnnotations, mergeMatlabAnnotationRows, MatlabReviewCsvCache, type MatlabCsvFileHandle, type MatlabAnnotationRow } from "./matlab-annotations-csv";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -311,6 +312,7 @@ type UploadErrorMessage = {
 type ImportChoice = "edf" | "mat" | "mat-dat" | "neurotrace";
 
 type DirectoryOpenRequest = {
+  csvReviewRows?: MatlabAnnotationRow[];
   catalogId: string;
   recordingId: string;
   sessionId: string;
@@ -332,6 +334,7 @@ type ProjectSavePicker = (options: {
 }) => Promise<MatlabCsvFileHandle>;
 
 type SourceImportContext = {
+  csvReviewRows?: MatlabAnnotationRow[];
   primaryFile: File;
   uploadedFileInputs: File[];
   companionBundle: BidsCompanionBundle;
@@ -998,6 +1001,36 @@ function reconcileCandidateQueue(imported: Candidate[], restored: Candidate[], r
     }),
     activeIndex: Math.max(0, activeIndex),
   };
+}
+
+/** Accepted CSV reviews supplement the queue; local drafts and decisions retain authority. */
+function restoreCsvCandidateReviews(candidates: Candidate[], annotations: Annotation[], rows: MatlabAnnotationRow[], meta: RecordingMeta) {
+  const nextAnnotations = [...annotations];
+  const rate = meta.sampleRates[0];
+  const sampleRate = meta.sampleRates.every(value => value === rate) ? rate : NaN;
+  const used = new Set<MatlabAnnotationRow>();
+  const indexedRows = indexReviewRows(rows);
+  const linked = new Set(annotations.map(annotation => annotation.candidateId));
+  const nextCandidates = candidates.map(candidate => {
+    if (["reviewed", "skipped", "conflict"].includes(candidate.status)
+      || linked.has(candidate.id)) return candidate;
+    const row = (indexedRows.get(candidate.time.toFixed(6)) ?? []).find(row => !used.has(row) && reviewRowMatches(row, { timeSec: candidate.time, label: candidate.label },
+      { sampleRate, channelCount: meta.channelCount, durationSec: meta.durationSec }));
+    if (!row) return candidate;
+    const reviewedAt = new Date(String(row.review_timestamp).replace(" ", "T"));
+    if (!Number.isFinite(reviewedAt.getTime())) return candidate;
+    const timestamp = reviewedAt.toISOString();
+    used.add(row);
+    nextAnnotations.push({
+      id: `csv-review-${candidate.id}`, labelId: "ictal", start: Number(row.onset_time_adjusted_sec), end: Number(row.offset_time_adjusted_sec),
+      track: "instance", geometry: "interval", channels: [], confidence: 0, reliability: "gold", origin: "imported",
+      reviewer: "CSV import", notes: "Accepted review restored from annotation CSV.", status: "committed", candidateId: candidate.id,
+      revision: 1, createdAt: timestamp, updatedAt: timestamp,
+    });
+    return { ...candidate, status: "reviewed" as const, badChannels: String(row.bad_channels), reviewedAt: timestamp };
+  });
+  const queue = reconcileCandidateQueue(nextCandidates, nextCandidates, 0);
+  return { ...queue, annotations: nextAnnotations, restoredCount: used.size };
 }
 
 type RecoveredProject = {
@@ -1834,7 +1867,8 @@ export default function Home() {
   const directoryConfirmationRef = useRef<DirectoryOpenRequest | null>(null);
   const guidedFilesInputRef = useRef<HTMLInputElement | null>(null);
   const guidedDirectoryInputRef = useRef<HTMLInputElement | null>(null);
-  const directoryImportRunnerRef = useRef<(files: File[], format: DirectoryImportFormat) => Promise<DirectorySessionStatus | undefined>>(async () => undefined);
+  const directoryImportRunnerRef = useRef<(files: File[], format: DirectoryImportFormat, keepSeparate?: boolean, csvReviewRows?: MatlabAnnotationRow[]) => Promise<DirectorySessionStatus | undefined>>(async () => undefined);
+  const sourceReviewCsvRowsRef = useRef(new WeakMap<SignalSource, MatlabAnnotationRow[]>());
   const sourceVerificationRef = useRef(false);
   const sourceVerificationAbortRef = useRef<AbortController | null>(null);
   const overviewBuildSourceRef = useRef<SignalSource | null>(null);
@@ -3417,7 +3451,14 @@ export default function Home() {
           .map((event, index): Candidate => ({ id: `edf-cand-${index}-${Math.round(event.timeSec * 1000)}`,
             time: event.timeSec, label: event.label, source: "bronze", status: "queued", confidence: 0,
             ictalChannels: "", legacyConfidence: "", reviewerInitials: "" }));
-        const queue = reconcileCandidateQueue(importedCandidates, candidatesRef.current, activeCandidateIndexRef.current);
+        let queue = reconcileCandidateQueue(importedCandidates, candidatesRef.current, activeCandidateIndexRef.current);
+        const csvRows = sourceReviewCsvRowsRef.current.get(source);
+        if (csvRows?.length) {
+          const resumed = restoreCsvCandidateReviews(queue.candidates, next, csvRows, source.meta);
+          queue = resumed;
+          annotationsRef.current = resumed.annotations;
+          setAnnotations(resumed.annotations);
+        }
         candidatesRef.current = queue.candidates;
         setCandidates(queue.candidates);
         setActiveCandidate(queue.activeIndex);
@@ -5626,6 +5667,7 @@ export default function Home() {
     keepSeparateSession = false,
   ) => {
     const targetSessionId = activeSessionId;
+    if (importContext?.csvReviewRows?.length) sourceReviewCsvRowsRef.current.set(source, importContext.csvReviewRows);
     if (keepSeparateSession) {
       // Separate recovery state as well as tabs for identical bytes at distinct
       // session paths. This key is stable when the same directory is reselected.
@@ -5861,7 +5903,12 @@ export default function Home() {
     setSessionKey(nextKey);
     setRawSourceHash("");
     setSourceHash(interpretationHash);
-    setSourceInterpretation(applyMatlabExportIdentity(interpretation, restoredMatlabExportIdentity) ?? null);
+    const csvRow = importContext?.csvReviewRows?.[0];
+    if (csvRow) interpretation = { ...interpretation, companion_mat_path: String(csvRow.mat_path) || null,
+      data_dir_hint: String(csvRow.data_dir), dat_file_base: String(csvRow.dat_file) };
+    const csvIdentity = csvRow ? { patientId: typeof interpretation?.patient_id_hint === "string" ? interpretation.patient_id_hint : "",
+      matPath: String(csvRow.mat_path), dataDirectory: String(csvRow.data_dir), datFile: String(csvRow.dat_file) } : null;
+    setSourceInterpretation(applyMatlabExportIdentity(interpretation, restoredMatlabExportIdentity ?? csvIdentity) ?? null);
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
     setReviewer(restoredReviewer ?? "");
@@ -6015,7 +6062,7 @@ export default function Home() {
     }
   }, [commitViewStart]);
 
-  const importFiles = async (files: File[], expectedFormat?: DirectoryImportFormat, keepSeparateSession = false): Promise<DirectorySessionStatus | undefined> => {
+  const importFiles = async (files: File[], expectedFormat?: DirectoryImportFormat, keepSeparateSession = false, csvReviewRows?: MatlabAnnotationRow[]): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
     setShowImport(true);
     const selectionError = validateUploadSelection(files);
@@ -6079,6 +6126,7 @@ export default function Home() {
       if (extension === "edf") {
         const source = await EDFSource.create(incomingPrimary, { parseAnnotations: false });
         const importContext = await prepareSourceImportContext(source, incomingPrimary, allFiles);
+        importContext.csvReviewRows = csvReviewRows;
         const opened = await loadSource(source, incomingPrimary, undefined, importContext, Boolean(expectedFormat) || keepSeparateSession);
         if (!opened) return;
         setPendingImportFiles([]);
@@ -6102,8 +6150,22 @@ export default function Home() {
         }
         if (resolved.kind === "standalone-mat") {
           const importContext = await prepareSourceImportContext(resolved.source, resolved.file, allFiles);
+          importContext.csvReviewRows = csvReviewRows;
           const opened = await loadSource(resolved.source, resolved.file, undefined, importContext, Boolean(expectedFormat) || keepSeparateSession);
-          if (opened) setPendingImportFiles([]);
+          if (opened) {
+            setPendingImportFiles([]);
+            if (csvReviewRows?.length) {
+              const importedCandidates = detectedRecordingLabels(resolved.source).filter(label => isLegacySeizureCandidate(label.label))
+                .map((label, index): Candidate => ({ id: `mat-cand-${index}-${Math.round(label.timeSec * 1000)}`, time: label.timeSec,
+                  label: label.label, source: "bronze", status: "queued", confidence: 0 }));
+              const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
+              const resumed = restoreCsvCandidateReviews(queue.candidates, annotationsRef.current, csvReviewRows, resolved.source.meta);
+              annotationsRef.current = resumed.annotations; setAnnotations(resumed.annotations);
+              setCandidates(resumed.candidates); setActiveCandidate(resumed.activeIndex);
+              const next = resumed.candidates[resumed.activeIndex];
+              if (next) { commitViewStart(clamp(next.time - 10, 0, Math.max(0, resolved.source.meta.durationSec - 20))); setCursorTime(next.time); setCursorLocked(true); }
+            }
+          }
           return opened ? { state: "loaded" } : { state: "error", message: "The recording could not be opened." };
         }
         const dat = resolved.file;
@@ -6181,7 +6243,7 @@ export default function Home() {
     setQueuedDirectoryOpen(null);
     if (directoryCatalogIdRef.current !== request.catalogId) return;
     updateDirectoryStatus(request, { state: "opening" });
-    void directoryImportRunnerRef.current(request.files, request.format).then((status) => {
+    void directoryImportRunnerRef.current(request.files, request.format, false, request.csvReviewRows).then((status) => {
       const result = status ?? { state: "error" as const, message: "Opening was interrupted. Try again." };
       updateDirectoryStatus(request, result);
       directoryConfirmationRef.current = result.state === "confirmation" ? request : null;
@@ -6216,7 +6278,24 @@ export default function Home() {
     const existingPrimary = existing?.sessionId === activeSessionId ? primaryFile : snapshot?.primaryFile;
     const existingLoaded = existing?.sessionId === activeSessionId ? hasRecording : snapshot?.hasRecording;
     if (existingTab && existingLoaded && existingPrimary && existing.files.includes(existingPrimary)) {
-      switchSession(existingTab.id);
+      const csvRows = directoryReviewCache(catalog.plan).byRecording.get(recording.id);
+      if (csvRows?.length) {
+        storeActiveSession();
+        const saved = sessionSnapshotsRef.current.get(existingTab.id)!;
+        const resumed = restoreCsvCandidateReviews(saved.candidates, saved.annotations, csvRows, saved.meta);
+        const next = resumed.candidates[resumed.activeIndex];
+        sourceReviewCsvRowsRef.current.set(saved.source, csvRows);
+        const existingDirectory = String(saved.sourceInterpretation?.data_dir_hint ?? "");
+        const sourceInterpretation = /^[a-z]:[/\\]|^\//i.test(existingDirectory) ? saved.sourceInterpretation
+          : { ...saved.sourceInterpretation, companion_mat_path: String(csvRows[0].mat_path) || null,
+            data_dir_hint: String(csvRows[0].data_dir), dat_file_base: String(csvRows[0].dat_file) };
+        const updated = { ...saved, annotations: resumed.annotations, candidates: resumed.candidates, activeCandidate: resumed.activeIndex,
+          sourceInterpretation,
+          ...(next ? { cursorTime: next.time, cursorLocked: true, viewStart: clamp(next.time - saved.timebase / 2, 0, Math.max(0, saved.meta.durationSec - saved.timebase)) } : {}) };
+        sessionSnapshotsRef.current.set(existingTab.id, updated);
+        setActiveSessionId(existingTab.id);
+        applySessionSnapshot(updated);
+      } else switchSession(existingTab.id);
       if (existingTab.id !== options?.replaceSessionId) completeDirectoryReplacement(options?.replaceSessionId);
       setShowDirectorySessions(false);
       return;
@@ -6247,6 +6326,7 @@ export default function Home() {
     directorySessionTabsRef.current.set(recording.id, { sessionId, files: recording.files });
     const request: DirectoryOpenRequest = {
       catalogId: catalog.id, recordingId: recording.id, sessionId,
+      csvReviewRows: directoryReviewCache(catalog.plan).byRecording.get(recording.id),
       format: catalog.plan.format,
       files: directoryRecordingFiles(catalog.plan, recording),
       ...(options ? { replaceSessionId: options.replaceSessionId } : {}),
@@ -6620,6 +6700,7 @@ export default function Home() {
           : [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null),
       );
       importContext.companionMatFile = pendingLegacyMatFile ?? undefined;
+      importContext.csvReviewRows = directoryRequest?.csvReviewRows;
       const opened = await loadSource(source, pendingDat, interpretation, importContext, Boolean(directoryRequest));
       if (!opened) return;
       if (directoryRequest) updateDirectoryStatus(directoryRequest, { state: "loaded" });
@@ -6642,7 +6723,13 @@ export default function Home() {
             legacyConfidence: "",
             reviewerInitials: "",
           }));
-        const queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
+        let queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
+        if (directoryRequest?.csvReviewRows?.length) {
+          const resumed = restoreCsvCandidateReviews(queue.candidates, annotationsRef.current, directoryRequest.csvReviewRows, source.meta);
+          queue = resumed;
+          annotationsRef.current = resumed.annotations;
+          setAnnotations(resumed.annotations);
+        }
         if (queue.candidates.length) {
           const resumeCandidate = queue.candidates[queue.activeIndex];
           setCandidates(queue.candidates);
@@ -6886,7 +6973,8 @@ export default function Home() {
       meta, sourceInterpretation, candidates, annotations,
       sourcePath: primaryFile ? relativeFilePath(primaryFile) : undefined,
     }));
-    return matlabCsvCacheRef.current.rows(group);
+    const resumedRows = csvDirectoryId ? directoryCatalogs.find(catalog => catalog.id === csvDirectoryId) : undefined;
+    return mergeMatlabAnnotationRows(resumedRows ? [...directoryReviewCache(resumedRows.plan).byRecording.values()].flat() : [], matlabCsvCacheRef.current.rows(group));
   };
   const saveAnnotationsCsv = async () => {
     if (projectSaveBusy || !hasRecording || sourceVerificationRef.current || importBusyRef.current) return;
@@ -8112,6 +8200,10 @@ export default function Home() {
         busy={importBusy || Boolean(queuedDirectoryOpen)}
         statuses={directoryStatuses}
         onOpen={openDirectoryRecording}
+        onPrepareResume={() => {
+          storeActiveSession();
+          addDirectoryReviewRows(directoryCatalog.plan, matlabCsvCacheRef.current.rows(directoryCatalog.id));
+        }}
         onClose={() => setShowDirectorySessions(false)}
         onClear={clearDirectoryCatalog}
       />}

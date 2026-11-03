@@ -5,6 +5,7 @@ import type { DirectoryImportPlan, DirectoryRecording } from "./directory-import
 import { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords } from "./directory-event-index";
 import { directoryEventCache, scanDirectoryEvents, setDirectoryEventQuery, supportsDirectoryEventSearch } from "./directory-event-client";
 import "./directory-sessions.css";
+import { DirectoryReviewControls } from "./directory-review-controls";
 
 export type DirectorySessionStatus = {
   state: "opening" | "confirmation" | "loaded" | "error";
@@ -16,6 +17,7 @@ type DirectorySessionsProps = {
   busy: boolean;
   statuses: Record<string, DirectorySessionStatus>;
   onOpen(recording: DirectoryRecording): void;
+  onPrepareResume?(): void;
   onClose(): void;
   onClear(): void;
 };
@@ -30,7 +32,7 @@ const STATUS_LABELS = {
 };
 
 /** On-demand session catalog with a cancellable, metadata-only event-label index. */
-export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear }: DirectorySessionsProps) {
+export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear, onPrepareResume }: DirectorySessionsProps) {
   const searchSupported = supportsDirectoryEventSearch(plan.format);
   const cache = directoryEventCache(plan);
   const [requestedPage, setRequestedPage] = useState(0);
@@ -40,18 +42,20 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
   const [includeUnchecked, setIncludeUnchecked] = useState(false);
   const [checking, setChecking] = useState<string | null>(null);
   const [scanGeneration, setScanGeneration] = useState(0);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const catalogBusy = busy || reviewBusy;
   const [, refreshIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const keywordsRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (busy || !searchSupported) return;
+    if (catalogBusy || !searchSupported) return;
     const controller = new AbortController();
     void scanDirectoryEvents(plan, controller.signal, (id) => {
       setChecking(id);
       refreshIndex((version) => version + 1);
     }, scanGeneration > 0);
     return () => controller.abort();
-  }, [plan, busy, scanGeneration, searchSupported]);
+  }, [plan, catalogBusy, scanGeneration, searchSupported]);
   const changeQuery = (value: string) => {
     if (!searchSupported) return;
     setDirectoryEventQuery(plan, value);
@@ -96,6 +100,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
         <span>{loadedCount.toLocaleString()} open</span>
         {errorCount > 0 && <span>{errorCount.toLocaleString()} need attention</span>}
       </div>
+      <DirectoryReviewControls plan={plan} busy={busy} onBusyChange={setReviewBusy} onResume={onOpen} onPrepareResume={onPrepareResume} />
       <div className="directory-event-search">
         <label htmlFor="directory-event-query">Filter sessions by event label</label>
         <div className="directory-event-search-row" data-unsupported={!searchSupported || undefined}
@@ -149,7 +154,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
               {searchSupported && <span className="directory-session-events" title={matchingLabels.join(" · ")}>{matchingLabels.length ? `Events: ${matchingLabels.slice(0, 3).join(" · ")}${matchingLabels.length > 3 ? ` · +${matchingLabels.length - 3} more` : ""}` : labelIndex?.state === "ready" ? "No supported event labels found" : checking === recording.id && !busy ? "Checking event labels…" : "Event labels not fully checked"}</span>}
               {!!labelIndex?.warnings.length && <details className="directory-event-warning"><summary>Event-label check incomplete</summary>{labelIndex.warnings.map((warning) => <p key={warning}>{warning}</p>)}</details>}
             </div>
-            <button type="button" className="button secondary" disabled={busy || status?.state === "opening"} aria-label={`${action} ${recording.relativePath}`} onClick={() => onOpen(recording)}>{action}</button>
+            <button type="button" className="button secondary" disabled={catalogBusy || status?.state === "opening"} aria-label={`${action} ${recording.relativePath}`} onClick={() => onOpen(recording)}>{action}</button>
           </li>;
         })}
         {!visible.length && <li className="directory-event-empty">{uncheckedCount ? "No matches found yet. Some sessions have not been fully checked." : "No sessions contain these event-label keywords."}</li>}

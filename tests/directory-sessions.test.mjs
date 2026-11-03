@@ -46,6 +46,7 @@ function harness(count, options = {}) {
       directoryEventCache, setDirectoryEventQuery, supportsDirectoryEventSearch,
       scanDirectoryEvents: async (plan, signal, notify, retry) => { scans.push({ plan, signal, notify, retry }); },
     };
+    if (name === "./directory-review-controls") return { DirectoryReviewControls: () => null };
     if (name.endsWith(".css")) return {};
     return require(name);
   }, exports);

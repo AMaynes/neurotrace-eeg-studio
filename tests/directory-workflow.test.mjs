@@ -1,3 +1,4 @@
+import { directoryReviewCache } from "../app/directory-review-resume.ts";
 import { recordingReferenceMatches } from "../app/local-recording-identity.ts";
 /** Execute the page's real handlers/effect with patient-free files and state spies. */
 import assert from "node:assert/strict";
@@ -41,7 +42,7 @@ function executable(code, result, env) {
   return new Function(...Object.keys(env), `${javascript}\nreturn ${result};`)(...Object.values(env));
 }
 function handler(name, env, helpers = []) {
-  return executable([...helpers, name].map(declaration).join("\n"), name, env);
+  return executable([...helpers, name].map(declaration).join("\n"), name, { directoryReviewCache, ...env });
 }
 function state(env, key, initial) {
   env[key] = initial;
@@ -833,7 +834,7 @@ test("queued import waits for the target render and runs once under StrictMode w
   effect();
   effect();
   assert.equal(h.calls.length, 1);
-  assert.deepEqual(h.calls[0], [h.request.files, "mat-dat"]);
+  assert.deepEqual(h.calls[0], [h.request.files, "mat-dat", false, h.request.csvReviewRows]);
   assert.deepEqual(h.env.directoryStatuses.recording, { state: "opening" });
   await tick();
   assert.deepEqual(h.env.directoryStatuses.recording, { state: "loaded" });

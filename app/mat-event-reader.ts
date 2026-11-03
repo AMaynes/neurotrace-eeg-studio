@@ -2,8 +2,8 @@
  * Selective Level-5 MAT traversal for directory event indexing. Numeric signal
  * payloads are skipped, not decoded (bounded read-ahead may touch their edges).
  * Compressed elements are streamed through zlib; only character matrices under
- * sessionInfo.sFile.events.label reach the existing MAT decoder. Event times,
- * notes and channel metadata are not needed for MATLAB's label-list search.
+ * sessionInfo.sFile.events.label reach the existing MAT decoder by default.
+ * Explicit resume scans also request event timing and acquisition scalars.
  * Called in a cancellable worker, never during waveform rendering.
  */
 
@@ -171,15 +171,18 @@ function integers(item: { type: number; payload: Uint8Array }, little: boolean) 
 }
 
 /** Keep wrapper support, then follow only the known session/event/label fields. */
-function containsEventLabels(path: string) {
+function containsEventLabels(path: string, review = false) {
   const parts = path.replace(/\[\d+\]/g, "").toLowerCase().split(".");
   const start = parts.indexOf("sessioninfo");
   if (start === -1) return true;
-  return /^sessioninfo(?:\.sfile(?:\.events(?:\.label)?)?)?$/.test(parts.slice(start).join("."));
+  return (review
+    ? /^sessioninfo(?:\.sfile(?:\.events(?:\.(?:label|times|epochs))?|\.header(?:\.(?:sample_rate|num_channels))?)?)?$/
+    : /^sessioninfo(?:\.sfile(?:\.events(?:\.label)?)?)?$/).test(parts.slice(start).join("."));
 }
 
-/** Extract only the event label list, not one expanded marker per timestamp. */
-export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint8Array, prefix: string, little: boolean) => Promise<void>) {
+/** Default label searches omit numeric metadata; resume opts into its bounded timing subset. */
+export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint8Array, prefix: string, little: boolean) => Promise<void>, options: { reviewTiming?: boolean } = {}) {
+  const review = options.reviewTiming === true;
   const reader = new BlobReader(file);
   const header = await reader.read(128);
   if (!/MATLAB\s+(?:5\.0|Level 5)\s+MAT-file/i.test(text(header))) throw new Error("Background event search supports Level-5 MAT metadata; this MAT format cannot be checked.");
@@ -202,8 +205,9 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
     const shape = integers(dimensions, little);
     const count = shape.reduce((product, value) => product * value, 1);
     if (!shape.length || shape.some((value) => value < 0) || !Number.isSafeInteger(count)) throw new Error("Invalid MAT dimensions.");
-    if (!containsEventLabels(name)) { await input.skip(end - input.position); return; }
-    if (kind === 4 && /(?:^|\.)sessionInfo(?:\[\d+\])?\.sFile(?:\[\d+\])?\.events(?:\[\d+\])?\.label(?:\[\d+\])*$/i.test(name)) {
+    if (!containsEventLabels(name, review)) { await input.skip(end - input.position); return; }
+    if ((kind === 4 && /(?:^|\.)sessionInfo(?:\[\d+\])?\.sFile(?:\[\d+\])?\.events(?:\[\d+\])?\.label(?:\[\d+\])*$/i.test(name))
+      || (review && kind >= 6 && kind <= 15 && /\.(?:times|epochs|sample_rate|num_channels)(?:\[\d+\])*$/i.test(name))) {
       const remaining = end - input.position;
       metadataBytes += flags.raw.length + dimensions.raw.length + nameField.raw.length + remaining;
       if (metadataBytes > MAX_METADATA_BYTES) throw new Error("Event metadata exceeds the 64 MiB background-search safety limit.");
@@ -229,7 +233,7 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
         const childPath = kind === 2 ? `${path}.${names[index % names.length]}` : path;
         // Child byte lengths let us seek past large times/notes/ChannelMat
         // arrays without parsing their elements or allocating marker objects.
-        if (containsEventLabels(childPath)) await matrix(input, childEnd, childPath, depth + 1);
+        if (containsEventLabels(childPath, review)) await matrix(input, childEnd, childPath, depth + 1);
         index += 1;
       }
       await input.skip(childEnd - input.position);
