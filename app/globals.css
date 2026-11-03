@@ -1215,7 +1215,32 @@ textarea:focus-visible {
   font-size: 11px;
   font-weight: 650;
   white-space: nowrap;
+}
+
+.session-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.session-title-tooltip {
+  position: fixed;
+  z-index: 90;
+  width: max-content;
+  max-width: min(600px, calc(100vw - 16px));
+  padding: 7px 10px;
+  border: 1px solid #3d648d;
+  border-radius: 6px;
+  background: #102027;
+  color: #e8f3ff;
+  box-shadow: 0 6px 24px #0008;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
 }
 
 .session-tab:hover { color: #c7d7d7; background: #102127; }

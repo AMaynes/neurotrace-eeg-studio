@@ -66,6 +66,7 @@ import { DirectoryImportError, directoryRecordingFiles, type DirectoryImportForm
 import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
 import { addDirectoryReviewRows, directoryReviewCache, indexReviewRows, reviewRowMatches } from "./directory-review-resume";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
+import { SessionTabTitle } from "./session-tab-title";
 import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./import-selection";
 import { edfRecordingLabels, mergeRecordingLabels, recordingLabelAnnotations, validRecordingLabel, type RecordingLabel } from "./recording-labels";
 import { annotationLabelTypeKey, collectLabelTypes, recordingLabelTypeKey } from "./label-visibility";
@@ -5901,7 +5902,7 @@ export default function Home() {
     setVerifyingSource(false);
     detachDirectorySession(targetSessionId, file);
     setSessionTabs((current) => current.map((tab) => tab.id === targetSessionId
-      ? { ...tab, title: shortFileName(nextMeta.name.replace(/\.[^.]+$/, ""), 22), hasRecording: true, recoveryStatus: "saved" }
+      ? { ...tab, title: nextMeta.name, hasRecording: true, recoveryStatus: "saved" }
       : tab));
     setSessionKey(nextKey);
     setRawSourceHash("");
@@ -6313,7 +6314,7 @@ export default function Home() {
     detachDirectorySession(sessionId);
     setSessionTabs((current) => {
       const target = {
-        id: sessionId, title: shortFileName(recording.label, 22), hasRecording: false,
+        id: sessionId, title: recording.label, hasRecording: false,
         recoveryStatus: "saved" as const, contentView: "recording" as const,
         directoryId: catalog.id, directoryRecordingId: recording.id,
       };
@@ -7489,7 +7490,7 @@ export default function Home() {
                   disabled={importBusy}
                   onClick={() => switchSession(tab.id)}
                   title={`${tab.title}${tabRecovery === "error" ? " · local recovery unavailable" : tabHasRecording ? " · locally recoverable" : " · blank"}`}
-                ><span className={`session-tab-dot ${tabRecovery === "error" ? "error" : tabHasRecording ? "loaded" : "blank"}`} />{tab.title}</button>
+                ><span className={`session-tab-dot ${tabRecovery === "error" ? "error" : tabHasRecording ? "loaded" : "blank"}`} /><SessionTabTitle title={tab.title} /></button>
                 <button
                   className={`session-tab-structure ${tab.contentView === "structure" ? "active" : ""}`}
                   disabled={importBusy || !tabHasRecording}

@@ -362,7 +362,7 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   assert.match(load, /setHasRecording\(true\)/);
   assert.match(load, /const targetSessionId\s*=\s*activeSessionId/);
   assert.match(load, /tab\.id\s*===\s*targetSessionId/);
-  assert.match(load, /title:\s*shortFileName/);
+  assert.match(load, /title:\s*nextMeta\.name/, "session titles retain the complete filename for hover and accessible names");
   const previewIndex = load.indexOf("sourceRef.current = source");
   assert.ok(previewIndex >= 0);
   assert.match(load, /localRecordingIdentity\(file/);
