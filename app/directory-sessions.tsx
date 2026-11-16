@@ -166,7 +166,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
       </nav>}
       <p className="directory-sessions-note">{plan.format === "neurotrace"
         ? "Projects open from their saved contents. Nearby files are not added to a project. Projects saved without recording data require the matching original recording to be opened separately."
-        : "The directory is checked for matching file types and complete pairs. Recording contents are verified when opened; MAT + DAT sessions still require layout confirmation. Directory review state is separate from individual-file imports."}</p>
+        : "Recordings are checked as they open. MAT + DAT pairs use their companion metadata when available. Directory review state is separate from individual-file imports."}</p>
       <footer className="directory-sessions-footer">
         <span>Clearing this list does not delete files or close sessions already open.</span>
         <button type="button" className="button secondary" disabled={busy} onClick={onClear}>Clear directory list</button>

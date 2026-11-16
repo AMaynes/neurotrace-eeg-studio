@@ -157,13 +157,14 @@ test("recovery validates saved structures, preserves unreadable data, and falls 
 test("raw DAT requires valid dimensions while preserving an explicit raw-count mode", async () => {
   const page = await pageSource();
   const confirm = section(page, "const confirmDatImport", "const exportBundle");
+  const mapped = section(page, "const openMappedDat", "const importFiles");
   assert.match(confirm, /Number\.isFinite\(datMapping\.sampleRate\)/);
   assert.match(confirm, /datMapping\.sampleRate\s*>\s*0/);
   assert.match(confirm, /Number\.isInteger\(datMapping\.channelCount\)/);
   assert.match(page, /datMapping\.physicalScale\s*===\s*""[\s\S]*?Number\.isFinite\(datMapping\.physicalScale\)[\s\S]*?datMapping\.physicalScale\s*>\s*0/);
-  assert.match(confirm, /const verifiedPhysicalScale\s*=\s*datMapping\.physicalScale\s*===\s*""\s*\?\s*undefined/);
-  assert.match(confirm, /channelUnits:\s*verifiedPhysicalScale\s*===\s*undefined\s*\?\s*"ADC count"\s*:\s*"µV"/);
-  assert.match(confirm, /display_amplitude_mode:\s*verifiedPhysicalScale\s*===\s*undefined\s*\?\s*"legacy-raw-counts"/);
+  assert.match(mapped, /const verifiedPhysicalScale\s*=\s*datMapping\.physicalScale\s*===\s*""\s*\?\s*undefined/);
+  assert.match(mapped, /channelUnits:\s*verifiedPhysicalScale\s*===\s*undefined\s*\?\s*"ADC count"\s*:\s*"µV"/);
+  assert.match(mapped, /display_amplitude_mode:\s*verifiedPhysicalScale\s*===\s*undefined\s*\?\s*"legacy-raw-counts"/);
   assert.match(page, /Leave scale blank to match MATLAB&apos;s raw-count display with 15,000 counts between channel baselines/);
 
   const mapperButton = page.match(/<button className="button primary wide" disabled=\{([^}]+)\} onClick=\{confirmDatImport\}/)?.[1] ?? "";
@@ -175,7 +176,7 @@ test("raw DAT requires valid dimensions while preserving an explicit raw-count m
 
 test("legacy MAT review defaults seizure events into a selectable pre-review queue", async () => {
   const page = await pageSource();
-  assert.match(page, /setSelectedLegacyEventIndices\(new Set\(legacyMetadata\?\.events\.flatMap/);
+  assert.match(page, /const selected = new Set\(legacyMetadata\?\.events\.flatMap/);
   assert.match(page, /className="legacy-event-picker"/);
   assert.match(page, /Source events to review/);
   assert.match(page, /selectedLegacyEventIndices\.has\(sourceIndex\)/);

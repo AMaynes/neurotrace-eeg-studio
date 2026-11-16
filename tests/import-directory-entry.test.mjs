@@ -118,7 +118,7 @@ function harness(options = {}) {
     submitGuidedImport: () => actions.push(["submit"]),
   };
   for (const [key, value] of Object.entries({ showImport: false, importChoice: null, importPickerKind: null, fileDragActive: false,
-    stagedDirectoryPlan: null, uploadError: null })) state(env, key, value);
+    stagedDirectoryPlan: null, stagedImportFiles: [], uploadError: null })) state(env, key, value);
   Object.assign(env, options);
   env.setShowImportOpen = (open) => { env.showImport = open; };
   env.setShowImport = (open) => handler("setShowImport", env)(open);
@@ -131,7 +131,7 @@ function harness(options = {}) {
   };
 }
 
-test("welcome requires a recording type before exposing file or folder selection", () => {
+test("welcome offers file and folder selection before any optional format filter", () => {
   const ui = harness();
   ui.welcome().props.onClick();
   assert.equal(ui.env.showImport, true);
@@ -143,7 +143,7 @@ test("welcome requires a recording type before exposing file or folder selection
     assert.equal(formatButton(tree, label).props.disabled, false);
     assert.equal(formatButton(tree, label).props["aria-pressed"], false, "no format is selected initially");
   }
-  assert.equal(pickerButtons(ui).size, 0, "file and folder actions are revealed only after selecting a type");
+  assert.deepEqual(new Set(pickerButtons(ui).keys()), new Set(["files", "directory"]));
   const obsoleteActions = new Set(["Single recording", "Recording directory"]);
   assert.equal(elements(tree, (node) => node.type === "button" && (obsoleteActions.has(node.props["aria-label"]) || obsoleteActions.has(text(node).trim()))).length, 0);
   assert.equal(elements(tree, (node) => node.props?.className === "import-requirements").length, 0);
@@ -191,7 +191,7 @@ test("the import dialog has separate hidden file and recursive-directory pickers
 });
 
 for (const [format, label, accept] of [["edf", "EDF / EDF+", ".edf"], ["mat", "MAT", ".mat"], ["mat-dat", "MAT + DAT", ".mat,.dat"], ["neurotrace", "NeuroTrace", ".neurotrace"]]) {
-  test(`${label} card selects its format without opening Explorer and reveals both picker choices`, () => {
+  test(`${label} card sets an optional filter without opening Explorer`, () => {
     const ui = harness();
     const unexpectedPicker = { click: () => assert.fail("choosing a format must not skip the file/folder choice") };
     ui.env.guidedFilesInputRef.current = unexpectedPicker;
@@ -263,7 +263,7 @@ test("busy import disables format cards, both inputs, and file/folder actions", 
   }
 });
 
-test("home drop instructions describe files and reserve folder drops for the explicit folder choice", () => {
+test("home drop instructions distinguish workspace and dialog drop targets", () => {
   const ui = harness();
   assert.match(text(ui.welcome()), /drop[^.]*files/i);
   assert.doesNotMatch(text(ui.welcome()), /drop[^.]*folder/i);
@@ -289,11 +289,11 @@ test("workspace drops never opt into directory traversal, even after choosing Fo
   }
 });
 
-test("dialog drops allow folders only after both a type and Folder are selected", () => {
+test("dialog drops accept folders unless an existing DAT mapping is open", () => {
   for (const [importChoice, importPickerKind, pendingDat, allowed] of [
-    [null, null, null, false], ["edf", null, null, false], ["edf", "files", null, false],
+    [null, null, null, true], ["edf", null, null, true], ["edf", "files", null, true],
     ["edf", "directory", null, true], ["mat-dat", "directory", null, true],
-    [null, "directory", null, false], ["mat-dat", "directory", { name: "signal.dat" }, false],
+    [null, "directory", null, true], ["mat-dat", "directory", { name: "signal.dat" }, false],
   ]) {
     const ui = harness({ importChoice, importPickerKind, pendingDat });
     const event = dropEvent();
@@ -317,48 +317,21 @@ test("file drop handlers ignore label and text drags and do not start competing 
   }
 });
 
-test("Folder activation gates dialog drops until Files, a different type, or dialog close resets it", () => {
-  const ui = harness({ importChoice: "edf", showImport: true });
-  const input = { click: () => {} };
-  ui.env.guidedFilesInputRef.current = input;
-  ui.env.guidedDirectoryInputRef.current = input;
-  const allowsFolderDrop = () => {
-    ui.actions.length = 0;
-    jsxHandler(dialog, "onDrop", ui.env)(dropEvent());
-    return ui.actions[0]?.[2];
-  };
-  ui.env.openImportPicker("directory");
-  assert.equal(ui.env.importPickerKind, "directory");
-  assert.equal(allowsFolderDrop(), true);
-  ui.env.openImportPicker("files");
-  assert.equal(ui.env.importPickerKind, "files");
-  assert.equal(allowsFolderDrop(), false);
-  ui.env.openImportPicker("directory");
-  ui.env.chooseImportType("mat");
-  assert.equal(ui.env.importPickerKind, null);
-  assert.equal(allowsFolderDrop(), false);
-  ui.env.openImportPicker("directory");
-  button(ui.render(), "Close").props.onClick();
-  assert.equal(ui.env.showImport, false);
-  assert.equal(ui.env.importPickerKind, null);
-  ui.welcome().props.onClick();
-  assert.equal(ui.env.showImport, true);
-  assert.equal(allowsFolderDrop(), false, "reopening the dialog cannot inherit previous folder-drop permission");
-});
-
-test("a missing native picker cannot enable folder dropping", () => {
-  const ui = harness({ importChoice: "edf" });
+test("picker actions safely ignore missing input refs", () => {
+  const ui = harness();
   ui.env.openImportPicker("directory");
   assert.equal(ui.env.importPickerKind, null);
 });
 
-test("backdrop and Escape close paths reset the explicit folder-drop choice", () => {
+test("backdrop and Escape close paths clear the staged file selection", () => {
   const backdrop = dialog.parent;
-  const ui = harness({ showImport: true, importChoice: "edf", importPickerKind: "directory" });
+  const ui = harness({ showImport: true, importChoice: "edf", importPickerKind: "directory", stagedImportFiles: [{ name: "one.edf" }] });
   const target = {};
   jsxHandler(backdrop, "onMouseDown", ui.env)({ target, currentTarget: target });
   assert.equal(ui.env.showImport, false);
   assert.equal(ui.env.importPickerKind, null);
+
+  assert.deepEqual(ui.env.stagedImportFiles, []);
 
   let escapeBranch;
   function findEscape(node) {
@@ -379,13 +352,13 @@ test("actual input handler preserves the folder format and snapshots files befor
     const files = [{ name: "one.edf" }, { name: "two.edf" }];
     const routed = [];
     const target = { files, webkitdirectory: fromDirectory, value: "chosen-path" };
-    await handler("stageDetectedImport", { importChoice: "edf", handleSelectedRecordingFiles: (selected, isDirectory, format) => {
+    await handler("stageDetectedImport", { importChoice: "edf", handleSelectedRecordingFiles: (selected, isDirectory, format, confirm) => {
       assert.equal(target.value, "");
       assert.notEqual(selected, files, "snapshot the live chooser list");
-      routed.push([selected, isDirectory, format]);
+      routed.push([selected, isDirectory, format, confirm]);
     } })({ target });
     assert.equal(target.value, "");
-    assert.deepEqual(routed, [[files, fromDirectory, fromDirectory ? "edf" : null]]);
+    assert.deepEqual(routed, [[files, fromDirectory, fromDirectory ? "edf" : null, true]]);
   }
 });
 
@@ -435,10 +408,16 @@ test("format selection works before inputs mount and picker actions safely ignor
   for (const mode of ["files", "directory"]) assert.doesNotThrow(() => ui.env.openImportPicker(mode));
 });
 
-test("programmatic file/folder actions cannot bypass choosing a recording type", () => {
+test("native file and folder pickers work with automatic format detection", () => {
   const ui = harness();
-  ui.env.guidedFilesInputRef.current = { click: () => assert.fail("choose a format before activating a picker") };
-  ui.env.guidedDirectoryInputRef.current = ui.env.guidedFilesInputRef.current;
-  for (const mode of ["files", "directory"]) ui.env.openImportPicker(mode);
+  const calls = [];
+  const input = { accept: ".old", click: () => calls.push(ui.env.importPickerKind) };
+  ui.env.guidedFilesInputRef.current = input;
+  ui.env.guidedDirectoryInputRef.current = input;
+  for (const mode of ["files", "directory"]) {
+    ui.env.openImportPicker(mode);
+    assert.equal(input.accept, "");
+  }
+  assert.deepEqual(calls, ["files", "directory"]);
   assert.equal(ui.env.importChoice, null);
 });

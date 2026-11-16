@@ -237,6 +237,7 @@ test("loading a source or applying a session snapshot clears the previous record
     bindings(callback);
     env.recordingOverviewCacheRef = { current: new Map() };
     env.sessionSnapshotsRef = { current: new Map() };
+    env.setDirectoryEventArrival = () => {};
     env.setSpectrogramAnchor = (anchor) => { env.anchor = anchor; setters.set("setSpectrogramAnchor", [anchor]); };
     env.anchor = 4;
     const meta = { ...defaultMeta, id: "next-recording" };

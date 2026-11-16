@@ -122,7 +122,6 @@ test("missing or inconsistent legacy metadata stays editable without inferred co
     [{ channelCount: null }, /num_channels.*missing/],
     [{ channelCount: 1.5 }, /num_channels.*whole-number/],
     [{ labels: Array.from({ length: 156 }, (_, index) => `SYN${index}`) }, /157 channels but 156 channel labels/],
-    [{ labels: [] }, /no channel names/],
   ]) {
     const mat = legacyMatFile(options);
     const result = await resolveMatDatImport(dat, [dat, mat]);
@@ -132,6 +131,15 @@ test("missing or inconsistent legacy metadata stays editable without inferred co
     if (options.sampleRate !== undefined) assert.equal(result.metadata.sampleRate, undefined);
     if (options.labels) assert.equal(result.metadata.channelLabels.length, options.labels.length);
   }
+});
+
+test("an unnamed DAT with complete timing and channel count can use numbered channels", async () => {
+  const dat = datFile();
+  const mat = legacyMatFile({ labels: [] });
+  const result = await resolveMatDatImport(dat, [dat, mat]);
+  assert.equal(result.kind, "legacy-dat");
+  assert.equal(result.metadataIssue, null);
+  assert.deepEqual(result.metadata.channelLabels, []);
 });
 
 test("folder pairing prefers a sibling and rejects ambiguous basename-only matches", () => {

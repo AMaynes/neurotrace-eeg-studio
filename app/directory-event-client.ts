@@ -3,9 +3,9 @@
  * the directory dialog aborts outstanding work; reopening reuses completed scans.
  * File references remain local and no source samples or hashes enter this cache.
  */
-import { directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan } from "./directory-import.ts";
+import { directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import.ts";
 import { createEventLabelMatcher } from "./event-keywords.ts";
-import type { DirectoryEventIndex, DirectoryEventRequest } from "./directory-event-index.ts";
+import type { DirectoryEventIndex, DirectoryEventRequest, DirectoryTimedEvent } from "./directory-event-index.ts";
 import type { DirectoryEventResponse } from "./directory-event-worker.ts";
 
 export interface DirectoryEventCache {
@@ -27,6 +27,13 @@ export function directoryEventCache(plan: DirectoryImportPlan): DirectoryEventCa
 /** Query persistence is confined to this catalog's in-memory store. */
 export function setDirectoryEventQuery(plan: DirectoryImportPlan, query: string) {
   directoryEventCache(plan).query = query;
+}
+
+function eventRequest(plan: DirectoryImportPlan, recording: DirectoryRecording): DirectoryEventRequest {
+  const file = plan.format === "mat-dat" ? recording.files.find((file) => /\.mat$/i.test(file.name)) : recording.primary;
+  if (!file) throw new Error("Missing MAT event metadata.");
+  return { format: plan.format, file,
+    eventTables: directoryRecordingFiles(plan, recording).filter((file) => /(?:^|_)events\.tsv$/i.test(file.name)) };
 }
 
 /** One pending request per worker. Explicit folder filtering can check several files at once. */
@@ -61,10 +68,7 @@ export async function scanDirectoryEvents(
         if (signal.aborted) break;
         try {
           if (fatal || !worker) throw fatal;
-          const file = plan.format === "mat-dat" ? entry.files.find((file) => /\.mat$/i.test(file.name)) : entry.primary;
-          if (!file) throw new Error("Missing MAT event metadata.");
-          const request: DirectoryEventRequest = { format: plan.format, file,
-            eventTables: directoryRecordingFiles(plan, entry).filter((file) => /(?:^|_)events\.tsv$/i.test(file.name)) };
+          const request = eventRequest(plan, entry);
           const result = await new Promise<DirectoryEventIndex>((resolve, reject) => {
             failPending = reject;
             worker!.onmessage = (event: MessageEvent<DirectoryEventResponse>) => {
@@ -104,10 +108,79 @@ export function filterDirectoryPlan(plan: DirectoryImportPlan, query: string): D
   const matches = createEventLabelMatcher(query);
   const { entries } = directoryEventCache(plan);
   const recordings = plan.recordings.filter((entry) => matches(entries[entry.id]?.labels ?? []));
-  const filtered = { ...plan, recordings, unfilteredRecordings: plan.unfilteredRecordings ?? plan.recordings };
+  const filtered = { ...plan, recordings, eventKeywordFilter: query, unfilteredRecordings: plan.unfilteredRecordings ?? plan.recordings };
   const cache = directoryEventCache(filtered);
   for (const { id } of recordings) {
     if (entries[id]) cache.entries[id] = entries[id];
   }
   return filtered;
+}
+
+export function nextTimedEvent<T extends DirectoryTimedEvent>(events: readonly T[], query: string, after = -Infinity): T | undefined {
+  const matches = createEventLabelMatcher(query);
+  let first: T | undefined;
+  for (const event of events) {
+    if (!Number.isFinite(event.timeSec) || event.timeSec < 0 || event.timeSec <= after || !matches([event.label])) continue;
+    if (!first || event.timeSec < first.timeSec) first = event;
+  }
+  return first;
+}
+
+/** Read later recordings in folder order. Only the destination recording is opened. */
+export async function findNextDirectoryEvent(
+  plan: DirectoryImportPlan,
+  afterId: string,
+  query: string,
+  signal: AbortSignal,
+  knownEvents: (recording: DirectoryRecording) => readonly DirectoryTimedEvent[] | undefined,
+  onProgress: (path: string) => void,
+): Promise<{ target?: { recording: DirectoryRecording; event: DirectoryTimedEvent }; incomplete: number }> {
+  const start = plan.recordings.findIndex(({ id }) => id === afterId);
+  if (start < 0) return { incomplete: 0 };
+  const { entries } = directoryEventCache(plan);
+  const matches = createEventLabelMatcher(query);
+  let worker: Worker | undefined;
+  let rejectRead: ((reason: unknown) => void) | undefined;
+  let incomplete = 0;
+  const abort = () => {
+    worker?.terminate();
+    rejectRead?.(signal.reason);
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    for (let index = start + 1; index < plan.recordings.length; index++) {
+      signal.throwIfAborted();
+      const recording = plan.recordings[index];
+      const known = knownEvents(recording);
+      if (known) {
+        const event = nextTimedEvent(known, query);
+        if (event) return { target: { recording, event }, incomplete };
+        continue;
+      }
+      const cached = entries[recording.id];
+      if (query.trim() && cached?.state === "ready" && !matches(cached.labels)) continue;
+      onProgress(recording.relativePath);
+      signal.throwIfAborted();
+      const request = { ...eventRequest(plan, recording), eventQuery: query,
+        datBytes: plan.format === "mat-dat" ? recording.primary.size : undefined };
+      const reader = worker ??= new Worker(new URL("./directory-event-worker.ts", import.meta.url), { type: "module" });
+      const result = await new Promise<DirectoryEventIndex>((resolve, reject) => {
+        rejectRead = reject;
+        reader.onmessage = (message: MessageEvent<DirectoryEventResponse>) => {
+          if (message.data.id === recording.id) resolve(message.data.result);
+        };
+        reader.onerror = (error) => { error.preventDefault(); reject(new Error("The background event reader stopped.")); };
+        reader.onmessageerror = () => reject(new Error("Could not read event search results."));
+        reader.postMessage({ id: recording.id, request });
+      });
+      rejectRead = undefined;
+      signal.throwIfAborted();
+      if (result.state !== "ready") incomplete++;
+      if (result.firstEvent) return { target: { recording, event: result.firstEvent }, incomplete };
+    }
+    return { incomplete };
+  } finally {
+    signal.removeEventListener("abort", abort);
+    worker?.terminate();
+  }
 }

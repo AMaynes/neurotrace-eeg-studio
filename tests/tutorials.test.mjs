@@ -179,7 +179,7 @@ test("walkthroughs advance, go back, complete, and replay without performing wor
   assert.match(ui.markup(), /STEP 1 OF 4/);
   assert.equal(ui.button("Back").props.disabled, true);
   ui.click("Next →");
-  assert.match(ui.markup(), /Choose your format/);
+  assert.match(ui.markup(), /Choose files or a folder/);
   ui.click("Back");
   assert.match(ui.markup(), /STEP 1 OF 4/);
   for (let index = 0; index < 4; index++) ui.click("Next →");
@@ -231,25 +231,24 @@ test("every step offers assistance only for a real action, never just an explana
   }
 });
 
-test("directory loading follows folder readiness and the list without opening recordings automatically", () => {
+test("directory walkthrough advances when confirmation opens the first recording", () => {
   const ui = harness({ topic: "directories", hasRecording: false });
-  assert.match(ui.markup(), /Load a directory/);
   ui.click("Start walkthrough →");
   ui.emit("import-opened");
-  assert.match(ui.markup(), /STEP 2 OF 5/);
+  assert.match(ui.markup(), /STEP 2 OF 4/);
   ui.emit("import-format-chosen");
   ui.emit("import-files-ready");
-  assert.match(ui.markup(), /STEP 3 OF 5/, "individual-file selection does not complete Folder");
+  assert.match(ui.markup(), /STEP 2 OF 4/, "a format choice or individual files cannot complete Folder");
   ui.emit("directory-files-ready");
-  assert.match(ui.markup(), /STEP 4 OF 5/);
+  assert.match(ui.markup(), /STEP 3 OF 4/);
   ui.emit("directory-list-opened");
-  assert.match(ui.markup(), /STEP 5 OF 5/);
+  assert.match(ui.markup(), /STEP 3 OF 4/, "opening the list is not required for the first recording");
   ui.props.sessionId = "directory-recording"; ui.props.hasRecording = true; ui.render();
   ui.emit("recording-opened");
-  assert.match(ui.markup(), /Open one recording/);
+  assert.match(ui.markup(), /Browse the folder/);
   ui.click("Next →");
   assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
-  assert.deepEqual(ui.actions, [], "the guide never chooses or loads files");
+  assert.deepEqual(ui.actions, []);
   ui.dispose();
 });
 
@@ -257,9 +256,9 @@ test("directory navigation is informational and Bias Locks stays an explicit use
   const ui = harness({ topic: "directories" });
   ui.find((node) => node.type === "button" && text(node).startsWith("Navigate directory files")).props.onClick();
   ui.render(); ui.click("Start walkthrough →");
-  for (let index = 0; index < 4; index++) {
+  for (let index = 0; index < 5; index++) {
     ui.emit("directory-list-opened"); ui.emit("recording-opened");
-    assert.match(ui.markup(), new RegExp(`STEP ${index + 1} OF 4`));
+    assert.match(ui.markup(), new RegExp(`STEP ${index + 1} OF 5`));
     assert.doesNotMatch(ui.markup(), />Do it for me</);
     ui.click("Next →");
   }
@@ -330,7 +329,7 @@ test("the guide stays inside open dialogs and cannot open a competing tutorial m
 
 test("a control below the visible dialog prompts scrolling, not closing or restarting the loader", () => {
   const ui = harness({ topic: "directories" }); ui.click("Start walkthrough →");
-  for (let index = 0; index < 3; index++) ui.click("Next →");
+  for (let index = 0; index < 2; index++) ui.click("Next →");
   ui.surface.dialogName = "Load recording";
   ui.surface.host = { querySelector: () => ({ focus() {} }), closest: () => ({}) };
   ui.surface.offscreen = true; ui.render();
@@ -492,6 +491,8 @@ test("completed actions advance once; unrelated clicks, duplicate events, Back, 
   ui.emit("import-opened");
   assert.match(ui.markup(), /STEP 2 OF 4/);
   ui.emit("import-format-chosen");
+  assert.match(ui.markup(), /STEP 2 OF 4/);
+  ui.emit("import-files-ready");
   assert.match(ui.markup(), /STEP 3 OF 4/);
   ui.click("Back");
   assert.match(ui.markup(), /STEP 2 OF 4/);
@@ -507,39 +508,32 @@ test("completed actions advance once; unrelated clicks, duplicate events, Back, 
   ui.dispose();
 });
 
-test("single-recording auto-open advances file selection without needing a separate files-ready event", () => {
+test("a recording opened directly through a drop can advance past file selection", () => {
   const ui = harness({ hasRecording: false }); ui.click("Start walkthrough →");
-  ui.emit("import-opened"); ui.emit("import-format-chosen");
-  assert.match(ui.markup(), /STEP 3 OF 4/);
+  ui.emit("import-opened");
+  assert.match(ui.markup(), /STEP 2 OF 4/);
   ui.emit("recording-opened");
-  assert.match(ui.markup(), /STEP 4 OF 4/);
-  assert.match(ui.markup(), /check the channel names, units, and duration/);
-  assert.match(ui.markup(), /Read this step, then select Next/);
+  assert.match(ui.markup(), /Open the selection/);
+  ui.click("Next →");
+  assert.match(ui.markup(), /Check channel names, units, and duration/);
   ui.emit("recording-opened");
-  assert.match(ui.markup(), /STEP 4 OF 4/, "a repeated load never skips the explicit inspection step");
+  assert.match(ui.markup(), /STEP 4 OF 4/, "a repeated load never skips the inspection step");
   ui.click("Next →");
   assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
   assert.deepEqual(ui.actions, []);
   ui.dispose();
 });
 
-test("load-recording guidance chooses a format before opening the files or folder picker", () => {
+test("load-recording guidance explains auto-detection and the single confirm action", () => {
   const lesson = catalog.tutorialLessons.find((candidate) => candidate.id === "load-recording");
-  assert.match(lesson.steps[1].instruction, /reveals Files and Folder choices/);
-  assert.equal(lesson.steps[2].target, "import-files");
-  assert.match(lesson.steps[2].instruction, /Click Files to open the file picker/);
-  assert.match(lesson.steps[2].instruction, /one or multiple files/);
-  assert.match(lesson.steps[2].instruction, /both the MAT and DAT/);
-  assert.match(lesson.steps[2].instruction, /click Folder to select a directory, including its subfolders/);
-  assert.match(lesson.steps[2].instruction, /opens automatically/);
-  assert.match(lesson.steps[2].tip, /individual files onto the homepage or workspace/);
-  assert.match(lesson.steps[2].tip, /folder drop, choose a format, click Folder, cancel the directory picker, then drop inside the loader dialog/);
-  assert.deepEqual(lesson.steps[2].completeOn, ["import-files-ready", "recording-opened"]);
-  assert.match(lesson.steps[3].instruction, /Load N sessions/);
-  assert.equal(lesson.steps[3].completeOn, undefined, "recording inspection is a reading-only step, not a second load");
-  const copy = lesson.steps.map((step) => step.instruction).join(" ");
-  assert.doesNotMatch(copy, /required row|loader’s Open button|file picker immediately|no file-versus-folder setting/);
-  assert.doesNotMatch(lesson.steps[2].tip, /files or folders into the workspace/);
+  assert.equal(lesson.steps[1].target, "import-files");
+  assert.match(lesson.steps[1].instruction, /Click Files to select one or multiple files/);
+  assert.match(lesson.steps[1].instruction, /both the MAT and DAT/);
+  assert.match(lesson.steps[1].instruction, /detects the type/);
+  assert.match(lesson.steps[1].tip, /Drop a folder inside the loader/);
+  assert.match(lesson.steps[2].instruction, /Open selected files or Load N sessions/);
+  assert.deepEqual(lesson.steps[2].completeOn, ["recording-opened"]);
+  assert.equal(lesson.steps[3].completeOn, undefined);
 });
 
 test("auto-advance pauses in the hub and while prerequisites are unmet, and cleans up after ending", () => {

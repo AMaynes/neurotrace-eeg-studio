@@ -4,7 +4,7 @@ import test from "node:test";
 import { matWriter, legacyMatFile } from "./fixtures/legacy-mat.mjs";
 import { indexMatRecordingLabels, parseLegacyMatMetadata, parseEDFHeader, parseEDFAnnotations } from "../app/eeg-core.ts";
 import { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords, eventLabelMatches, readDirectoryEventIndex } from "../app/directory-event-index.ts";
-import { directoryEventCache, scanDirectoryEvents } from "../app/directory-event-client.ts";
+import { directoryEventCache, findNextDirectoryEvent, nextTimedEvent, scanDirectoryEvents } from "../app/directory-event-client.ts";
 import { planDirectoryImport } from "../app/directory-import.ts";
 import { createNeurotraceProjectArchive } from "../app/neurotrace-project.ts";
 
@@ -269,6 +269,45 @@ test("valid sidecar matches survive a failed embedded metadata scan, with explic
   assert.equal(result.state, "partial");
   assert.deepEqual(result.labels, ["Button, push"]);
   assert.ok(result.warnings.length);
+});
+
+test("timed checks find the earliest matching occurrence across embedded labels and matching sidecars", async () => {
+  const file = eventMat();
+  const eventTables = [new File(["onset\tduration\ttrial_type\n0.25\t0\tStim extra\n"], "synthetic_events.tsv")];
+  const check = (eventQuery, tables = []) => readDirectoryEventIndex({ format: "mat", file, eventTables: tables, eventQuery });
+  assert.deepEqual((await check("Seizure")).firstEvent, { label: "Seizure onset", timeSec: 1 });
+  assert.deepEqual((await check("STIM")).firstEvent, { label: "Stim β", timeSec: 2 });
+  assert.deepEqual((await check("STIM", eventTables)).firstEvent, { label: "Stim extra", timeSec: 0.25 });
+  assert.equal((await check("none")).firstEvent, undefined);
+});
+
+test("next event moves past the current timestamp and opens only the first later match in folder order", async () => {
+  const events = [{ label: "Stim", timeSec: 7 }, { label: "Stim", timeSec: 0 },
+    { label: "Sleep", timeSec: 2 }, { label: "Stim", timeSec: 5 }];
+  assert.equal(nextTimedEvent(events, "stim").timeSec, 0);
+  assert.equal(nextTimedEvent(events, "stim", 0).timeSec, 5);
+  assert.equal(nextTimedEvent(events, "stim", 7), undefined);
+  const plan = planDirectoryImport(["a", "b", "c", "d", "e"].map(name => fileAt(`folder/${name}.edf`)), "edf");
+  const sent = [];
+  const original = globalThis.Worker;
+  globalThis.Worker = class {
+    postMessage({ id, request }) {
+      sent.push(id);
+      assert.equal(request.eventQuery, "stim");
+      const found = request.file.name === "d.edf";
+      queueMicrotask(() => this.onmessage({ data: { id, result: { state: "ready", labels: [], warnings: [],
+        ...(found ? { firstEvent: { label: "Stimulation", timeSec: 3 } } : {}) } } }));
+    }
+    terminate() {}
+  };
+  try {
+    const [current, cached, unmatched, match] = plan.recordings;
+    directoryEventCache(plan).entries[cached.id] = { state: "ready", labels: ["Sleep"], warnings: [] };
+    const result = await findNextDirectoryEvent(plan, current.id, "stim", new AbortController().signal, () => undefined, () => {});
+    assert.equal(result.target.recording, match);
+    assert.equal(result.target.event.timeSec, 3);
+    assert.deepEqual(sent, [unmatched.id, match.id]);
+  } finally { if (original === undefined) delete globalThis.Worker; else globalThis.Worker = original; }
 });
 
 test("saved projects index custom display names and source labels without embedded recording bytes", async () => {

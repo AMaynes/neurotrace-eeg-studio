@@ -40,7 +40,7 @@ export function DirectoryImportFilters({ plan, busy, onLoad }: {
     setChecking(false);
   };
 
-  const apply = async () => {
+  const apply = async (loadWhenReady = false) => {
     if (!query || scanRef.current || busy) return;
     const controller = new AbortController();
     scanRef.current = controller;
@@ -60,9 +60,11 @@ export function DirectoryImportFilters({ plan, busy, onLoad }: {
     }, true, true);
     if (controller.signal.aborted) return;
     const incomplete = plan.recordings.filter(({ id }) => cache.entries[id]?.state !== "ready").length;
-    setApplied({ query, plan: filterDirectoryPlan(plan, query), incomplete });
+    const filtered = filterDirectoryPlan(plan, query);
+    setApplied({ query, plan: filtered, incomplete });
     scanRef.current = null;
     setChecking(false);
+    if (loadWhenReady && filtered.recordings.length) onLoad(filtered);
   };
 
   return <>
@@ -92,8 +94,12 @@ export function DirectoryImportFilters({ plan, busy, onLoad }: {
     </div>}
     <footer>
       <span className="directory-import-local-note">{plan.supportingFiles.length ? `${plan.supportingFiles.length} companion file${plan.supportingFiles.length === 1 ? "" : "s"} found · ` : ""}Files stay on this device.</span>
-      <button type="button" className="button primary" data-tutorial="import-open" disabled={!ready || !selected?.recordings.length || busy || checking}
-        onClick={() => { if (ready && selected?.recordings.length && !busy && !checking) onLoad(selected); }}>
+      <button type="button" className="button primary" data-tutorial="import-open" disabled={(ready && !selected?.recordings.length) || busy || checking}
+        onClick={() => {
+          if (busy || checking) return;
+          if (!ready) void apply(true);
+          else if (selected?.recordings.length) onLoad(selected);
+        }}>
         {checking ? "Checking labels…" : busy ? "Opening…" : query && !ready ? "Load matching sessions" : `Load ${selected?.recordings.length ?? 0} sessions`}
       </button>
     </footer>

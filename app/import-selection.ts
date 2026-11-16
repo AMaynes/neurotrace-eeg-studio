@@ -10,6 +10,12 @@ function extensionOf(file: File): string {
   return file.name.includes(".") ? file.name.split(".").at(-1)!.toLowerCase() : "";
 }
 
+/** A headerless DAT without a matching MAT goes straight to the mapping form. */
+export function isUnmappedDatSelection(files: readonly File[]): boolean {
+  const dat = files.find((file) => extensionOf(file) === "dat");
+  return Boolean(dat && !files.some((file) => file.name.toLowerCase() === dat.name.toLowerCase().replace(/\.dat$/, ".mat")));
+}
+
 /**
  * Classify input shape using filenames only. A chosen folder format filters the
  * directory; without a choice, automatic detection must not discard recordings.
@@ -64,11 +70,11 @@ const KNOWN_FILE_EXTENSIONS = new Set([
 ]);
 
 function dropFailure(detail: string): Error {
-  return new Error(`${detail} Nothing was imported. Open Load recording, choose a recording type, then Files or Folder. Folder drops are accepted only after choosing Folder.`);
+  return new Error(`${detail} Nothing was imported. Open Load recording and choose Files or Folder.`);
 }
 
 function directoryDropFailure(): Error {
-  return new Error("Nothing was imported. Folder drops are only available inside Load recording after choosing a recording type, then Folder.");
+  return new Error("Nothing was imported. Folder drops are only available inside Load recording.");
 }
 
 function assertFallbackFile(file: File): void {

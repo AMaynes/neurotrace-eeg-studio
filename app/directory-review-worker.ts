@@ -14,7 +14,8 @@ export async function readDirectoryReviewMetadata(format: DirectoryImportFormat,
   }
   const metadata = await indexMatReviewEvents(file);
   if (!metadata.sampleRate || !metadata.channelCount) throw new Error("Acquisition rate/channel metadata is incomplete; open this recording to check it.");
-  return { ...metadata, durationSec: datBytes === undefined ? undefined : Math.floor(datBytes / (metadata.channelCount * 2)) / metadata.sampleRate,
+  return { events: metadata.events, sampleRate: metadata.sampleRate, channelCount: metadata.channelCount,
+    durationSec: datBytes === undefined ? undefined : Math.floor(datBytes / (metadata.channelCount * 2)) / metadata.sampleRate,
     warnings: metadata.warnings.filter(warning => !warning.startsWith("No sessionInfo.ChannelMat.Channel.Name")) };
 }
 

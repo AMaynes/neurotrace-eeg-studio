@@ -558,6 +558,11 @@ textarea:focus-visible {
 .candidate-review-actions .button.quiet:hover { border-color: #3e5552; background: #122321; }
 .candidate-review-actions .button:disabled { cursor: not-allowed; opacity: .38; }
 
+.directory-event-controls { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+.directory-event-controls label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.directory-event-controls input { width: min(190px, 35vw); height: 29px; padding: 4px 7px; color: var(--ink); background: #0d1b20; border: 1px solid var(--border-strong); border-radius: 4px; }
+.directory-event-controls .button { min-height: 29px; padding: 5px 9px; }
+.directory-event-progress { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overview-block { height: 62px; padding: 7px 12px 4px; border-bottom: 1px solid var(--border); background: #0a161b; }
 .overview-label { height: 13px; display: flex; align-items: center; justify-content: space-between; }
 .overview-label span { color: #637982; font-size: 7px; letter-spacing: .12em; font-weight: 750; }

@@ -1,5 +1,6 @@
-import { directoryReviewCache } from "../app/directory-review-resume.ts";
+import { directoryReviewCache, isReviewCsv, loadDirectoryReviewCsvs } from "../app/directory-review-resume.ts";
 import { recordingReferenceMatches } from "../app/local-recording-identity.ts";
+import { serializeMatlabAnnotations } from "../app/matlab-annotations-csv.ts";
 /** Execute the page's real handlers/effect with patient-free files and state spies. */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -8,7 +9,7 @@ import ts from "typescript";
 import { inspectMatRecording, RawDatSource } from "../app/eeg-core.ts";
 import { mergeSelectedFiles, relativeFilePath } from "../app/bids-companions.ts";
 import { DirectoryImportError, directoryRecordingFiles, planDirectoryImport } from "../app/directory-import.ts";
-import { classifyRecordingSelection, collectDroppedRecordingFiles } from "../app/import-selection.ts";
+import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "../app/import-selection.ts";
 import { adjacentDirectoryRecording } from "../app/directory-tab-layout.ts";
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "../app/mat-import.ts";
 import { legacyMatFile, standaloneMatFile } from "./fixtures/legacy-mat.mjs";
@@ -42,7 +43,7 @@ function executable(code, result, env) {
   return new Function(...Object.keys(env), `${javascript}\nreturn ${result};`)(...Object.values(env));
 }
 function handler(name, env, helpers = []) {
-  return executable([...helpers, name].map(declaration).join("\n"), name, { directoryReviewCache, ...env });
+  return executable([...helpers, name].map(declaration).join("\n"), name, { directoryReviewCache, isReviewCsv, loadDirectoryReviewCsvs, ...env });
 }
 function state(env, key, initial) {
   env[key] = initial;
@@ -66,18 +67,19 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function stageHarness(format = null) {
   const calls = [];
-  const env = { importBusyRef: { current: false }, DirectoryImportError, classifyRecordingSelection,
+  const env = { importBusyRef: { current: false }, DirectoryImportError, classifyRecordingSelection, isUnmappedDatSelection,
     directoryConfirmationRef: { current: { stale: true } },
     handleUploadedFiles: async (files) => { calls.push(files); } };
   state(env, "importChoice", format);
   state(env, "stagedDirectoryPlan", { stale: true });
+  state(env, "stagedImportFiles", []);
   state(env, "uploadError", { stale: true });
   state(env, "pendingDat", { stale: true });
   state(env, "showImport", false);
   return {
     env, calls,
-    async stage(files, fromDirectory = true, selectedFormat = null) {
-      await handler("handleSelectedRecordingFiles", env)(files, fromDirectory, selectedFormat);
+    async stage(files, fromDirectory = true, selectedFormat = null, confirmSelection = false) {
+      await handler("handleSelectedRecordingFiles", env)(files, fromDirectory, selectedFormat, confirmSelection);
     },
   };
 }
@@ -90,7 +92,7 @@ test("directory selection auto-detects format and every nested session without o
   assert.deepEqual(new Set(h.env.stagedDirectoryPlan.recordings.map((item) => item.primary)), new Set(files.slice(0, 2)));
   assert.deepEqual(h.env.stagedDirectoryPlan.supportingFiles, [files[2]]);
   assert.equal(h.env.uploadError, null);
-  assert.equal(h.env.importChoice, "edf");
+  assert.equal(h.env.stagedDirectoryPlan.format, "edf");
   assert.equal(h.env.pendingDat, null);
   assert.equal(h.env.directoryConfirmationRef.current, null);
   assert.equal(h.env.showImport, true);
@@ -110,7 +112,7 @@ test("mixed-directory rejection clears stale staged plans", async () => {
 test("automatic detection without an explicit folder format does not reuse stale manual choices", async () => {
   const h = stageHarness("neurotrace");
   await h.stage([unreadableFile("root/session.mat"), unreadableFile("root/session.dat")]);
-  assert.equal(h.env.importChoice, "mat-dat");
+  assert.equal(h.env.importChoice, "neurotrace", "auto-detection does not change the optional format filter");
   assert.equal(h.env.stagedDirectoryPlan.format, "mat-dat");
   assert.equal(h.env.uploadError, null);
   assert.deepEqual(h.calls, []);
@@ -151,7 +153,7 @@ test("selecting multiple loose recordings also stages a lazy auto-detected colle
   const files = [new File([new Uint8Array(256)], "a.edf"), new File([new Uint8Array(256)], "b.edf")];
   await h.stage(files, false);
   assert.equal(h.env.stagedDirectoryPlan.recordings.length, 2);
-  assert.equal(h.env.importChoice, "edf");
+  assert.equal(h.env.stagedDirectoryPlan.format, "edf");
   assert.deepEqual(h.calls, []);
 });
 
@@ -297,8 +299,14 @@ test("failed drop discovery clears stale selections and reports an error without
   assert.equal(h.env.importBusyRef.current, false);
 });
 
-test("loading a directory installs only the catalogue, preserving lazy recording imports", async () => {
-  const plan = planDirectoryImport([unreadableFile("root/a.edf"), unreadableFile("root/b.edf")], "edf");
+test("confirming a directory opens its first recording without displaying a second chooser", async () => {
+  const saved = serializeMatlabAnnotations([{
+    mat_path: "", data_dir: "root", dat_file: "a", event_label: "Seizure", event_time_original_sec: 10,
+    onset_offset_sec: -1, onset_time_adjusted_sec: 9, offset_offset_sec: 3, offset_time_adjusted_sec: 13,
+    sampling_rate: 100, n_channels: 2, bad_channels: "", review_timestamp: "2026-11-16 12:00:00", accepted: 1,
+  }]);
+  const plan = { ...planDirectoryImport([unreadableFile("root/a.edf"), unreadableFile("root/b.edf"),
+    fileAt("root/root_QA_annotations.csv", saved)], "edf"), eventKeywordFilter: "seizure" };
   const tabs = new Map([["stale-recording", { sessionId: "old" }]]);
   const previous = { sessions: tabs, statuses: { "stale-recording": { state: "loaded" } } };
   const env = {
@@ -308,10 +316,17 @@ test("loading a directory installs only the catalogue, preserving lazy recording
     directoryCatalogIdRef: { current: "old" }, directorySessionTabsRef: { current: tabs },
     directoryCatalogWorkspacesRef: { current: new Map([["old", previous]]) },
     directoryConfirmationRef: { current: { stale: true } }, makeId: () => "new-directory",
-    handleUploadedFiles: () => assert.fail("cataloguing must not import any recording"),
+    openDirectoryRecording: (recording, options) => {
+      assert.equal(recording, plan.recordings[0]);
+      assert.equal(options.catalog.plan, plan);
+      assert.equal(env.showImport, false);
+      assert.equal(env.directoryEventQuery, "seizure");
+      assert.equal(Number(directoryReviewCache(plan).byRecording.get(recording.id)[0].event_time_original_sec), 10);
+    },
   };
   for (const [key, value] of Object.entries({ directoryStatuses: { stale: true }, directoryCatalog: null,
-    directoryCatalogs: [{ id: "old", plan }], showImport: true, showDirectorySessions: false, toast: "", stagedDirectoryPlan: plan })) state(env, key, value);
+    directoryCatalogs: [{ id: "old", plan }], showImport: true, showDirectorySessions: false,
+    importBusy: false, directoryEventQuery: "", toast: "", stagedDirectoryPlan: plan })) state(env, key, value);
   await handler("submitGuidedImport", env)();
   assert.equal(env.directoryCatalog.plan, plan);
   assert.equal(env.directoryCatalog.id, "new-directory");
@@ -324,7 +339,7 @@ test("loading a directory installs only the catalogue, preserving lazy recording
   assert.deepEqual(env.directoryStatuses, {});
   assert.equal(env.stagedDirectoryPlan, null);
   assert.equal(env.showImport, false);
-  assert.equal(env.showDirectorySessions, true);
+  assert.equal(env.showDirectorySessions, false);
 });
 
 test("collection submit cannot run without a staged plan or while another import is busy", async () => {
@@ -450,6 +465,11 @@ test("different catalogs retain independent mappings and statuses even for ident
   h.env.guidedImportReady = true;
   h.env.makeId = () => "second-catalog";
   state(h.env, "stagedDirectoryPlan", secondPlan);
+  state(h.env, "directoryEventQuery", "");
+  h.env.openDirectoryRecording = (recording, { catalog }) => {
+    assert.equal(recording, secondPlan.recordings[0]);
+    assert.equal(catalog.id, "second-catalog");
+  };
   await handler("submitGuidedImport", h.env)();
   const newWorkspace = h.env.directoryCatalogWorkspacesRef.current.get("second-catalog");
   assert.equal(oldWorkspace.sessions.get(h.plan.recordings[0].id).sessionId, "new-tab");
@@ -876,7 +896,8 @@ function importHarness(overrides = {}) {
   const contexts = [];
   const env = {
     importBusyRef: { current: false }, hasRecording: false, primaryFile: null,
-    relativeFilePath, mergeSelectedFiles, pendingFilesForSelection, MatDatImportError, resolveMatDatImport, inspectMatRecording,
+    relativeFilePath, mergeSelectedFiles, pendingFilesForSelection, MatDatImportError, resolveMatDatImport, inspectMatRecording, RawDatSource,
+    pendingProjectImportRef: { current: null }, setCandidates() {}, setActiveCandidate() {},
     measureLocalFileDecode: (_file, _label, callback) => callback(), console: { info() {} },
     prepareSourceImportContext: async (source, primary, files) => { contexts.push({ source, primary, files }); return {}; },
     loadSource: async (source, primary, _interpretation, _context, keepSeparateSession) => {
@@ -887,6 +908,7 @@ function importHarness(overrides = {}) {
     uploadedFileInputs: [], pendingImportFiles: [], pendingDat: null, pendingLegacyMatFile: null, pendingLegacyMeta: null,
     legacyExportHints: null, selectedLegacyEventIndices: new Set(), datMapping: null, datChannelNamesText: "" })) state(env, key, value);
   Object.assign(env, overrides);
+  env.openMappedDat = handler("openMappedDat", env, ["portablePathParts", "isLegacySeizureCandidate", "LEGACY_SEIZURE_EVENT_TERMS"]);
   return { env, loaded, contexts, run: (files, expected, keepSeparateSession) => handler("importFiles", env, importHelpers)(files, expected, keepSeparateSession) };
 }
 
@@ -1047,7 +1069,7 @@ test("uploaded-file routing forwards project isolation and returns the actual lo
     state(env, "importBusy", false);
     const result = await handler("handleUploadedFiles", env, ["SUPPORTED_RECORDING_EXTENSIONS", "recordingExtension"])([file], true);
     assert.equal(result, status);
-    assert.deepEqual(calls, extension === "neurotrace" ? [[file, true]] : [[[file], undefined, true]]);
+    assert.deepEqual(calls, extension === "neurotrace" ? [[file, true]] : [[[file], undefined, true, undefined, false]]);
     assert.equal(env.directoryConfirmationRef.current, null);
   }
 });
@@ -1071,7 +1093,7 @@ test("custom-tool parsing holds the busy guard until the recording importer take
       imports += 1;
       assert.equal(env.importBusyRef.current, false, "the importer can acquire its own guard");
       assert.equal(env.importBusy, false);
-      assert.deepEqual(args, [[file], undefined, true]);
+      assert.deepEqual(args, [[file], undefined, true, undefined, false]);
       return status;
     },
   };
@@ -1174,16 +1196,22 @@ test("matching standalone MAT directory import opens the decoded signal without 
   assert.deepEqual((await h.loaded[0].source.getWindow(0, 1)).data.map((values) => [...values]), [[1, 2, 3, 4], [10, 20, 30, 40]]);
 });
 
-test("matching legacy directory pair retains metadata and requires mapping confirmation, without loading the DAT", async () => {
-  const mat = legacyMatFile({ sampleRate: 250, channelCount: 2, labels: ["SYN2", "SYN1"] });
+test("fully mapped directory pairs open directly while incomplete pairs wait for mapping", async () => {
   const dat = unreadableFile("synthetic.dat");
-  const h = importHarness();
-  assert.deepEqual(await h.run([mat, dat], "mat-dat"), { state: "confirmation" });
-  assert.equal(h.env.pendingDat, dat);
-  assert.equal(h.env.pendingLegacyMatFile, mat);
-  assert.deepEqual(h.env.datMapping, { sampleRate: 250, channelCount: 2, physicalScale: "" });
-  assert.equal(h.env.datChannelNamesText, "SYN2\nSYN1");
-  assert.equal(h.loaded.length, 0);
+  const valid = importHarness();
+  const mat = legacyMatFile({ sampleRate: 250, channelCount: 2, labels: ["SYN2", "SYN1"] });
+  assert.deepEqual(await valid.run([mat, dat], "mat-dat"), { state: "loaded" });
+  assert.equal(valid.env.pendingDat, null);
+  assert.equal(valid.loaded[0].primary, dat);
+  assert.equal(valid.loaded[0].keepSeparateSession, true);
+  assert.deepEqual(valid.loaded[0].source.meta.channelLabels, ["SYN2", "SYN1"]);
+  const incomplete = importHarness();
+  const unknown = legacyMatFile({ sampleRate: null, channelCount: 2, labels: ["SYN2", "SYN1"] });
+  assert.deepEqual(await incomplete.run([unknown, dat], "mat-dat"), { state: "confirmation" });
+  assert.equal(incomplete.env.pendingDat, dat);
+  assert.equal(incomplete.env.pendingLegacyMatFile, unknown);
+  assert.match(incomplete.env.uploadError.message, /sample_rate/);
+  assert.equal(incomplete.loaded.length, 0);
 });
 
 test("format-constrained imports reject EDF/MAT family mismatches before decoding", async () => {
@@ -1280,7 +1308,7 @@ test("confirmed DAT mapping updates its directory status only after a successful
   };
   for (const [key, value] of Object.entries({ uploadError: null, importBusy: false, pendingDat: env.pendingDat,
     pendingLegacyMatFile: null, pendingLegacyMeta: null, pendingImportFiles: [], selectedLegacyEventIndices: new Set(), legacyExportHints: env.legacyExportHints })) state(env, key, value);
-  await handler("confirmDatImport", env, ["portablePathParts"])();
+  await handler("confirmDatImport", env, ["portablePathParts", "openMappedDat"])();
   assert.deepEqual(statuses, [[request, { state: "loaded" }]]);
   assert.equal(env.directoryConfirmationRef.current, null);
   assert.equal(env.pendingDat, null);

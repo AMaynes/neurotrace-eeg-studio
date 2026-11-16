@@ -173,7 +173,7 @@ test("folder roots reject by default before any file callback or directory trave
   const forbiddenFolder = { name: "study", isFile: false, isDirectory: true,
     createReader() { assert.fail("a rejected selection must not enumerate a folder"); } };
   for (const entries of [[forbiddenFolder], [forbiddenFile, forbiddenFolder], [forbiddenFolder, forbiddenFile]]) {
-    await assert.rejects(collectDroppedRecordingFiles(dropEntries(entries)), /Nothing was imported.*inside Load recording.*recording type, then Folder/);
+    await assert.rejects(collectDroppedRecordingFiles(dropEntries(entries)), /Nothing was imported.*inside Load recording/);
     await assert.rejects(collectDroppedRecordingFiles(dropEntries(entries), { allowDirectories: false }), /Folder drops/);
   }
 });
@@ -259,7 +259,7 @@ test("mixed available entries and plain-file fallbacks do not lose either input"
 });
 test("uninspectable directory-like drops give actionable chooser guidance", async () => {
   const directoryLike = new File([], "study");
-  await assert.rejects(collectDroppedRecordingFiles({ files: [directoryLike], items: [] }), /Nothing was imported.*Load recording.*recording type.*Files or Folder.*only after choosing Folder/);
+  await assert.rejects(collectDroppedRecordingFiles({ files: [directoryLike], items: [] }), /Nothing was imported.*Load recording.*Files or Folder/);
 });
 test("a reader failure rejects the complete drop, never returning the preceding partial batch", async () => {
   let reads = 0;

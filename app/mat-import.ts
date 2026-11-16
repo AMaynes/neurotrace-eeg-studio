@@ -66,11 +66,10 @@ export function legacyMetadataIssue(metadata: LegacyMatMetadata): string | null 
   const issues: string[] = [];
   if (metadata.sampleRate === undefined) issues.push("sessionInfo.sFile.header.sample_rate is missing or is not a positive real scalar.");
   if (metadata.channelCount === undefined) issues.push("sessionInfo.sFile.header.num_channels is missing or is not a positive whole-number scalar.");
-  if (metadata.channelCount !== undefined && metadata.channelEntryCount !== undefined && metadata.channelEntryCount !== metadata.channelCount) {
+  if (metadata.channelCount !== undefined && metadata.channelEntryCount && metadata.channelEntryCount !== metadata.channelCount) {
     issues.push(`Legacy EEG MAT metadata reports ${metadata.channelCount} channels but sessionInfo.ChannelMat.Channel contains ${metadata.channelEntryCount} entries.`);
   }
-  if (!metadata.channelLabels.length) issues.push("sessionInfo.ChannelMat.Channel.Name contains no channel names.");
-  else if (metadata.channelCount !== undefined && metadata.channelLabels.length !== metadata.channelCount) {
+  if (metadata.channelCount !== undefined && metadata.channelLabels.length && metadata.channelLabels.length !== metadata.channelCount) {
     issues.push(`Legacy EEG MAT metadata reports ${metadata.channelCount} channels but ${metadata.channelLabels.length} channel labels were found.`);
   }
   return issues.length ? `${issues.join(" ")} Correct and confirm the DAT mapping before opening.` : null;

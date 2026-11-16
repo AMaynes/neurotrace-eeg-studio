@@ -21,6 +21,7 @@ export interface DirectoryImportPlan {
   recordings: DirectoryRecording[];
   /** Keep the original filename namespace when matching saved reviews. */
   unfilteredRecordings?: readonly DirectoryRecording[];
+  eventKeywordFilter?: string;
   /** Shared once, avoiding one full companion-file array per recording. */
   supportingFiles: File[];
 }

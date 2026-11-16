@@ -65,10 +65,12 @@ import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from
 import { DirectoryImportError, directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
 import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
 import { DirectoryImportFilters } from "./directory-import-filters";
-import { addDirectoryReviewRows, directoryReviewCache, indexReviewRows, reviewRowMatches } from "./directory-review-resume";
+import { addDirectoryReviewRows, directoryReviewCache, indexReviewRows, isReviewCsv, loadDirectoryReviewCsvs, reviewRowMatches } from "./directory-review-resume";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { SessionTabTitle } from "./session-tab-title";
-import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./import-selection";
+import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "./import-selection";
+import { findNextDirectoryEvent, nextTimedEvent } from "./directory-event-client";
+import type { DirectoryTimedEvent } from "./directory-event-index";
 import { edfRecordingLabels, mergeRecordingLabels, recordingLabelAnnotations, validRecordingLabel, type RecordingLabel } from "./recording-labels";
 import { annotationLabelTypeKey, collectLabelTypes, recordingLabelTypeKey } from "./label-visibility";
 import { LabelVisibilityFilter } from "./label-visibility-filter";
@@ -317,6 +319,8 @@ type ImportChoice = "edf" | "mat" | "mat-dat" | "neurotrace";
 
 type DirectoryOpenRequest = {
   csvReviewRows?: MatlabAnnotationRow[];
+  event?: DirectoryTimedEvent;
+  incompleteEventChecks?: number;
   catalogId: string;
   recordingId: string;
   sessionId: string;
@@ -329,6 +333,7 @@ type DirectoryCatalog = { id: string; plan: DirectoryImportPlan };
 type DirectoryCatalogWorkspace = {
   sessions: Map<string, { sessionId: string; files: File[] }>;
   statuses: Record<string, DirectorySessionStatus>;
+  eventRecovery?: Map<string, { key: string; duration: number; channelCount: number }>;
 };
 
 type ProjectSavePicker = (options: {
@@ -554,6 +559,15 @@ function annotationLabel(annotation: Annotation): LabelDefinition | undefined {
   return definition && annotation.labelId === "recording-label" && annotation.recordingLabel
     ? { ...definition, name: annotation.recordingLabel.label, short: annotation.recordingLabel.label }
     : definition;
+}
+
+function timedNavigationEvents(annotations: readonly Annotation[], candidates: readonly Candidate[], duration: number): DirectoryTimedEvent[] {
+  const events = candidates.map(({ label, time }) => ({ label, timeSec: time }));
+  for (const item of annotations) {
+    if (annotationGeometry(item) === "session") continue;
+    events.push({ label: annotationLabel(item)?.name ?? item.labelId, timeSec: item.start });
+  }
+  return events.filter(({ timeSec }) => timeSec >= 0 && timeSec < duration);
 }
 
 function detectedRecordingLabels(source: SignalSource): readonly RecordingLabel[] {
@@ -2102,9 +2116,13 @@ export default function Home() {
   const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
   const [showImport, setShowImportOpen] = useState(false);
   const [importPickerKind, setImportPickerKind] = useState<"files" | "directory" | null>(null);
+  const [stagedImportFiles, setStagedImportFiles] = useState<File[]>([]);
   const setShowImport = useCallback((open: boolean) => {
     setShowImportOpen(open);
-    if (!open) setImportPickerKind(null);
+    if (!open) {
+      setImportPickerKind(null);
+      setStagedImportFiles([]);
+    }
   }, []);
   const [stagedDirectoryPlan, setStagedDirectoryPlan] = useState<DirectoryImportPlan | null>(null);
   const [directoryCatalog, setDirectoryCatalog] = useState<DirectoryCatalog | null>(null);
@@ -2112,6 +2130,18 @@ export default function Home() {
   const [showDirectorySessions, setShowDirectorySessions] = useState(false);
   const [directoryStatuses, setDirectoryStatuses] = useState<Record<string, DirectorySessionStatus>>({});
   const [queuedDirectoryOpen, setQueuedDirectoryOpen] = useState<DirectoryOpenRequest | null>(null);
+  const [directoryEventQuery, setDirectoryEventQuery] = useState("");
+  const [directoryEventProgress, setDirectoryEventProgress] = useState<string | null>(null);
+  const directoryEventScanRef = useRef<AbortController | null>(null);
+  const [directoryEventArrival, setDirectoryEventArrival] = useState<{ sessionId: string; event: DirectoryTimedEvent; incomplete?: number } | null>(null);
+  const cancelDirectoryEventSearch = useCallback(() => {
+    const controller = directoryEventScanRef.current;
+    if (!controller) return;
+    directoryEventScanRef.current = null;
+    controller.abort();
+    setDirectoryEventProgress(null);
+  }, []);
+  useEffect(() => cancelDirectoryEventSearch, [activeSessionId, cancelDirectoryEventSearch, sessionKey]);
   const directoryHeaders = useMemo(() => directoryTabHeaders(sessionTabs, directoryCatalogs), [sessionTabs, directoryCatalogs]);
   useEffect(() => {
     document.querySelector<HTMLElement>(`[data-session-tab="${activeSessionId}"]`)
@@ -2478,7 +2508,8 @@ export default function Home() {
       redo: redoRef.current,
     };
     if (snapshot.hasRecording && !sourceVerificationRef.current) {
-      const group = sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId ?? snapshot.sessionKey;
+      const tab = sessionTabs.find((tab) => tab.id === activeSessionId);
+      const group = tab?.directoryId ?? snapshot.sessionKey;
       matlabCsvCacheRef.current.update(snapshot.sessionKey, group, matlabAnnotationRows({
         ...snapshot, sourcePath: snapshot.primaryFile ? relativeFilePath(snapshot.primaryFile) : undefined,
       }));
@@ -2495,6 +2526,13 @@ export default function Home() {
           savedAt: new Date().toISOString(),
         }));
         snapshot.recoveryStatus = "saved";
+        const workspace = tab?.directoryId && directoryCatalogWorkspacesRef.current.get(tab.directoryId);
+        if (workspace && tab?.directoryRecordingId && snapshot.recordingLabelsImported) {
+          workspace.eventRecovery ??= new Map();
+          workspace.eventRecovery.set(tab.directoryRecordingId, {
+            key: snapshot.sessionKey, duration: snapshot.meta.durationSec, channelCount: snapshot.meta.channelCount,
+          });
+        }
       } catch {
         snapshot.recoveryStatus = "error";
       }
@@ -2598,6 +2636,7 @@ export default function Home() {
     annotationSelectionRef.current = null;
     dragAnnotationRef.current = null;
     pendingAnnotationDragRef.current = null;
+    setDirectoryEventArrival(null);
     setPendingDat(null);
     setPendingLegacyMatFile(null);
     setPendingLegacyMeta(null);
@@ -5572,6 +5611,54 @@ export default function Home() {
     jumpTo(candidates[index].time);
   }, [candidates, jumpTo]);
 
+  const jumpToDirectoryEvent = useCallback((event: DirectoryTimedEvent, incomplete = 0) => {
+    const duration = sourceRef.current.meta.durationSec;
+    if (!Number.isFinite(event.timeSec) || event.timeSec < 0 || event.timeSec >= duration) {
+      setToast("This event falls outside the recording.");
+      return;
+    }
+    const matches = (label: string, time: number) => label === event.label && Math.abs(time - event.timeSec) < 1e-6;
+    const index = candidatesRef.current.findIndex((candidate) => matches(candidate.label, candidate.time));
+    if (index >= 0) {
+      setActiveCandidate(index);
+      setCandidates((current) => current.map((candidate, candidateIndex) => {
+        if (candidateIndex === index && candidate.status === "queued") return { ...candidate, status: "active" };
+        if (candidateIndex !== index && candidate.status === "active") return { ...candidate, status: "queued" };
+        return candidate;
+      }));
+    }
+    const label = annotationsRef.current.find((item) => matches(annotationLabel(item)?.name ?? item.labelId, item.start));
+    setSelectedAnnotationId(label?.id ?? null);
+    setSelectedAnnotationIds(new Set(label ? [label.id] : []));
+    setPlaying(false);
+    setSelection(null);
+    setInspectionRange(null);
+    setMarkOnset(null);
+    setActiveTool("cursor");
+    pendingEdfReviewNavigationRef.current = null;
+    const window = zoomViewRef.current.timebase;
+    commitViewStart(clamp(event.timeSec - window / 2, 0, Math.max(0, duration - window)));
+    setCursorTime(event.timeSec);
+    setCursorLocked(true);
+    setToast(`${event.label} · ${formatClock(event.timeSec, true)}${incomplete ? " · Some recordings could not be fully checked" : ""}`);
+  }, [commitViewStart]);
+
+  useEffect(() => {
+    if (!directoryEventArrival || directoryEventArrival.sessionId !== activeSessionId
+      || !hasRecording || verifyingSource || importBusy) return;
+    const source = sourceRef.current;
+    let canceled = false;
+    const arrive = async () => {
+      if (source instanceof EDFSource) await source.loadAnnotations().catch(() => undefined);
+      if (canceled || source !== sourceRef.current) return;
+      jumpToDirectoryEvent(directoryEventArrival.event, directoryEventArrival.incomplete);
+      setDirectoryEventArrival(null);
+    };
+    // Let the incoming tab publish its restored view and candidates first.
+    const frame = window.requestAnimationFrame(() => void arrive());
+    return () => { canceled = true; window.cancelAnimationFrame(frame); };
+  }, [activeSessionId, directoryEventArrival, hasRecording, importBusy, jumpToDirectoryEvent, verifyingSource]);
+
   const updateActiveCandidateReview = useCallback((patch: Partial<Pick<Candidate, "ictalChannels" | "badChannels" | "legacyConfidence" | "confidence">>) => {
     if (!activeCandidateItem || ["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)) return;
     setCandidates((items) => items.map((item) => item.id === activeCandidateItem.id ? { ...item, ...patch } : item));
@@ -6101,12 +6188,140 @@ export default function Home() {
     }
   }, [commitViewStart]);
 
-  const importFiles = async (files: File[], expectedFormat?: DirectoryImportFormat, keepSeparateSession = false, csvReviewRows?: MatlabAnnotationRow[]): Promise<DirectorySessionStatus | undefined> => {
+  const openMappedDat = async ({
+    pendingDat, pendingLegacyMatFile, pendingLegacyMeta, datMapping, channelLabels, pendingImportFiles,
+    legacyExportHints, selectedLegacyEventIndices, keepSeparateSession, csvReviewRows,
+  }: {
+    pendingDat: File;
+    pendingLegacyMatFile: File | null;
+    pendingLegacyMeta: LegacyMatMetadata | null;
+    datMapping: { sampleRate: number; channelCount: number; physicalScale: number | "" };
+    channelLabels: string[];
+    pendingImportFiles: File[];
+    legacyExportHints: MatlabExportIdentity;
+    selectedLegacyEventIndices: ReadonlySet<number>;
+    keepSeparateSession: boolean;
+    csvReviewRows?: MatlabAnnotationRow[];
+  }) => {
+    const companionPath = portablePathParts(pendingLegacyMatFile?.webkitRelativePath || pendingLegacyMatFile?.name || "");
+    const datPath = portablePathParts(pendingDat.webkitRelativePath || pendingDat.name);
+    const verifiedPhysicalScale = datMapping.physicalScale === "" ? undefined : datMapping.physicalScale;
+    const source = await RawDatSource.create(pendingDat, {
+      sampleRate: datMapping.sampleRate,
+      channelCount: datMapping.channelCount,
+      physicalScale: verifiedPhysicalScale,
+      channelLabels: channelLabels.length ? channelLabels : undefined,
+      recordingLabels: pendingLegacyMeta?.recordingLabels,
+      channelUnits: verifiedPhysicalScale === undefined ? "ADC count" : "µV",
+      warnings: [
+        ...(pendingLegacyMeta?.warnings ?? []),
+        verifiedPhysicalScale === undefined
+          ? "No physical calibration was supplied; display sensitivity follows the MATLAB reviewer's 15,000-count row spacing."
+          : "Physical scale is reviewer-confirmed mapping metadata; the headerless DAT does not encode calibration.",
+      ],
+      assumptions: [
+        `confirmed sample rate ${datMapping.sampleRate} Hz`,
+        `confirmed channel count ${datMapping.channelCount}`,
+        verifiedPhysicalScale === undefined
+          ? "unscaled signed int16 ADC counts"
+          : `confirmed physical scale ${verifiedPhysicalScale} µV/count`,
+      ],
+    });
+    const interpretation = {
+      kind: "raw-int16-le",
+      companion_mat_sha256: null,
+      companion_mat_name: pendingLegacyMatFile?.name ?? null,
+      companion_mat_path: legacyExportHints.matPath.trim() || companionPath.path || null,
+      dat_file_name: pendingDat.name,
+      dat_file_base: legacyExportHints.datFile.trim() || datPath.fileName.replace(/\.dat$/i, ""),
+      data_dir_hint: legacyExportHints.dataDirectory.trim() || datPath.directory || companionPath.directory || null,
+      patient_id_hint: legacyExportHints.patientId.trim() || datPath.topDirectory || companionPath.topDirectory || null,
+      sample_rate_hz: datMapping.sampleRate,
+      channel_count: datMapping.channelCount,
+      // Preserve existing recovery keys unless names were manually supplied or changed.
+      ...((channelLabels.length || pendingLegacyMeta?.channelLabels.length) && JSON.stringify(source.meta.channelLabels) !== JSON.stringify(pendingLegacyMeta?.channelLabels)
+        ? { channel_labels: [...source.meta.channelLabels] } : {}),
+      physical_scale_uv_per_count: verifiedPhysicalScale ?? null,
+      display_amplitude_mode: verifiedPhysicalScale === undefined ? "legacy-raw-counts" : "calibrated-microvolts",
+      layout: "sample-major channel-interleaved signed int16 little-endian",
+    };
+    const importContext = await prepareSourceImportContext(
+      source,
+      pendingDat,
+      pendingImportFiles.length
+        ? pendingImportFiles
+        : [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null),
+    );
+    importContext.companionMatFile = pendingLegacyMatFile ?? undefined;
+    importContext.csvReviewRows = csvReviewRows;
+    const opened = await loadSource(source, pendingDat, interpretation, importContext, keepSeparateSession);
+    if (!opened) return false;
+    if (pendingLegacyMeta?.events.length && datMapping.channelCount >= 100) {
+      const importedCandidates = pendingLegacyMeta.events
+        .map((event, sourceIndex) => ({ event, sourceIndex }))
+        .filter(({ event }) => isLegacySeizureCandidate(event.label))
+        .filter(({ event }) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
+        .map((entry, candidateIndex) => ({ ...entry, candidateIndex }))
+        .filter(({ sourceIndex }) => selectedLegacyEventIndices.has(sourceIndex))
+        .map(({ event, candidateIndex }): Candidate => ({
+          id: `cand-${candidateIndex}-${Math.round(event.timeSec * 1000)}`,
+          time: event.timeSec,
+          label: event.label,
+          source: "bronze",
+          status: "queued",
+          confidence: 0,
+          ictalChannels: "",
+          legacyConfidence: "",
+          reviewerInitials: "",
+        }));
+      let queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
+      if (csvReviewRows?.length) {
+        const resumed = restoreCsvCandidateReviews(queue.candidates, annotationsRef.current, csvReviewRows, source.meta);
+        queue = resumed;
+        annotationsRef.current = resumed.annotations;
+        setAnnotations(resumed.annotations);
+      }
+      if (queue.candidates.length) {
+        const resumeCandidate = queue.candidates[queue.activeIndex];
+        setCandidates(queue.candidates);
+        setActiveCandidate(queue.activeIndex);
+        commitViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
+        setCursorTime(resumeCandidate.time);
+        setCursorLocked(true);
+        setToast(importedCandidates.length
+          ? `Ready to review ${importedCandidates.length} selected seizure-source event${importedCandidates.length === 1 ? "" : "s"}`
+          : `No new source events selected · preserved ${queue.candidates.length} prior decision record${queue.candidates.length === 1 ? "" : "s"}`);
+      } else {
+        setCandidates([]);
+        setActiveCandidate(0);
+        setToast("Recording opened, but no selected seizure-keyword events remain to review");
+      }
+    } else if (pendingLegacyMeta && datMapping.channelCount < 100) {
+      setCandidates([]);
+      setActiveCandidate(0);
+      setToast(`${source.recordingLabels.length} recording labels detected · the separate MATLAB seizure review requires 100 channels`);
+    }
+    if (pendingProjectImportRef.current) {
+      const project = pendingProjectImportRef.current;
+      applyImportedProjectState(project);
+      pendingProjectImportRef.current = null;
+      setToast(`Opened ${project.manifest.title} from a NeuroTrace project`);
+    }
+    setPendingDat(null);
+    setPendingLegacyMatFile(null);
+    setPendingLegacyMeta(null);
+    setPendingImportFiles([]);
+    setSelectedLegacyEventIndices(new Set());
+    setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
+    return true;
+  };
+
+  const importFiles = async (files: File[], expectedFormat?: DirectoryImportFormat, keepSeparateSession = false, csvReviewRows?: MatlabAnnotationRow[], editDatMapping = false): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
-    setShowImport(true);
     const selectionError = validateUploadSelection(files);
     setUploadError(selectionError);
     if (selectionError) {
+      setShowImport(true);
       setToast(selectionError.title);
       return { state: "error", message: selectionError.message };
     }
@@ -6212,19 +6427,32 @@ export default function Home() {
         const legacyMetadata = resolved.kind === "legacy-dat" ? resolved.metadata : null;
         const companionPath = portablePathParts(mat?.webkitRelativePath || mat?.name || "");
         const datPath = portablePathParts(dat.webkitRelativePath || dat.name);
-        setLegacyExportHints({
+        const exportHints = {
           patientId: datPath.topDirectory || companionPath.topDirectory,
           matPath: companionPath.path,
           dataDirectory: datPath.directory || companionPath.directory,
           datFile: datPath.fileName.replace(/\.dat$/i, ""),
-        });
-        setSelectedLegacyEventIndices(new Set(legacyMetadata?.events.flatMap((event, index) =>
-          isLegacySeizureCandidate(event.label) ? [index] : []) ?? []));
-        setDatMapping({
+        };
+        const selected = new Set(legacyMetadata?.events.flatMap((event, index) =>
+          isLegacySeizureCandidate(event.label) ? [index] : []) ?? []);
+        const mapping = {
           sampleRate: legacyMetadata?.sampleRate ?? 0,
           channelCount: legacyMetadata?.channelCount ?? 0,
-          physicalScale: "",
-        });
+          physicalScale: "" as const,
+        };
+        const channelLabels = legacyMetadata?.channelLabels.map((label, index) => label || `CH${String(index + 1).padStart(3, "0")}`) ?? [];
+        if (!editDatMapping && resolved.kind === "legacy-dat" && !resolved.metadataIssue && dat.size >= mapping.channelCount * 2
+          && dat.size % (mapping.channelCount * 2) === 0) {
+          const opened = await openMappedDat({
+            pendingDat: dat, pendingLegacyMatFile: mat, pendingLegacyMeta: legacyMetadata, datMapping: mapping,
+            channelLabels, pendingImportFiles: allFiles, legacyExportHints: exportHints, selectedLegacyEventIndices: selected,
+            keepSeparateSession: Boolean(expectedFormat) || keepSeparateSession, csvReviewRows,
+          });
+          return opened ? { state: "loaded" } : { state: "error", message: "The recording could not be opened." };
+        }
+        setLegacyExportHints(exportHints);
+        setSelectedLegacyEventIndices(selected);
+        setDatMapping(mapping);
         if (resolved.kind === "legacy-dat" && resolved.metadataIssue) {
           setUploadError({ title: "Legacy MAT metadata needs correction", message: resolved.metadataIssue, files: [resolved.mat.name] });
         } else if (resolved.kind === "raw-dat" && resolved.metadataError) {
@@ -6233,7 +6461,7 @@ export default function Home() {
         setPendingDat(dat);
         setPendingLegacyMatFile(mat ?? null);
         setPendingLegacyMeta(legacyMetadata);
-        setDatChannelNamesText(legacyMetadata?.channelLabels.map((label, index) => label || `CH${String(index + 1).padStart(3, "0")}`).join("\n") ?? "");
+        setDatChannelNamesText(channelLabels.join("\n"));
         setPendingImportFiles(allFiles);
         setShowImport(true);
         if (legacyMetadata) {
@@ -6267,7 +6495,13 @@ export default function Home() {
 
   const updateDirectoryStatus = useCallback((request: DirectoryOpenRequest, status: DirectorySessionStatus) => {
     if (!directoryCatalogWorkspacesRef.current.has(request.catalogId)) return;
-    if (status.state === "loaded") completeDirectoryReplacement(request.replaceSessionId);
+    if (status.state === "loaded") {
+      completeDirectoryReplacement(request.replaceSessionId);
+      if (request.event && request.sessionId === activeSessionIdRef.current) {
+        pendingEdfReviewNavigationRef.current = null;
+        setDirectoryEventArrival({ sessionId: request.sessionId, event: request.event, incomplete: request.incompleteEventChecks });
+      }
+    }
     const workspace = directoryCatalogWorkspacesRef.current.get(request.catalogId);
     if (!workspace) return;
     const statuses = { ...workspace.statuses, [request.recordingId]: status };
@@ -6292,12 +6526,12 @@ export default function Home() {
     });
   }, [activeSessionId, queuedDirectoryOpen, updateDirectoryStatus]);
 
-  const openDirectoryRecording = (recording: DirectoryRecording, options?: { catalog: DirectoryCatalog; replaceSessionId: string }) => {
+  const openDirectoryRecording = (recording: DirectoryRecording, options?: { catalog: DirectoryCatalog; replaceSessionId?: string; event?: DirectoryTimedEvent; incompleteEventChecks?: number }) => {
     const catalog = options?.catalog ?? directoryCatalog;
     if (!catalog || importBusyRef.current || queuedDirectoryOpenRef.current) return;
     const workspace = directoryCatalogWorkspacesRef.current.get(catalog.id);
     if (!workspace) return;
-    if (options) {
+    if (options?.replaceSessionId) {
       // Do not discard an unsaved review or another folder's viewed session.
       if (options.replaceSessionId !== activeSessionId || !hasRecording
         || sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId !== catalog.id) return;
@@ -6336,6 +6570,10 @@ export default function Home() {
         applySessionSnapshot(updated);
       } else switchSession(existingTab.id);
       if (existingTab.id !== options?.replaceSessionId) completeDirectoryReplacement(options?.replaceSessionId);
+      if (options?.event) {
+        setSessionTabs((current) => current.map((tab) => tab.id === existingTab.id ? { ...tab, contentView: "recording" } : tab));
+        setDirectoryEventArrival({ sessionId: existingTab.id, event: options.event, incomplete: options.incompleteEventChecks });
+      }
       setShowDirectorySessions(false);
       return;
     }
@@ -6368,7 +6606,9 @@ export default function Home() {
       csvReviewRows: directoryReviewCache(catalog.plan).byRecording.get(recording.id),
       format: catalog.plan.format,
       files: directoryRecordingFiles(catalog.plan, recording),
-      ...(options ? { replaceSessionId: options.replaceSessionId } : {}),
+      replaceSessionId: options?.replaceSessionId,
+      event: options?.event,
+      incompleteEventChecks: options?.incompleteEventChecks,
     };
     queuedDirectoryOpenRef.current = request;
     setQueuedDirectoryOpen(request);
@@ -6384,7 +6624,65 @@ export default function Home() {
     openDirectoryRecording(next, { catalog, replaceSessionId: activeSessionId });
   };
 
-  const handleUploadedFiles = async (files: File[], keepSeparateSession = false): Promise<DirectorySessionStatus | undefined> => {
+  const navigateDirectoryEvent = async () => {
+    if (directoryEventScanRef.current || directoryEventArrival || importBusyRef.current || queuedDirectoryOpenRef.current || pendingDat || !hasRecording) return;
+    const tab = sessionTabs.find((item) => item.id === activeSessionId);
+    const catalog = directoryCatalogs.find((item) => item.id === tab?.directoryId);
+    const workspace = catalog && directoryCatalogWorkspacesRef.current.get(catalog.id);
+    if (!catalog || !tab?.directoryRecordingId || !workspace) return;
+    const source = sourceRef.current;
+    const after = cursorLocked ? cursorTime : viewStartRef.current - 1e-9;
+    const query = directoryEventQuery.trim() || labelKeywords;
+    const controller = new AbortController();
+    directoryEventScanRef.current = controller;
+    setDirectoryEventProgress("Checking this recording…");
+    const current = () => !controller.signal.aborted && sourceRef.current === source
+      && activeSessionIdRef.current === tab.id && directoryCatalogWorkspacesRef.current.has(catalog.id)
+      && !importBusyRef.current && !queuedDirectoryOpenRef.current;
+    try {
+      let sourceEvents: readonly DirectoryTimedEvent[] = [];
+      if (source instanceof EDFSource && !recordingLabelsImportedRef.current) {
+        sourceEvents = await source.loadAnnotations();
+      }
+      if (!current()) return;
+      const next = nextTimedEvent([
+        ...timedNavigationEvents(annotationsRef.current, candidatesRef.current, source.meta.durationSec),
+        ...sourceEvents.filter(({ timeSec }) => timeSec < source.meta.durationSec),
+      ], query, after);
+      if (next) { jumpToDirectoryEvent(next); return; }
+      const { target, incomplete } = await findNextDirectoryEvent(catalog.plan, tab.directoryRecordingId, query,
+        controller.signal, (recording) => {
+          const entry = workspace.sessions.get(recording.id);
+          const saved = entry && sessionSnapshotsRef.current.get(entry.sessionId);
+          if (saved?.hasRecording && saved.recordingLabelsImported) {
+            return timedNavigationEvents(saved.annotations, saved.candidates, saved.meta.durationSec);
+          }
+          const recovery = workspace.eventRecovery?.get(recording.id);
+          if (!recovery) return undefined;
+          try {
+            const raw = localStorage.getItem(`neurotrace:project:${recovery.key}`);
+            if (!raw) return undefined;
+            const review = parseRecoveryProject(raw, recovery.duration, recovery.channelCount);
+            return timedNavigationEvents(review.annotations, review.candidates, recovery.duration);
+          } catch { return undefined; }
+        }, (path) => setDirectoryEventProgress(`Checking ${path}…`));
+      if (!current()) return;
+      if (target) openDirectoryRecording(target.recording, {
+        catalog, replaceSessionId: tab.id, event: target.event, incompleteEventChecks: incomplete,
+      });
+      else setToast(incomplete ? "No confirmed matching events. Some recordings could not be fully checked."
+        : "No more matching events in this folder.");
+    } catch (error) {
+      if (current()) setToast(error instanceof Error ? error.message : "Could not find the next event.");
+    } finally {
+      if (directoryEventScanRef.current === controller) {
+        directoryEventScanRef.current = null;
+        setDirectoryEventProgress(null);
+      }
+    }
+  };
+
+  const handleUploadedFiles = async (files: File[], keepSeparateSession = false, editDatMapping = false): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
     directoryConfirmationRef.current = null;
     const projectFile = files.find((file) => recordingExtension(file) === "neurotrace");
@@ -6411,7 +6709,7 @@ export default function Home() {
     }
     let result: DirectorySessionStatus | undefined;
     if (customImport.remainingFiles.length) {
-      result = await importFiles(customImport.remainingFiles, undefined, keepSeparateSession);
+      result = await importFiles(customImport.remainingFiles, undefined, keepSeparateSession, undefined, editDatMapping);
       if (customImport.assets.length) {
         setToast((current) => `${current} · ${customImport.assets.length} custom tool${customImport.assets.length === 1 ? "" : "s"} imported`);
       }
@@ -6430,17 +6728,21 @@ export default function Home() {
     return result;
   };
 
-  const handleSelectedRecordingFiles = async (files: File[], fromDirectory = false, selectedFormat: DirectoryImportFormat | null = null) => {
+  const handleSelectedRecordingFiles = async (files: File[], fromDirectory = false, selectedFormat: DirectoryImportFormat | null = null, confirmSelection = false) => {
     if (importBusyRef.current || (!files.length && !fromDirectory)) return;
     setStagedDirectoryPlan(null);
+    setStagedImportFiles([]);
     directoryConfirmationRef.current = null;
     setUploadError(null);
     try {
       const selection = classifyRecordingSelection(files, fromDirectory, selectedFormat);
       if (selection.kind === "directory") {
         setPendingDat(null);
-        setImportChoice(selection.plan.format);
         setStagedDirectoryPlan(selection.plan);
+        setShowImport(true);
+      } else if (confirmSelection && !isUnmappedDatSelection(selection.files)) {
+        setPendingDat(null);
+        setStagedImportFiles(selection.files);
         setShowImport(true);
       } else {
         await handleUploadedFiles(selection.files);
@@ -6460,7 +6762,7 @@ export default function Home() {
     const fromDirectory = Boolean(event.target.webkitdirectory);
     event.target.value = "";
     if (!files.length) return;
-    void handleSelectedRecordingFiles(files, fromDirectory, fromDirectory ? importChoice : null);
+    void handleSelectedRecordingFiles(files, fromDirectory, fromDirectory ? importChoice : null, true);
   };
 
   const handleDroppedRecordingFiles = async (transfer: DataTransfer, allowDirectories = false) => {
@@ -6476,7 +6778,7 @@ export default function Home() {
       setStagedDirectoryPlan(null);
       setUploadError({
         title: "Dropped files could not be read",
-        message: error instanceof Error ? error.message : "Drop individual files, or choose a recording type and Folder to drop a folder inside this dialog.",
+        message: error instanceof Error ? error.message : "Drop files or a folder into Load recordings.",
         files: [],
       });
       setShowImport(true);
@@ -6489,18 +6791,18 @@ export default function Home() {
 
   const chooseImportType = (choice: ImportChoice) => {
     if (importBusyRef.current) return;
-    setImportChoice(choice);
+    setImportChoice((current) => current === choice ? null : choice);
     setImportPickerKind(null);
   };
 
   const openImportPicker = (kind: "files" | "directory") => {
-    if (importBusyRef.current || !importChoice) return;
+    if (importBusyRef.current) return;
     const input = kind === "directory" ? guidedDirectoryInputRef.current : guidedFilesInputRef.current;
     if (!input) return;
     setImportPickerKind(kind);
     // Configure and open within this click, retaining the browser's user activation.
     // Do not clear an existing collection until replacement files are actually selected.
-    input.accept = kind === "directory" ? "" : importChoice === "mat-dat" ? ".mat,.dat" : `.${importChoice}`;
+    input.accept = kind === "directory" || !importChoice ? "" : importChoice === "mat-dat" ? ".mat,.dat" : `.${importChoice}`;
     input.multiple = true;
     input.value = "";
     input.click();
@@ -6627,8 +6929,8 @@ export default function Home() {
 
   useTutorialMilestones({
     scope: activeSessionId, stateKey: sessionKey, recording: hasRecording ? meta.id : null,
-    importOpen: showImport, importFormat: importChoice, filesReady: guidedImportReady || Boolean(pendingDat),
-    directoryFilesReady: guidedImportReady && importPickerKind === "directory",
+    importOpen: showImport, importFormat: importChoice, filesReady: guidedImportReady || Boolean(pendingDat) || stagedImportFiles.length > 0,
+    directoryFilesReady: guidedImportReady && importPickerKind !== "files",
     directoryListOpen: showDirectorySessions && Boolean(directoryCatalog), settingsOpen: showSettings, biasLocks,
     channelsOpen: showChannels, montage, gain, clamp: traceDisplayMode,
     groups: anatomicalGroups, playing, labelFilterOpen: showLabelVisibilityFilter, olderReviewOpen: olderReviews !== null,
@@ -6640,6 +6942,17 @@ export default function Home() {
 
   const submitGuidedImport = async (plan = stagedDirectoryPlan) => {
     if (!guidedImportReady || !plan?.recordings.length || importBusyRef.current || queuedDirectoryOpenRef.current) return;
+    const reviewFiles = plan.format === "neurotrace" ? [] : plan.supportingFiles.filter(isReviewCsv);
+    if (reviewFiles.length) {
+      importBusyRef.current = true;
+      setImportBusy(true);
+      try {
+        await loadDirectoryReviewCsvs(plan, reviewFiles);
+      } finally {
+        importBusyRef.current = false;
+        setImportBusy(false);
+      }
+    }
     const id = makeId("directory");
     const catalog = { id, plan };
     const workspace: DirectoryCatalogWorkspace = { sessions: new Map(), statuses: {} };
@@ -6650,10 +6963,10 @@ export default function Home() {
     setDirectoryStatuses(workspace.statuses);
     setDirectoryCatalogs((current) => [...current, catalog]);
     setDirectoryCatalog(catalog);
+    setDirectoryEventQuery(plan.eventKeywordFilter ?? "");
     setStagedDirectoryPlan(null);
     setShowImport(false);
-    setShowDirectorySessions(true);
-    setToast(`${plan.recordings.length} directory sessions ready — open any recording when needed`);
+    openDirectoryRecording(plan.recordings[0], { catalog });
   };
 
   const confirmDatImport = async () => {
@@ -6690,118 +7003,11 @@ export default function Home() {
     importBusyRef.current = true;
     setImportBusy(true);
     try {
-      const companionPath = portablePathParts(pendingLegacyMatFile?.webkitRelativePath || pendingLegacyMatFile?.name || "");
-      const datPath = portablePathParts(pendingDat.webkitRelativePath || pendingDat.name);
-      const verifiedPhysicalScale = datMapping.physicalScale === "" ? undefined : datMapping.physicalScale;
-      const source = await RawDatSource.create(pendingDat, {
-        sampleRate: datMapping.sampleRate,
-        channelCount: datMapping.channelCount,
-        physicalScale: verifiedPhysicalScale,
-        channelLabels: datChannelNames.labels.length ? datChannelNames.labels : undefined,
-        recordingLabels: pendingLegacyMeta?.recordingLabels,
-        channelUnits: verifiedPhysicalScale === undefined ? "ADC count" : "µV",
-        warnings: [
-          ...(pendingLegacyMeta?.warnings ?? []),
-          verifiedPhysicalScale === undefined
-            ? "No physical calibration was supplied; display sensitivity follows the MATLAB reviewer's 15,000-count row spacing."
-            : "Physical scale is reviewer-confirmed mapping metadata; the headerless DAT does not encode calibration.",
-        ],
-        assumptions: [
-          `confirmed sample rate ${datMapping.sampleRate} Hz`,
-          `confirmed channel count ${datMapping.channelCount}`,
-          verifiedPhysicalScale === undefined
-            ? "unscaled signed int16 ADC counts"
-            : `confirmed physical scale ${verifiedPhysicalScale} µV/count`,
-        ],
-      });
-      const interpretation = {
-        kind: "raw-int16-le",
-        companion_mat_sha256: null,
-        companion_mat_name: pendingLegacyMatFile?.name ?? null,
-        companion_mat_path: legacyExportHints.matPath.trim() || companionPath.path || null,
-        dat_file_name: pendingDat.name,
-        dat_file_base: legacyExportHints.datFile.trim() || datPath.fileName.replace(/\.dat$/i, ""),
-        data_dir_hint: legacyExportHints.dataDirectory.trim() || datPath.directory || companionPath.directory || null,
-        patient_id_hint: legacyExportHints.patientId.trim() || datPath.topDirectory || companionPath.topDirectory || null,
-        sample_rate_hz: datMapping.sampleRate,
-        channel_count: datMapping.channelCount,
-        // Preserve existing recovery keys unless names were manually supplied or changed.
-        ...((datChannelNames.labels.length || pendingLegacyMeta?.channelLabels.length) && JSON.stringify(source.meta.channelLabels) !== JSON.stringify(pendingLegacyMeta?.channelLabels)
-          ? { channel_labels: [...source.meta.channelLabels] } : {}),
-        physical_scale_uv_per_count: verifiedPhysicalScale ?? null,
-        display_amplitude_mode: verifiedPhysicalScale === undefined ? "legacy-raw-counts" : "calibrated-microvolts",
-        layout: "sample-major channel-interleaved signed int16 little-endian",
-      };
-      const importContext = await prepareSourceImportContext(
-        source,
-        pendingDat,
-        pendingImportFiles.length
-          ? pendingImportFiles
-          : [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null),
-      );
-      importContext.companionMatFile = pendingLegacyMatFile ?? undefined;
-      importContext.csvReviewRows = directoryRequest?.csvReviewRows;
-      const opened = await loadSource(source, pendingDat, interpretation, importContext, Boolean(directoryRequest));
-      if (!opened) return;
-      if (directoryRequest) updateDirectoryStatus(directoryRequest, { state: "loaded" });
-      directoryConfirmationRef.current = null;
-      if (pendingLegacyMeta?.events.length && datMapping.channelCount >= 100) {
-        const importedCandidates = pendingLegacyMeta.events
-          .map((event, sourceIndex) => ({ event, sourceIndex }))
-          .filter(({ event }) => isLegacySeizureCandidate(event.label))
-          .filter(({ event }) => event.timeSec >= 0 && event.timeSec < source.meta.durationSec)
-          .map((entry, candidateIndex) => ({ ...entry, candidateIndex }))
-          .filter(({ sourceIndex }) => selectedLegacyEventIndices.has(sourceIndex))
-          .map(({ event, candidateIndex }): Candidate => ({
-            id: `cand-${candidateIndex}-${Math.round(event.timeSec * 1000)}`,
-            time: event.timeSec,
-            label: event.label,
-            source: "bronze",
-            status: "queued",
-            confidence: 0,
-            ictalChannels: "",
-            legacyConfidence: "",
-            reviewerInitials: "",
-          }));
-        let queue = reconcileCandidateQueue(importedCandidates, opened.restoredCandidates, opened.restoredActiveCandidate);
-        if (directoryRequest?.csvReviewRows?.length) {
-          const resumed = restoreCsvCandidateReviews(queue.candidates, annotationsRef.current, directoryRequest.csvReviewRows, source.meta);
-          queue = resumed;
-          annotationsRef.current = resumed.annotations;
-          setAnnotations(resumed.annotations);
-        }
-        if (queue.candidates.length) {
-          const resumeCandidate = queue.candidates[queue.activeIndex];
-          setCandidates(queue.candidates);
-          setActiveCandidate(queue.activeIndex);
-          commitViewStart(clamp(resumeCandidate.time - 10, 0, Math.max(0, source.meta.durationSec - 20)));
-          setCursorTime(resumeCandidate.time);
-          setCursorLocked(true);
-          setToast(importedCandidates.length
-            ? `Ready to review ${importedCandidates.length} selected seizure-source event${importedCandidates.length === 1 ? "" : "s"}`
-            : `No new source events selected · preserved ${queue.candidates.length} prior decision record${queue.candidates.length === 1 ? "" : "s"}`);
-        } else {
-          setCandidates([]);
-          setActiveCandidate(0);
-          setToast("Recording opened, but no selected seizure-keyword events remain to review");
-        }
-      } else if (pendingLegacyMeta && datMapping.channelCount < 100) {
-        setCandidates([]);
-        setActiveCandidate(0);
-        setToast(`${source.recordingLabels.length} recording labels detected · the separate MATLAB seizure review requires 100 channels`);
-      }
-      if (pendingProjectImportRef.current) {
-        const project = pendingProjectImportRef.current;
-        applyImportedProjectState(project);
-        pendingProjectImportRef.current = null;
-        setToast(`Opened ${project.manifest.title} from a NeuroTrace project`);
-      }
-      setPendingDat(null);
-      setPendingLegacyMatFile(null);
-      setPendingLegacyMeta(null);
-      setPendingImportFiles([]);
-      setSelectedLegacyEventIndices(new Set());
-      setLegacyExportHints({ patientId: "", matPath: "", dataDirectory: "", datFile: "" });
+      const opened = await openMappedDat({ pendingDat, pendingLegacyMatFile, pendingLegacyMeta, datMapping,
+        channelLabels: datChannelNames.labels, pendingImportFiles, legacyExportHints, selectedLegacyEventIndices,
+        keepSeparateSession: Boolean(directoryRequest), csvReviewRows: directoryRequest?.csvReviewRows });
+      if (opened && directoryRequest) updateDirectoryStatus(directoryRequest, { state: "loaded" });
+      if (opened) directoryConfirmationRef.current = null;
     } catch (error) {
       pendingProjectImportRef.current = null;
       const uploadFailure = uploadErrorFrom(error, [pendingLegacyMatFile, pendingDat].filter((file): file is File => file !== null));
@@ -7919,6 +8125,20 @@ export default function Home() {
           </section>}
 
           {hasRecording ? <>
+          {sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId && <div className="directory-event-controls" data-tutorial="directory-next-event">
+            <label><span>Event keywords</span>
+              <input type="search" value={directoryEventQuery} disabled={directoryEventProgress !== null || importBusy || Boolean(directoryEventArrival)}
+                placeholder={labelKeywords || "Any label"} onChange={(event) => setDirectoryEventQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void navigateDirectoryEvent(); } }} />
+            </label>
+            <button type="button" className="button secondary" disabled={importBusy || Boolean(queuedDirectoryOpen || pendingDat || directoryEventArrival) || directoryEventProgress !== null}
+              title="Jump to the next matching event in time, then continue in the next matching recording"
+              onClick={() => void navigateDirectoryEvent()}>Next event ›</button>
+            {directoryEventProgress && <>
+              <span className="directory-event-progress" role="status">{directoryEventProgress}</span>
+              <button type="button" className="button quiet" onClick={cancelDirectoryEventSearch}>Cancel search</button>
+            </>}
+          </div>}
           <div className="overview-block" data-tutorial="overview">
             <div className="overview-label"><span>FULL SESSION{sessionOverview.channelLabel ? ` · ${formatDisplayChannelLabel(sessionOverview.channelLabel)} · RAW RANGE` : ""}</span><strong>{formatClock(viewStart)} — {formatClock(viewStart + timebase)}</strong></div>
             <div className="overview-track" ref={overviewRef} title={sessionOverview.description} aria-label={sessionOverview.description} onPointerDown={(event) => {
@@ -8137,7 +8357,7 @@ export default function Home() {
               <span className="empty-load-mark" aria-hidden="true">＋</span>
               <strong>Load a recording to begin</strong>
               <span>Open a single recording or a full directory of EDF / EDF+, MATLAB, or MAT + DAT sessions.</span>
-              <small>Drop individual files, including MAT + DAT pairs. For folders, choose a recording type, then Folder.</small>
+              <small>Drop individual files, including MAT + DAT pairs. Use Folder to choose a directory.</small>
             </button>
           </div>}
           </>}
@@ -8333,38 +8553,48 @@ export default function Home() {
             event.stopPropagation();
             fileDragDepthRef.current = 0;
             setFileDragActive(false);
-            if (!importBusyRef.current) void handleDroppedRecordingFiles(event.dataTransfer, Boolean(importChoice && importPickerKind === "directory" && !pendingDat));
+            if (!importBusyRef.current) void handleDroppedRecordingFiles(event.dataTransfer, !pendingDat);
           }}
         >
           <button className="modal-close" disabled={importBusy} onClick={() => setShowImport(false)} aria-label="Close">×</button>
           <span className="modal-eyebrow">OPEN RECORDINGS</span>
-          <h2>{pendingDat ? "Confirm the DAT layout." : "Choose a recording type."}</h2>
+          <h2>{pendingDat ? "Enter the DAT layout" : "Open recordings"}</h2>
           <p>{pendingDat
             ? "The signal bytes are ready. Confirm the recording details before NeuroTrace opens them."
-            : "Choose a recording type, then Files or Folder to open the file explorer."}</p>
+            : "Choose files or a folder. NeuroTrace detects the recording format from your selection."}</p>
           {!pendingDat && <>
             <input ref={guidedFilesInputRef} hidden type="file" multiple disabled={importBusy} onChange={stageDetectedImport} />
             <input ref={(element) => { guidedDirectoryInputRef.current = element; if (element) element.webkitdirectory = true; }} hidden type="file" multiple disabled={importBusy} onChange={stageDetectedImport} />
+            <section className="recording-import-actions" data-tutorial="import-files" aria-label="Choose files or folder">
+              <div>
+                <button type="button" className="button" disabled={importBusy} onClick={() => openImportPicker("files")}>Files</button>
+                <button type="button" className="button" data-tutorial="import-folder" disabled={importBusy} onClick={() => openImportPicker("directory")}>Folder</button>
+              </div>
+            </section>
+            <p>Choose an optional format filter for mixed folders.</p>
             <div className="format-cards" data-tutorial="import-formats" role="group" aria-label="Recording formats">
               <button type="button" aria-label="EDF / EDF+" aria-pressed={importChoice === "edf"} disabled={importBusy} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>Calibrated .edf recordings</span></button>
               <button type="button" aria-label="MAT" aria-pressed={importChoice === "mat"} disabled={importBusy} onClick={() => chooseImportType("mat")}><strong>MAT</strong><span>Standalone .mat recordings</span></button>
               <button type="button" aria-label="MAT + DAT" aria-pressed={importChoice === "mat-dat"} disabled={importBusy} onClick={() => chooseImportType("mat-dat")}><strong>MAT + DAT</strong><span>Matching .mat + .dat pairs</span></button>
               <button type="button" aria-label="NeuroTrace" aria-pressed={importChoice === "neurotrace"} disabled={importBusy} onClick={() => chooseImportType("neurotrace")}><strong>NeuroTrace</strong><span>Saved review projects</span></button>
             </div>
-            {importChoice && <section className="recording-import-actions" data-tutorial="import-files" aria-label="Choose files or folder">
-              <strong>{importChoice === "edf" ? "EDF / EDF+" : importChoice === "mat" ? "MAT" : importChoice === "mat-dat" ? "MAT + DAT" : "NeuroTrace"}</strong>
-              <div>
-                <button type="button" className="button" disabled={importBusy} onClick={() => openImportPicker("files")}>Files</button>
-                <button type="button" className="button" data-tutorial="import-folder" disabled={importBusy} onClick={() => openImportPicker("directory")}>Folder</button>
-              </div>
-              <p>{importChoice === "mat-dat" ? "Select both matching files for each MAT + DAT pair, or choose their folder." : "Select one or multiple files, or choose a folder to include its subfolders."} Folders include only the selected recording type; other recording types are ignored.</p>
-            </section>}
             <div className="recording-import-drop-hint">
-              <strong>{importChoice && importPickerKind === "directory" ? "Or drop a folder here" : "Or drop individual files here"}</strong>
-              <p>{importChoice && importPickerKind === "directory"
-                ? "Folder drops are accepted inside this dialog only and include subfolders. Only the selected recording type is included."
-                : "MAT + DAT pairs are accepted together. For folder drops, choose a recording type, then Folder."} Files stay on this device.</p>
+              <strong>Or drop files or a folder here</strong>
+              <p>For MAT + DAT, select both matching files or their folder.</p>
             </div>
+            {stagedImportFiles.length > 0 && <section className="guided-import" aria-label="Detected files">
+              <header><strong>Ready to open</strong><b>{importBusy ? "Opening…" : "Detected"}</b></header>
+              <div className="directory-import-summary"><ul aria-label="Selected files">
+                {stagedImportFiles.slice(0, 5).map((file, index) => <li key={index}>{file.name}</li>)}
+              </ul>{stagedImportFiles.length > 5 && <small>And {stagedImportFiles.length - 5} more files.</small>}</div>
+              <footer><span>Files stay on this device.</span>
+                {stagedImportFiles.some((file) => recordingExtension(file) === "dat") &&
+                  <button type="button" className="button secondary" disabled={importBusy}
+                    onClick={() => void handleUploadedFiles(stagedImportFiles, false, true)}>Edit DAT mapping</button>}
+                <button type="button" className="button primary" data-tutorial="import-open" disabled={importBusy}
+                  onClick={() => void handleUploadedFiles(stagedImportFiles)}>Open selected files</button>
+              </footer>
+            </section>}
             {stagedDirectoryPlan && <section className="guided-import" aria-label="Detected session collection">
               <header>
                 <div><strong>Session collection detected</strong>
@@ -8374,7 +8604,7 @@ export default function Home() {
               <div className="directory-import-summary" role="status">
                 <strong>{stagedDirectoryPlan.recordings.length} sessions found</strong>
                 <p>All recording filenames match {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : stagedDirectoryPlan.format === "neurotrace" ? "NeuroTrace projects" : "paired MAT + DAT"}. File contents are checked when each session opens.</p>
-                <p>Only the session list is loaded now. Signal data opens on demand; nothing is uploaded.</p>
+                <p>The first matching recording opens when you load the folder.</p>
               </div>
               <DirectoryImportFilters plan={stagedDirectoryPlan} busy={importBusy} onLoad={submitGuidedImport} />
             </section>}

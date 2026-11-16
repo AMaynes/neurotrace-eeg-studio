@@ -1883,15 +1883,18 @@ export async function indexMatRecordingLabels(file: File) {
 }
 
 /** Resume scans read event timing and acquisition scalars, never waveform matrices. */
-export async function indexMatReviewEvents(file: File) {
+export async function indexMatReviewEvents(file: File, allowEmpty = false) {
   let context: MatParseContext | undefined;
   await visitMatEventLabelMatrices(file, async (bytes, prefix, littleEndian) => {
     context ??= { littleEndian, numeric: [], strings: [], structures: [], warnings: [] };
     await parseMatMatrix(bytes, context, prefix, 0);
   }, { reviewTiming: true });
-  if (!context) throw new Error("No supported MAT event metadata was found.");
+  if (!context) {
+    if (allowEmpty) return { events: [], recordingLabels: [], warnings: [] };
+    throw new Error("No supported MAT event metadata was found.");
+  }
   const metadata = legacyMetadataFromContext(context);
-  return { events: metadata.events, sampleRate: metadata.sampleRate, channelCount: metadata.channelCount,
+  return { events: metadata.events, recordingLabels: metadata.recordingLabels, sampleRate: metadata.sampleRate, channelCount: metadata.channelCount,
     warnings: metadata.warnings };
 }
 

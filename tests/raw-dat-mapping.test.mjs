@@ -108,10 +108,10 @@ test("supports pasted MATLAB names and previews only explicitly mapped DAT layou
 test("DAT confirmation uses edited names and exposes mapping errors before loading", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /aria-label="DAT channel names"/);
-  assert.match(page, /channelLabels: datChannelNames\.labels\.length \? datChannelNames\.labels : undefined/);
+  assert.match(page, /channelLabels: datChannelNames\.labels/);
   assert.match(page, /if \(datChannelNames\.error\)[\s\S]*?return;/);
   assert.match(page, /Boolean\(datChannelNames\.error\) \|\| !datLayout\?\.frames/);
   assert.match(page, /datLayout\.trailingBytes/);
-  assert.match(page, /setDatChannelNamesText\(legacyMetadata\?\.channelLabels\.map/);
+  assert.match(page, /setDatChannelNamesText\(channelLabels\.join/);
   assert.match(page, /channel_labels: \[\.\.\.source\.meta\.channelLabels\]/, "manual names participate in the source interpretation identity");
 });
