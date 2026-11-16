@@ -182,26 +182,31 @@ async function writeReviewFile(handle: ReviewFile, data: Blob) {
   catch (error) { await writable.abort?.().catch(() => {}); throw error; }
 }
 
-/** An existing pair can only be replaced by the same reviewer pass. */
+async function existingReviewFile(directory: ReviewOutputDirectory, name: string) {
+  try { return await directory.getFileHandle(name); }
+  catch (error) {
+    if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+    return undefined;
+  }
+}
+
+/** Validate both paths first. Commit the recoverable JSON before replacing the CSV. */
 export async function writeReviewWorkspacePair(directory: ReviewOutputDirectory, workspace: ReviewWorkspace, csv: string) {
   const names = reviewWorkspaceNames(workspace);
-  let existing: ReviewWorkspace | undefined;
-  try {
-    const handle = await directory.getFileHandle(names.workspace);
-    existing = await readReviewWorkspace(await handle.getFile());
-  } catch (error) {
-    if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
-  }
+  const jsonFile = await existingReviewFile(directory, names.workspace);
+  const previousJson = jsonFile ? await jsonFile.getFile() : undefined;
+  const existing = previousJson?.size ? await readReviewWorkspace(previousJson) : undefined;
   if (existing && (existing.instanceId !== workspace.instanceId || existing.folderKey !== workspace.folderKey
     || existing.reviewerId !== workspace.reviewerId || existing.reviewSessionId !== workspace.reviewSessionId
     || existing.updatedAt > workspace.updatedAt)) {
     throw new Error("This destination contains a different or newer review with the same filename. Choose another folder.");
   }
-  const csvFile = await directory.getFileHandle(names.annotations, { create: true });
-  if (!existing && (await csvFile.getFile()).size) {
+  const csvFile = await existingReviewFile(directory, names.annotations);
+  if (!existing && csvFile && (await csvFile.getFile()).size) {
     throw new Error("This destination already contains an annotations CSV without its workspace JSON.");
   }
-  const jsonFile = await directory.getFileHandle(names.workspace, { create: true });
-  await writeReviewFile(jsonFile, new Blob([JSON.stringify(workspace)], { type: "application/json" }));
-  await writeReviewFile(csvFile, new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const json = new Blob([JSON.stringify(workspace)], { type: "application/json" });
+  await writeReviewFile(jsonFile ?? await directory.getFileHandle(names.workspace, { create: true }), json);
+  await writeReviewFile(csvFile ?? await directory.getFileHandle(names.annotations, { create: true }),
+    new Blob([csv], { type: "text/csv;charset=utf-8" }));
 }

@@ -48,8 +48,8 @@ test("workspace JSON round-trips view, drafts, decisions and the label library",
 
 function memoryDirectory() {
   const files = new Map();
-  let failCsv = false;
-  return { files, setFailCsv: (value) => { failCsv = value; }, async getFileHandle(name, { create } = {}) {
+  let failingExtension = "";
+  return { files, failWritesTo: (extension) => { failingExtension = extension; }, async getFileHandle(name, { create } = {}) {
     if (!files.has(name)) {
       if (!create) throw new DOMException("Missing file", "NotFoundError");
       files.set(name, new File([], name));
@@ -59,7 +59,7 @@ function memoryDirectory() {
       createWritable: async () => {
         let content;
         return { async write(blob) {
-          if (failCsv && name.endsWith(".csv")) throw new Error("Disk write interrupted");
+          if (failingExtension && name.endsWith(failingExtension)) throw new Error("Disk write interrupted");
           content = blob;
         }, async close() { files.set(name, new File([content], name)); }, async abort() {} };
       },
@@ -75,10 +75,10 @@ test("the same pass updates exactly two standard files and can retry after a CSV
   assert.deepEqual(names, {
     workspace: "reviewer-R017_review-004_workspace.json", annotations: "reviewer-R017_review-004_annotations.csv",
   });
-  directory.setFailCsv(true);
+  directory.failWritesTo(".csv");
   await assert.rejects(writeReviewWorkspacePair(directory, review, csv), /interrupted/);
   assert.equal(parseReviewWorkspace(await directory.files.get(names.workspace).text()).instanceId, review.instanceId);
-  directory.setFailCsv(false);
+  directory.failWritesTo("");
   await writeReviewWorkspacePair(directory, review, csv);
   assert.equal(directory.files.size, 2);
   assert.equal(await directory.files.get(names.annotations).text(), csv);
@@ -93,4 +93,19 @@ test("reviewer-scoped CSVs never restore into an unmanaged directory", async () 
   const cache = await loadDirectoryReviewCsvs(plan, [csv]);
   assert.equal(cache.files.size, 0);
   assert.equal(cache.byRecording.size, 0);
+});
+
+
+test("an interrupted first JSON write leaves the pair retryable", async () => {
+  const review = newReviewWorkspace("1".repeat(64), "R017", 4, true);
+  const directory = memoryDirectory();
+  const names = reviewWorkspaceNames(review);
+  directory.failWritesTo(".json");
+  await assert.rejects(writeReviewWorkspacePair(directory, review, "labels"), /interrupted/);
+  assert.equal(directory.files.get(names.workspace).size, 0);
+  assert.equal(directory.files.has(names.annotations), false);
+  directory.failWritesTo("");
+  await writeReviewWorkspacePair(directory, review, "labels");
+  assert.equal(directory.files.size, 2);
+  assert.equal(await directory.files.get(names.annotations).text(), "labels");
 });

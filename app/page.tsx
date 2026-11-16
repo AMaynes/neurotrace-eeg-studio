@@ -229,6 +229,7 @@ type Annotation = {
   candidateId?: string;
   /** Original recording evidence survives edits, recovery, and exports unchanged. */
   recordingLabel?: RecordingLabel;
+  sourceLabel?: string;
   dictionaryLabel?: DictionaryLabel;
   channelScope?: ChannelScope;
   /** Plot-axis seconds stay authoritative; this records their source-grid offset. */
@@ -760,6 +761,7 @@ function bidsEventAnnotations(
       confidence: 0,
       reliability: "silver",
       origin: "imported",
+      sourceLabel: event.label,
       reviewer: "",
       notes: `${sourceNote} · ${event.sourcePath} row ${event.rowIndex + 2}`,
       status: "draft",
@@ -2535,7 +2537,7 @@ export default function Home() {
       selectedChannels: [...selectedChannels],
       focusedChannel,
       spectrogramChannels,
-      annotations,
+      annotations: annotationsRef.current,
       recordingLabelsImported: recordingLabelsImportedRef.current,
       selectedAnnotationId,
       selection,
@@ -2549,7 +2551,7 @@ export default function Home() {
       waveformVerticalViewport,
       channelScrollTop: pendingZoomScrollRef.current ?? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current,
       spectrogramFrequencyRange,
-      candidates,
+      candidates: candidatesRef.current,
       activeCandidate,
       sourceHash,
       rawSourceHash,
@@ -2629,7 +2631,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, anatomicalGroups, annotations, bottomTracksOpen, candidates, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, directoryEventQuery, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
+  }, [activeCandidate, activeSessionId, anatomicalGroups, bottomTracksOpen, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, directoryEventQuery, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -7541,6 +7543,18 @@ export default function Home() {
   const csvPatient = activeMatlabExportIdentity?.patientId || (csvDirectoryId
     ? directoryHeaders.find((header) => header.catalogId === csvDirectoryId)?.label : undefined) || effectivePatientLabel;
   const csvFileName = matlabAnnotationFilename(csvPatient, reviewer);
+  const completeExportLabels = async (source: EDFSource, readLabels: () => Annotation[]) => {
+    try { await source.loadAnnotations(); }
+    catch (error) {
+      if (!isAbortFailure(error)) throw error;
+      // A background read may have been canceled when this tab was selected.
+      await source.loadAnnotations();
+    }
+    const { annotations: detected } = recordingLabelAnnotations(detectedRecordingLabels(source),
+      source.meta.durationSec, source.meta.channelLabels);
+    return mergeRecordingLabels<Annotation>(readLabels(), detected);
+  };
+  const csvLabelName = (item: Annotation) => annotationLabel(item)?.name ?? item.labelId;
   const saveReviewerWorkspace = async () => {
     const folder = csvDirectoryId ? directoryCatalogWorkspacesRef.current.get(csvDirectoryId) : undefined;
     if (!folder?.review || projectSaveBusy || sourceVerificationRef.current || importBusyRef.current || reviewViewArrival) return;
@@ -7549,32 +7563,61 @@ export default function Home() {
     setReviewOutputLinks(null);
     try {
       const picker = (window as Window & { showDirectoryPicker?: (options: { mode: "readwrite" }) => Promise<ReviewOutputDirectory> }).showDirectoryPicker;
+      let destinationError = "";
       if (picker && !folder.output) {
         try { folder.output = await picker.call(window, { mode: "readwrite" }); }
         catch (error) {
-          if (!(error instanceof DOMException && (error.name === "SecurityError" || error.name === "NotSupportedError"))) throw error;
+          if (isAbortFailure(error)) return;
+          destinationError = error instanceof Error ? error.message : "The destination could not be opened.";
         }
       }
       flushSessionRef.current();
       const review = structuredClone(folder.review);
-      const rows = Object.values(review.recordings).flatMap((item) => item.csvRows);
-      const compatibleRows = rows.filter((item) => item.sampling_rate !== "");
-      const csv = serializeMatlabAnnotations(compatibleRows);
+      const catalog = directoryCatalogs.find((item) => item.id === csvDirectoryId);
+      const recordings = new Map((catalog?.plan.unfilteredRecordings ?? catalog?.plan.recordings ?? []).map((item) => [item.id, item]));
+      const activeRecordingId = sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryRecordingId;
+      const missingLabels: string[] = [];
+      const labels = [];
+      for (const [id, item] of Object.entries(review.recordings)) {
+        const entry = recordings.get(id);
+        const recording = entry?.relativePath ?? id.replace(/^directory:/, "");
+        let annotations = item.review.annotations as Annotation[];
+        if (entry && catalog?.plan.format === "edf" && item.review.recordingLabelsImported !== true) {
+          try {
+            const activeSource = sourceRef.current;
+            const source = id === activeRecordingId && activeSource instanceof EDFSource
+              ? activeSource : await EDFSource.create(entry.primary, { parseAnnotations: false });
+            annotations = await completeExportLabels(source, () => id === activeRecordingId && sourceRef.current === source
+              ? annotationsRef.current : annotations);
+            item.review.annotations = annotations;
+            item.review.recordingLabelsImported = true;
+          } catch { missingLabels.push(recording); }
+        }
+        labels.push({ recording, annotations });
+      }
+      const incompleteMessage = missingLabels.length
+        ? `Could not read all detected labels for ${missingLabels.slice(0, 3).join(", ")}${missingLabels.length > 3 ? ` and ${missingLabels.length - 3} more` : ""}.`
+        : "";
+      const csv = serializeRecordingLabels(labels, csvLabelName);
       const names = reviewWorkspaceNames(review);
       if (folder.output) {
-        await writeReviewWorkspacePair(folder.output, review, csv);
-        folder.savedToDiskAt = review.updatedAt;
-        setShowProjectSave(false);
-        setToast(rows.length === compatibleRows.length ? "Saved workspace JSON and MATLAB CSV."
-          : "Saved both files. Mixed-rate reviews are included in the workspace JSON.");
-        notifyTutorialAction("annotations-saved");
-      } else {
-        setReviewOutputLinks({ names, json: new Blob([JSON.stringify(review)], { type: "application/json" }),
-          csv: new Blob([csv], { type: "text/csv;charset=utf-8" }) });
-        if (rows.length !== compatibleRows.length) setProjectSaveError("Mixed-rate reviews are included in the workspace JSON.");
+        try {
+          await writeReviewWorkspacePair(folder.output, review, csv);
+          folder.savedToDiskAt = review.updatedAt;
+          setShowProjectSave(false);
+          setToast(incompleteMessage ? `Saved available labels. ${incompleteMessage}` : "Saved workspace JSON and all-labels CSV.");
+          notifyTutorialAction("annotations-saved");
+          return;
+        } catch (error) {
+          folder.output = undefined;
+          destinationError = error instanceof Error ? error.message : "The selected destination could not be written.";
+        }
       }
+      setReviewOutputLinks({ names, json: new Blob([JSON.stringify(review)], { type: "application/json" }),
+        csv: new Blob([csv], { type: "text/csv;charset=utf-8" }) });
+      setProjectSaveError([destinationError && `${destinationError} Download both files below or try another destination.`, incompleteMessage]
+        .filter(Boolean).join(" "));
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
       setProjectSaveError(error instanceof Error ? error.message : "Could not save the workspace.");
     } finally { setProjectSaveBusy(false); }
   };
@@ -7706,20 +7749,28 @@ export default function Home() {
     }
   };
 
-  const saveAllLabelsCsv = () => {
+  const saveAllLabelsCsv = async () => {
     if (projectSaveBusy || !hasRecording || sourceVerificationRef.current || importBusyRef.current) return;
-    const labels = annotationsRef.current;
-    if (!labels.length) return;
+    setProjectSaveBusy(true);
+    setProjectSaveError("");
     try {
-      const csv = serializeRecordingLabels(meta.name, labels, (item) => annotationLabel(item)?.name ?? item.labelId);
+      const source = sourceRef.current;
+      let annotations = annotationsRef.current;
+      let incomplete = false;
+      if (source instanceof EDFSource && !recordingLabelsImportedRef.current) {
+        try { annotations = await completeExportLabels(source, () => annotationsRef.current); }
+        catch { incomplete = true; }
+      }
+      const csv = serializeRecordingLabels([{ recording: meta.name, annotations }], csvLabelName);
       const name = meta.name.replace(/\.[^.]+$/, "");
       downloadBlob(`${name}_labels.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
       setShowProjectSave(false);
-      setToast(`Saved ${labels.length} label${labels.length === 1 ? "" : "s"} to CSV`);
+      setToast(incomplete ? "Downloaded available labels. Some recording labels could not be read."
+        : `Saved ${annotations.length} label${annotations.length === 1 ? "" : "s"} to CSV`);
       notifyTutorialAction("annotations-saved");
     } catch (error) {
       setProjectSaveError(error instanceof Error ? error.message : "The label CSV could not be saved.");
-    }
+    } finally { setProjectSaveBusy(false); }
   };
 
   useEffect(() => {
@@ -9161,12 +9212,12 @@ export default function Home() {
               <li>{reviewWorkspaceNames(activeReviewIdentity).annotations}</li>
               <li>{reviewWorkspaceNames(activeReviewIdentity).workspace}</li>
             </ul>
-            <p>The workspace includes review progress, all labels, settings, and the label library. The MATLAB CSV includes accepted source-event reviews.</p>
+            <p>The CSV includes detected and reviewer-added labels from opened recordings. The JSON includes review progress, settings, and the label library.</p>
             {projectSaveError && <div className="project-save-error" role="alert">{projectSaveError}</div>}
             <footer className="project-save-footer">
               {reviewOutputLinks?.names.workspace === reviewWorkspaceNames(activeReviewIdentity).workspace && <>
                 <button type="button" className="button secondary" onClick={() => downloadBlob(reviewOutputLinks.names.workspace, reviewOutputLinks.json)}>Download workspace JSON</button>
-                <button type="button" className="button secondary" onClick={() => downloadBlob(reviewOutputLinks.names.annotations, reviewOutputLinks.csv)}>Download MATLAB CSV</button>
+                <button type="button" className="button secondary" onClick={() => downloadBlob(reviewOutputLinks.names.annotations, reviewOutputLinks.csv)}>Download labels CSV</button>
               </>}
               <button type="button" className="button primary" data-tutorial="save-confirm" disabled={projectSaveBusy || !reviewReady}
                 onClick={() => void saveReviewerWorkspace()}>{projectSaveBusy ? "Saving…" : "Save all into…"}</button>
@@ -9174,8 +9225,8 @@ export default function Home() {
           </> : <>
           <h2>Save annotations</h2>
           <div className="csv-export-all">
-            <div><strong>All labels CSV</strong><p>{annotations.length ? `Download ${annotations.length} labels from this recording, including drafts and imported labels.` : "There are no labels in this recording yet."}</p></div>
-            <button className="button primary" disabled={projectSaveBusy || !reviewReady || !annotations.length} onClick={saveAllLabelsCsv}>Download all labels</button>
+            <div><strong>All labels CSV</strong><p>Download detected, draft, and committed labels with their source.</p></div>
+            <button className="button primary" disabled={projectSaveBusy || !reviewReady} onClick={() => void saveAllLabelsCsv()}>{projectSaveBusy ? "Saving…" : "Download all labels"}</button>
           </div>
           <h3>MATLAB review CSV</h3>
           <p><strong>{csvFileName}</strong> · Accepted source-event seizure reviews {csvDirectoryId ? "from this directory" : "from this recording"}. Used to resume folder reviews.</p>
