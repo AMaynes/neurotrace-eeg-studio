@@ -154,6 +154,11 @@ import {
 } from "./neurotrace-project";
 import { matlabAnnotationRows, matlabAnnotationFilename, serializeMatlabAnnotations, writeMatlabAnnotations, mergeMatlabAnnotationRows, MatlabReviewCsvCache, type MatlabCsvFileHandle, type MatlabAnnotationRow } from "./matlab-annotations-csv";
 import { serializeRecordingLabels } from "./recording-labels-csv";
+import { LabelLibraryEditor } from "./label-library";
+import { canOpenReviewRecording, emptyLabelLibrary, isReviewWorkspaceFile, listReviewWorkspaces,
+  newReviewWorkspace, normalizeReviewerId, parseLabelLibrary, persistReviewWorkspace, readReviewWorkspace,
+  reviewFolderKey, reviewWorkspaceNames, writeReviewWorkspacePair, type DictionaryLabel, type LabelLibrary,
+  type ReviewOutputDirectory, type ReviewWorkspace } from "./review-workspace";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -193,6 +198,7 @@ type LabelDefinition = {
   defaultDuration: number;
   category: "Context" | "Seizure" | "Rhythmic / periodic" | "Ictal pathology" | "Sleep stage" | "Other";
   hidden?: boolean;
+  dictionaryLabel?: DictionaryLabel;
 };
 
 type ChannelScope = {
@@ -223,6 +229,7 @@ type Annotation = {
   candidateId?: string;
   /** Original recording evidence survives edits, recovery, and exports unchanged. */
   recordingLabel?: RecordingLabel;
+  dictionaryLabel?: DictionaryLabel;
   channelScope?: ChannelScope;
   /** Plot-axis seconds stay authoritative; this records their source-grid offset. */
   sourceTimeOffsetSec?: number;
@@ -329,11 +336,14 @@ type DirectoryOpenRequest = {
   replaceSessionId?: string;
 };
 
-type DirectoryCatalog = { id: string; plan: DirectoryImportPlan };
+type DirectoryCatalog = { id: string; plan: DirectoryImportPlan; review?: Pick<ReviewWorkspace, "reviewerId" | "reviewSessionId" | "instanceId" | "blind"> };
 type DirectoryCatalogWorkspace = {
   sessions: Map<string, { sessionId: string; files: File[] }>;
   statuses: Record<string, DirectorySessionStatus>;
   eventRecovery?: Map<string, { key: string; duration: number; channelCount: number }>;
+  review?: ReviewWorkspace;
+  output?: ReviewOutputDirectory;
+  savedToDiskAt?: string;
 };
 
 type ProjectSavePicker = (options: {
@@ -484,6 +494,7 @@ type SessionWorkspaceSnapshot = {
   uploadedFileInputs: File[];
   companionBundle: BidsCompanionBundle;
   customTools: NeurotraceCustomToolAsset[];
+  labelLibrary?: LabelLibrary;
   meta: RecordingMeta;
   sessionKey: string;
   reviewer: string;
@@ -495,6 +506,7 @@ type SessionWorkspaceSnapshot = {
   filters: DisplayFilterSettings;
   selectedChannels: number[];
   focusedChannel: number;
+  spectrogramChannels?: number[];
   annotations: Annotation[];
   recordingLabelsImported: boolean;
   selectedAnnotationId: string | null;
@@ -520,6 +532,7 @@ type SessionWorkspaceSnapshot = {
 };
 
 const LABELS: LabelDefinition[] = [
+  { id: "dictionary-label", name: "Dictionary label", short: "DICT", color: "#b0b1fb", geometry: "point", track: "instance", defaultDuration: 5, category: "Other", hidden: true },
   { id: "recording-label", name: "Recording label", short: "SOURCE", color: "#94c5cf", geometry: "point", track: "instance", defaultDuration: 0, category: "Other", hidden: true },
   { id: "session-context", name: "Entire-session context", short: "SESSION", color: "#8db7f3", geometry: "session", track: "context", defaultDuration: 0, category: "Context" },
   { id: "laterality", name: "Lateralization / locality", short: "LOCALITY", color: "#b99cf7", geometry: "session", track: "context", defaultDuration: 0, category: "Context" },
@@ -554,11 +567,16 @@ const LABELS: LabelDefinition[] = [
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
 
 /** Display source wording without inventing a clinical classification. */
-function annotationLabel(annotation: Annotation): LabelDefinition | undefined {
+function annotationLabel(annotation: Annotation, library?: LabelLibrary): LabelDefinition | undefined {
   const definition = LABEL_BY_ID.get(annotation.labelId);
-  return definition && annotation.labelId === "recording-label" && annotation.recordingLabel
+  const dictionary = annotation.dictionaryLabel && (library?.labels.find((entry) => entry.id === annotation.dictionaryLabel?.id) ?? annotation.dictionaryLabel);
+  const original = definition && annotation.labelId === "recording-label" && annotation.recordingLabel
     ? { ...definition, name: annotation.recordingLabel.label, short: annotation.recordingLabel.label }
-    : definition;
+    : definition && annotation.labelId === "dictionary-label" && dictionary
+      ? { ...definition, name: dictionary.name, short: dictionary.code || dictionary.name }
+      : definition;
+  const alias = library?.aliases.find((entry) => entry.key === annotationLabelTypeKey(annotation))?.alias;
+  return alias && original ? { ...original, name: alias, short: alias } : original;
 }
 
 function timedNavigationEvents(annotations: readonly Annotation[], candidates: readonly Candidate[], duration: number): DirectoryTimedEvent[] {
@@ -899,6 +917,7 @@ function migrateAnnotationList(value: unknown, durationSec: number, channelCount
     if (!label || !Number.isFinite(Number(saved.start)) || !Number.isFinite(Number(saved.end))) return [];
     if (saved.recordingLabel !== undefined && !validRecordingLabel(saved.recordingLabel)) return [];
     if (labelId === "recording-label" && !validRecordingLabel(saved.recordingLabel)) return [];
+    if (labelId === "dictionary-label" && !parseLabelLibrary({ labels: [saved.dictionaryLabel] }).labels.length) return [];
     const status: AnnotationStatus = ["draft", "committed", "suggestion"].includes(saved.status) ? saved.status : "draft";
     const reliability: Reliability = ["gold", "silver", "bronze", "gray"].includes(saved.reliability) ? saved.reliability : "gray";
     const origin: AnnotationOrigin = ["manual", "imported", "detector", "legacy"].includes(saved.origin) ? saved.origin : "legacy";
@@ -1987,6 +2006,7 @@ export default function Home() {
   const [uploadedFileInputs, setUploadedFileInputs] = useState<File[]>([]);
   const [companionBundle, setCompanionBundle] = useState<BidsCompanionBundle>(() => emptyBidsCompanionBundle());
   const [customTools, setCustomTools] = useState<NeurotraceCustomToolAsset[]>([]);
+  const [labelLibrary, setLabelLibrary] = useState<LabelLibrary>(emptyLabelLibrary);
   const [sessionTabs, setSessionTabs] = useState<SessionTab[]>([
     { id: "initial-session", title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" },
   ]);
@@ -2010,6 +2030,7 @@ export default function Home() {
   const [filters, setFilters] = useState<DisplayFilterSettings>(DEFAULT_FILTERS);
   const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set());
   const [focusedChannel, setFocusedChannel] = useState(0);
+  const [spectrogramChannels, setSpectrogramChannels] = useState<number[]>([]);
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
   const [anatomicalGroups, setAnatomicalGroups] = useState(true);
   const [preparedDisplay, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
@@ -2093,8 +2114,15 @@ export default function Home() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [activeCandidate, setActiveCandidate] = useState(0);
   const displayAnnotations = useMemo(() => annotations.filter((item) => !hiddenLabelTypes.has(annotationLabelTypeKey(item))
-    && matchesLabelKeywords([annotationLabel(item)?.name ?? item.labelId])), [annotations, hiddenLabelTypes, matchesLabelKeywords]);
-  const labelTypeOptions = useMemo(() => collectLabelTypes(annotations, candidates, LABELS), [annotations, candidates]);
+    && matchesLabelKeywords([annotationLabel(item)?.name ?? item.labelId, annotationLabel(item, labelLibrary)?.name ?? item.labelId])), [annotations, hiddenLabelTypes, labelLibrary, matchesLabelKeywords]);
+  const labelTypeOptions = useMemo(() => {
+    const options = collectLabelTypes(annotations, candidates, LABELS);
+    for (const label of labelLibrary.labels) {
+      const key = `dictionary:${label.id}`;
+      if (!options.some((option) => option.key === key)) options.push({ key, name: label.name, source: "annotation", count: 0 });
+    }
+    return options;
+  }, [annotations, candidates, labelLibrary]);
   const hiddenLabelTypeCount = useMemo(() => labelTypeOptions.filter((option) => hiddenLabelTypes.has(option.key)).length, [hiddenLabelTypes, labelTypeOptions]);
   const [toast, setToast] = useState("Blank session ready — load a recording");
   const [uploadError, setUploadError] = useState<UploadErrorMessage | null>(null);
@@ -2108,6 +2136,7 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [biasLocks, setBiasLocks] = useState(false);
   const [showChannels, setShowChannels] = useState(false);
+  const [showLabelLibrary, setShowLabelLibrary] = useState(false);
   const [showSessionMap, setShowSessionMap] = useState(false);
   const [showSessionContextPicker, setShowSessionContextPicker] = useState(false);
   const [showPatientInfo, setShowPatientInfo] = useState(false);
@@ -2117,16 +2146,26 @@ export default function Home() {
   const [showImport, setShowImportOpen] = useState(false);
   const [importPickerKind, setImportPickerKind] = useState<"files" | "directory" | null>(null);
   const [stagedImportFiles, setStagedImportFiles] = useState<File[]>([]);
+  const [portableReviewFile, setPortableReviewFile] = useState<File | null>(null);
+  const [reviewResumePrompt, setReviewResumePrompt] = useState<{ plan: DirectoryImportPlan; review: ReviewWorkspace; nextId: number } | null>(null);
   const setShowImport = useCallback((open: boolean) => {
     setShowImportOpen(open);
     if (!open) {
       setImportPickerKind(null);
       setStagedImportFiles([]);
+      setReviewResumePrompt(null);
+      setPortableReviewFile(null);
     }
   }, []);
   const [stagedDirectoryPlan, setStagedDirectoryPlan] = useState<DirectoryImportPlan | null>(null);
   const [directoryCatalog, setDirectoryCatalog] = useState<DirectoryCatalog | null>(null);
   const [directoryCatalogs, setDirectoryCatalogs] = useState<DirectoryCatalog[]>([]);
+  const [reviewerProfileId, setReviewerProfileId] = useState("");
+  const [startBlindReview, setStartBlindReview] = useState(false);
+  const [reviewAutosaveStatus, setReviewAutosaveStatus] = useState<"saving" | "saved" | "error">("saved");
+  const [reviewOutputLinks, setReviewOutputLinks] = useState<{ json: Blob; csv: Blob; names: ReturnType<typeof reviewWorkspaceNames> } | null>(null);
+  const reviewSavePromiseRef = useRef<Promise<void> | null>(null);
+  const [reviewViewArrival, setReviewViewArrival] = useState<{ sessionId: string; view: Record<string, unknown> } | null>(null);
   const [showDirectorySessions, setShowDirectorySessions] = useState(false);
   const [directoryStatuses, setDirectoryStatuses] = useState<Record<string, DirectorySessionStatus>>({});
   const [queuedDirectoryOpen, setQueuedDirectoryOpen] = useState<DirectoryOpenRequest | null>(null);
@@ -2143,6 +2182,14 @@ export default function Home() {
   }, []);
   useEffect(() => cancelDirectoryEventSearch, [activeSessionId, cancelDirectoryEventSearch, sessionKey]);
   const directoryHeaders = useMemo(() => directoryTabHeaders(sessionTabs, directoryCatalogs), [sessionTabs, directoryCatalogs]);
+  const activeReviewIdentity = directoryCatalogs.find((catalog) => catalog.id === sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId)?.review;
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      try { setReviewerProfileId(localStorage.getItem("neurotrace:reviewer-id") ?? ""); }
+      catch { /* reviewer identity can still be entered for this visit */ }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
   useEffect(() => {
     document.querySelector<HTMLElement>(`[data-session-tab="${activeSessionId}"]`)
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -2255,7 +2302,8 @@ export default function Home() {
         kind: "annotation" as const,
         id: item.id,
         time: item.start,
-        label: annotationLabel(item)?.name ?? item.labelId,
+        label: annotationLabel(item, labelLibrary)?.name ?? item.labelId,
+        originalLabel: annotationLabel(item)?.name ?? item.labelId,
         visibilityKey: annotationLabelTypeKey(item),
         detail: item.recordingLabel ? "Recording label · imported" : item.track === "context" ? "Context event" : "Instance label",
         status: item.status,
@@ -2267,7 +2315,8 @@ export default function Home() {
         kind: "candidate" as const,
         id: item.id,
         time: item.time,
-        label: item.label,
+        label: labelLibrary.aliases.find((alias) => alias.key === recordingLabelTypeKey(item.label))?.alias || item.label,
+        originalLabel: item.label,
         visibilityKey: recordingLabelTypeKey(item.label),
         detail: "File event",
         status: item.status,
@@ -2275,13 +2324,13 @@ export default function Home() {
         locked: ["reviewed", "skipped", "conflict"].includes(item.status),
       }));
     return [...annotationEntries, ...candidateEntries].sort((a, b) => a.time - b.time || a.label.localeCompare(b.label));
-  }, [annotations, candidates]);
+  }, [annotations, candidates, labelLibrary]);
   const filteredQueueEntries = useMemo(() => {
     const terms = queueSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return instanceQueueEntries.map((entry, index) => ({ entry, index }))
       .filter(({ entry }) => !hiddenLabelTypes.has(entry.visibilityKey)
-        && matchesLabelKeywords([entry.label])
-        && terms.every((term) => `${entry.label} ${entry.detail} ${entry.status}`.toLowerCase().includes(term)));
+        && matchesLabelKeywords([entry.label, entry.originalLabel])
+        && terms.every((term) => `${entry.label} ${entry.originalLabel} ${entry.detail} ${entry.status}`.toLowerCase().includes(term)));
   }, [hiddenLabelTypes, instanceQueueEntries, matchesLabelKeywords, queueSearch]);
   const activeQueueIndex = useMemo(() => {
     const selectedIndex = selectedAnnotationId
@@ -2304,7 +2353,7 @@ export default function Home() {
   const queueDetailCandidate = queueDetailTarget?.kind === "candidate"
     ? candidates.find((item) => item.id === queueDetailTarget.id) ?? null
     : null;
-  const queueDetailLabel = queueDetailAnnotation ? annotationLabel(queueDetailAnnotation) : null;
+  const queueDetailLabel = queueDetailAnnotation ? annotationLabel(queueDetailAnnotation, labelLibrary) : null;
   const sourceHashDisplay = verifyingSource
     ? "Opening…"
     : sourceHash.startsWith("demo:")
@@ -2473,6 +2522,7 @@ export default function Home() {
       uploadedFileInputs,
       companionBundle,
       customTools,
+      labelLibrary,
       meta,
       sessionKey,
       reviewer,
@@ -2484,6 +2534,7 @@ export default function Home() {
       filters: { ...filters },
       selectedChannels: [...selectedChannels],
       focusedChannel,
+      spectrogramChannels,
       annotations,
       recordingLabelsImported: recordingLabelsImportedRef.current,
       selectedAnnotationId,
@@ -2507,41 +2558,78 @@ export default function Home() {
       undo: undoRef.current,
       redo: redoRef.current,
     };
-    if (snapshot.hasRecording && !sourceVerificationRef.current) {
+    if (snapshot.hasRecording && !sourceVerificationRef.current && !reviewViewArrival) {
       const tab = sessionTabs.find((tab) => tab.id === activeSessionId);
       const group = tab?.directoryId ?? snapshot.sessionKey;
-      matlabCsvCacheRef.current.update(snapshot.sessionKey, group, matlabAnnotationRows({
+      const csvRows = matlabAnnotationRows({
         ...snapshot, sourcePath: snapshot.primaryFile ? relativeFilePath(snapshot.primaryFile) : undefined,
-      }));
-      try {
-        localStorage.setItem(`neurotrace:draft:${snapshot.sessionKey}`, JSON.stringify(snapshot.annotations));
-        localStorage.setItem(`neurotrace:project:${snapshot.sessionKey}`, JSON.stringify({
-          version: 2,
-          annotations: snapshot.annotations,
-          recordingLabelsImported: snapshot.recordingLabelsImported,
-          candidates: snapshot.candidates,
-          activeCandidate: snapshot.activeCandidate,
-          reviewer: snapshot.reviewer,
-          matlabExportIdentity: matlabExportIdentityFromInterpretation(snapshot.sourceInterpretation),
-          savedAt: new Date().toISOString(),
-        }));
-        snapshot.recoveryStatus = "saved";
-        const workspace = tab?.directoryId && directoryCatalogWorkspacesRef.current.get(tab.directoryId);
-        if (workspace && tab?.directoryRecordingId && snapshot.recordingLabelsImported) {
-          workspace.eventRecovery ??= new Map();
-          workspace.eventRecovery.set(tab.directoryRecordingId, {
-            key: snapshot.sessionKey, duration: snapshot.meta.durationSec, channelCount: snapshot.meta.channelCount,
-          });
+      });
+      matlabCsvCacheRef.current.update(snapshot.sessionKey, group, csvRows);
+      const folder = tab?.directoryId ? directoryCatalogWorkspacesRef.current.get(tab.directoryId) : undefined;
+      const managed = folder?.review;
+      const reviewData = {
+        version: 2,
+        annotations: snapshot.annotations,
+        recordingLabelsImported: snapshot.recordingLabelsImported,
+        candidates: snapshot.candidates,
+        activeCandidate: snapshot.activeCandidate,
+        reviewer: managed?.reviewerId ?? snapshot.reviewer,
+        matlabExportIdentity: matlabExportIdentityFromInterpretation(snapshot.sourceInterpretation),
+        savedAt: new Date().toISOString(),
+      };
+      if (managed && tab?.directoryRecordingId) {
+        const prior = managed.recordings[tab.directoryRecordingId];
+        const completed = snapshot.candidates.some((candidate) => candidate.status === "reviewed" || candidate.status === "skipped")
+          || snapshot.annotations.some((item) => item.status === "committed" && item.origin !== "imported");
+        managed.recordings[tab.directoryRecordingId] = {
+          visitedAt: prior?.visitedAt ?? reviewData.savedAt,
+          completedAt: prior?.completedAt ?? (completed ? reviewData.savedAt : undefined),
+          review: reviewData, csvRows,
+          view: {
+            viewStart: snapshot.viewStart, timebase, gain, montage, filters, traceDisplayMode,
+            cursor: { time: cursorTime, locked: cursorLocked }, selectedChannels: snapshot.selectedChannels,
+            focusedChannel, channelSelectionActive, selectedAnnotationId, selection, snapMode, spectrogramOpen, spectrogramChannels, spectrogramAnchor,
+            anatomicalGroups, expandedChannels, channelScrollTop: snapshot.channelScrollTop,
+            waveformVerticalViewport, spectrogramFrequencyRange,
+          },
+        };
+        managed.position = tab.directoryRecordingId;
+        managed.updatedAt = reviewData.savedAt;
+        managed.library = labelLibrary;
+        managed.customTools = customTools;
+        managed.settings = {
+          controlBindings, hiddenLabelTypes: [...hiddenLabelTypes], labelKeywords, labelsVisible,
+          directoryEventQuery, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, rightPanelOpen, rightPanelView, bottomTracksOpen,
+        };
+        setReviewAutosaveStatus("saving");
+        const task = persistReviewWorkspace(managed);
+        reviewSavePromiseRef.current = task;
+        void task.then(
+          () => { if (reviewSavePromiseRef.current === task) setReviewAutosaveStatus("saved"); },
+          () => { if (reviewSavePromiseRef.current === task) setReviewAutosaveStatus("error"); },
+        );
+      } else {
+        try {
+          localStorage.setItem(`neurotrace:draft:${snapshot.sessionKey}`, JSON.stringify(snapshot.annotations));
+          localStorage.setItem(`neurotrace:project:${snapshot.sessionKey}`, JSON.stringify(reviewData));
+          snapshot.recoveryStatus = "saved";
+          const workspace = tab?.directoryId && directoryCatalogWorkspacesRef.current.get(tab.directoryId);
+          if (workspace && tab?.directoryRecordingId && snapshot.recordingLabelsImported) {
+            workspace.eventRecovery ??= new Map();
+            workspace.eventRecovery.set(tab.directoryRecordingId, {
+              key: snapshot.sessionKey, duration: snapshot.meta.durationSec, channelCount: snapshot.meta.channelCount,
+            });
+          }
+        } catch {
+          snapshot.recoveryStatus = "error";
         }
-      } catch {
-        snapshot.recoveryStatus = "error";
       }
     }
     sessionSnapshotsRef.current.set(activeSessionId, snapshot);
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, anatomicalGroups, annotations, candidates, companionBundle, cursorAmplitude, cursorLocked, cursorTime, customTools, expandedChannels, filters, focusedChannel, gain, hasRecording, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
+  }, [activeCandidate, activeSessionId, anatomicalGroups, annotations, bottomTracksOpen, candidates, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, directoryEventQuery, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2550,8 +2638,29 @@ export default function Home() {
   useEffect(() => {
     const flush = () => flushSessionRef.current();
     window.addEventListener("pagehide", flush);
-    return () => window.removeEventListener("pagehide", flush);
+    const onVisibility = () => { if (document.visibilityState === "hidden") flush(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!activeReviewIdentity || !hasRecording || verifyingSource || importBusy || reviewViewArrival || playing) return;
+    const timer = window.setTimeout(() => flushSessionRef.current(), 650);
+    return () => window.clearTimeout(timer);
+  }, [activeReviewIdentity, activeCandidate, annotations, anatomicalGroups, bottomTracksOpen, candidates, channelSelectionActive, controlBindings, cursorLocked, cursorTime,
+    customTools, directoryEventQuery, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, importBusy,
+    labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, montage, playing, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels,
+    selection, sessionKey, snapMode, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramFrequencyRange, spectrogramOpen, timebase,
+    traceDisplayMode, verifyingSource, viewStart, waveformVerticalViewport]);
+
+  useEffect(() => {
+    if (!activeReviewIdentity || !playing) return;
+    const timer = window.setInterval(() => flushSessionRef.current(), 5000);
+    return () => window.clearInterval(timer);
+  }, [activeReviewIdentity, playing]);
 
   useEffect(() => () => {
     sourceVerificationAbortRef.current?.abort();
@@ -2583,6 +2692,7 @@ export default function Home() {
     setUploadedFileInputs(snapshot.uploadedFileInputs);
     setCompanionBundle(snapshot.companionBundle);
     setCustomTools(snapshot.customTools ?? []);
+    setLabelLibrary(snapshot.labelLibrary ?? emptyLabelLibrary());
     setMeta(snapshot.meta);
     setSessionKey(snapshot.sessionKey);
     setReviewer(snapshot.reviewer);
@@ -2596,6 +2706,7 @@ export default function Home() {
     setFilters({ ...snapshot.filters });
     setSelectedChannels(new Set(snapshot.selectedChannels));
     setFocusedChannel(snapshot.focusedChannel);
+    setSpectrogramChannels(snapshot.spectrogramChannels ?? []);
     setChannelSelectionActive(false);
     setSpectrogramState(null);
     setSpectrogramAnchor(null);
@@ -2637,6 +2748,7 @@ export default function Home() {
     dragAnnotationRef.current = null;
     pendingAnnotationDragRef.current = null;
     setDirectoryEventArrival(null);
+    setReviewViewArrival(null);
     setPendingDat(null);
     setPendingLegacyMatFile(null);
     setPendingLegacyMeta(null);
@@ -2660,15 +2772,28 @@ export default function Home() {
     redoRef.current = snapshot.redo;
   }, [commitViewStart, setShowImport]);
 
-  const switchSession = useCallback((id: string) => {
+  const switchSession = useCallback((id: string, confirmedReview = false) => {
     if (importBusy || queuedDirectoryOpenRef.current || id === activeSessionId) return;
+    const tab = sessionTabs.find((item) => item.id === id);
+    const catalog = tab?.directoryId && directoryCatalogs.find((item) => item.id === tab.directoryId);
+    const managed = catalog ? directoryCatalogWorkspacesRef.current.get(catalog.id)?.review : undefined;
+    if (catalog && tab?.directoryRecordingId) {
+      if (managed && !canOpenReviewRecording(managed, catalog.plan, tab.directoryRecordingId)) {
+        setToast("Blind review blocks opening earlier recordings.");
+        return;
+      }
+      const completedAt = managed?.recordings[tab.directoryRecordingId]?.completedAt;
+      if (managed && completedAt && !confirmedReview && !window.confirm(
+        `Reviewer ${managed.reviewerId} already reviewed this recording. Open it again?`,
+      )) return;
+    }
     storeActiveSession();
     const snapshot = sessionSnapshotsRef.current.get(id);
     if (!snapshot) return;
     setActiveSessionId(id);
-    applySessionSnapshot(snapshot);
+    applySessionSnapshot(managed ? { ...snapshot, reviewer: managed.reviewerId, labelLibrary: managed.library, customTools: managed.customTools } : snapshot);
     setToast(snapshot.hasRecording ? "Session restored" : "Blank session ready — load a recording");
-  }, [activeSessionId, applySessionSnapshot, importBusy, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, directoryCatalogs, importBusy, sessionTabs, storeActiveSession]);
 
   const createBlankSession = useCallback(() => {
     if (importBusy || queuedDirectoryOpenRef.current) return;
@@ -2685,7 +2810,10 @@ export default function Home() {
 
   const closeSession = useCallback((id: string) => {
     if (importBusy || queuedDirectoryOpenRef.current) return;
-    if (id === activeSessionId) storeActiveSession();
+    if (id === activeSessionId) {
+      if (reviewViewArrival) return;
+      storeActiveSession();
+    }
     const closingSnapshot = sessionSnapshotsRef.current.get(id);
     if (closingSnapshot?.hasRecording && closingSnapshot.recoveryStatus === "error") {
       setToast("This session could not be saved locally — export it before closing the tab");
@@ -2695,24 +2823,30 @@ export default function Home() {
     const closingIndex = sessionTabs.findIndex((tab) => tab.id === id);
     let remaining = sessionTabs.filter((tab) => tab.id !== id);
     sessionSnapshotsRef.current.delete(id);
-    if (remaining.length === 0) {
+    const canAccess = (tab: SessionTab) => {
+      const catalog = directoryCatalogs.find((item) => item.id === tab.directoryId);
+      const review = catalog && directoryCatalogWorkspacesRef.current.get(catalog.id)?.review;
+      if (!catalog || !review || !tab.directoryRecordingId) return true;
+      return canOpenReviewRecording(review, catalog.plan, tab.directoryRecordingId) && !review.recordings[tab.directoryRecordingId]?.completedAt;
+    };
+    if (remaining.length === 0 || (id === activeSessionId && !remaining.some(canAccess))) {
       const replacementId = makeId("session");
       const replacementSnapshot = blankSessionSnapshot(demoSource, replacementId);
       sessionSnapshotsRef.current.set(replacementId, replacementSnapshot);
-      remaining = [{ id: replacementId, title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" }];
+      remaining = [...remaining, { id: replacementId, title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" }];
     }
     setSessionTabs(remaining);
     if (id !== activeSessionId) {
       setToast("Session tab closed; its local recovery remains available");
       return;
     }
-    const target = remaining[Math.min(Math.max(0, closingIndex), remaining.length - 1)];
+    const target = remaining.slice(closingIndex).find(canAccess) ?? remaining.find(canAccess);
     const snapshot = target ? sessionSnapshotsRef.current.get(target.id) : undefined;
     if (!target || !snapshot) return;
     setActiveSessionId(target.id);
     applySessionSnapshot(snapshot);
     setToast(snapshot.hasRecording ? "Session restored" : "Blank session ready — load a recording");
-  }, [activeSessionId, applySessionSnapshot, demoSource, detachDirectorySession, importBusy, sessionTabs, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, demoSource, detachDirectorySession, directoryCatalogs, importBusy, reviewViewArrival, sessionTabs, storeActiveSession]);
 
   const toggleSessionContentView = useCallback((id: string) => {
     if (importBusy) return;
@@ -3056,6 +3190,7 @@ export default function Home() {
         reviewer,
         notes: "",
         status: "draft",
+        dictionaryLabel: label.dictionaryLabel,
         candidateId: candidateMatches ? activeSourceCandidate.id : undefined,
         channelScope: label.id === "spikes" && primarySourceIndex !== undefined ? {
           displayLabel: display.labels[targetRow] ?? `Display row ${targetRow + 1}`,
@@ -3440,7 +3575,7 @@ export default function Home() {
     commitAnnotation(selectedAnnotation, force, advanceAfter), [commitAnnotation, selectedAnnotation]);
 
   useEffect(() => {
-    if (!hasRecording || verifyingSource) return;
+    if (!hasRecording || verifyingSource || activeReviewIdentity) return;
     const timer = window.setTimeout(() => {
       try {
         localStorage.setItem(`neurotrace:draft:${sessionKey}`, JSON.stringify(annotations));
@@ -3463,7 +3598,7 @@ export default function Home() {
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [activeCandidate, activeSessionId, annotations, candidates, hasRecording, reviewer, sessionKey, sourceInterpretation, verifyingSource]);
+  }, [activeCandidate, activeReviewIdentity, activeSessionId, annotations, candidates, hasRecording, reviewer, sessionKey, sourceInterpretation, verifyingSource]);
 
   // Progress must not repeatedly cancel a detailed read. Only coarse views
   // that can use the recording index subscribe to its incremental revisions.
@@ -4471,14 +4606,14 @@ export default function Home() {
     const anchor = spectrogramAnchor !== null && spectrogramAnchor >= signalViewStart && spectrogramAnchor <= signalViewStart + timebase
       ? spectrogramAnchor : signalViewStart + timebase / 2;
     try {
-      const plan = matlabSpectrogramInputPlan(meta, spectrogramSourceIndex, signalViewStart, timebase, anchor);
+      const plan = matlabSpectrogramInputPlan(meta, spectrogramSourceIndex, signalViewStart, timebase, anchor, spectrogramChannels);
       return { plan, error: "",
         requestKey: JSON.stringify([sessionKey, plan]) };
     } catch (error) {
       return { plan: null, error: error instanceof Error ? error.message : "Invalid spectrogram inputs",
         requestKey: JSON.stringify([sessionKey, signalViewStart, timebase, spectrogramSourceIndex]) };
     }
-  }, [meta, sessionKey, signalViewStart, spectrogramAnchor, spectrogramSourceIndex, timebase]);
+  }, [meta, sessionKey, signalViewStart, spectrogramAnchor, spectrogramChannels, spectrogramSourceIndex, timebase]);
 
   // Raw-group Gabor analysis covers the whole visible window. The worker asks
   // for bounded source slices; never send reduced waveform/montage samples.
@@ -4735,7 +4870,7 @@ export default function Home() {
       } else {
         for (const item of waveformAnnotations) {
           if (item.end < displayStart || item.start > displayEnd) continue;
-          const label = annotationLabel(item);
+          const label = annotationLabel(item, labelLibrary);
           if (!label) continue;
           const x1 = ((Math.max(item.start, displayStart) - displayStart) / timebase) * width;
           const geometry = annotationGeometry(item);
@@ -4925,7 +5060,7 @@ export default function Home() {
       performanceDiagnostics.removeCanvasSurface("waveform");
       performanceDiagnostics.removeCanvasSurface("waveform-frame");
     };
-  }, [activeCandidateTime, activeSessionContentView, activeCandidateVisible, displayAnnotations, channelRowLayout, channelSelectionActive, display, displaySettingsKey, expandedChannels, focusedChannel, gain, labelsVisible, legacyRawCountDisplay, markOnset, meta.durationSec, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, activeCandidateVisible, displayAnnotations, channelRowLayout, channelSelectionActive, display, displaySettingsKey, expandedChannels, focusedChannel, gain, labelLibrary, labelsVisible, legacyRawCountDisplay, markOnset, meta.durationSec, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -5792,11 +5927,17 @@ export default function Home() {
     keepSeparateSession = false,
   ) => {
     const targetSessionId = activeSessionId;
+    const reviewTab = sessionTabs.find((tab) => tab.id === targetSessionId);
+    const reviewFolder = reviewTab?.directoryId ? directoryCatalogWorkspacesRef.current.get(reviewTab.directoryId) : undefined;
+    const managedReview = reviewTab?.directoryRecordingId && reviewFolder?.sessions.get(reviewTab.directoryRecordingId)?.files.includes(file)
+      ? reviewFolder.review : undefined;
+    const savedReview = managedReview && reviewTab?.directoryRecordingId ? managedReview.recordings[reviewTab.directoryRecordingId] : undefined;
     if (importContext?.csvReviewRows?.length) sourceReviewCsvRowsRef.current.set(source, importContext.csvReviewRows);
     if (keepSeparateSession) {
       // Separate recovery state as well as tabs for identical bytes at distinct
       // session paths. This key is stable when the same directory is reselected.
-      interpretation = { ...interpretation, directory_session_path: relativeFilePath(file) };
+      interpretation = { ...interpretation, directory_session_path: relativeFilePath(file),
+        ...(managedReview ? { review_instance: managedReview.instanceId } : {}) };
     }
     const nextMeta = sourceMeta(source);
     const projectReviewPreview = pendingProjectImportRef.current?.review;
@@ -5836,6 +5977,7 @@ export default function Home() {
     setChannelSelectionActive(false);
     setSpectrogramState(null);
     setSpectrogramAnchor(null);
+    setSpectrogramChannels([]);
     // Do not clear cross-session LRUs here; entries are source-keyed and their
     // global byte ceilings evict the least-recently used recording as needed.
     setDisplay(EMPTY_DISPLAY);
@@ -5964,7 +6106,7 @@ export default function Home() {
     let projectJson: string | null = null;
     let recoveryReadable = true;
     try {
-      projectJson = localStorage.getItem(`neurotrace:project:${nextKey}`);
+      projectJson = managedReview ? savedReview ? JSON.stringify(savedReview.review) : null : localStorage.getItem(`neurotrace:project:${nextKey}`);
     } catch {
       recoveryReadable = false;
       recoveryWarning = "Local recovery is unavailable in this browser. This recording opened without recovered labels.";
@@ -5981,6 +6123,7 @@ export default function Home() {
         restoredMatlabExportIdentity = project.matlabExportIdentity;
         recordingLabelsImported = project.recordingLabelsImported;
       } catch {
+        if (managedReview) throw new Error("Saved annotations could not be validated for this recording.");
         const preserved = preserveUnreadableRecovery("project", projectJson);
         try {
           const usedDraft = restoreDraft();
@@ -5993,7 +6136,7 @@ export default function Home() {
           recoveryWarning = `Saved project and draft labels could not be verified${preserved ? "; the project was preserved for support" : ""}. This recording opened without recovered labels.`;
         }
       }
-    } else {
+    } else if (!managedReview) {
       try {
         restoreDraft();
       } catch {
@@ -6015,7 +6158,7 @@ export default function Home() {
     if (activeSessionIdRef.current !== targetSessionId) {
       throw new Error("The active session changed while the recording was opening. Load it again in the intended tab.");
     }
-    pendingEdfReviewNavigationRef.current = source instanceof EDFSource && !pendingProjectImportRef.current ? source : null;
+    pendingEdfReviewNavigationRef.current = source instanceof EDFSource && !pendingProjectImportRef.current && !savedReview ? source : null;
     sourceVerificationRef.current = false;
     if (sourceVerificationAbortRef.current === verificationAbortController) {
       sourceVerificationAbortRef.current = null;
@@ -6036,7 +6179,11 @@ export default function Home() {
     setSourceInterpretation(applyMatlabExportIdentity(interpretation, restoredMatlabExportIdentity ?? csvIdentity) ?? null);
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
-    setReviewer(restoredReviewer ?? "");
+    setReviewer(managedReview?.reviewerId ?? restoredReviewer ?? "");
+    if (managedReview) {
+      setLabelLibrary(managedReview.library);
+      setCustomTools(managedReview.customTools);
+    }
     recordingLabelsImportedRef.current = source instanceof EDFSource ? recordingLabelsImported : true;
     annotationsRef.current = restored;
     setAnnotations(restored);
@@ -6054,7 +6201,7 @@ export default function Home() {
       if (previousSnapshot && activeSessionIdRef.current === targetSessionId) applySessionSnapshot(previousSnapshot);
       throw error;
     }
-  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, detachDirectorySession, setShowImport, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, detachDirectorySession, sessionTabs, setShowImport, storeActiveSession]);
 
   const openOlderReviews = () => {
     setOlderReviewKey("");
@@ -6065,7 +6212,7 @@ export default function Home() {
   };
 
   const restoreOlderReview = () => {
-    if (!reviewReady || !olderReviews?.some((entry) => entry.key === olderReviewKey)) return;
+    if (!reviewReady || activeReviewIdentity || !olderReviews?.some((entry) => entry.key === olderReviewKey)) return;
     try {
       const raw = localStorage.getItem(olderReviewKey);
       if (!raw) throw new Error("This saved review is no longer available.");
@@ -6493,6 +6640,65 @@ export default function Home() {
     setSessionTabs((current) => current.filter((tab) => tab.id !== sessionId));
   }, [detachDirectorySession]);
 
+  useEffect(() => {
+    if (!reviewViewArrival || reviewViewArrival.sessionId !== activeSessionId || importBusy || !hasRecording) return;
+    const frame = window.requestAnimationFrame(() => {
+      const view = reviewViewArrival.view;
+      const number = (value: unknown, fallback: number) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
+      const indices = (value: unknown) => Array.isArray(value) ? [...new Set(value.filter((item): item is number =>
+        Number.isInteger(item) && item >= 0 && item < meta.channelCount))] : undefined;
+      const duration = meta.durationSec;
+      const windowSize = clamp(number(view.timebase, 20), Math.min(MIN_TIME_WINDOW_SECONDS, duration), duration);
+      setTimebase(windowSize);
+      commitViewStart(clamp(number(view.viewStart, 0), -windowSize / 2, Math.max(0, duration - windowSize / 2)));
+      setGain(normalizeDisplayGain(number(view.gain, 1)));
+      if (view.montage === "average" || view.montage === "referential" || view.montage === "bipolar") setMontage(view.montage);
+      setTraceDisplayMode(view.traceDisplayMode === "overlap" ? "overlap" : "clamped");
+      if (view.filters && typeof view.filters === "object") {
+        const filter = view.filters as Partial<DisplayFilterSettings>;
+        setFilters({
+          enabled: filter.enabled === true,
+          highPassHz: Math.max(0, number(filter.highPassHz, DEFAULT_FILTERS.highPassHz)),
+          lowPassHz: Math.max(1, number(filter.lowPassHz, DEFAULT_FILTERS.lowPassHz)),
+          notchHz: filter.notchHz === 50 || filter.notchHz === 60 ? filter.notchHz : 0,
+        });
+      }
+      const channels = indices(view.selectedChannels);
+      if (channels) setSelectedChannels(new Set(channels));
+      setFocusedChannel(clamp(Math.floor(number(view.focusedChannel, 0)), 0, Math.max(0, meta.channelCount - 1)));
+      setChannelSelectionActive(view.channelSelectionActive === true);
+      if (view.cursor && typeof view.cursor === "object") {
+        const cursor = view.cursor as { time?: unknown; locked?: unknown };
+        setCursorTime(clamp(number(cursor.time, 0), 0, duration));
+        setCursorLocked(cursor.locked === true);
+      }
+      const selection = view.selection as { start?: unknown; end?: unknown } | null | undefined;
+      const start = number(selection?.start, -1), end = number(selection?.end, -1);
+      setSelection(start >= 0 && end > start && end <= duration ? { start, end } : null);
+      const selected = typeof view.selectedAnnotationId === "string"
+        && annotationsRef.current.some((item) => item.id === view.selectedAnnotationId) ? view.selectedAnnotationId : null;
+      setSelectedAnnotationId(selected);
+      setSelectedAnnotationIds(new Set(selected ? [selected] : []));
+      if (view.snapMode === "none" || view.snapMode === "1s" || view.snapMode === "100ms" || view.snapMode === "sample") setSnapMode(view.snapMode);
+      setExpandedChannels(view.expandedChannels === true);
+      setAnatomicalGroups(view.anatomicalGroups !== false);
+      const vertical = view.waveformVerticalViewport as { top?: unknown; bottom?: unknown } | null | undefined;
+      const top = number(vertical?.top, -1), bottom = number(vertical?.bottom, -1);
+      setWaveformVerticalViewport(top >= 0 && bottom > top && bottom <= 1 ? { top, bottom } : null);
+      pendingZoomScrollRef.current = Math.max(0, number(view.channelScrollTop, 0));
+      setSpectrogramOpen(view.spectrogramOpen === true);
+      setSpectrogramChannels(indices(view.spectrogramChannels) ?? []);
+      const anchor = number(view.spectrogramAnchor, -1);
+      setSpectrogramAnchor(anchor >= 0 && anchor <= duration ? anchor : null);
+      const frequency = view.spectrogramFrequencyRange as { min?: unknown; max?: unknown } | null | undefined;
+      const min = number(frequency?.min, 0), max = number(frequency?.max, 150);
+      if (min >= 0 && max > min) setSpectrogramFrequencyRange({ min, max });
+      setPlaying(false);
+      setReviewViewArrival(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSessionId, commitViewStart, hasRecording, importBusy, meta.channelCount, meta.durationSec, reviewViewArrival]);
+
   const updateDirectoryStatus = useCallback((request: DirectoryOpenRequest, status: DirectorySessionStatus) => {
     if (!directoryCatalogWorkspacesRef.current.has(request.catalogId)) return;
     if (status.state === "loaded") {
@@ -6501,13 +6707,23 @@ export default function Home() {
         pendingEdfReviewNavigationRef.current = null;
         setDirectoryEventArrival({ sessionId: request.sessionId, event: request.event, incomplete: request.incompleteEventChecks });
       }
+      const managed = directoryCatalogWorkspacesRef.current.get(request.catalogId)?.review;
+      if (managed) {
+        const pass = directoryCatalogs.find(({ id }) => id === request.catalogId);
+        const index = (pass?.plan.unfilteredRecordings ?? pass?.plan.recordings)?.findIndex(({ id }) => id === request.recordingId) ?? -1;
+        managed.furthestIndex = Math.max(managed.furthestIndex, index);
+        const existing = managed.recordings[request.recordingId];
+        if (existing && !request.event && request.sessionId === activeSessionIdRef.current) {
+          setReviewViewArrival({ sessionId: request.sessionId, view: existing.view });
+        }
+      }
     }
     const workspace = directoryCatalogWorkspacesRef.current.get(request.catalogId);
     if (!workspace) return;
     const statuses = { ...workspace.statuses, [request.recordingId]: status };
     directoryCatalogWorkspacesRef.current.set(request.catalogId, { ...workspace, statuses });
     if (directoryCatalogIdRef.current === request.catalogId) setDirectoryStatuses(statuses);
-  }, [completeDirectoryReplacement]);
+  }, [completeDirectoryReplacement, directoryCatalogs]);
 
   useEffect(() => {
     const request = queuedDirectoryOpen;
@@ -6526,11 +6742,21 @@ export default function Home() {
     });
   }, [activeSessionId, queuedDirectoryOpen, updateDirectoryStatus]);
 
-  const openDirectoryRecording = (recording: DirectoryRecording, options?: { catalog: DirectoryCatalog; replaceSessionId?: string; event?: DirectoryTimedEvent; incompleteEventChecks?: number }) => {
+  const openDirectoryRecording = (recording: DirectoryRecording, options?: { catalog: DirectoryCatalog; replaceSessionId?: string; event?: DirectoryTimedEvent; incompleteEventChecks?: number; continuing?: boolean }) => {
     const catalog = options?.catalog ?? directoryCatalog;
     if (!catalog || importBusyRef.current || queuedDirectoryOpenRef.current) return;
     const workspace = directoryCatalogWorkspacesRef.current.get(catalog.id);
     if (!workspace) return;
+    if (workspace.review) {
+      if (!canOpenReviewRecording(workspace.review, catalog.plan, recording.id)) {
+        setToast("Blind review blocks opening earlier recordings.");
+        return;
+      }
+      const completedAt = workspace.review.recordings[recording.id]?.completedAt;
+      if (completedAt && !options?.continuing && !window.confirm(
+        `Reviewer ${workspace.review.reviewerId} already reviewed this recording on ${new Date(completedAt).toLocaleString()}. Open it again?`,
+      )) return;
+    }
     if (options?.replaceSessionId) {
       // Do not discard an unsaved review or another folder's viewed session.
       if (options.replaceSessionId !== activeSessionId || !hasRecording
@@ -6551,7 +6777,7 @@ export default function Home() {
     const existingPrimary = existing?.sessionId === activeSessionId ? primaryFile : snapshot?.primaryFile;
     const existingLoaded = existing?.sessionId === activeSessionId ? hasRecording : snapshot?.hasRecording;
     if (existingTab && existingLoaded && existingPrimary && existing.files.includes(existingPrimary)) {
-      const csvRows = directoryReviewCache(catalog.plan).byRecording.get(recording.id);
+      const csvRows = workspace.review ? undefined : directoryReviewCache(catalog.plan).byRecording.get(recording.id);
       if (csvRows?.length) {
         storeActiveSession();
         const saved = sessionSnapshotsRef.current.get(existingTab.id)!;
@@ -6568,7 +6794,7 @@ export default function Home() {
         sessionSnapshotsRef.current.set(existingTab.id, updated);
         setActiveSessionId(existingTab.id);
         applySessionSnapshot(updated);
-      } else switchSession(existingTab.id);
+      } else switchSession(existingTab.id, Boolean(workspace.review));
       if (existingTab.id !== options?.replaceSessionId) completeDirectoryReplacement(options?.replaceSessionId);
       if (options?.event) {
         setSessionTabs((current) => current.map((tab) => tab.id === existingTab.id ? { ...tab, contentView: "recording" } : tab));
@@ -6603,7 +6829,7 @@ export default function Home() {
     directorySessionTabsRef.current.set(recording.id, { sessionId, files: recording.files });
     const request: DirectoryOpenRequest = {
       catalogId: catalog.id, recordingId: recording.id, sessionId,
-      csvReviewRows: directoryReviewCache(catalog.plan).byRecording.get(recording.id),
+      csvReviewRows: workspace.review ? undefined : directoryReviewCache(catalog.plan).byRecording.get(recording.id),
       format: catalog.plan.format,
       files: directoryRecordingFiles(catalog.plan, recording),
       replaceSessionId: options?.replaceSessionId,
@@ -6619,6 +6845,7 @@ export default function Home() {
     if ((biasLocks && direction === -1) || importBusyRef.current || queuedDirectoryOpenRef.current || pendingDat) return;
     const catalog = directoryCatalogs.find((entry) => entry.id === catalogId);
     const activeTab = sessionTabs.find((tab) => tab.id === activeSessionId);
+    if (catalog?.review?.blind && direction === -1) return;
     const next = catalog && adjacentDirectoryRecording(catalog, activeTab, direction);
     if (!catalog || !next) return;
     openDirectoryRecording(next, { catalog, replaceSessionId: activeSessionId });
@@ -6684,9 +6911,17 @@ export default function Home() {
 
   const handleUploadedFiles = async (files: File[], keepSeparateSession = false, editDatMapping = false): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
+    if (activeReviewIdentity && files.some((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))) {
+      setUploadError({ title: "Open recording from the folder list", message: "Use the folder’s navigation or add a blank session to open a separate recording.", files: [] });
+      return;
+    }
     directoryConfirmationRef.current = null;
     const projectFile = files.find((file) => recordingExtension(file) === "neurotrace");
     if (projectFile) {
+      if (activeReviewIdentity) {
+        setUploadError({ title: "Review workspace is isolated", message: "Open legacy projects from a separate session.", files: [] });
+        return;
+      }
       return openNeurotraceProject(projectFile, keepSeparateSession);
     }
     if (!projectFileImportRef.current
@@ -6940,9 +7175,110 @@ export default function Home() {
     labelsVisible, saveOpen: showProjectSave,
   });
 
+  const openReviewerFolder = (plan: DirectoryImportPlan, review: ReviewWorkspace, continuing: boolean) => {
+    const recording = continuing && review.position ? plan.recordings.find(({ id }) => id === review.position) : plan.recordings[0];
+    if (!recording || !canOpenReviewRecording(review, plan, recording.id)) {
+      setUploadError({ title: "Saved recording is outside this selection", message: "Remove the folder filter to continue this review.", files: [] });
+      return;
+    }
+    const alreadyOpen = directoryCatalogs.find((catalog) => catalog.review?.instanceId === review.instanceId);
+    if (alreadyOpen) {
+      openDirectoryRecording(recording, { catalog: alreadyOpen, continuing });
+      setReviewResumePrompt(null);
+      setShowImport(false);
+      return;
+    }
+    // A reviewer change closes the other reviewer's tabs after the outgoing
+    // workspace has been saved by the import action.
+    const otherReviewerIds = new Set(directoryCatalogs.filter((catalog) =>
+      catalog.review && catalog.review.reviewerId !== review.reviewerId).map((catalog) => catalog.id));
+    const id = makeId("directory");
+    const catalog = { id, plan, review: { reviewerId: review.reviewerId, reviewSessionId: review.reviewSessionId,
+      instanceId: review.instanceId, blind: review.blind } };
+    const workspace: DirectoryCatalogWorkspace = { sessions: new Map(), statuses: {}, review };
+    directoryCatalogWorkspacesRef.current.set(id, workspace);
+    setDirectoryCatalogs((current) => [...current, catalog]);
+    setReviewResumePrompt(null);
+    setPortableReviewFile(null);
+    setStagedDirectoryPlan(null);
+    setShowImport(false);
+    setUploadError(null);
+    openDirectoryRecording(recording, { catalog, continuing });
+    if (otherReviewerIds.size) {
+      for (const tab of sessionTabs) {
+        if (tab.directoryId && otherReviewerIds.has(tab.directoryId)) sessionSnapshotsRef.current.delete(tab.id);
+      }
+      for (const otherId of otherReviewerIds) directoryCatalogWorkspacesRef.current.delete(otherId);
+      setSessionTabs((current) => current.filter((tab) => !tab.directoryId || !otherReviewerIds.has(tab.directoryId)));
+      setDirectoryCatalogs((current) => current.filter((item) => !otherReviewerIds.has(item.id)));
+    }
+    const settings = review.settings;
+    if (settings.controlBindings) setControlBindings(normalizeControlBindings(settings.controlBindings));
+    const textList = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+    setHiddenLabelTypes(new Set(textList(settings.hiddenLabelTypes)));
+    setLabelKeywords(typeof settings.labelKeywords === "string" ? settings.labelKeywords : "");
+    setLabelsVisible(settings.labelsVisible !== false);
+    if (Array.isArray(settings.enabledEphysLabelIds)) setEnabledEphysLabelIds(new Set(textList(settings.enabledEphysLabelIds)));
+    if (typeof settings.leftPanelOpen === "boolean") setLeftPanelOpen(settings.leftPanelOpen);
+    if (typeof settings.rightPanelOpen === "boolean") setRightPanelOpen(settings.rightPanelOpen);
+    if (settings.rightPanelView === "labels" || settings.rightPanelView === "inspect" || settings.rightPanelView === "resources") setRightPanelView(settings.rightPanelView);
+    if (typeof settings.bottomTracksOpen === "boolean") setBottomTracksOpen(settings.bottomTracksOpen);
+    setDirectoryEventQuery(typeof settings.directoryEventQuery === "string" ? settings.directoryEventQuery : plan.eventKeywordFilter ?? "");
+    setLabelLibrary(review.library);
+    setCustomTools(review.customTools);
+    try { localStorage.setItem("neurotrace:reviewer-id", review.reviewerId); } catch { /* optional preference */ }
+  };
+
   const submitGuidedImport = async (plan = stagedDirectoryPlan) => {
     if (!guidedImportReady || !plan?.recordings.length || importBusyRef.current || queuedDirectoryOpenRef.current) return;
-    const reviewFiles = plan.format === "neurotrace" ? [] : plan.supportingFiles.filter(isReviewCsv);
+    if (plan.format !== "neurotrace" && (reviewerProfileId.trim() || portableReviewFile)) {
+      const reviewerId = normalizeReviewerId(reviewerProfileId);
+      if (!reviewerId) {
+        setUploadError({ title: "Review workspace needs a reviewer ID and recordings",
+          message: "Use letters, numbers, or hyphens in your reviewer ID and select the original EDF or MATLAB recordings.", files: [] });
+        return;
+      }
+      importBusyRef.current = true;
+      setImportBusy(true);
+      setUploadError(null);
+      try {
+        if (activeReviewIdentity) {
+          flushSessionRef.current();
+          await reviewSavePromiseRef.current?.catch(() => {});
+        }
+        const folderKey = await reviewFolderKey(plan);
+        const workspaceFiles = plan.supportingFiles.filter((file) => isReviewWorkspaceFile(file)
+          && file.name.toUpperCase().startsWith(`REVIEWER-${reviewerId}_REVIEW-`));
+        const local = await listReviewWorkspaces(folderKey, reviewerId).catch(() => []);
+        const candidates = [...local];
+        for (const file of workspaceFiles) {
+          const workspace = await readReviewWorkspace(file).catch(() => null);
+          if (workspace?.reviewerId === reviewerId && workspace.folderKey === folderKey) candidates.push(workspace);
+        }
+        let selected: ReviewWorkspace | undefined;
+        if (portableReviewFile) {
+          selected = await readReviewWorkspace(portableReviewFile);
+          if (selected.reviewerId !== reviewerId || selected.folderKey !== folderKey) {
+            throw new Error("This workspace belongs to a different reviewer or folder.");
+          }
+          candidates.push(selected);
+        }
+        const nextId = Math.max(0, ...candidates.map((workspace) => workspace.reviewSessionId)) + 1;
+        const previous = candidates.filter((workspace) => workspace.position && (!selected || workspace.instanceId === selected.instanceId))
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? selected;
+        importBusyRef.current = false;
+        setImportBusy(false);
+        if (previous?.position) setReviewResumePrompt({ plan, review: previous, nextId });
+        else openReviewerFolder(plan, newReviewWorkspace(folderKey, reviewerId, nextId, startBlindReview), false);
+      } catch (error) {
+        setUploadError({ title: "Review workspace could not be opened", message: error instanceof Error ? error.message : "Could not read this workspace.", files: [] });
+      } finally {
+        importBusyRef.current = false;
+        setImportBusy(false);
+      }
+      return;
+    }
+    const reviewFiles = plan.format === "neurotrace" ? [] : plan.supportingFiles.filter((file) => isReviewCsv(file));
     if (reviewFiles.length) {
       importBusyRef.current = true;
       setImportBusy(true);
@@ -7205,6 +7541,107 @@ export default function Home() {
   const csvPatient = activeMatlabExportIdentity?.patientId || (csvDirectoryId
     ? directoryHeaders.find((header) => header.catalogId === csvDirectoryId)?.label : undefined) || effectivePatientLabel;
   const csvFileName = matlabAnnotationFilename(csvPatient, reviewer);
+  const saveReviewerWorkspace = async () => {
+    const folder = csvDirectoryId ? directoryCatalogWorkspacesRef.current.get(csvDirectoryId) : undefined;
+    if (!folder?.review || projectSaveBusy || sourceVerificationRef.current || importBusyRef.current || reviewViewArrival) return;
+    setProjectSaveBusy(true);
+    setProjectSaveError("");
+    setReviewOutputLinks(null);
+    try {
+      const picker = (window as Window & { showDirectoryPicker?: (options: { mode: "readwrite" }) => Promise<ReviewOutputDirectory> }).showDirectoryPicker;
+      if (picker && !folder.output) {
+        try { folder.output = await picker.call(window, { mode: "readwrite" }); }
+        catch (error) {
+          if (!(error instanceof DOMException && (error.name === "SecurityError" || error.name === "NotSupportedError"))) throw error;
+        }
+      }
+      flushSessionRef.current();
+      const review = structuredClone(folder.review);
+      const rows = Object.values(review.recordings).flatMap((item) => item.csvRows);
+      const compatibleRows = rows.filter((item) => item.sampling_rate !== "");
+      const csv = serializeMatlabAnnotations(compatibleRows);
+      const names = reviewWorkspaceNames(review);
+      if (folder.output) {
+        await writeReviewWorkspacePair(folder.output, review, csv);
+        folder.savedToDiskAt = review.updatedAt;
+        setShowProjectSave(false);
+        setToast(rows.length === compatibleRows.length ? "Saved workspace JSON and MATLAB CSV."
+          : "Saved both files. Mixed-rate reviews are included in the workspace JSON.");
+        notifyTutorialAction("annotations-saved");
+      } else {
+        setReviewOutputLinks({ names, json: new Blob([JSON.stringify(review)], { type: "application/json" }),
+          csv: new Blob([csv], { type: "text/csv;charset=utf-8" }) });
+        if (rows.length !== compatibleRows.length) setProjectSaveError("Mixed-rate reviews are included in the workspace JSON.");
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setProjectSaveError(error instanceof Error ? error.message : "Could not save the workspace.");
+    } finally { setProjectSaveBusy(false); }
+  };
+
+  const closeReviewerFolder = async () => {
+    if (!directoryCatalog || importBusyRef.current || queuedDirectoryOpenRef.current) return;
+    const id = directoryCatalog.id;
+    const workspace = directoryCatalogWorkspacesRef.current.get(id);
+    const managed = workspace?.review;
+    if (!managed) { clearDirectoryCatalog(); return; }
+    const closing = sessionTabs.filter((tab) => tab.directoryId === id);
+    const activeClosing = closing.some((tab) => tab.id === activeSessionId);
+    if (activeClosing) flushSessionRef.current();
+    importBusyRef.current = true;
+    setImportBusy(true);
+    let savedLocally = true;
+    try { await persistReviewWorkspace(managed); }
+    catch {
+      savedLocally = false;
+      if (workspace?.savedToDiskAt !== managed.updatedAt && !window.confirm(
+        "Browser autosave failed. Close this folder anyway? Save all into… keeps a portable copy.",
+      )) return;
+    } finally {
+      importBusyRef.current = false;
+      setImportBusy(false);
+    }
+    for (const tab of closing) sessionSnapshotsRef.current.delete(tab.id);
+    const remaining = sessionTabs.filter((tab) => tab.directoryId !== id);
+    if (activeClosing) {
+      const next = remaining.find((tab) => {
+        const catalog = directoryCatalogs.find((item) => item.id === tab.directoryId);
+        const review = catalog && directoryCatalogWorkspacesRef.current.get(catalog.id)?.review;
+        return !catalog || !review || (tab.directoryRecordingId && canOpenReviewRecording(review, catalog.plan, tab.directoryRecordingId)
+          && !review.recordings[tab.directoryRecordingId]?.completedAt);
+      });
+      const nextId = next?.id ?? makeId("session");
+      const snapshot = sessionSnapshotsRef.current.get(nextId) ?? blankSessionSnapshot(demoSource, nextId);
+      if (!next) {
+        sessionSnapshotsRef.current.set(nextId, snapshot);
+        remaining.push({ id: nextId, title: "Session 1", hasRecording: false, recoveryStatus: "saved", contentView: "recording" });
+      }
+      setActiveSessionId(nextId);
+      applySessionSnapshot(snapshot);
+    }
+    setSessionTabs(remaining);
+    directoryCatalogWorkspacesRef.current.delete(id);
+    directoryCatalogIdRef.current = null;
+    directorySessionTabsRef.current = new Map();
+    setDirectoryCatalogs((current) => current.filter((catalog) => catalog.id !== id));
+    setDirectoryCatalog(null);
+    setDirectoryStatuses({});
+    setShowDirectorySessions(false);
+    setToast(savedLocally ? "Folder closed. Review progress was autosaved." : "Folder closed. Browser autosave was unavailable.");
+  };
+
+  const markReviewRecordingComplete = () => {
+    const tab = sessionTabs.find((item) => item.id === activeSessionId);
+    const managed = tab?.directoryId ? directoryCatalogWorkspacesRef.current.get(tab.directoryId)?.review : undefined;
+    if (!managed || !tab?.directoryRecordingId || !reviewReady) return;
+    flushSessionRef.current();
+    const saved = managed.recordings[tab.directoryRecordingId];
+    if (saved) {
+      saved.completedAt ??= new Date().toISOString();
+      flushSessionRef.current();
+      setToast("Recording marked reviewed.");
+    }
+  };
   const collectCsvRows = () => {
     const group = csvDirectoryId ?? sessionKey;
     // Refresh open tabs; closed directory sessions remain as small export rows in the cache.
@@ -7286,7 +7723,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+    const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelLibrary || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -7326,7 +7763,7 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, olderReviews, pendingLabel, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
+  }, [confirmCommit.length, olderReviews, pendingLabel, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -7342,7 +7779,7 @@ export default function Home() {
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
       const editingTarget = target?.closest("input, textarea, select, [contenteditable='true']");
       if (target?.closest(".spectrogram-panel") && !clearShortcut && !historyShortcut) return;
-      const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+      const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelLibrary || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
       if (modalOpen && zoomShortcut && !editingTarget && !target?.closest("[data-shortcut-scope]")) {
         event.preventDefault();
         event.stopPropagation();
@@ -7368,6 +7805,7 @@ export default function Home() {
         else if (showAnnotationEditor) setShowAnnotationEditor(false);
         else if (queueDetailEntry) setQueueDetailTarget(null);
         else if (showProjectSave && !projectSaveBusy) setShowProjectSave(false);
+        else if (showLabelLibrary) setShowLabelLibrary(false);
         else if (showImport && !importBusy) setShowImport(false);
         else if (showDirectorySessions && !importBusy) setShowDirectorySessions(false);
         return;
@@ -7468,7 +7906,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, pendingLabel, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, pendingLabel, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (Math.max(0, viewStart) / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, ((Math.min(meta.durationSec, viewStart + timebase) - Math.max(0, viewStart)) / Math.max(1, meta.durationSec)) * 100);
@@ -7582,7 +8020,7 @@ export default function Home() {
 
   /** Explicit, synchronous view actions only. Never choose files, labels, or save contents. */
   const assistTutorial = (action: TutorialAssistAction): boolean => {
-    const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
+    const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelLibrary || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
       || showSessionMap || showPatientInfo || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
     if (modalOpen) return (action === "open-import" && showImport) || (action === "open-save" && showProjectSave)
       || (action === "open-settings" && showSettings)
@@ -7743,10 +8181,10 @@ export default function Home() {
                   onClick={() => openDirectoryCatalog(group.catalogId)}
                 ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M1.5 4.5V3h5l1.5 2h6.5v8H1.5z" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg><span className="directory-tab-name">{group.label}</span></button>
                 <div className="directory-tab-navigation">
-                  <button className={`directory-tab-step ${biasLocks ? "bias-locked" : ""}`} disabled={biasLocks || navigationBusy || !previous}
+                  <button className={`directory-tab-step ${biasLocks ? "bias-locked" : ""}`} disabled={biasLocks || navigationBusy || !previous || catalog?.review?.blind}
                     data-tutorial={group.sessionIds.includes(activeSessionId) ? "directory-previous" : undefined}
                     aria-label={`Previous file in ${group.label}${biasLocks ? " (locked by Bias Locks)" : ""}`}
-                    title={biasLocks ? "Backward directory navigation is locked by Bias Locks" : previous ? `Previous: ${previous.relativePath}` : "No previous file for the viewed session"}
+                    title={catalog?.review?.blind ? "Blind review blocks opening earlier recordings" : biasLocks ? "Backward directory navigation is locked by Bias Locks" : previous ? `Previous: ${previous.relativePath}` : "No previous file for the viewed session"}
                     onClick={() => navigateDirectoryRecording(group.catalogId, -1)}>{biasLocks
                       ? <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" /><path d="M5 7V4a3 3 0 0 1 6 0v3" /></svg>
                       : <span aria-hidden="true">‹</span>}</button>
@@ -7791,14 +8229,15 @@ export default function Home() {
           <button
             className="utility-button save-project-button"
             data-tutorial="save"
-            aria-label="Save annotations CSV"
+            aria-label={activeReviewIdentity ? "Save review workspace" : "Save annotations CSV"}
             aria-haspopup="dialog"
             aria-expanded={showProjectSave}
             aria-controls="project-save-dialog"
-            title="Save annotations CSV"
+            title={activeReviewIdentity ? "Save review workspace" : "Save annotations CSV"}
             disabled={!hasRecording || verifyingSource || importBusy || projectSaveBusy}
             onClick={() => {
               setProjectSaveError("");
+              setReviewOutputLinks(null);
               setShowProjectSave(true);
             }}
           ><span aria-hidden="true">⇩</span></button>
@@ -7869,7 +8308,7 @@ export default function Home() {
             </div>
             <div className="session-label-list">
               {!labelsVisible ? <div className="empty-session-labels"><strong>Labels hidden</strong><span>Show labels from the right panel to restore them.</span></div> : sessionContextAnnotations.length ? sessionContextAnnotations.map((item) => {
-                const label = annotationLabel(item);
+                const label = annotationLabel(item, labelLibrary);
                 return <button key={item.id} className={selectedAnnotationId === item.id ? "active" : ""} onClick={() => {
                   setSelectedAnnotationId(item.id);
                   setSelectedAnnotationIds(new Set([item.id]));
@@ -7950,7 +8389,7 @@ export default function Home() {
               <button className={`panel-bottom-button ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} title={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} onClick={() => setBottomTracksOpen((value) => !value)}><span className="bottom-panel-glyph" aria-hidden="true"><i /><i /><i /></span></button>
             </div>
             <span className="toolbar-kicker">Signal tools</span>
-            <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} data-tutorial="spectrogram-toggle" aria-label="Spectrogram" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
+            <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} data-tutorial="spectrogram-toggle" aria-label="Spectrogram" title="Shift-click channel names to average their spectrogram power" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
             <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">{bipolarMontageLabel(meta.channelLabels)}</option></select></label>
             <button
               className={`compact-toggle ${anatomicalGroups ? "active" : ""}`}
@@ -8110,7 +8549,7 @@ export default function Home() {
               <i />
               <span>OFFSET <b>{activeCandidateOffset === null ? "—" : formatRelativeTime(activeCandidateOffset - activeCandidateItem.time)}</b></span>
             </div>
-            <label className="candidate-review-field reviewer-field" data-tutorial="source-review-fields"><span>Reviewer</span><input value={reviewer} maxLength={12} placeholder="Initials" onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
+            <label className="candidate-review-field reviewer-field" data-tutorial="source-review-fields"><span>Reviewer</span><input value={reviewer} disabled={Boolean(activeReviewIdentity)} maxLength={12} placeholder="Initials" onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
             <label className="candidate-review-field confidence-score"><span>Confidence</span><select disabled={candidateDecisionLocked} value={activeCandidateItem.legacyConfidence ?? ""} onChange={(event) => {
               const value = event.target.value as Candidate["legacyConfidence"];
               updateActiveCandidateReview({ legacyConfidence: value, confidence: value ? Number(value) * 33 + (value === "3" ? 1 : 0) : 0 });
@@ -8138,6 +8577,10 @@ export default function Home() {
               <span className="directory-event-progress" role="status">{directoryEventProgress}</span>
               <button type="button" className="button quiet" onClick={cancelDirectoryEventSearch}>Cancel search</button>
             </>}
+          </div>}
+          {activeReviewIdentity && <div className="review-folder-status">
+            <span role="status">{activeReviewIdentity.reviewerId} · Review {activeReviewIdentity.reviewSessionId} · {reviewAutosaveStatus === "saved" ? "Autosaved" : reviewAutosaveStatus === "saving" ? "Saving…" : "Autosave unavailable"}{activeReviewIdentity.blind ? " · Blind review" : ""}</span>
+            <button type="button" className="button secondary" disabled={!reviewReady} onClick={markReviewRecordingComplete}>Mark reviewed</button>
           </div>}
           <div className="overview-block" data-tutorial="overview">
             <div className="overview-label"><span>FULL SESSION{sessionOverview.channelLabel ? ` · ${formatDisplayChannelLabel(sessionOverview.channelLabel)} · RAW RANGE` : ""}</span><strong>{formatClock(viewStart)} — {formatClock(viewStart + timebase)}</strong></div>
@@ -8191,19 +8634,29 @@ export default function Home() {
                 {display.labels.map((label, index) => {
                   const rowStyle = channelRailRowStyle(index);
                   if (!rowStyle) return null;
-                  const focused = channelSelectionActive
+                  const sourceIndex = display.primarySourceIndices[index];
+                  const combined = spectrogramChannels.includes(sourceIndex);
+                  const focused = combined || (channelSelectionActive
                     && !inspectionDragging
                     && !inspectionRange?.dragged
-                    && focusedChannel === index;
+                    && focusedChannel === index);
                   const rowReadout = readCursorReadout(display, index, cursorTime);
                   return <button
                     key={`${label}-${index}`}
-                    className={focused ? "focused" : ""}
+                    className={combined ? "focused spectrogram-selected" : focused ? "focused" : ""}
                     style={rowStyle}
                     aria-pressed={focused}
                     aria-label={anatomicalGroups ? label : undefined}
                     title={`${anatomicalGroups ? `${label} · ` : ""}${!displayReadoutReady ? "Signal readout unavailable" : formatCursorAmplitude(rowReadout)}`}
-                    onClick={() => {
+                    onClick={(event) => {
+                      if (event.shiftKey && sourceIndex >= 0) {
+                        const previous = channelSelectionActive ? display.primarySourceIndices[focusedChannel] : undefined;
+                        setSpectrogramChannels((current) => {
+                          if (current.includes(sourceIndex)) return current.filter((id) => id !== sourceIndex);
+                          const initial = previous !== undefined && previous >= 0 && previous !== sourceIndex ? [previous] : [];
+                          return [...(current.length ? current : initial), sourceIndex];
+                        });
+                      } else setSpectrogramChannels([]);
                       setFocusedChannel(index);
                       setChannelSelectionActive(true);
                       notifyTutorialAction("channel-focused");
@@ -8309,7 +8762,7 @@ export default function Home() {
                         title={`${bin.count} annotation${bin.count === 1 ? "" : "s"} in this overview interval — zoom in to edit`}
                       />;
                     }) : bottomAnnotations.filter((item) => item.track === track.id).map((item) => {
-                    const label = annotationLabel(item)!;
+                    const label = annotationLabel(item, labelLibrary)!;
                     const geometry = annotationGeometry(item);
                     const point = geometry === "point";
                     const visibleStart = point ? item.start : Math.max(item.start, viewStart);
@@ -8424,6 +8877,7 @@ export default function Home() {
           /> : <>
           <div className="ontology-search-row">
             <input className="palette-search" aria-label="Search label ontology" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
+            <button type="button" className="button secondary" onClick={() => setShowLabelLibrary(true)}>Label library</button>
           </div>
           <section className="compact-context-palette" data-tutorial="context-palette">
             <h2>Context Labels</h2>
@@ -8438,6 +8892,19 @@ export default function Home() {
                 </button>)}
             </div>
           </section>
+          {labelLibrary.labels.length > 0 && <section className="compact-context-palette">
+            <h2>Dictionary labels</h2>
+            <div className="compact-context-only">{labelLibrary.labels.filter((item) =>
+              `${item.name} ${item.code}`.toLowerCase().includes(paletteSearch.toLowerCase())).map((item) => {
+              const label = LABEL_BY_ID.get("dictionary-label")!;
+              const alias = labelLibrary.aliases.find((entry) => entry.key === `dictionary:${item.id}`);
+              return <button type="button" key={item.id} className="compact-palette-button context" disabled={!reviewReady}
+                style={{ "--label-color": label.color } as React.CSSProperties} title={alias?.description || item.description}
+                onClick={() => placePaletteLabel({ ...label, name: alias?.alias || item.name, short: item.code || item.name, dictionaryLabel: item })}>
+                <i />{alias?.alias || item.name}
+              </button>;
+            })}</div>
+          </section>}
           <section className="compact-ephys-palette" data-tutorial="ephys-palette">
             <div className="ephys-palette-heading">
               <h2>ePhys Labels</h2>
@@ -8531,6 +8998,9 @@ export default function Home() {
         </div>
       </div>}
 
+      {showLabelLibrary && <LabelLibraryEditor library={labelLibrary} types={labelTypeOptions}
+        onChange={setLabelLibrary} onClose={() => setShowLabelLibrary(false)} />}
+
       {showDirectorySessions && directoryCatalog && <DirectorySessions
         key={directoryCatalog.id}
         plan={directoryCatalog.plan}
@@ -8542,7 +9012,16 @@ export default function Home() {
           addDirectoryReviewRows(directoryCatalog.plan, matlabCsvCacheRef.current.rows(directoryCatalog.id));
         }}
         onClose={() => setShowDirectorySessions(false)}
-        onClear={clearDirectoryCatalog}
+        reviewMode={Boolean(directoryCatalog.review)}
+        reviewProgress={directoryCatalog.review ? (recording) => {
+          const saved = directoryCatalogWorkspacesRef.current.get(directoryCatalog.id)?.review?.recordings[recording.id];
+          return saved?.completedAt ? "Reviewed" : saved?.visitedAt ? "Visited" : undefined;
+        } : undefined}
+        canOpen={(recording) => {
+          const review = directoryCatalogWorkspacesRef.current.get(directoryCatalog.id)?.review;
+          return !review || canOpenReviewRecording(review, directoryCatalog.plan, recording.id);
+        }}
+        onClear={directoryCatalog.review ? () => void closeReviewerFolder() : clearDirectoryCatalog}
       />}
 
       {showImport && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !importBusy) setShowImport(false); }}>
@@ -8606,7 +9085,29 @@ export default function Home() {
                 <p>All recording filenames match {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : stagedDirectoryPlan.format === "neurotrace" ? "NeuroTrace projects" : "paired MAT + DAT"}. File contents are checked when each session opens.</p>
                 <p>The first matching recording opens when you load the folder.</p>
               </div>
-              <DirectoryImportFilters plan={stagedDirectoryPlan} busy={importBusy} onLoad={submitGuidedImport} />
+              {reviewResumePrompt ? <section className="review-folder-setup" aria-label="Continue saved review">
+                <strong>Continue where you left off?</strong>
+                <span>{reviewResumePrompt.review.reviewerId} · Review {reviewResumePrompt.review.reviewSessionId} · {Object.values(reviewResumePrompt.review.recordings).filter((recording) => recording.visitedAt).length} visited · {Object.values(reviewResumePrompt.review.recordings).filter((recording) => recording.completedAt).length} reviewed</span>
+                <span>{(reviewResumePrompt.plan.unfilteredRecordings ?? reviewResumePrompt.plan.recordings).find((recording) => recording.id === reviewResumePrompt.review.position)?.relativePath}</span>
+                {reviewResumePrompt.review.position && reviewResumePrompt.review.recordings[reviewResumePrompt.review.position]?.completedAt &&
+                  <small>You already reviewed this recording. Continuing opens your saved annotations.</small>}
+                <div className="modal-actions">
+                  <button type="button" className="button secondary" onClick={() => setReviewResumePrompt(null)}>Back</button>
+                  <button type="button" className="button secondary" onClick={() => openReviewerFolder(reviewResumePrompt.plan,
+                    newReviewWorkspace(reviewResumePrompt.review.folderKey, reviewResumePrompt.review.reviewerId, reviewResumePrompt.nextId, startBlindReview), false)}>Start new review</button>
+                  <button type="button" className="button primary" onClick={() => openReviewerFolder(reviewResumePrompt.plan, reviewResumePrompt.review, true)}>Continue review</button>
+                </div>
+              </section> : <>
+                {stagedDirectoryPlan.format !== "neurotrace" && <div className="review-folder-setup">
+                  <label className="form-field"><span>Reviewer ID</span><input value={reviewerProfileId} maxLength={32} placeholder="R017"
+                    disabled={importBusy} onChange={(event) => setReviewerProfileId(event.target.value)} /></label>
+                  <small>Enter your ID for autosave and folder recovery. Leave blank to browse.</small>
+                  <label><input type="checkbox" checked={startBlindReview} disabled={importBusy} onChange={(event) => setStartBlindReview(event.target.checked)} /> Blind review (forward only)</label>
+                  <label className="form-field"><span>Open workspace JSON (optional)</span><input type="file" accept=".json,application/json"
+                    disabled={importBusy} onChange={(event) => setPortableReviewFile(event.target.files?.[0] ?? null)} /></label>
+                </div>}
+                <DirectoryImportFilters plan={stagedDirectoryPlan} busy={importBusy} onLoad={submitGuidedImport} />
+              </>}
             </section>}
           </>}
           {uploadError && <div className="upload-error" role="alert" aria-live="assertive">
@@ -8651,8 +9152,26 @@ export default function Home() {
       </div>}
 
       {showProjectSave && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !projectSaveBusy) setShowProjectSave(false); }}>
-        <div id="project-save-dialog" className="modal project-save-modal" data-tutorial="save-dialog" role="dialog" aria-modal="true" aria-label="Save annotations CSV" tabIndex={-1}>
-          <button className="modal-close" disabled={projectSaveBusy} onClick={() => setShowProjectSave(false)} aria-label="Close CSV save">×</button>
+        <div id="project-save-dialog" className="modal project-save-modal" data-tutorial="save-dialog" role="dialog" aria-modal="true" aria-label={activeReviewIdentity ? "Save review workspace" : "Save annotations CSV"} tabIndex={-1}>
+          <button className="modal-close" disabled={projectSaveBusy} onClick={() => setShowProjectSave(false)} aria-label={activeReviewIdentity ? "Close workspace save" : "Close CSV save"}>×</button>
+          {activeReviewIdentity ? <>
+            <h2>Save review workspace</h2>
+            <p>{activeReviewIdentity.reviewerId} · Review {activeReviewIdentity.reviewSessionId}</p>
+            <ul className="review-output-names" data-tutorial="save-details">
+              <li>{reviewWorkspaceNames(activeReviewIdentity).annotations}</li>
+              <li>{reviewWorkspaceNames(activeReviewIdentity).workspace}</li>
+            </ul>
+            <p>The workspace includes review progress, all labels, settings, and the label library. The MATLAB CSV includes accepted source-event reviews.</p>
+            {projectSaveError && <div className="project-save-error" role="alert">{projectSaveError}</div>}
+            <footer className="project-save-footer">
+              {reviewOutputLinks?.names.workspace === reviewWorkspaceNames(activeReviewIdentity).workspace && <>
+                <button type="button" className="button secondary" onClick={() => downloadBlob(reviewOutputLinks.names.workspace, reviewOutputLinks.json)}>Download workspace JSON</button>
+                <button type="button" className="button secondary" onClick={() => downloadBlob(reviewOutputLinks.names.annotations, reviewOutputLinks.csv)}>Download MATLAB CSV</button>
+              </>}
+              <button type="button" className="button primary" data-tutorial="save-confirm" disabled={projectSaveBusy || !reviewReady}
+                onClick={() => void saveReviewerWorkspace()}>{projectSaveBusy ? "Saving…" : "Save all into…"}</button>
+            </footer>
+          </> : <>
           <h2>Save annotations</h2>
           <div className="csv-export-all">
             <div><strong>All labels CSV</strong><p>{annotations.length ? `Download ${annotations.length} labels from this recording, including drafts and imported labels.` : "There are no labels in this recording yet."}</p></div>
@@ -8675,6 +9194,7 @@ export default function Home() {
             <span>Choose an existing MATLAB CSV to retain earlier rows and update matching events. Browsers without a save-location dialog download a new CSV.</span>
             <button className="button primary" data-tutorial="save-confirm" disabled={projectSaveBusy || !hasRecording || verifyingSource || !reviewer.trim()} onClick={() => void saveAnnotationsCsv()}>{projectSaveBusy ? "Saving…" : "Save MATLAB CSV"}</button>
           </footer>
+          </>}
         </div>
       </div>}
 
@@ -8761,7 +9281,7 @@ export default function Home() {
           <button className="modal-close" onClick={() => setShowSettings(false)} aria-label="Close Settings">×</button>
           <h2>Settings</h2>
           <section className="settings-section">
-            <button className="button secondary" disabled={!reviewReady} data-tutorial="older-review-open" onClick={openOlderReviews}>Restore older browser review…</button>
+            <button className="button secondary" disabled={!reviewReady || Boolean(activeReviewIdentity)} data-tutorial="older-review-open" onClick={openOlderReviews}>Restore older browser review…</button>
           </section>
           <section className="settings-section bias-locks-settings" data-tutorial="bias-locks">
             <div><strong id="bias-locks-label">Bias Locks</strong><p id="bias-locks-description">Disable the directory Previous button to prevent backward navigation. Next stays available.</p></div>
@@ -8792,7 +9312,7 @@ export default function Home() {
             <div><span>Recording start</span><strong>{formatSessionStart(meta.startedAt)}</strong></div>
             <div><span>Local recording ID</span><strong className="hash-text" title={verifyingSource ? "Opening recording" : sourceHash}>{sourceHashDisplay}</strong></div>
             <div><span>Source channels</span><strong>{meta.channelLabels.length}</strong></div>
-            <label><span>Reviewer initials</span><input value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
+            <label><span>Reviewer initials</span><input value={reviewer} disabled={Boolean(activeReviewIdentity)} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
             {activeMatlabExportIdentity && <>
               <div className="matlab-identity-note"><span>MATLAB export identity</span><strong>Editable without changing the recording recovery key</strong></div>
               <label className="matlab-identity-field"><span>MATLAB patient ID</span><input value={activeMatlabExportIdentity.patientId} onChange={(event) => updateMatlabExportIdentity({ patientId: event.target.value })} /></label>
@@ -8862,10 +9382,13 @@ export default function Home() {
           <button className="modal-close" onClick={() => setShowAnnotationEditor(false)} aria-label="Close annotation editor">×</button>
           <span className="modal-eyebrow">ANNOTATION EDITOR</span>
           <div className="annotation-editor-heading">
-            <div className="selected-label" style={{ "--label-color": annotationLabel(selectedAnnotation)?.color } as React.CSSProperties}><i /><div><strong>{annotationLabel(selectedAnnotation)?.name}</strong><span>{selectedGeometry} label · {selectedAnnotation.track} track · revision {selectedAnnotation.revision}</span></div></div>
+            <div className="selected-label" style={{ "--label-color": annotationLabel(selectedAnnotation)?.color } as React.CSSProperties}><i /><div><strong>{annotationLabel(selectedAnnotation, labelLibrary)?.name}</strong><span>{selectedGeometry} label · {selectedAnnotation.track} track · revision {selectedAnnotation.revision}</span></div></div>
             <span className={`revision-state ${selectedAnnotation.status}`}>{selectedAnnotation.status}</span>
           </div>
           <div className="inspector-form">
+            {labelLibrary.aliases.find((alias) => alias.key === annotationLabelTypeKey(selectedAnnotation))?.description && <p>
+              {labelLibrary.aliases.find((alias) => alias.key === annotationLabelTypeKey(selectedAnnotation))?.description}
+            </p>}
             {selectedAnnotation.recordingLabel && <section className="recording-label-evidence" aria-label="Original recording label">
               <strong>Original recording label · {selectedAnnotation.recordingLabel.source.toUpperCase()}</strong>
               <p>{selectedAnnotation.recordingLabel.label}</p>
@@ -8882,7 +9405,7 @@ export default function Home() {
             }}>Go to source event</button></div>}
             <div className="time-fields"><label><span>Start (s)</span><input type="number" step="0.001" value={selectedAnnotation.start} disabled={selectedGeometry === "session" || selectedCandidateDecisionLocked} onChange={(event) => updateAnnotation(selectedAnnotation.id, { start: clamp(Number(event.target.value), 0, selectedGeometry === "interval" ? selectedAnnotation.end : meta.durationSec) })} /></label><label><span>End (s)</span><input type="number" step="0.001" value={selectedAnnotation.end} disabled={selectedGeometry !== "interval" || selectedCandidateDecisionLocked} onChange={(event) => updateAnnotation(selectedAnnotation.id, { end: clamp(Number(event.target.value), selectedAnnotation.start, meta.durationSec) })} /></label></div>
             <div className="duration-line"><span>{formatClock(selectedAnnotation.start, true)}</span><i /><span>{(selectedAnnotation.end - selectedAnnotation.start).toFixed(3)} s</span></div>
-            <label className="form-field"><span>Reviewer</span><input disabled={selectedCandidateDecisionLocked} value={selectedAnnotation.reviewer} onChange={(event) => updateAnnotation(selectedAnnotation.id, { reviewer: event.target.value })} /></label>
+            <label className="form-field"><span>Reviewer</span><input disabled={selectedCandidateDecisionLocked || Boolean(activeReviewIdentity)} value={activeReviewIdentity?.reviewerId ?? selectedAnnotation.reviewer} onChange={(event) => updateAnnotation(selectedAnnotation.id, { reviewer: event.target.value })} /></label>
             <label className="confidence-field"><span>Confidence <strong>{selectedAnnotation.confidence}%</strong></span><input disabled={selectedCandidateDecisionLocked} type="range" min="0" max="100" value={selectedAnnotation.confidence} onChange={(event) => updateAnnotation(selectedAnnotation.id, { confidence: Number(event.target.value) }, false)} /></label>
             <label className="form-field"><span>Clinical / review note</span><textarea disabled={selectedCandidateDecisionLocked} rows={4} placeholder="Evidence, uncertainty, or rationale…" value={selectedAnnotation.notes} onChange={(event) => updateAnnotation(selectedAnnotation.id, { notes: event.target.value }, false)} /></label>
             <div className="inspector-actions"><button className="button primary" onClick={() => {

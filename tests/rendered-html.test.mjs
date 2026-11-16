@@ -335,7 +335,7 @@ test("renders accessible session tabs and isolates each session workspace", asyn
   const switchEnd = page.indexOf("const createBlankSession", switchStart);
   const switchSession = page.slice(switchStart, switchEnd);
   assert.ok(
-    switchSession.indexOf("storeActiveSession()") < switchSession.indexOf("applySessionSnapshot(snapshot)"),
+    switchSession.indexOf("storeActiveSession()") < switchSession.indexOf("applySessionSnapshot(managed ?"),
     "the outgoing workspace is saved before the target workspace is restored",
   );
 
@@ -669,7 +669,7 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
   assert.match(page, /enabledEphysLabelIds\.has\(item\.id\)/, "disabled types are filtered from the palette");
   assert.match(page, /className="modal ephys-label-picker" role="dialog" aria-modal="true"/, "the picker opens outside the sidebar as a modal");
   assert.ok(page.indexOf('id="ephys-label-picker"') > page.indexOf('</aside>'), "the picker is not clipped by the right panel");
-  assert.match(page, /const modalOpen = pendingLabel !== null \|\| olderReviews !== null \|\| showLabelVisibilityFilter \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
+  assert.match(page, /const modalOpen = pendingLabel !== null \|\| olderReviews !== null \|\| showLabelLibrary \|\| showLabelVisibilityFilter \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
   assert.match(page, /else if \(showEphysLabelPicker\) setShowEphysLabelPicker\(false\)/, "Escape closes the picker without clearing the waveform selection");
   assert.match(page, /aria-label="Close ePhys label picker"/);
   assert.match(css, /\.ephys-label-picker\s*\{[^}]*width:\s*min\(520px, calc\(100vw - 32px\)\)/, "the popup fits narrow viewports independently of the sidebar");
@@ -751,7 +751,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
     /\[activeCandidateTime, activeSessionContentView,[^\]]*inspection(?:Dragging|Range)/,
     "the DOM inspection rectangle updates without retracing busy waveform paths",
   );
-  assert.match(page, /const focused = channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
+  assert.match(page, /const focused = combined \|\| \(channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
   assert.doesNotMatch(page, /inspectionHighlighted|inspection-highlighted/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
   assert.match(css, /\.box-zoom-button\s*\{[^}]*width:\s*31px/);
@@ -1070,7 +1070,7 @@ test("highlights a focused channel and provides compact or vertically scrollable
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /const focused = channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
+  assert.match(page, /const focused = combined \|\| \(channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
   assert.match(page, /aria-pressed=\{focused\}/);
   assert.match(page, /setFocusedChannel\(index\)[\s\S]*?setChannelSelectionActive\(true\)/);
   assert.match(page, /setChannelSelectionActive\(false\)/);

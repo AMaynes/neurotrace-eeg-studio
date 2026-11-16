@@ -43,7 +43,8 @@ function executable(code, result, env) {
   return new Function(...Object.keys(env), `${javascript}\nreturn ${result};`)(...Object.values(env));
 }
 function handler(name, env, helpers = []) {
-  return executable([...helpers, name].map(declaration).join("\n"), name, { directoryReviewCache, isReviewCsv, loadDirectoryReviewCsvs, ...env });
+  return executable([...helpers, name].map(declaration).join("\n"), name, { reviewerProfileId: "", portableReviewFile: null, activeReviewIdentity: undefined,
+    reviewViewArrival: null, directoryCatalogs: [], directoryReviewCache, isReviewCsv, loadDirectoryReviewCsvs, ...env });
 }
 function state(env, key, initial) {
   env[key] = initial;
@@ -1253,7 +1254,7 @@ test("directory path remains in recovery identity while ordinary imports retain 
   const scoped = (file, keepSeparateSession) => executable(
     `let interpretation = initial; ${pathGuard.getText(syntax)}`,
     "interpretation",
-    { file, keepSeparateSession, relativeFilePath, initial: { kind: "raw-int16-le", sample_rate_hz: 250, patient_id_hint: "synthetic" } },
+    { file, keepSeparateSession, managedReview: undefined, relativeFilePath, initial: { kind: "raw-int16-le", sample_rate_hz: 250, patient_id_hint: "synthetic" } },
   );
   const first = identity(scoped(fileAt("root/session1/trace.dat"), true));
   const second = identity(scoped(fileAt("root/session2/trace.dat"), true));

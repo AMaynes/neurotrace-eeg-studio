@@ -18,6 +18,9 @@ type DirectorySessionsProps = {
   statuses: Record<string, DirectorySessionStatus>;
   onOpen(recording: DirectoryRecording): void;
   onPrepareResume?(): void;
+  reviewMode?: boolean;
+  reviewProgress?(recording: DirectoryRecording): string | undefined;
+  canOpen?(recording: DirectoryRecording): boolean;
   onClose(): void;
   onClear(): void;
 };
@@ -32,7 +35,7 @@ const STATUS_LABELS = {
 };
 
 /** On-demand session catalog with a cancellable, metadata-only event-label index. */
-export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear, onPrepareResume }: DirectorySessionsProps) {
+export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear, onPrepareResume, reviewMode, reviewProgress, canOpen }: DirectorySessionsProps) {
   const searchSupported = supportsDirectoryEventSearch(plan.format) || Boolean(plan.unfilteredRecordings);
   const cache = directoryEventCache(plan);
   const [requestedPage, setRequestedPage] = useState(0);
@@ -100,7 +103,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
         <span>{loadedCount.toLocaleString()} open</span>
         {errorCount > 0 && <span>{errorCount.toLocaleString()} need attention</span>}
       </div>
-      <DirectoryReviewControls plan={plan} busy={busy} onBusyChange={setReviewBusy} onResume={onOpen} onPrepareResume={onPrepareResume} />
+      {!reviewMode && <DirectoryReviewControls plan={plan} busy={busy} onBusyChange={setReviewBusy} onResume={onOpen} onPrepareResume={onPrepareResume} />}
       <div className="directory-event-search">
         <label htmlFor="directory-event-query">Filter sessions by event label</label>
         <div className="directory-event-search-row" data-unsupported={!searchSupported || undefined}
@@ -141,6 +144,8 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
       <ol className="directory-sessions-list" aria-label="Recordings in directory" start={first + 1}>
         {visible.map(({ recording, index }) => {
           const status = statuses[recording.id];
+          const progress = reviewProgress?.(recording);
+          const locked = canOpen?.(recording) === false;
           const labelIndex = searchSupported ? cache.entries[recording.id] : undefined;
           const matchingLabels = labelIndex?.labels.filter((label) => !searching || matchesLabels([label])) ?? [];
           const action = status?.state === "loaded" || status?.state === "confirmation" ? "Resume"
@@ -151,10 +156,11 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
               <strong className="directory-session-path">{recording.relativePath}</strong>
               <span className="directory-session-meta">Session {(index + 1).toLocaleString()} · {FORMAT_NAMES[plan.format]}{plan.format === "mat-dat" ? " pair" : ""}</span>
               <span className="directory-session-state" data-state={status?.state ?? "ready"}>{status ? status.message || STATUS_LABELS[status.state] : "Ready to open"}</span>
+              {(progress || locked) && <span className="directory-session-state">{progress}{locked ? `${progress ? " · " : ""}Locked by blind review` : ""}</span>}
               {searchSupported && <span className="directory-session-events" title={matchingLabels.join(" · ")}>{matchingLabels.length ? `Events: ${matchingLabels.slice(0, 3).join(" · ")}${matchingLabels.length > 3 ? ` · +${matchingLabels.length - 3} more` : ""}` : labelIndex?.state === "ready" ? "No supported event labels found" : checking === recording.id && !busy ? "Checking event labels…" : "Event labels not fully checked"}</span>}
               {!!labelIndex?.warnings.length && <details className="directory-event-warning"><summary>Event-label check incomplete</summary>{labelIndex.warnings.map((warning) => <p key={warning}>{warning}</p>)}</details>}
             </div>
-            <button type="button" className="button secondary" disabled={catalogBusy || status?.state === "opening"} aria-label={`${action} ${recording.relativePath}`} onClick={() => onOpen(recording)}>{action}</button>
+            <button type="button" className="button secondary" disabled={catalogBusy || status?.state === "opening" || locked} aria-label={`${action} ${recording.relativePath}`} onClick={() => onOpen(recording)}>{action}</button>
           </li>;
         })}
         {!visible.length && <li className="directory-event-empty">{uncheckedCount ? "No matches found yet. Some sessions have not been fully checked." : "No sessions contain these event-label keywords."}</li>}
@@ -168,8 +174,8 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
         ? "Projects open from their saved contents. Nearby files are not added to a project. Projects saved without recording data require the matching original recording to be opened separately."
         : "Recordings are checked as they open. MAT + DAT pairs use their companion metadata when available. Directory review state is separate from individual-file imports."}</p>
       <footer className="directory-sessions-footer">
-        <span>Clearing this list does not delete files or close sessions already open.</span>
-        <button type="button" className="button secondary" disabled={busy} onClick={onClear}>Clear directory list</button>
+        <span>{reviewMode ? "Review progress is kept in this browser." : "Clearing this list does not delete files or close sessions already open."}</span>
+        <button type="button" className="button secondary" disabled={busy} onClick={onClear}>{reviewMode ? "Close folder" : "Clear directory list"}</button>
       </footer>
     </div>
   </div>;

@@ -55,7 +55,7 @@ test("lets the spectrogram replace the waveform pane without changing the wavefo
   assert.doesNotMatch(page, /spectrogramCanUseExactSamples/);
   assert.match(page, /setSpectrogramState/);
   assert.match(page, /const spectrogramSourceIndex = display\.primarySourceIndices\[focusedChannel\]/);
-  assert.match(page, /matlabSpectrogramInputPlan\(meta, spectrogramSourceIndex, signalViewStart, timebase, anchor\)/);
+  assert.match(page, /matlabSpectrogramInputPlan\(meta, spectrogramSourceIndex, signalViewStart, timebase, anchor, spectrogramChannels\)/);
   assert.match(page, /readMatlabSourceWindow\(source, start, \(count \+ 1\) \/ plan\.sampleRate/);
   assert.match(page, /windowData\.data\[position\]\.slice\(begin, begin \+ count\)/);
   assert.doesNotMatch(page, /data: exact\?\.data \?\? display\.data/);

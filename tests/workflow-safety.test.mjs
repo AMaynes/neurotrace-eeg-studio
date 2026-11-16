@@ -91,12 +91,12 @@ test("committed deletion is confirmed and canceled actions keep the editor open"
   assert.match(editor, /className="icon-danger"[\s\S]*?deleteAnnotation\(selectedAnnotation\.id\)[\s\S]*?disabled=\{selectedCandidateDecisionLocked\}\s+title="Delete annotation"/);
 });
 
-test("reviewer identity stays with its recording rather than a browser-wide preference", async () => {
+test("unmanaged review identity stays with its recording", async () => {
   const page = await pageSource();
-  assert.doesNotMatch(page, /neurotrace:reviewer/);
+  assert.match(page, /setReviewerProfileId\(localStorage\.getItem\("neurotrace:reviewer-id"\)/);
   assert.match(page, /reviewer:\s*""[\s\S]*?sessionSnapshotsRef\.current\.set\(id,\s*snapshot\)/);
-  assert.match(page, /setReviewer\(restoredReviewer\s*\?\?\s*""\)/);
-  assert.match(page, /reviewer:\s*snapshot\.reviewer/);
+  assert.match(page, /setReviewer\(managedReview\?\.reviewerId\s*\?\?\s*restoredReviewer\s*\?\?\s*""\)/);
+  assert.match(page, /reviewer:\s*managed\?\.reviewerId\s*\?\?\s*snapshot\.reviewer/);
 });
 
 test("global shortcuts leave native controls alone and reserve Enter and Space for the waveform", async () => {

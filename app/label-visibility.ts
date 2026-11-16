@@ -2,6 +2,7 @@
 export interface LabelTypeAnnotation {
   labelId: string;
   recordingLabel?: { label: string };
+  dictionaryLabel?: { id: string; name: string };
 }
 
 export interface LabelTypeOption {
@@ -17,6 +18,7 @@ export function recordingLabelTypeKey(name: string): string {
 }
 
 export function annotationLabelTypeKey(annotation: LabelTypeAnnotation): string {
+  if (annotation.labelId === "dictionary-label" && annotation.dictionaryLabel) return `dictionary:${annotation.dictionaryLabel.id}`;
   return annotation.labelId === "recording-label" && annotation.recordingLabel
     ? recordingLabelTypeKey(annotation.recordingLabel.label)
     : `annotation:${annotation.labelId}`;
@@ -42,7 +44,7 @@ export function collectLabelTypes(
   };
   for (const annotation of annotations) {
     const fileLabel = annotation.labelId === "recording-label" ? annotation.recordingLabel?.label : undefined;
-    add(annotationLabelTypeKey(annotation), fileLabel?.trim() || names.get(annotation.labelId) || annotation.labelId,
+    add(annotationLabelTypeKey(annotation), fileLabel?.trim() || annotation.dictionaryLabel?.name || names.get(annotation.labelId) || annotation.labelId,
       fileLabel !== undefined ? "recording" : "annotation");
   }
   for (const candidate of candidates) add(recordingLabelTypeKey(candidate.label), candidate.label.trim(), "recording");

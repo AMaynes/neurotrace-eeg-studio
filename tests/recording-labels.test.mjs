@@ -353,7 +353,7 @@ async function loadHarness({ recovered, projectReview, edf = false } = {}) {
   const diagnostics = () => ({ update() {}, finish() {}, cancel() {}, fail() {} });
   const scope = {
     ...recovery, EDFSource, RawDatSource, localRecordingIdentity, recordingLabelAnnotations, mergeRecordingLabels,
-    activeSessionId: "active", activeSessionIdRef: { current: "active" },
+    activeSessionId: "active", sessionTabs: [], activeSessionIdRef: { current: "active" },
     pendingProjectImportRef: { current: projectReview ? { review: projectReview } : null },
     pendingEdfReviewNavigationRef: { current: null }, zoomViewRef: { current: { timebase: 20 } },
     sourceVerificationAbortRef: { current: null }, sourceVerificationRef: { current: false },
@@ -520,7 +520,7 @@ test("explicit old-review recovery backs up the current review and never deletes
   const raw = JSON.stringify({ version: 2, annotations: [label], candidates: [], reviewer: "AB", recordingLabelsImported: true });
   const storage = new Map([[oldKey, raw]]);
   let restored;
-  const scope = { ...recovery, reviewReady: true, olderReviews: [{ key: oldKey }], olderReviewKey: oldKey,
+  const scope = { ...recovery, reviewReady: true, activeReviewIdentity: undefined, olderReviews: [{ key: oldKey }], olderReviewKey: oldKey,
     localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
     meta: { name: "current.edf", durationSec: 10, channelLabels: ["A"] }, sessionKey: "local-v1:current",
     sourceRef: { current: { recordingLabels: [], meta: { durationSec: 10, channelLabels: ["A"] } } },

@@ -69,7 +69,7 @@ function display(overrides = {}) {
 function harness(overrides = {}) {
   const env = {
     ...formatters, formatClock, formatDisplayChannelLabel, readCursorReadout, playbackWindowReady,
-    useMemo: (compute) => compute(), display: display(), focusedChannel: 0, cursorTime: 10.25,
+    useMemo: (compute) => compute(), spectrogramChannels: [], display: display(), focusedChannel: 0, cursorTime: 10.25,
     meta: { id: "test-recording", durationSec: 100 }, montage: "referential", filters: { enabled: false }, selectedChannels: new Set([0]),
     playing: false, viewStart: 10, loadingSignal: false, cursorAmplitude: 999999, signalViewStart: 10, timebase: 1,
     channelSelectionActive: true, inspectionDragging: false, inspectionRange: null, anatomicalGroups: false,

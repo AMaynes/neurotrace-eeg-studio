@@ -2837,3 +2837,71 @@ textarea:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.review-folder-setup,
+.label-library-modal section {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.review-folder-setup input[type="checkbox"] {
+  accent-color: var(--mint);
+}
+
+.review-folder-status,
+.label-library-modal footer,
+.dictionary-label-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-folder-status {
+  font-size: 11px;
+  margin-block: 6px;
+}
+
+.review-output-names li {
+  overflow-wrap: anywhere;
+}
+
+.ontology-search-row .button {
+  flex-shrink: 0;
+  padding-inline: 7px;
+}
+
+.label-library-modal {
+  width: min(530px, calc(100vw - 32px));
+  max-height: 85vh;
+  overflow: auto;
+}
+
+.label-library-modal section {
+  margin-bottom: 10px;
+}
+
+.label-library-modal form {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.label-library-modal .form-field {
+  width: 100%;
+}
+
+.dictionary-label-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.spectrogram-selected {
+  outline: 1px dashed currentColor;
+  outline-offset: -2px;
+}

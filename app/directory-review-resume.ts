@@ -1,6 +1,7 @@
 /** CSV-backed folder progress. Catalogs retain small rows, never decoded waveforms. */
 import type { DirectoryImportPlan, DirectoryRecording } from "./directory-import.ts";
 import { mergeMatlabAnnotationRows, parseMatlabAnnotations, type MatlabAnnotationRow } from "./matlab-annotations-csv.ts";
+import { isReviewerCsv } from "./review-workspace.ts";
 
 export type ReviewEvent = { timeSec: number; label: string };
 export type ReviewMetadata = { events: ReviewEvent[]; sampleRate?: number; channelCount?: number; durationSec?: number; warnings: string[] };
@@ -14,7 +15,7 @@ export function directoryReviewCache(plan: DirectoryImportPlan): ResumeCache {
   if (!cache) { cache = { rows: [], byRecording: new Map(), files: new Set(), warnings: [] }; caches.set(plan, cache); }
   return cache;
 }
-export const isReviewCsv = (file: File) => /_annotations\.csv$/i.test(file.name);
+export const isReviewCsv = (file: File) => /_annotations\.csv$/i.test(file.name) && !isReviewerCsv(file);
 export const isReviewEvent = (label: string) => /sz|seizure|seiz|tonic|eeg onset/i.test(label);
 const path = (value: string | number) => String(value).trim().replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
 function append<K, V>(map: Map<K, V[]>, key: K, value: V) {
@@ -61,7 +62,7 @@ export async function loadDirectoryReviewCsvs(plan: DirectoryImportPlan, files: 
   const cache = directoryReviewCache(plan);
   for (const file of files) {
     signal?.throwIfAborted();
-    if (cache.files.has(file)) continue;
+    if (cache.files.has(file) || isReviewerCsv(file)) continue;
     try {
       if (file.size > 8 * 1024 * 1024) throw new Error("CSV exceeds the 8 MiB review limit.");
       const rows = parseMatlabAnnotations(await file.text(), { acceptedOnly: true });

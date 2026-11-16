@@ -134,7 +134,7 @@ test("hidden types disappear from timed views, session labels and queues while s
   ]);
   const candidates = Object.freeze([{ id: "source", label: "Stimulation", time: 1, status: "queued", confidence: 0 }]);
   const before = JSON.stringify({ annotations, candidates });
-  const scope = { annotations, candidates, hiddenLabelTypes: new Set([recordingLabelTypeKey("Stimulation"), "annotation:medication"]),
+  const scope = { annotations, candidates, labelLibrary: { aliases: [], labels: [] }, hiddenLabelTypes: new Set([recordingLabelTypeKey("Stimulation"), "annotation:medication"]),
     annotationLabelTypeKey, recordingLabelTypeKey, matchesLabelKeywords: () => true, useMemo: (callback) => callback(),
     annotationGeometry: (item) => item.geometry, annotationLabel: (item) => ({ name: item.recordingLabel?.label ?? item.labelId }),
     clamp: (value, min, max) => Math.min(max, Math.max(min, value)), queueSearch: "",

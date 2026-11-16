@@ -223,7 +223,8 @@ test("loading a source or applying a session snapshot clears the previous record
   for (const name of ["loadSource", "applySessionSnapshot"]) {
     const callback = variables.get(name).initializer.arguments[0];
     const setters = new Map();
-    const env = { sourceMeta: pure.sourceMeta, normalizeDisplayGain, EMPTY_DISPLAY: {}, activeSessionId: "next-session",
+    const env = { sourceMeta: pure.sourceMeta, normalizeDisplayGain, EMPTY_DISPLAY: {}, activeSessionId: "next-session", sessionTabs: [],
+      emptyLabelLibrary: () => ({ aliases: [], labels: [] }),
       emptyBidsCompanionBundle: () => ({}), DEFAULT_FILTERS: { enabled: false },
       window: { cancelAnimationFrame() {} }, commitViewStart() {}, storeActiveSession() {}, cancelPendingViewFrames() {} };
     function bindings(node) {
@@ -271,7 +272,7 @@ test("loading a source or applying a session snapshot clears the previous record
     // the reset it would silently change the next recording's normalization.
     let requestedAnchor;
     const input = variable("spectrogramInputPlan", { useMemo: (fn) => fn(), spectrogramAnchor: env.anchor,
-      signalViewStart: 0, timebase: 20, meta, spectrogramSourceIndex: 0, sessionKey: "next-session",
+      signalViewStart: 0, timebase: 20, meta, spectrogramSourceIndex: 0, spectrogramChannels: [], sessionKey: "next-session",
       matlabSpectrogramInputPlan: (_meta, _row, _start, _duration, anchor) => {
         requestedAnchor = anchor;
         return { sourceIndices: [0], sampleCount: 20, baselineTime: anchor };
@@ -293,7 +294,7 @@ test("finishing a waveform refresh does not reread and recompute an unchanged ra
     return previousPlan;
   };
   const base = { useMemo, spectrogramAnchor: 4, signalViewStart: 0, timebase: 20,
-    meta: defaultMeta, sessionKey: "recording", spectrogramSourceIndex: 0,
+    meta: defaultMeta, sessionKey: "recording", spectrogramSourceIndex: 0, spectrogramChannels: [],
     matlabSpectrogramInputPlan: (_meta, sourceIndex) => {
       requests++;
       return { sourceIndices: [sourceIndex], sampleCount: 20000, baselineTime: 4 };

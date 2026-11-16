@@ -13,19 +13,24 @@ export function matlabSpectrogramInputPlan(
   viewStart: number,
   viewDuration: number,
   clickTime: number,
+  selectedSources: readonly number[] = [],
 ) {
-  const sampleRate = meta.sampleRates[primarySourceIndex];
-  if (!Number.isInteger(primarySourceIndex) || primarySourceIndex < 0 || primarySourceIndex >= meta.channelLabels.length
+  const explicit = [...new Set(selectedSources)].filter((index) =>
+    Number.isInteger(index) && index >= 0 && index < meta.channelLabels.length);
+  const primary = explicit[0] ?? primarySourceIndex;
+  const sampleRate = meta.sampleRates[primary];
+  if (!Number.isInteger(primary) || primary < 0 || primary >= meta.channelLabels.length
     || !Number.isFinite(sampleRate) || !(sampleRate > 0)
     || !Number.isFinite(meta.durationSec) || !(meta.durationSec > 0)
     || !Number.isFinite(viewStart) || viewStart < 0 || !Number.isFinite(viewDuration) || !(viewDuration > 0)
     || !Number.isFinite(clickTime)) return null;
-  const group = sourceContactGroup(meta.channelLabels[primarySourceIndex]);
-  const sourceIndices = group
+  const group = sourceContactGroup(meta.channelLabels[primary]);
+  const sourceIndices = explicit.length ? explicit : group
     ? meta.channelLabels.flatMap((label, index) => sourceContactGroup(label) === group ? [index] : [])
     : [primarySourceIndex];
   if (sourceIndices.some((index) => meta.sampleRates[index] !== sampleRate)) {
-    throw new Error("MATLAB group spectrogram requires equal source sample rates.");
+    throw new Error(explicit.length ? "Selected spectrogram channels must have the same sample rate."
+      : "MATLAB group spectrogram requires equal source sample rates.");
   }
   const firstSourceSample = Math.floor(viewStart * sampleRate);
   // Metadata duration is commonly sampleCount / fs; recover that integer if
@@ -51,7 +56,9 @@ export function matlabSpectrogramInputPlan(
     readDuration: count / sampleRate,
     dataStart: origin,
     baselineTime: viewStart + (clickIndex + 1) / sampleRate,
-    label: group ? `${group} raw group (${sourceIndices.length})` : meta.channelLabels[primarySourceIndex],
+    label: explicit.length > 1 ? `Selected channels · ${explicit.length} averaged`
+      : explicit.length ? meta.channelLabels[explicit[0]]
+      : group ? `${group} raw group (${sourceIndices.length})` : meta.channelLabels[primarySourceIndex],
   };
 }
 

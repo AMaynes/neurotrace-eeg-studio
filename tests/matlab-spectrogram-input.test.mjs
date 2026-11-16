@@ -149,3 +149,14 @@ test("invalid metadata or window inputs cannot produce negative or NaN source re
     assert.equal(matlabSpectrogramInputPlan(meta, channel, 0, 40, 20), null);
   }
 });
+
+test("explicit channels average only the selected raw contacts, independent of the focused row", () => {
+  const meta = metadata();
+  meta.sampleRates[4] = 100;
+  const selected = matlabSpectrogramInputPlan(meta, 4, 0, 4, 2, [0, 1, 0, 99]);
+  assert.deepEqual(selected.sourceIndices, [0, 1]);
+  assert.equal(selected.label, "Selected channels · 2 averaged");
+  assert.equal(selected.sampleRate, 200);
+  assert.deepEqual(matlabSpectrogramInputPlan(meta, 3, 0, 4, 2, [0]).sourceIndices, [0]);
+  assert.throws(() => matlabSpectrogramInputPlan(meta, 0, 0, 4, 2, [0, 4]), /same sample rate/);
+});

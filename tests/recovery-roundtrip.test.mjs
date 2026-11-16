@@ -43,7 +43,10 @@ function review(sourceInterpretation = null) {
   };
 }
 function save(writer, state) {
-  return evaluate(`const saved = ${writer.getText(syntax)};`, "saved", {
+  const expression = writer.getText(syntax);
+  const setup = expression.includes("reviewData") ? `const ${declarations.get("reviewData").getText(syntax)};` : "";
+  return evaluate(`${setup}\nconst saved = ${expression};`, "saved", {
+    managed: undefined,
     ...state, snapshot: state, recordingLabelsImportedRef: { current: state.recordingLabelsImported },
     matlabExportIdentityFromInterpretation: api.matlabExportIdentityFromInterpretation,
   });
