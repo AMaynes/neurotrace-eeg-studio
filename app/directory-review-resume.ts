@@ -6,7 +6,9 @@ export type ReviewEvent = { timeSec: number; label: string };
 export type ReviewMetadata = { events: ReviewEvent[]; sampleRate?: number; channelCount?: number; durationSec?: number; warnings: string[] };
 type ResumeCache = { rows: MatlabAnnotationRow[]; byRecording: Map<string, MatlabAnnotationRow[]>; files: Set<File>; warnings: string[] };
 const caches = new WeakMap<DirectoryImportPlan, ResumeCache>();
-const pathIndexes = new WeakMap<DirectoryImportPlan, { paths: Map<string, DirectoryRecording[]>; names: Map<string, DirectoryRecording[]> }>();
+const pathIndexes = new WeakMap<DirectoryImportPlan, {
+  paths: Map<string, DirectoryRecording[]>; names: Map<string, DirectoryRecording[]>; included: Set<string>;
+}>();
 export function directoryReviewCache(plan: DirectoryImportPlan): ResumeCache {
   let cache = caches.get(plan);
   if (!cache) { cache = { rows: [], byRecording: new Map(), files: new Set(), warnings: [] }; caches.set(plan, cache); }
@@ -24,8 +26,8 @@ function append<K, V>(map: Map<K, V[]>, key: K, value: V) {
 export function matchReviewRecording(plan: DirectoryImportPlan, row: MatlabAnnotationRow): DirectoryRecording | undefined {
   let index = pathIndexes.get(plan);
   if (!index) {
-    index = { paths: new Map(), names: new Map() };
-    for (const recording of plan.recordings) {
+    index = { paths: new Map(), names: new Map(), included: new Set(plan.recordings.map(({ id }) => id)) };
+    for (const recording of plan.unfilteredRecordings ?? plan.recordings) {
       const file = plan.format === "mat-dat" ? recording.files.find(file => /\.mat$/i.test(file.name)) : recording.primary;
       if (!file) continue;
       const relative = path(file.webkitRelativePath || file.name), name = relative.split("/").at(-1)!;
@@ -39,7 +41,7 @@ export function matchReviewRecording(plan: DirectoryImportPlan, row: MatlabAnnot
   const parts = saved.split("/");
   for (let offset = 0; offset < parts.length; offset++) matches.push(...(index.paths.get(parts.slice(offset).join("/")) ?? []));
   if (!saved.includes("/") && !matches.length) matches.push(...(index.names.get(saved) ?? []));
-  return matches.length === 1 ? matches[0] : undefined;
+  return matches.length === 1 && index.included.has(matches[0].id) ? matches[0] : undefined;
 }
 
 /** Include decisions made since the last CSV save when continuing within this visit. */

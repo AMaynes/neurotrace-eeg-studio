@@ -5,9 +5,11 @@ import type { LabelTypeOption } from "./label-visibility";
 import "./label-visibility-filter.css";
 
 /** Searchable display preferences. The parent retains all source and review data. */
-export function LabelVisibilityFilter({ options, hiddenTypes, onChange, onClose }: {
+export function LabelVisibilityFilter({ options, hiddenTypes, keywords, onKeywordsChange, onChange, onClose }: {
   options: readonly LabelTypeOption[];
   hiddenTypes: ReadonlySet<string>;
+  keywords: string;
+  onKeywordsChange: (keywords: string) => void;
   onChange: (hidden: Set<string>) => void;
   onClose: () => void;
 }) {
@@ -20,13 +22,17 @@ export function LabelVisibilityFilter({ options, hiddenTypes, onChange, onClose 
     <div className="modal label-display-filter" data-tutorial="label-filter-dialog" role="dialog" aria-modal="true" aria-label="Filter labels" tabIndex={-1}>
       <button className="modal-close" type="button" aria-label="Close label filter" onClick={onClose}>×</button>
       <header><h2>Filter labels</h2><span>{hiddenCount} of {options.length} types hidden</span></header>
-      <p>Uncheck types to hide them from the viewer, timelines, and queues. Saved labels and exports are preserved.</p>
+      <label className="label-keyword-field">Only show labels matching
+        <input type="search" value={keywords} onChange={(event) => onKeywordsChange(event.target.value)} placeholder="e.g. seizure, spike" />
+        <small>Separate keywords with commas. Any keyword can match.</small>
+      </label>
+      <p>Uncheck types to hide them from the viewer, timelines, and queues.</p>
       <input type="search" aria-label="Find label types" placeholder="Find a label type…" value={search} onChange={(event) => {
         setSearch(event.target.value);
         setLimit(100);
       }} />
       <div className="label-display-filter-actions">
-        <button type="button" data-tutorial="label-filter-reset" onClick={() => onChange(new Set())}>Show all types</button>
+        <button type="button" data-tutorial="label-filter-reset" onClick={() => { onKeywordsChange(""); onChange(new Set()); }}>Show all types</button>
         <button type="button" onClick={() => onChange(new Set([...hiddenTypes, ...options.map((option) => option.key)]))}>Hide all types</button>
       </div>
       <div className="label-display-filter-list">

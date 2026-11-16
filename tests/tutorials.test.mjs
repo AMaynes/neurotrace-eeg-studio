@@ -12,7 +12,7 @@ import { subscribeTutorialActions } from "../app/tutorial-events.ts";
 const componentSource = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const directorySessions = await readFile(new URL("../app/directory-sessions.tsx", import.meta.url), "utf8");
-const extraSurfaces = (await Promise.all(["directory-review-controls.tsx", "label-visibility-filter.tsx"].map(name => readFile(new URL(`../app/${name}`, import.meta.url), "utf8")))).join("\n");
+const extraSurfaces = (await Promise.all(["directory-review-controls.tsx", "label-visibility-filter.tsx", "directory-import-filters.tsx"].map(name => readFile(new URL(`../app/${name}`, import.meta.url), "utf8")))).join("\n");
 const syntax = ts.createSourceFile("tutorial-center.tsx", componentSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = syntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "TutorialCenter");
 assert.ok(component);

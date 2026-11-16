@@ -60,12 +60,12 @@ function filterHarness(options) {
     if (name.endsWith(".css")) return {};
     return require(name);
   }, exports);
-  const props = { options, hiddenTypes: new Set(), onChange(hidden) { props.hiddenTypes = hidden; }, onClose() { closed++; } };
+  const props = { options, keywords: "", hiddenTypes: new Set(), onKeywordsChange(value) { props.keywords = value; }, onChange(hidden) { props.hiddenTypes = hidden; }, onClose() { closed++; } };
   return {
     props, get closed() { return closed; },
     render() { cursor = 0; return exports.LabelVisibilityFilter(props); },
     checkbox(tree, name) {
-      const label = elements(tree, (node) => node.type === "label" && node.props.children[1].props.children[0] === name)[0];
+      const label = elements(tree, (node) => node.type === "label" && node.props.children[0]?.type === "input" && node.props.children[1].props.children[0] === name)[0];
       assert.ok(label, `checkbox for ${name}`);
       return label.props.children[0];
     },
@@ -135,7 +135,7 @@ test("hidden types disappear from timed views, session labels and queues while s
   const candidates = Object.freeze([{ id: "source", label: "Stimulation", time: 1, status: "queued", confidence: 0 }]);
   const before = JSON.stringify({ annotations, candidates });
   const scope = { annotations, candidates, hiddenLabelTypes: new Set([recordingLabelTypeKey("Stimulation"), "annotation:medication"]),
-    annotationLabelTypeKey, recordingLabelTypeKey, useMemo: (callback) => callback(),
+    annotationLabelTypeKey, recordingLabelTypeKey, matchesLabelKeywords: () => true, useMemo: (callback) => callback(),
     annotationGeometry: (item) => item.geometry, annotationLabel: (item) => ({ name: item.recordingLabel?.label ?? item.labelId }),
     clamp: (value, min, max) => Math.min(max, Math.max(min, value)), queueSearch: "",
     labelsVisible: true, annotationDragPreview: null, meta: { durationSec: 10 }, viewStart: 0, timebase: 10,
@@ -162,7 +162,7 @@ test("changing a type filter clears annotation selection without editing annotat
   for (const name of ["setHiddenLabelTypes", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setAnnotationSelectionBox", "setAnnotationDragPreview", "setQueueLimit"]) {
     scope[name] = (value) => { state[name] = value; };
   }
-  const { changeHiddenLabelTypes } = pageValues(["changeHiddenLabelTypes"], scope);
+  const { changeHiddenLabelTypes } = pageValues(["clearLabelFilterSelection", "changeHiddenLabelTypes"], scope);
   changeHiddenLabelTypes(new Set(["annotation:ictal"]));
   assert.equal(state.setSelectedAnnotationId, null);
   assert.equal(state.setSelectedAnnotationIds.size, 0);

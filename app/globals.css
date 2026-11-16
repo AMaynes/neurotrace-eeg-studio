@@ -836,6 +836,10 @@ textarea:focus-visible {
 .guided-import > header > b { flex: none; color: var(--mint); font-size: 7px; letter-spacing: .09em; text-transform: uppercase; }
 .guided-import > footer { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 9px; border-top: 1px solid #1d353a; }
 .guided-import > footer .button { flex: none; min-width: 112px; }
+.directory-import-filter-toggle { margin: 0 9px 8px; }
+.directory-import-filter { padding: 0 9px 8px; }
+.directory-import-filter .label-keyword-field { margin-top: 0; }
+.guided-import > .directory-import-preview { padding-top: 0; }
 .research-notice { display: flex; gap: 9px; margin-top: 12px; padding: 9px; border: 1px solid #3e3825; border-radius: 6px; background: #1c1a12; }
 .research-notice > span { color: var(--gold); }
 .research-notice p { margin: 0; color: #918b76; font-size: 7px; line-height: 1.45; }
@@ -1680,8 +1684,8 @@ textarea:focus-visible {
   background: #132923;
   color: var(--mint);
   box-shadow: 0 4px 12px rgba(0, 0, 0, .24);
-  font: 800 9px ui-monospace, monospace;
-  letter-spacing: .02em;
+  font-size: 9px;
+  font-weight: 700;
 }
 .channel-rail > .channel-manager-button:hover { border-color: var(--mint); background: #18344d; box-shadow: 0 0 0 1px rgba(90, 169, 255, .15); }
 .channel-rail > .channel-layout-button {
@@ -1878,54 +1882,41 @@ textarea:focus-visible {
 }
 .channel-modal-tools input { min-width: 0; padding: 0 9px; }
 .channel-modal-tools button { padding: 0 10px; color: #91a7aa; cursor: pointer; font-size: 9px; }
-.channel-toggle-list {
+.channel-group-list {
   max-height: min(430px, 48dvh);
+  overflow: auto;
+  padding-right: 3px;
+}
+.channel-choice-group { min-width: 0; margin: 0 0 8px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; }
+.channel-choice-group legend { padding: 0 5px; }
+.channel-choice-group legend label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+.channel-choice-group legend small { color: var(--muted); }
+.channel-group-list input { width: 16px; height: 16px; margin: 0; accent-color: var(--mint); cursor: pointer; }
+.channel-modal-footer { display: flex; justify-content: flex-end; margin-top: 12px; }
+.label-confidence-modal { width: min(380px, calc(100vw - 32px)); }
+.label-confidence-modal .form-field { margin: 16px 0; }
+.csv-export-all { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.csv-export-all p { margin: 4px 0 0; }
+.project-save-modal h3 { margin: 12px 0 0; font-size: 13px; }
+.channel-toggle-list {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 5px;
-  overflow: auto;
-  padding-right: 3px;
 }
 .channel-toggle-row {
   min-width: 0;
   min-height: 48px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   padding: 5px 6px;
   border: 1px solid #21383f;
   border-radius: 6px;
   background: #0a171c;
-}
-.channel-toggle-row > label {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: center;
-  gap: 7px;
   cursor: pointer;
 }
-.channel-toggle-row input { position: absolute; opacity: 0; pointer-events: none; }
-.channel-switch {
-  width: 27px;
-  height: 15px;
-  padding: 2px;
-  border-radius: 10px;
-  background: #243a40;
-  transition: .15s;
-}
-.channel-switch::after {
-  content: "";
-  display: block;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: #71848a;
-  transition: .15s;
-}
-.channel-toggle-row input:checked + .channel-switch { background: #245649; }
-.channel-toggle-row input:checked + .channel-switch::after { background: var(--mint); transform: translateX(12px); }
+.channel-toggle-row:hover { border-color: var(--border-strong); }
 .channel-toggle-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .channel-toggle-copy strong,
 .channel-toggle-copy small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

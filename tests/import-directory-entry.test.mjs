@@ -35,6 +35,18 @@ function evaluate(code, expression, env) {
   }).outputText;
   return new Function("require", "exports", ...Object.keys(env), `${javascript}\nreturn ${expression};`)(require, {}, ...Object.values(env));
 }
+const filterSource = await readFile(new URL("../app/directory-import-filters.tsx", import.meta.url), "utf8");
+const filterCode = ts.transpileModule(filterSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+}).outputText;
+const filterExports = {};
+new Function("require", "exports", filterCode)((name) => {
+  if (name === "react") return { useState: (initial) => [initial, () => {}], useRef: (current) => ({ current }), useEffect() {} };
+  if (name === "./directory-event-client") return {};
+  if (name === "./event-keywords") return { eventKeywords: (value) => value ? [value] : [] };
+  return require(name);
+}, filterExports);
+
 function handler(name, env) {
   const node = declarations.get(name);
   assert.ok(node, `find actual ${name} handler`);
@@ -48,6 +60,7 @@ function jsxHandler(node, name, env) {
 function elements(tree, predicate) {
   if (Array.isArray(tree)) return tree.flatMap((child) => elements(child, predicate));
   if (!tree || typeof tree !== "object") return [];
+  if (tree.type === filterExports.DirectoryImportFilters) return elements(tree.type(tree.props), predicate);
   return [...(predicate(tree) ? [tree] : []), ...elements(tree.props?.children, predicate)];
 }
 function text(tree) {
@@ -101,6 +114,7 @@ function harness(options = {}) {
     fileDragDepthRef: { current: 0 },
     handleDroppedRecordingFiles: (...args) => actions.push(["dropped", ...args]),
     stageDetectedImport: (event) => actions.push(["detected", event]),
+    DirectoryImportFilters: filterExports.DirectoryImportFilters,
     submitGuidedImport: () => actions.push(["submit"]),
   };
   for (const [key, value] of Object.entries({ showImport: false, importChoice: null, importPickerKind: null, fileDragActive: false,

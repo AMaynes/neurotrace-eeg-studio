@@ -83,7 +83,7 @@ export function matlabAnnotationRows(input: ReviewInput): MatlabAnnotationRow[] 
   return rows;
 }
 
-function csvCell(value: string | number): string {
+export function csvCell(value: string | number): string {
   const text = typeof value === "number" ? matlabCsvNumber(value) : value;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }

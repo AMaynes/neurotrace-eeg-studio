@@ -33,7 +33,7 @@ const STATUS_LABELS = {
 
 /** On-demand session catalog with a cancellable, metadata-only event-label index. */
 export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear, onPrepareResume }: DirectorySessionsProps) {
-  const searchSupported = supportsDirectoryEventSearch(plan.format);
+  const searchSupported = supportsDirectoryEventSearch(plan.format) || Boolean(plan.unfilteredRecordings);
   const cache = directoryEventCache(plan);
   const [requestedPage, setRequestedPage] = useState(0);
   const [query, setQuery] = useState(() => cache.query);
@@ -53,7 +53,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
     void scanDirectoryEvents(plan, controller.signal, (id) => {
       setChecking(id);
       refreshIndex((version) => version + 1);
-    }, scanGeneration > 0);
+    }, scanGeneration > 0, Boolean(plan.unfilteredRecordings) && scanGeneration > 0);
     return () => controller.abort();
   }, [plan, catalogBusy, scanGeneration, searchSupported]);
   const changeQuery = (value: string) => {

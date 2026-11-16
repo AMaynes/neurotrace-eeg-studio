@@ -5,6 +5,7 @@ import ts from 'typescript';
 import { addDirectoryReviewRows, directoryReviewCache, findNextDirectoryReview, indexReviewRows, loadDirectoryReviewCsvs, matchReviewRecording, reviewRowMatches } from '../app/directory-review-resume.ts';
 import { readDirectoryReviewMetadata } from '../app/directory-review-worker.ts';
 import { planDirectoryImport } from '../app/directory-import.ts';
+import { directoryEventCache, filterDirectoryPlan } from '../app/directory-event-client.ts';
 import { MATLAB_ANNOTATION_COLUMNS, parseMatlabAnnotations, serializeMatlabAnnotations } from '../app/matlab-annotations-csv.ts';
 import { matWriter } from './fixtures/legacy-mat.mjs';
 
@@ -40,6 +41,18 @@ test('CSV matching uses complete relative paths across platforms, isolates patie
   assert.equal(matchReviewRecording(p, row('a', 10, { mat_path: 'session.mat' })), undefined);
   assert.equal(matchReviewRecording(p, row('a', 10, { mat_path: '/OtherPatient/day-a/session.mat' })), undefined);
   assert.equal(matchReviewRecording(p, row('a', 10, { mat_path: '/Patient/day-c/session.mat' })).id, p.recordings[2].id);
+});
+
+test('a keyword-filtered folder never reassigns a CSV review from an excluded sibling', () => {
+  const p = plan();
+  const entry = p.recordings[1];
+  directoryEventCache(p).entries[entry.id] = { state: 'ready', labels: ['EEG Onset'], warnings: [] };
+  const filtered = filterDirectoryPlan(p, 'artifact, eeg onset');
+  assert.deepEqual(filtered.recordings, [entry]);
+  assert.equal(matchReviewRecording(filtered, row('a', 10, { mat_path: 'session.mat' })), undefined);
+  assert.equal(matchReviewRecording(filtered, row('a')), undefined);
+  assert.equal(matchReviewRecording(filtered, row('b')), entry);
+  assert.deepEqual(directoryEventCache(filtered).entries[entry.id].labels, ['EEG Onset']);
 });
 
 test('loading multiple CSVs keeps the newest accepted decision, retains good files after an invalid file, and isolates catalogs', async () => {

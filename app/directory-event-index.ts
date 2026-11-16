@@ -3,6 +3,9 @@ import { indexMatRecordingLabels, parseEDFHeader, parseEdfTalText } from "./eeg-
 import { analyzeBidsCompanions } from "./bids-companions.ts";
 import { readNeurotraceProjectArchive } from "./neurotrace-project.ts";
 import type { DirectoryImportFormat } from "./directory-import.ts";
+import { createEventLabelMatcher } from "./event-keywords.ts";
+
+export { createEventLabelMatcher, eventKeywords } from "./event-keywords.ts";
 
 export interface DirectoryEventIndex {
   state: "ready" | "partial" | "error";
@@ -27,26 +30,6 @@ export const COMMON_EVENT_KEYWORDS = [
   { name: "Button press", query: "button, push" },
   { name: "Sleep", query: "sleep, NREM, REM" },
 ] as const;
-
-/** Commas mean OR; spaces within a keyword remain a phrase. No regex or clinical inference. */
-export function eventKeywords(query: string): string[] {
-  const seen = new Set<string>();
-  return query.split(",").map((term) => term.trim()).filter((term) => {
-    const key = term.toLowerCase();
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-/** Normalize the search once, like MATLAB's tgt_lower, not once per session. */
-export function createEventLabelMatcher(query: string): (labels: readonly string[]) => boolean {
-  const terms = eventKeywords(query).map((term) => term.toLowerCase());
-  return (labels) => !terms.length || labels.some((label) => {
-    const lower = label.toLowerCase();
-    return terms.some((term) => lower.includes(term));
-  });
-}
 
 export function eventLabelMatches(labels: readonly string[], query: string): boolean {
   return createEventLabelMatcher(query)(labels);

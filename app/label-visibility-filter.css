@@ -7,6 +7,9 @@
 .label-display-filter h2 { margin: 0; color: #d5e3e2; font-size: 16px; }
 .label-display-filter > header span, .label-display-filter > p { color: #879fa5; font-size: 11px; line-height: 1.5; }
 .label-display-filter > input { flex: 0 0 auto; width: 100%; height: 34px; border: 1px solid #355058; border-radius: 4px; padding: 6px 9px; background: #0d1b20; color: #d7e3e2; font-size: 12px; }
+.label-keyword-field { display: grid; gap: 5px; margin-top: 14px; color: var(--ink); font-size: 12px; }
+.label-keyword-field input { width: 100%; min-height: 34px; padding: 6px 9px; border: 1px solid #355058; border-radius: 4px; background: #0d1b20; color: var(--ink); }
+.label-keyword-field small { color: var(--muted); }
 .label-display-filter-actions { flex: 0 0 auto; display: flex; gap: 6px; margin: 10px 0; }
 .label-display-filter-actions button, .label-display-filter-more { min-height: 29px; padding: 5px 9px; border: 1px solid #355058; border-radius: 4px; background: #102027; color: #b9cece; cursor: pointer; font-size: 11px; }
 .label-display-filter-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }

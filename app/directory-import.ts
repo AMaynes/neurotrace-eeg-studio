@@ -19,6 +19,8 @@ export interface DirectoryRecording {
 export interface DirectoryImportPlan {
   format: DirectoryImportFormat;
   recordings: DirectoryRecording[];
+  /** Keep the original filename namespace when matching saved reviews. */
+  unfilteredRecordings?: readonly DirectoryRecording[];
   /** Shared once, avoiding one full companion-file array per recording. */
   supportingFiles: File[];
 }
@@ -222,7 +224,7 @@ export function directoryRecordingFiles(plan: DirectoryImportPlan, recording: Di
   const recordingName = nameParts(recording.relativePath);
   const sameFolderStems = new Map<string, string>();
   const modalityBaseOwners = new Map<string, string[]>();
-  for (const entry of plan.recordings) {
+  for (const entry of plan.unfilteredRecordings ?? plan.recordings) {
     if (directoryOf(entry.relativePath) !== recordingFolder) continue;
     const stem = nameParts(entry.relativePath).stem;
     sameFolderStems.set(stem, entry.id);

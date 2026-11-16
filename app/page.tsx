@@ -64,6 +64,7 @@ import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
 import { DirectoryImportError, directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
 import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
+import { DirectoryImportFilters } from "./directory-import-filters";
 import { addDirectoryReviewRows, directoryReviewCache, indexReviewRows, reviewRowMatches } from "./directory-review-resume";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { SessionTabTitle } from "./session-tab-title";
@@ -71,6 +72,7 @@ import { classifyRecordingSelection, collectDroppedRecordingFiles } from "./impo
 import { edfRecordingLabels, mergeRecordingLabels, recordingLabelAnnotations, validRecordingLabel, type RecordingLabel } from "./recording-labels";
 import { annotationLabelTypeKey, collectLabelTypes, recordingLabelTypeKey } from "./label-visibility";
 import { LabelVisibilityFilter } from "./label-visibility-filter";
+import { createEventLabelMatcher, eventKeywords } from "./event-keywords";
 import {
   buildEDFFileWindowOffThread,
   buildRawDatFileWindowOffThread,
@@ -95,7 +97,7 @@ import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { parseRecordingTimestamp } from "./recording-timestamp";
 import { nextPlaybackStep, playbackWindowReady } from "./playback";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
-import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, channelGroupOrder, orderGroupedDisplayRows, remapDisplayFocus } from "./channel-layout";
+import { buildChannelRowLayout, channelNameGroup, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, channelGroupOrder, orderGroupedDisplayRows, remapDisplayFocus } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
 import {
   RecordingOverviewCache,
@@ -114,7 +116,7 @@ import { DEFAULT_CONTROLS, normalizeControlBindings, matchesShortcut, shortcutAc
 import type { TutorialTopic } from "./tutorials";
 import { notifyTutorialAction, type TutorialAssistAction } from "./tutorial-events";
 import { useTutorialMilestones } from "./tutorial-progress";
-import { recordZoomChange, type ZoomView, type ZoomHistoryEntry, type ZoomGestureState, type SpectrogramFrequencyRange } from "./zoom-history";
+import { previousWaveformBoxView, recordZoomChange, type ZoomView, type ZoomHistoryEntry, type ZoomGestureState, type SpectrogramFrequencyRange } from "./zoom-history";
 import { MAX_DISPLAY_GAIN, MIN_DISPLAY_GAIN, normalizeDisplayGain, stepDisplayGain } from "./display-gain";
 import { centerDisplayWindow } from "./trace-centering";
 import { clusterTimelineDensity } from "./timeline-density";
@@ -149,6 +151,7 @@ import {
   type NeurotraceCustomToolAsset,
 } from "./neurotrace-project";
 import { matlabAnnotationRows, matlabAnnotationFilename, serializeMatlabAnnotations, writeMatlabAnnotations, mergeMatlabAnnotationRows, MatlabReviewCsvCache, type MatlabCsvFileHandle, type MatlabAnnotationRow } from "./matlab-annotations-csv";
+import { serializeRecordingLabels } from "./recording-labels-csv";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -1707,7 +1710,7 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
     snapMode: "none",
     spectrogramOpen: false,
     expandedChannels: false,
-    anatomicalGroups: false,
+    anatomicalGroups: true,
     waveformVerticalViewport: null,
     channelScrollTop: 0,
     spectrogramFrequencyRange: { min: 0, max: 150 },
@@ -1994,7 +1997,7 @@ export default function Home() {
   const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set());
   const [focusedChannel, setFocusedChannel] = useState(0);
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
-  const [anatomicalGroups, setAnatomicalGroups] = useState(false);
+  const [anatomicalGroups, setAnatomicalGroups] = useState(true);
   const [preparedDisplay, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
   const channelGroupingMode = meta.format === "edf" || meta.format === "edf+" ? "name" : "matlab";
   const display = useMemo(() => anatomicalGroups ? orderGroupedDisplayRows(preparedDisplay, channelGroupingMode) : preparedDisplay,
@@ -2068,11 +2071,15 @@ export default function Home() {
   const [showEphysLabelPicker, setShowEphysLabelPicker] = useState(false);
   const [labelsVisible, setLabelsVisible] = useState(true);
   const [hiddenLabelTypes, setHiddenLabelTypes] = useState<ReadonlySet<string>>(() => new Set());
+  const [labelKeywords, setLabelKeywords] = useState("");
+  const keywordFilterActive = eventKeywords(labelKeywords).length > 0;
+  const matchesLabelKeywords = useMemo(() => createEventLabelMatcher(labelKeywords), [labelKeywords]);
   const [showLabelVisibilityFilter, setShowLabelVisibilityFilter] = useState(false);
   const [channelSearch, setChannelSearch] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [activeCandidate, setActiveCandidate] = useState(0);
-  const displayAnnotations = useMemo(() => annotations.filter((item) => !hiddenLabelTypes.has(annotationLabelTypeKey(item))), [annotations, hiddenLabelTypes]);
+  const displayAnnotations = useMemo(() => annotations.filter((item) => !hiddenLabelTypes.has(annotationLabelTypeKey(item))
+    && matchesLabelKeywords([annotationLabel(item)?.name ?? item.labelId])), [annotations, hiddenLabelTypes, matchesLabelKeywords]);
   const labelTypeOptions = useMemo(() => collectLabelTypes(annotations, candidates, LABELS), [annotations, candidates]);
   const hiddenLabelTypeCount = useMemo(() => labelTypeOptions.filter((option) => hiddenLabelTypes.has(option.key)).length, [hiddenLabelTypes, labelTypeOptions]);
   const [toast, setToast] = useState("Blank session ready — load a recording");
@@ -2091,6 +2098,7 @@ export default function Home() {
   const [showSessionContextPicker, setShowSessionContextPicker] = useState(false);
   const [showPatientInfo, setShowPatientInfo] = useState(false);
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
+  const [pendingLabel, setPendingLabel] = useState<{ name: string; add: (confidence: number) => void } | null>(null);
   const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
   const [showImport, setShowImportOpen] = useState(false);
   const [importPickerKind, setImportPickerKind] = useState<"files" | "directory" | null>(null);
@@ -2166,7 +2174,8 @@ export default function Home() {
 
   const activeCandidateItem = candidates[activeCandidate] ?? null;
   const activeCandidateTime = activeCandidateItem?.time ?? null;
-  const activeCandidateVisible = activeCandidateItem !== null && !hiddenLabelTypes.has(recordingLabelTypeKey(activeCandidateItem.label));
+  const activeCandidateVisible = activeCandidateItem !== null && !hiddenLabelTypes.has(recordingLabelTypeKey(activeCandidateItem.label))
+    && matchesLabelKeywords([activeCandidateItem.label]);
   const activeCandidateAnnotation = activeCandidateItem
     ? [...annotations].reverse().find((item) => item.candidateId === activeCandidateItem.id
       && item.labelId === "ictal"
@@ -2184,8 +2193,7 @@ export default function Home() {
     || recordingType === "SEEG / iEEG"
     || recordingType === "Simultaneous scalp + iEEG";
   const anatomicalGroupsAvailable = channelGroupingMode === "name" ? meta.channelLabels.length > 0
-    : (matlabAnatomicalLayout || bipolarMontageKind(meta.channelLabels) === "anatomical")
-      && meta.channelLabels.some((label) => matlabDisplayGroup(label) !== null);
+    : meta.channelLabels.some((label) => matlabDisplayGroup(label) !== null);
   const legacyRawCountDisplay = meta.format === "raw-int16-le"
     && sourceInterpretation?.display_amplitude_mode === "legacy-raw-counts";
   const datPhysicalScaleValid = datMapping.physicalScale === ""
@@ -2242,8 +2250,9 @@ export default function Home() {
     const terms = queueSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return instanceQueueEntries.map((entry, index) => ({ entry, index }))
       .filter(({ entry }) => !hiddenLabelTypes.has(entry.visibilityKey)
+        && matchesLabelKeywords([entry.label])
         && terms.every((term) => `${entry.label} ${entry.detail} ${entry.status}`.toLowerCase().includes(term)));
-  }, [hiddenLabelTypes, instanceQueueEntries, queueSearch]);
+  }, [hiddenLabelTypes, instanceQueueEntries, matchesLabelKeywords, queueSearch]);
   const activeQueueIndex = useMemo(() => {
     const selectedIndex = selectedAnnotationId
       ? instanceQueueEntries.findIndex((item) => item.kind === "annotation" && item.id === selectedAnnotationId)
@@ -2276,6 +2285,15 @@ export default function Home() {
   const changeHiddenLabelTypes = (hidden: Set<string>) => {
     if (hidden.size !== hiddenLabelTypes.size || [...hidden].some(key => !hiddenLabelTypes.has(key))) notifyTutorialAction("label-filter-changed");
     setHiddenLabelTypes(hidden);
+    clearLabelFilterSelection();
+  };
+  const changeLabelKeywords = (keywords: string) => {
+    if (keywords === labelKeywords) return;
+    setLabelKeywords(keywords);
+    notifyTutorialAction("label-filter-changed");
+    clearLabelFilterSelection();
+  };
+  const clearLabelFilterSelection = () => {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setAnnotationSelectionBox(null);
@@ -2564,7 +2582,7 @@ export default function Home() {
     setSnapMode(snapshot.snapMode);
     setSpectrogramOpen(snapshot.spectrogramOpen);
     setExpandedChannels(snapshot.expandedChannels ?? false);
-    setAnatomicalGroups(snapshot.anatomicalGroups ?? false);
+    setAnatomicalGroups(snapshot.anatomicalGroups ?? true);
     setCandidates(snapshot.candidates);
     setActiveCandidate(snapshot.activeCandidate);
     setSourceHash(snapshot.sourceHash);
@@ -2750,13 +2768,23 @@ export default function Home() {
     setInspectionDragging(false);
   }, [anatomicalGroups, cancelPendingViewFrames, channelGroupingMode, commitViewStart, display, focusedChannel, preparedDisplay]);
 
-  const changeZoomView = useCallback((patch: Partial<ZoomView>, group?: string) => {
+  const changeZoomView = useCallback((patch: Partial<ZoomView>, group?: string, boxAction?: ZoomHistoryEntry["boxAction"]) => {
     if (!hasRecording) return;
     const before = readZoomView();
     const after = { ...before, ...patch };
     after.gain = normalizeDisplayGain(after.gain, before.gain);
-    if (recordZoomChange(undoRef.current, redoRef.current, before, after, zoomGestureRef.current, group)) applyZoomView(after);
+    if (recordZoomChange(undoRef.current, redoRef.current, before, after, zoomGestureRef.current, group, undefined, boxAction)) applyZoomView(after);
   }, [applyZoomView, hasRecording, readZoomView]);
+
+  const restorePreviousWaveformZoom = useCallback(() => {
+    if (activeTool === "seizure") return;
+    const previous = previousWaveformBoxView(undoRef.current);
+    if (!previous) return;
+    setPlaying(false);
+    const { viewStart, timebase, verticalViewport, channelScrollTop, expandedChannels } = previous;
+    changeZoomView({ viewStart, timebase, verticalViewport, channelScrollTop, expandedChannels }, undefined, "out");
+    setToast("Previous waveform zoom restored");
+  }, [activeTool, changeZoomView]);
 
   const commitGainInput = (input: HTMLInputElement) => {
     // Commit once on blur, leaving partial decimal typing and native text undo alone.
@@ -2774,7 +2802,7 @@ export default function Home() {
     changeZoomView({ viewStart: clamp(anchor - anchorRatio * next, 0, Math.max(0, meta.durationSec - next)), timebase: next }, group);
   }, [changeZoomView, meta.durationSec, minimumRenderableWindow, readZoomView]);
 
-  const zoomToTimeRange = useCallback((start: number, end: number, otherAxes: Partial<ZoomView> = {}) => {
+  const zoomToTimeRange = useCallback((start: number, end: number, otherAxes: Partial<ZoomView> = {}, boxAction?: ZoomHistoryEntry["boxAction"]) => {
     const rangeStart = clamp(Math.min(start, end), 0, meta.durationSec);
     const rangeEnd = clamp(Math.max(start, end), rangeStart, meta.durationSec);
     const selectedDuration = rangeEnd - rangeStart;
@@ -2785,7 +2813,7 @@ export default function Home() {
       maximumWindow,
     );
     const center = (rangeStart + rangeEnd) / 2;
-    changeZoomView({ ...otherAxes, viewStart: clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)), timebase: nextDuration });
+    changeZoomView({ ...otherAxes, viewStart: clamp(center - nextDuration / 2, 0, Math.max(0, meta.durationSec - nextDuration)), timebase: nextDuration }, undefined, boxAction);
   }, [changeZoomView, meta.durationSec, minimumRenderableWindow]);
 
   const zoomTimeWindow = useCallback((direction: "in" | "out", anchorTime?: number) => {
@@ -2953,7 +2981,6 @@ export default function Home() {
       end = meta.durationSec;
       time = 0;
     }
-    const now = new Date().toISOString();
     const sourceIndices = display.sourceIndices[targetRow] ?? [];
     const primarySourceIndex = display.primarySourceIndices[targetRow];
     if (label.id === "spikes" && (primarySourceIndex === undefined || primarySourceIndex < 0 || sourceIndices.length === 0)) {
@@ -2969,91 +2996,97 @@ export default function Home() {
         || (explicitEnd !== undefined
           ? activeSourceCandidate.time >= start && activeSourceCandidate.time <= end
           : Math.abs(activeSourceCandidate.time - start) <= 1));
-    const next = normalizeAnnotationGeometry({
-      id: makeId("ann"),
-      labelId: label.id,
-      start: geometry === "window" || geometry === "session" ? time : start,
-      end,
-      track,
-      geometry,
-      channels: label.id === "spikes" ? [...sourceIndices] : [],
-      confidence: label.id === "uncertain" ? 50 : 85,
-      reliability: "gray",
-      origin: "manual",
-      sourceTimeOffsetSec: display.timingConvention === "matlab-window" && (geometry === "point" || geometry === "interval")
-        ? snapOrigin - Math.floor(display.viewStart * samplingRate) / samplingRate : 0,
-      timingSampleRateHz: samplingRate,
-      reviewer,
-      notes: "",
-      status: "draft",
-      candidateId: candidateMatches ? activeSourceCandidate.id : undefined,
-      channelScope: label.id === "spikes" && primarySourceIndex !== undefined ? {
-        displayLabel: display.labels[targetRow] ?? `Display row ${targetRow + 1}`,
-        montage,
-        primarySourceIndex,
-        sourceIndices: [...sourceIndices],
-        sourceLabels: sourceIndices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`),
-      } : undefined,
-      revision: 1,
-      createdAt: now,
-      updatedAt: now,
-    }, meta.durationSec);
-    const sleepOverlapCount = label.category === "Sleep stage" && track === "windowed" && geometry !== "point"
-      ? annotationsRef.current.filter((item) => {
-        const existing = LABEL_BY_ID.get(item.labelId);
-        return existing?.category === "Sleep stage"
-          && item.track === "windowed"
-          && annotationGeometry(item) !== "point"
-          && annotationOverlapsWindow(item, next.start, next.end);
-      }).length
-      : 0;
-    commitMutation((current) => {
-      const currentWithoutPreviousCandidateDraft = candidateMatches
-        ? current.filter((item) => !(item.candidateId === activeSourceCandidate.id && item.labelId === "ictal" && item.status === "draft"))
-        : current;
-      if (!sleepOverlapCount) return [...currentWithoutPreviousCandidateDraft, next];
-      const adjusted = currentWithoutPreviousCandidateDraft.flatMap((item) => {
-        const existing = LABEL_BY_ID.get(item.labelId);
-        if (existing?.category !== "Sleep stage"
-          || item.track !== "windowed"
-          || annotationGeometry(item) === "point"
-          || !annotationOverlapsWindow(item, next.start, next.end)) return [item];
-        const pieces: Annotation[] = [];
-        const changedAt = new Date().toISOString();
-        if (item.start < next.start) pieces.push(normalizeAnnotationGeometry({
-          ...item,
-          end: next.start,
-          geometry: "interval",
-          status: "draft",
-          revision: item.revision + 1,
-          updatedAt: changedAt,
-        }, meta.durationSec));
-        if (item.end > next.end) pieces.push(normalizeAnnotationGeometry({
-          ...item,
-          id: makeId("ann"),
-          start: next.end,
-          geometry: "interval",
-          status: "draft",
-          candidateId: undefined,
-          revision: item.revision + 1,
-          createdAt: changedAt,
-          updatedAt: changedAt,
-        }, meta.durationSec));
-        return pieces;
+    const labelSource = sourceRef.current;
+    const add = (confidence: number) => {
+      if (sourceRef.current !== labelSource || sourceVerificationRef.current) return;
+      const now = new Date().toISOString();
+      const next = normalizeAnnotationGeometry({
+        id: makeId("ann"),
+        labelId: label.id,
+        start: geometry === "window" || geometry === "session" ? time : start,
+        end,
+        track,
+        geometry,
+        channels: label.id === "spikes" ? [...sourceIndices] : [],
+        confidence,
+        reliability: "gray",
+        origin: "manual",
+        sourceTimeOffsetSec: display.timingConvention === "matlab-window" && (geometry === "point" || geometry === "interval")
+          ? snapOrigin - Math.floor(display.viewStart * samplingRate) / samplingRate : 0,
+        timingSampleRateHz: samplingRate,
+        reviewer,
+        notes: "",
+        status: "draft",
+        candidateId: candidateMatches ? activeSourceCandidate.id : undefined,
+        channelScope: label.id === "spikes" && primarySourceIndex !== undefined ? {
+          displayLabel: display.labels[targetRow] ?? `Display row ${targetRow + 1}`,
+          montage,
+          primarySourceIndex,
+          sourceIndices: [...sourceIndices],
+          sourceLabels: sourceIndices.map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`),
+        } : undefined,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+      }, meta.durationSec);
+      const sleepOverlapCount = label.category === "Sleep stage" && track === "windowed" && geometry !== "point"
+        ? annotationsRef.current.filter((item) => {
+          const existing = LABEL_BY_ID.get(item.labelId);
+          return existing?.category === "Sleep stage"
+            && item.track === "windowed"
+            && annotationGeometry(item) !== "point"
+            && annotationOverlapsWindow(item, next.start, next.end);
+        }).length
+        : 0;
+      commitMutation((current) => {
+        const currentWithoutPreviousCandidateDraft = candidateMatches
+          ? current.filter((item) => !(item.candidateId === activeSourceCandidate.id && item.labelId === "ictal" && item.status === "draft"))
+          : current;
+        if (!sleepOverlapCount) return [...currentWithoutPreviousCandidateDraft, next];
+        const adjusted = currentWithoutPreviousCandidateDraft.flatMap((item) => {
+          const existing = LABEL_BY_ID.get(item.labelId);
+          if (existing?.category !== "Sleep stage"
+            || item.track !== "windowed"
+            || annotationGeometry(item) === "point"
+            || !annotationOverlapsWindow(item, next.start, next.end)) return [item];
+          const pieces: Annotation[] = [];
+          const changedAt = new Date().toISOString();
+          if (item.start < next.start) pieces.push(normalizeAnnotationGeometry({
+            ...item,
+            end: next.start,
+            geometry: "interval",
+            status: "draft",
+            revision: item.revision + 1,
+            updatedAt: changedAt,
+          }, meta.durationSec));
+          if (item.end > next.end) pieces.push(normalizeAnnotationGeometry({
+            ...item,
+            id: makeId("ann"),
+            start: next.end,
+            geometry: "interval",
+            status: "draft",
+            candidateId: undefined,
+            revision: item.revision + 1,
+            createdAt: changedAt,
+            updatedAt: changedAt,
+          }, meta.durationSec));
+          return pieces;
+        });
+        return [...adjusted, next];
       });
-      return [...adjusted, next];
-    });
-    setSelectedAnnotationId(next.id);
-    if (track === "instance" || track === "windowed") notifyTutorialAction("ephys-label-added");
-    setSelectedAnnotationIds(new Set([next.id]));
-    setCursorTime(next.start);
-    setCursorLocked(true);
-    setSelection(null);
-    setToast(sleepOverlapCount
-      ? `${label.name} applied to the selected window; overlapping sleep stages were trimmed`
-      : geometry === "interval" && explicitEnd !== undefined
-        ? `${label.name} applied to ${formatClock(next.start, true)}–${formatClock(next.end, true)} — draft`
-        : `${label.name} placed at ${formatClock(next.start, true)} — draft`);
+      setSelectedAnnotationId(next.id);
+      if (track === "instance" || track === "windowed") notifyTutorialAction("ephys-label-added");
+      setSelectedAnnotationIds(new Set([next.id]));
+      setCursorTime(next.start);
+      setCursorLocked(true);
+      setSelection(null);
+      setToast(sleepOverlapCount
+        ? `${label.name} applied to the selected window; overlapping sleep stages were trimmed`
+        : geometry === "interval" && explicitEnd !== undefined
+          ? `${label.name} applied to ${formatClock(next.start, true)}–${formatClock(next.end, true)} — draft`
+          : `${label.name} placed at ${formatClock(next.start, true)} — draft`);
+    };
+    setPendingLabel({ name: label.name, add });
   }, [activeCandidate, activeTool, candidates, commitMutation, display, focusedChannel, hasRecording, meta, montage, reviewer, snapMode]);
 
   const placePaletteLabel = useCallback((label: LabelDefinition) => {
@@ -3224,7 +3257,8 @@ export default function Home() {
 
   const advanceFromCandidate = useCallback((candidateId: string) => {
     const currentIndex = candidates.findIndex((item) => item.id === candidateId);
-    const unresolved = (item: Candidate) => item.id !== candidateId && !["reviewed", "skipped", "conflict"].includes(item.status);
+    const unresolved = (item: Candidate) => item.id !== candidateId && !["reviewed", "skipped", "conflict"].includes(item.status)
+      && !hiddenLabelTypes.has(recordingLabelTypeKey(item.label)) && matchesLabelKeywords([item.label]);
     let nextIndex = candidates.findIndex((item, index) => index > currentIndex && unresolved(item));
     if (nextIndex < 0) nextIndex = candidates.findIndex(unresolved);
     if (nextIndex < 0) return null;
@@ -3244,7 +3278,7 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     return next;
-  }, [candidates, setViewStartSafe, timebase]);
+  }, [candidates, hiddenLabelTypes, matchesLabelKeywords, setViewStartSafe, timebase]);
 
   const commitAnnotation = useCallback((targetAnnotation: Annotation | null, force = false, advanceAfter = false) => {
     if (sourceVerificationRef.current) {
@@ -5107,8 +5141,8 @@ export default function Home() {
       const verticalDrag = Math.abs(pointerY - pointer.startY) > 3;
       if (horizontalDrag || verticalDrag) {
         const verticalZoom = verticalDrag ? waveformZoomForInspectionBox(range, rect) : {};
-        if (horizontalDrag && range.end > range.start) zoomToTimeRange(range.start, range.end, verticalZoom);
-        else changeZoomView(verticalZoom);
+        if (horizontalDrag && range.end > range.start) zoomToTimeRange(range.start, range.end, verticalZoom, "in");
+        else changeZoomView(verticalZoom, undefined, "in");
         notifyTutorialAction("waveform-zoomed");
         setToast(`Box fitted to the waveform view · ${(range.end - range.start).toFixed(2)} s × ${range.channelLabels.length} channel${range.channelLabels.length === 1 ? "" : "s"}`);
       } else {
@@ -5721,7 +5755,7 @@ export default function Home() {
     commitViewStart(0);
     setGain(1);
     setMontage("referential");
-    setAnatomicalGroups(false);
+    setAnatomicalGroups(true);
     setFilters({ ...DEFAULT_FILTERS });
     setCursorTime(0);
     setCursorLocked(false);
@@ -6604,10 +6638,10 @@ export default function Home() {
     labelsVisible, saveOpen: showProjectSave,
   });
 
-  const submitGuidedImport = async () => {
-    if (!guidedImportReady || !stagedDirectoryPlan || importBusyRef.current || queuedDirectoryOpenRef.current) return;
+  const submitGuidedImport = async (plan = stagedDirectoryPlan) => {
+    if (!guidedImportReady || !plan?.recordings.length || importBusyRef.current || queuedDirectoryOpenRef.current) return;
     const id = makeId("directory");
-    const catalog = { id, plan: stagedDirectoryPlan };
+    const catalog = { id, plan };
     const workspace: DirectoryCatalogWorkspace = { sessions: new Map(), statuses: {} };
     directoryCatalogWorkspacesRef.current.set(id, workspace);
     directoryCatalogIdRef.current = id;
@@ -6619,7 +6653,7 @@ export default function Home() {
     setStagedDirectoryPlan(null);
     setShowImport(false);
     setShowDirectorySessions(true);
-    setToast(`${stagedDirectoryPlan.recordings.length} directory sessions ready — open any recording when needed`);
+    setToast(`${plan.recordings.length} directory sessions ready — open any recording when needed`);
   };
 
   const confirmDatImport = async () => {
@@ -7000,12 +7034,19 @@ export default function Home() {
       const picker = (window as Window & { showSaveFilePicker?: ProjectSavePicker }).showSaveFilePicker;
       let rowCount = rows.length;
       if (picker) {
-        const handle = await picker.call(window, {
-          suggestedName: csvFileName,
-          startIn: "downloads",
-          types: [{ description: "MATLAB annotation CSV", accept: { "text/csv": [".csv"] } }],
-        });
-        rowCount = await writeMatlabAnnotations(handle, rows);
+        let handle: MatlabCsvFileHandle | undefined;
+        try {
+          handle = await picker.call(window, {
+            suggestedName: csvFileName,
+            startIn: "downloads",
+            types: [{ description: "MATLAB annotation CSV", accept: { "text/csv": [".csv"] } }],
+          });
+        } catch (error) {
+          // An embedded viewer or browser policy may expose a picker it cannot open.
+          if (!(error instanceof DOMException && error.name === "SecurityError")) throw error;
+        }
+        if (handle) rowCount = await writeMatlabAnnotations(handle, rows);
+        else downloadBlob(csvFileName, new Blob([csv], { type: "text/csv;charset=utf-8" }));
       } else {
         downloadBlob(csvFileName, new Blob([csv], { type: "text/csv;charset=utf-8" }));
       }
@@ -7022,8 +7063,24 @@ export default function Home() {
     }
   };
 
+  const saveAllLabelsCsv = () => {
+    if (projectSaveBusy || !hasRecording || sourceVerificationRef.current || importBusyRef.current) return;
+    const labels = annotationsRef.current;
+    if (!labels.length) return;
+    try {
+      const csv = serializeRecordingLabels(meta.name, labels, (item) => annotationLabel(item)?.name ?? item.labelId);
+      const name = meta.name.replace(/\.[^.]+$/, "");
+      downloadBlob(`${name}_labels.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      setShowProjectSave(false);
+      setToast(`Saved ${labels.length} label${labels.length === 1 ? "" : "s"} to CSV`);
+      notifyTutorialAction("annotations-saved");
+    } catch (error) {
+      setProjectSaveError(error instanceof Error ? error.message : "The label CSV could not be saved.");
+    }
+  };
+
   useEffect(() => {
-    const modalOpen = olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+    const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -7063,7 +7120,7 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, olderReviews, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
+  }, [confirmCommit.length, olderReviews, pendingLabel, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -7079,7 +7136,7 @@ export default function Home() {
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
       const editingTarget = target?.closest("input, textarea, select, [contenteditable='true']");
       if (target?.closest(".spectrogram-panel") && !clearShortcut && !historyShortcut) return;
-      const modalOpen = olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+      const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
       if (modalOpen && zoomShortcut && !editingTarget && !target?.closest("[data-shortcut-scope]")) {
         event.preventDefault();
         event.stopPropagation();
@@ -7093,6 +7150,7 @@ export default function Home() {
           setConfirmCommit([]);
           setCommitAdvanceAfter(false);
         }
+        else if (pendingLabel) setPendingLabel(null);
         else if (olderReviews !== null) setOlderReviews(null);
         else if (showLabelVisibilityFilter) setShowLabelVisibilityFilter(false);
         else if (showEphysLabelPicker) setShowEphysLabelPicker(false);
@@ -7204,7 +7262,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, pendingLabel, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (Math.max(0, viewStart) / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, ((Math.min(meta.durationSec, viewStart + timebase) - Math.max(0, viewStart)) / Math.max(1, meta.durationSec)) * 100);
@@ -7233,9 +7291,27 @@ export default function Home() {
     .map((id) => LABEL_BY_ID.get(id))
     .filter((label): label is LabelDefinition => label !== undefined && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
   const sessionContextAnnotations = displayAnnotations.filter((item) => item.track === "context" && annotationGeometry(item) === "session");
-  const filteredChannelOptions = meta.channelLabels
-    .map((name, index) => ({ name, index }))
-    .filter(({ name }) => name.toLowerCase().includes(channelSearch.toLowerCase()));
+  const channelOptions = useMemo(() => {
+    const groups = new Map<string, { name: string; index: number }[]>();
+    meta.channelLabels.forEach((name, index) => {
+      const group = (channelGroupingMode === "name" ? channelNameGroup(name) : matlabDisplayGroup(name)) ?? "Other channels";
+      const members = groups.get(group) ?? [];
+      members.push({ name, index });
+      groups.set(group, members);
+    });
+    return [...groups];
+  }, [channelGroupingMode, meta.channelLabels]);
+  const setChannelVisibility = (indices: number[], enabled: boolean) => {
+    setSelectedChannels((current) => {
+      const next = new Set(current);
+      for (const index of indices) {
+        if (enabled) next.add(index);
+        else next.delete(index);
+      }
+      return next;
+    });
+  };
+  const channelQuery = channelSearch.trim().toLowerCase();
   // Visibility affects rendering only; saved annotations and exports stay intact.
   const renderAnnotations = useMemo(() => !labelsVisible ? [] : annotationDragPreview
     ? displayAnnotations.map((item) => annotationDragPreview.patches[item.id]
@@ -7300,7 +7376,7 @@ export default function Home() {
 
   /** Explicit, synchronous view actions only. Never choose files, labels, or save contents. */
   const assistTutorial = (action: TutorialAssistAction): boolean => {
-    const modalOpen = olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
+    const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelVisibilityFilter || showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
       || showSessionMap || showPatientInfo || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
     if (modalOpen) return (action === "open-import" && showImport) || (action === "open-save" && showProjectSave)
       || (action === "open-settings" && showSettings)
@@ -7646,7 +7722,7 @@ export default function Home() {
                   <span>%</span>
                 </label>
                 <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
-              </div>) : <div className="empty-queue"><strong>{queueSearch || hiddenLabelTypeCount ? "No matching labels" : "No events or instance labels"}</strong><p>{queueSearch || hiddenLabelTypeCount ? "Try another search or change Filter labels." : hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
+              </div>) : <div className="empty-queue"><strong>{queueSearch || hiddenLabelTypeCount || keywordFilterActive ? "No matching labels" : "No events or instance labels"}</strong><p>{queueSearch || hiddenLabelTypeCount || keywordFilterActive ? "Try another search or change Filter labels." : hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
               {filteredQueueEntries.length > queueLimit && <button className="queue-load-more" onClick={() => setQueueLimit((limit) => limit + 100)}>Show next {Math.min(100, filteredQueueEntries.length - queueLimit)} labels</button>}
             </div>
           </section>
@@ -7673,14 +7749,14 @@ export default function Home() {
             <button
               className={`compact-toggle ${anatomicalGroups ? "active" : ""}`}
               data-tutorial="channel-groups"
-              aria-label="Channel groups"
+              aria-label={anatomicalGroups ? "Ungroup channels" : "Group channels"}
               aria-pressed={anatomicalGroups}
-              disabled={!hasRecording || (!anatomicalGroups && !anatomicalGroupsAvailable)}
+              disabled={!hasRecording || !anatomicalGroupsAvailable}
               title={anatomicalGroups ? "Show channels without grouping" : anatomicalGroupsAvailable
                 ? channelGroupingMode === "name" ? "Group channels by name" : "Group anatomical channels as in MATLAB"
                 : "No channel name groups available"}
               onClick={() => changeZoomView({ anatomicalGroups: !anatomicalGroups, verticalViewport: null, channelScrollTop: 0 })}
-            >Groups</button>
+            >{anatomicalGroups ? "Ungroup" : "Group"}</button>
             <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
             <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
               <span className="window-control-label">Window</span>
@@ -7877,7 +7953,7 @@ export default function Home() {
               onScroll={updateExpandedChannelViewport}
             >
               <div className={`channel-rail ${channelRowLayout.groups.length ? "anatomical-groups" : ""} ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
-                <button className="channel-manager-button" data-tutorial="channels" aria-label="Add channels" title="Choose visible channels" onClick={() => setShowChannels(true)}>CH+</button>
+                <button className="channel-manager-button" data-tutorial="channels" aria-label="Manage channels" title="Show or hide channels and groups" onClick={() => setShowChannels(true)}>Channels</button>
                 <button
                   className={`channel-layout-button ${expandedChannels || waveformVerticalViewport ? "active" : ""}`}
                   aria-label={waveformVerticalViewport ? "Reset vertical box zoom" : `${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`}
@@ -7927,7 +8003,7 @@ export default function Home() {
                   onDrop={onLabelDrop}
                   onDragLeave={() => setDragGhost(null)}
                 >
-                  <canvas ref={canvasRef} data-tutorial="waveform" tabIndex={0} role="img" aria-busy={loadingSignal || display.processingThroughSec !== undefined} aria-label={inspectionMode ? "Interactive EEG waveform. Click to inspect a point or drag a box to fit its time and channel area to the full view." : "Interactive EEG waveform. Click to pin a time or drag across time to select a labeling window."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} />
+                  <canvas ref={canvasRef} data-tutorial="waveform" tabIndex={0} role="img" aria-busy={loadingSignal || display.processingThroughSec !== undefined} aria-label={inspectionMode ? "Interactive EEG waveform. Drag a box to zoom in. Double-click to restore the previous box zoom." : "Interactive EEG waveform. Click to pin a time or drag to select a labeling window. Double-click to restore the previous box zoom."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} onDoubleClick={restorePreviousWaveformZoom} />
                   {!inspectionMode && selection && <div className="wave-selection" style={{
                     left: `${((Math.max(viewStart, selection.start) - viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(viewStart + timebase, selection.end) - Math.max(viewStart, selection.start)) / timebase) * 100)}%`,
@@ -7957,7 +8033,7 @@ export default function Home() {
                   {dragGhost && <div className="drop-ghost" style={{ left: `${((dragGhost.time - viewStart) / timebase) * 100}%` }}><span>{formatClock(dragGhost.time, true)}</span></div>}
                   {!display.data.length && !loadingSignal && <div className="no-channels" role="status">
                     <strong>{display.warnings.length ? `${montage === "bipolar" ? "Bipolar" : montage === "average" ? "Average-reference" : "Signal"} view unavailable` : "No visible channels"}</strong>
-                    <span>{display.warnings[0] ?? "Use CH+ to choose channels."}</span>
+                    <span>{display.warnings[0] ?? "Use Channels to choose channels."}</span>
                   </div>}
                 </div>
               </div>
@@ -8083,11 +8159,11 @@ export default function Home() {
                 setAnnotationSelectionBox(null);
               }}
             >{labelsVisible ? "Hide all labels" : "Show all labels"}</button>
-            <button type="button" className={`label-filter-trigger ${hiddenLabelTypeCount ? "active" : ""}`}
+            <button type="button" className={`label-filter-trigger ${hiddenLabelTypeCount || keywordFilterActive ? "active" : ""}`}
               data-tutorial="label-filter"
               aria-label="Filter labels" aria-haspopup="dialog" aria-expanded={showLabelVisibilityFilter}
               onClick={() => setShowLabelVisibilityFilter(true)}>
-              Filter labels{hiddenLabelTypeCount ? ` (${hiddenLabelTypeCount})` : ""}
+              Filter labels{keywordFilterActive ? " (keywords)" : hiddenLabelTypeCount ? ` (${hiddenLabelTypeCount})` : ""}
             </button>
           </div>
           {rightPanelView === "resources" ? <ResourceUsagePanel
@@ -8175,9 +8251,34 @@ export default function Home() {
         </aside>
       </div>
 
+      {pendingLabel && <div className="modal-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setPendingLabel(null);
+      }}>
+        <form className="modal label-confidence-modal" role="dialog" aria-modal="true" aria-labelledby="label-confidence-title" tabIndex={-1}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const value = String(new FormData(event.currentTarget).get("confidence") ?? "").trim();
+            const confidence = Number(value);
+            if (!value || !Number.isInteger(confidence) || confidence < 0 || confidence > 100) return;
+            pendingLabel.add(confidence);
+            setPendingLabel(null);
+          }}>
+          <h2 id="label-confidence-title">Confidence for {pendingLabel.name}</h2>
+          <label className="form-field"><span>Confidence (%)</span>
+            <input name="confidence" type="number" min="0" max="100" step="1" placeholder="0–100" required />
+          </label>
+          <div className="inspector-actions">
+            <button type="button" className="button secondary" onClick={() => setPendingLabel(null)}>Cancel</button>
+            <button type="submit" className="button primary">Add label</button>
+          </div>
+        </form>
+      </div>}
+
       {showLabelVisibilityFilter && <LabelVisibilityFilter
         options={labelTypeOptions}
         hiddenTypes={hiddenLabelTypes}
+        keywords={labelKeywords}
+        onKeywordsChange={changeLabelKeywords}
         onChange={changeHiddenLabelTypes}
         onClose={() => setShowLabelVisibilityFilter(false)}
       />}
@@ -8273,14 +8374,9 @@ export default function Home() {
               <div className="directory-import-summary" role="status">
                 <strong>{stagedDirectoryPlan.recordings.length} sessions found</strong>
                 <p>All recording filenames match {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : stagedDirectoryPlan.format === "neurotrace" ? "NeuroTrace projects" : "paired MAT + DAT"}. File contents are checked when each session opens.</p>
-                <ul>{stagedDirectoryPlan.recordings.slice(0, 5).map((recording) => <li key={recording.id}>{recording.relativePath}</li>)}</ul>
-                {stagedDirectoryPlan.recordings.length > 5 && <small>And {stagedDirectoryPlan.recordings.length - 5} more sessions.</small>}
                 <p>Only the session list is loaded now. Signal data opens on demand; nothing is uploaded.</p>
               </div>
-              <footer>
-                <span className="directory-import-local-note">{stagedDirectoryPlan?.supportingFiles.length ? `${stagedDirectoryPlan.supportingFiles.length} companion files found · ` : ""}Files stay on this device.</span>
-                <button type="button" className="button primary" data-tutorial="import-open" disabled={!guidedImportReady || importBusy} onClick={() => void submitGuidedImport()}>{importBusy ? "Opening…" : `Load ${stagedDirectoryPlan.recordings.length} sessions`}</button>
-              </footer>
+              <DirectoryImportFilters plan={stagedDirectoryPlan} busy={importBusy} onLoad={submitGuidedImport} />
             </section>}
           </>}
           {uploadError && <div className="upload-error" role="alert" aria-live="assertive">
@@ -8328,9 +8424,12 @@ export default function Home() {
         <div id="project-save-dialog" className="modal project-save-modal" data-tutorial="save-dialog" role="dialog" aria-modal="true" aria-label="Save annotations CSV" tabIndex={-1}>
           <button className="modal-close" disabled={projectSaveBusy} onClick={() => setShowProjectSave(false)} aria-label="Close CSV save">×</button>
           <h2>Save annotations</h2>
-          <p><strong>{csvFileName}</strong></p>
-          <p>Accepted seizure reviews in the MATLAB CSV format. {csvDirectoryId ? "Includes reviewed sessions in this directory, including tabs closed during this visit." : "Includes the current recording."}</p>
-          <p>Drafts, skipped events, other label types, settings, and recording data are not included.</p>
+          <div className="csv-export-all">
+            <div><strong>All labels CSV</strong><p>{annotations.length ? `Download ${annotations.length} labels from this recording, including drafts and imported labels.` : "There are no labels in this recording yet."}</p></div>
+            <button className="button primary" disabled={projectSaveBusy || !reviewReady || !annotations.length} onClick={saveAllLabelsCsv}>Download all labels</button>
+          </div>
+          <h3>MATLAB review CSV</h3>
+          <p><strong>{csvFileName}</strong> · Accepted source-event seizure reviews {csvDirectoryId ? "from this directory" : "from this recording"}. Used to resume folder reviews.</p>
           <div className="csv-save-fields" data-tutorial="save-details">
             <label><span>Reviewer initials</span><input disabled={projectSaveBusy} value={reviewer} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
             {activeMatlabExportIdentity && <>
@@ -8344,7 +8443,7 @@ export default function Home() {
           {projectSaveError && <div className="project-save-error" role="alert">{projectSaveError}</div>}
           <footer className="project-save-footer">
             <span>Choose an existing MATLAB CSV to retain earlier rows and update matching events. Browsers without a save-location dialog download a new CSV.</span>
-            <button className="button primary" data-tutorial="save-confirm" disabled={projectSaveBusy || !hasRecording || verifyingSource || !reviewer.trim()} onClick={() => void saveAnnotationsCsv()}>{projectSaveBusy ? "Saving…" : "Save CSV"}</button>
+            <button className="button primary" data-tutorial="save-confirm" disabled={projectSaveBusy || !hasRecording || verifyingSource || !reviewer.trim()} onClick={() => void saveAnnotationsCsv()}>{projectSaveBusy ? "Saving…" : "Save MATLAB CSV"}</button>
           </footer>
         </div>
       </div>}
@@ -8356,29 +8455,40 @@ export default function Home() {
       {showChannels && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowChannels(false); }}>
         <div className="modal channel-modal" data-tutorial="channel-dialog" role="dialog" aria-modal="true" aria-label="Channel controls" tabIndex={-1}>
           <button className="modal-close" onClick={() => setShowChannels(false)} aria-label="Close channel controls">×</button>
-          <span className="modal-eyebrow">CHANNEL DISPLAY</span>
-          <h2>Choose what appears in the recording.</h2>
+          <h2>Show or hide channels</h2>
           <div className="detected-channels"><strong>Detected channels:</strong><span>{meta.channelLabels.length} total · {selectedChannels.size} source channels selected · {display.labels.length} displayed rows</span></div>
           <div className="channel-modal-tools">
             <input aria-label="Search detected channels" placeholder="Find a channel…" value={channelSearch} onChange={(event) => setChannelSearch(event.target.value)} />
             <button onClick={() => setSelectedChannels(new Set(meta.channelLabels.map((_, index) => index)))}>Enable all</button>
             <button onClick={() => setSelectedChannels(new Set())}>Disable all</button>
           </div>
-          <div className="channel-toggle-list">
-            {filteredChannelOptions.map(({ name, index }) => <div className="channel-toggle-row" key={`${name}-${index}`}>
-              <label>
-                <input type="checkbox" checked={selectedChannels.has(index)} onChange={() => setSelectedChannels((current) => {
-                  const next = new Set(current);
-                  if (next.has(index)) next.delete(index);
-                  else next.add(index);
-                  return next;
-                })} />
-                <span className="channel-switch" aria-hidden="true" />
-                <span className="channel-toggle-copy"><strong>{formatDisplayChannelLabel(name)}</strong><small>{meta.channelUnits[index] ?? "µV"} · source channel {index + 1}</small></span>
-              </label>
-            </div>)}
+          <div className="channel-group-list">
+            {channelOptions.map(([group, members]) => {
+              const visible = group.toLowerCase().includes(channelQuery) ? members
+                : members.filter(({ name }) => name.toLowerCase().includes(channelQuery));
+              if (!visible.length) return null;
+              const enabled = members.filter(({ index }) => selectedChannels.has(index)).length;
+              return <fieldset className="channel-choice-group" key={group}>
+                <legend><label>
+                  <input type="checkbox" aria-label={`Enable group ${group}`} checked={enabled === members.length}
+                    ref={(input) => { if (input) input.indeterminate = enabled > 0 && enabled < members.length; }}
+                    onChange={(event) => setChannelVisibility(members.map(({ index }) => index), event.target.checked)} />
+                  {group} <small>{enabled}/{members.length} enabled</small>
+                </label></legend>
+                <div className="channel-toggle-list">
+                  {visible.map(({ name, index }) => <label className="channel-toggle-row" key={index} title={name}>
+                    <input type="checkbox" checked={selectedChannels.has(index)} onChange={(event) => setChannelVisibility([index], event.target.checked)} />
+                    <span className="channel-toggle-copy"><strong>{formatDisplayChannelLabel(name)}</strong><small>{meta.channelUnits[index] ?? "µV"} · source channel {index + 1}</small></span>
+                  </label>)}
+                </div>
+              </fieldset>;
+            })}
+            {!channelOptions.some(([group, members]) => group.toLowerCase().includes(channelQuery)
+              || members.some(({ name }) => name.toLowerCase().includes(channelQuery))) && <p>No matching channels.</p>}
           </div>
-          <p className="channel-modal-note">Montage labels may combine source channels. NeuroTrace keeps the original channel provenance with every channel-specific annotation.</p>
+          {anatomicalGroups && channelGroupingMode === "matlab" && anatomicalGroupsAvailable && channelOptions.some(([group]) => group === "Other channels")
+            && <p className="channel-modal-note">Use Ungroup to see auxiliary channels when anatomical groups are displayed.</p>}
+          <footer className="channel-modal-footer"><button className="button primary" onClick={() => setShowChannels(false)}>Done</button></footer>
         </div>
       </div>}
 
@@ -8434,7 +8544,7 @@ export default function Home() {
             <div className="settings-heading"><strong>Pointer and timing controls</strong></div>
             <label><span>Label snapping</span><select value={snapMode} onChange={(event) => setSnapMode(event.target.value as SnapMode)}><option value="none">Off (MATLAB click timing)</option><option value="1s">1 second</option><option value="100ms">100 milliseconds</option><option value="sample">Focused channel sample</option></select></label>
             <div className="fixed-control-grid">
-              {[["Click", "Pin instance time"], ["Click + drag", "Select label window (or box zoom with Zoom tool)"], ["Wheel / trackpad", "Pan in time; scroll expanded channels vertically"], ["Shift + wheel", "Pan time instead of scrolling channels"], ["Pinch / Ctrl/⌘ + wheel", "EEG-only time zoom"], ["Alt + pointer", "Bypass label snapping"], ["Window +/−", "Step 0.1; Shift: 1; Ctrl/⌘ + Shift: 10"], ["Drag divider", "Resize panels; double-click spectrogram divider to maximize/restore"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
+              {[["Click", "Pin instance time"], ["Click + drag", "Select label window (or box zoom with Zoom tool)"], ["Double-click waveform", "Restore the previous box zoom"], ["Wheel / trackpad", "Pan in time; scroll expanded channels vertically"], ["Shift + wheel", "Pan time instead of scrolling channels"], ["Pinch / Ctrl/⌘ + wheel", "EEG-only time zoom"], ["Alt + pointer", "Bypass label snapping"], ["Window +/−", "Step 0.1; Shift: 1; Ctrl/⌘ + Shift: 10"], ["Drag divider", "Resize panels; double-click spectrogram divider to maximize/restore"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
             </div>
           </section>
         </div>

@@ -89,6 +89,7 @@ function annotationHarness(overrides = {}) {
   const notices = [];
   const env = {
     ...pure, clamp, LABEL_BY_ID, useCallback: (fn) => fn, hasRecording: true,
+    sourceRef: { current: {} }, setPendingLabel: (prompt) => prompt.add(85),
     sourceVerificationRef: { current: false }, annotationsRef: { current: annotations },
     display: display(), meta: defaultMeta, snapMode: "none", focusedChannel: 0,
     candidates: [], activeCandidate: 0, activeTool: "cursor", montage: "referential", reviewer: "AR",

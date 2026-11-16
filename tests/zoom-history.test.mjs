@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
-import { recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
+import { previousWaveformBoxView, recordZoomChange, sameZoomView } from "../app/zoom-history.ts";
 import { composeVerticalViewport, projectVerticalFraction } from "../app/waveform-viewport.ts";
 import { DEFAULT_CONTROLS, shortcutAction } from "../app/shortcuts.ts";
 import { normalizeDisplayGain } from "../app/display-gain.ts";
@@ -12,6 +12,25 @@ import { bipolarMontageKind } from "../app/bipolar-montage.ts";
 const initialView = () => ({
   viewStart: 30, timebase: 20, gain: 1, verticalViewport: null,
   expandedChannels: false, channelScrollTop: 0, frequencyRange: { min: 0, max: 100 },
+});
+
+test("box backtracking restores nested time and channel views across annotation edits", () => {
+  const history = [], redo = [], gesture = {};
+  const full = initialView();
+  const first = { ...full, viewStart: 34, timebase: 8, verticalViewport: { top: .2, bottom: .8 } };
+  const second = { ...first, viewStart: 36, timebase: 3, verticalViewport: { top: .4, bottom: .6 } };
+  recordZoomChange(history, redo, full, first, gesture, undefined, 0, "in");
+  const edit = { annotations: [{ id: "label" }] };
+  history.push(edit);
+  recordZoomChange(history, redo, first, second, gesture, undefined, 1, "in");
+  assert.equal(previousWaveformBoxView(history), first);
+  recordZoomChange(history, redo, second, first, gesture, undefined, 2, "out");
+  assert.equal(previousWaveformBoxView(history), full);
+  recordZoomChange(history, redo, first, full, gesture, undefined, 3, "out");
+  assert.equal(previousWaveformBoxView(history), undefined);
+  assert.equal(history[1], edit);
+  redo.push(history.pop());
+  assert.equal(previousWaveformBoxView(history), full, "undoing the restore makes the prior box reachable again");
 });
 
 test("wheel frames form one zoom entry; pauses, other controls, edits, and panning break the group", () => {
@@ -395,7 +414,7 @@ test("Ctrl/Cmd+Z and Shift+Z reach shared history from waveform, spectrogram, bu
       const onKey = compile(declaration("onKey"), {
         ...ui.scope, undo: ui.undo, redo: ui.redo,
         controlBindings: DEFAULT_CONTROLS, shortcutAction, canvasRef: { current: null }, markOnset: null,
-        olderReviews: null, showDirectorySessions: false, setShowDirectorySessions() {}, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
+        olderReviews: null, pendingLabel: null, showDirectorySessions: false, setShowDirectorySessions() {}, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
         showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
         queueDetailEntry: null, confirmCommit: [],
       }, "onKey");

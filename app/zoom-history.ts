@@ -15,7 +15,7 @@ export type ZoomView = {
 };
 
 /** One atomic zoom, including both time and vertical/frequency axes for a box gesture. */
-export type ZoomHistoryEntry = { kind: "zoom"; before: ZoomView; after: ZoomView };
+export type ZoomHistoryEntry = { kind: "zoom"; before: ZoomView; after: ZoomView; boxAction?: "in" | "out" };
 /** Ephemeral grouping state, reset on undo/redo, session switch, and recording replacement. */
 export type ZoomGestureState = { entry?: ZoomHistoryEntry; group?: string; lastAt?: number };
 
@@ -26,6 +26,18 @@ export function sameZoomView(a: ZoomView, b: ZoomView): boolean {
     && a.expandedChannels === b.expandedChannels && a.channelScrollTop === b.channelScrollTop
     && Boolean(a.anatomicalGroups) === Boolean(b.anatomicalGroups)
     && a.frequencyRange.min === b.frequencyRange.min && a.frequencyRange.max === b.frequencyRange.max;
+}
+
+/** Find the latest box that has not already been backed out of. */
+export function previousWaveformBoxView(history: readonly { kind?: string; boxAction?: "in" | "out"; before?: ZoomView }[]): ZoomView | undefined {
+  let restored = 0;
+  for (let index = history.length - 1; index >= 0; index--) {
+    const entry = history[index];
+    if (entry.boxAction === "out") restored++;
+    if (entry.boxAction !== "in") continue;
+    if (!restored) return entry.before;
+    restored--;
+  }
 }
 
 /**
@@ -41,6 +53,7 @@ export function recordZoomChange<T extends { kind?: "annotation" }>(
   gesture: ZoomGestureState,
   group?: string,
   now = performance.now(),
+  boxAction?: ZoomHistoryEntry["boxAction"],
 ): boolean {
   if (sameZoomView(before, after)) return false;
   const last = undo.at(-1);
@@ -48,7 +61,7 @@ export function recordZoomChange<T extends { kind?: "annotation" }>(
     && now - (gesture.lastAt ?? -Infinity) <= 300 && sameZoomView(last.after, before)) {
     last.after = after;
   } else {
-    const entry: ZoomHistoryEntry = { kind: "zoom", before, after };
+    const entry: ZoomHistoryEntry = { kind: "zoom", before, after, ...(boxAction ? { boxAction } : {}) };
     undo.push(entry);
     if (undo.length > 100) undo.shift();
     gesture.entry = entry;

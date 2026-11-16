@@ -296,7 +296,7 @@ test("filtered queue navigation selects the original annotation without expandin
     detail: "Recording label · imported", status: "suggestion", time: index,
   }));
   const { filteredQueueEntries } = compile(["filteredQueueEntries"], {
-    queueSearch: "TARGET imported", instanceQueueEntries: entries, hiddenLabelTypes: new Set(), useMemo: (callback) => callback(),
+    queueSearch: "TARGET imported", instanceQueueEntries: entries, matchesLabelKeywords: () => true, hiddenLabelTypes: new Set(), useMemo: (callback) => callback(),
   });
   assert.deepEqual(filteredQueueEntries.map((item) => item.index), [999]);
   let selected, time, limit = 100;

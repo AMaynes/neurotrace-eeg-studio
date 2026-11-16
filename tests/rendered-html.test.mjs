@@ -144,9 +144,9 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   assert.doesNotMatch(leftSidebar, /compact-load-recording|>Load recording</, "the left panel never shows a duplicate recording loader");
   assert.match(leftSidebar, /\{hasRecording && <section className="recording-summary">/, "recording details appear in the left panel only after a file loads");
 
-  sourceHas(/aria-label="Add channels"/, "CH+ has an accessible action name");
-  sourceHas(/>\s*CH\+\s*<\/button>/, "the compact channel action is visible as CH+");
-  sourceHas(/className=\{`channel-layout-button[\s\S]*?waveformVerticalViewport \? "↕" : "E"/, "the channel layout and vertical-reset control sits beside CH+");
+  sourceHas(/aria-label="Manage channels"/, "Channels has an accessible action name");
+  sourceHas(/>\s*Channels\s*<\/button>/, "the compact channel action is visible as Channels");
+  sourceHas(/className=\{`channel-layout-button[\s\S]*?waveformVerticalViewport \? "↕" : "E"/, "the channel layout and vertical-reset control sits beside Channels");
   sourceHas(/aria-label="(?:Open )?Help"/, "Help trigger has an accessible name");
   sourceHas(/aria-label="(?:Open )?Settings"/, "Settings trigger has an accessible name");
 
@@ -171,7 +171,7 @@ test("keeps requested signal tools in the primary toolbar without legacy clutter
   }
   assert.doesNotMatch(toolbar, />\s*(?:Cursor|Select)\s*</i);
   assert.doesNotMatch(toolbar, /Mark seizure|Manage ontology/i);
-  assert.match(page, /className="channel-manager-button"[\s\S]{0,160}>CH\+<\/button>/, "CH+ is in the recording rail");
+  assert.match(page, /className="channel-manager-button"[\s\S]{0,160}>Channels<\/button>/, "Channels is in the recording rail");
   assert.match(toolbar, /className=\{`panel-bottom-button/);
   assert.match(toolbar, /aria-pressed=\{bottomTracksOpen\}/);
   assert.match(toolbar, /setBottomTracksOpen\(\(value\)\s*=>\s*!value\)/);
@@ -445,7 +445,7 @@ test("accepts additive directory companions while retaining actionable damaged-r
   assert.match(modal, /chooseImportType\("mat-dat"\)/);
   assert.match(modal, /chooseImportType\("neurotrace"\)/);
   assert.doesNotMatch(modal, /import-requirements/);
-  assert.match(modal, /disabled=\{!guidedImportReady \|\| importBusy\}/);
+  assert.match(modal, /<DirectoryImportFilters plan=\{stagedDirectoryPlan\} busy=\{importBusy\} onLoad=\{submitGuidedImport\}/);
   assert.match(page, /analyzeBidsCompanions\(mergedFiles/);
   assert.match(page, /<UploadedFilesPanel bundle=\{companionBundle\} compact/);
   assert.match(page, /Dictionaries, words, equations, filters, labels, and channel groups are accepted/);
@@ -521,10 +521,11 @@ test("wires channel, Help, and Settings dialogs to operable controls", async () 
   assert.match(channels, />Enable all<\/button>/);
   assert.match(channels, />Disable all<\/button>/);
   assert.match(channels, /checked=\{selectedChannels\.has\(index\)\}/);
-  assert.match(channels, /if\s*\(next\.has\(index\)\)\s*next\.delete\(index\)/);
+  assert.match(channels, /setChannelVisibility\(\[index\], event\.target\.checked\)/);
+  assert.match(channels, /setChannelVisibility\(members\.map/);
+  assert.match(channels, /input\.indeterminate = enabled > 0/);
   assert.doesNotMatch(channels, /setBadChannels|Bad channels|>Good<|>Bad</);
   assert.match(channels, /source channel \{index \+ 1\}/);
-  assert.match(channels, /original channel provenance/i);
 
   const help = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
   const lessons = await readFile(new URL("../app/tutorials.ts", import.meta.url), "utf8");
@@ -533,7 +534,7 @@ test("wires channel, Help, and Settings dialogs to operable controls", async () 
   assert.match(help, /role="tablist" aria-label="Tutorial topics"/);
   assert.match(lessons, /Session tabs/);
   assert.match(lessons, /Label a moment or a window/);
-  assert.match(lessons, /CH\+ channel manager/);
+  assert.match(lessons, /Open Channel controls/);
 
   const settingsStart = page.indexOf("{showSettings &&");
   const settingsEnd = page.indexOf("{showSessionMap &&", settingsStart);
@@ -668,7 +669,7 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
   assert.match(page, /enabledEphysLabelIds\.has\(item\.id\)/, "disabled types are filtered from the palette");
   assert.match(page, /className="modal ephys-label-picker" role="dialog" aria-modal="true"/, "the picker opens outside the sidebar as a modal");
   assert.ok(page.indexOf('id="ephys-label-picker"') > page.indexOf('</aside>'), "the picker is not clipped by the right panel");
-  assert.match(page, /const modalOpen = olderReviews !== null \|\| showLabelVisibilityFilter \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
+  assert.match(page, /const modalOpen = pendingLabel !== null \|\| olderReviews !== null \|\| showLabelVisibilityFilter \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
   assert.match(page, /else if \(showEphysLabelPicker\) setShowEphysLabelPicker\(false\)/, "Escape closes the picker without clearing the waveform selection");
   assert.match(page, /aria-label="Close ePhys label picker"/);
   assert.match(css, /\.ephys-label-picker\s*\{[^}]*width:\s*min\(520px, calc\(100vw - 32px\)\)/, "the popup fits narrow viewports independently of the sidebar");
@@ -718,7 +719,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   const pointerHandlers = page.slice(pointerStart, pointerEnd);
   assert.match(pointerHandlers, /inspectionBox: inspectionMode && pointerRef\.current\.moved/);
   assert.match(pointerHandlers, /if \(pending\.inspectionBox\) setInspectionRange\(pending\.inspectionBox\)/);
-  assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end, verticalZoom\)/);
+  assert.match(pointerHandlers, /zoomToTimeRange\(range\.start, range\.end, verticalZoom, "in"\)/);
   assert.match(pointerHandlers, /waveformZoomForInspectionBox\(range, rect\)/);
   assert.match(page, /verticalViewport: selection/);
   assert.match(page, /geometry\.unitForY\(\s*scrollTop \+ position \* canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT\)/, "box bounds account for scrolling and distributed group gaps");
@@ -838,7 +839,7 @@ test("saves MATLAB CSV instead of a custom project and still accepts inert custo
   assert.match(page, /startIn:\s*"downloads"/);
   assert.match(page, /"text\/csv": \["\.csv"\]/);
   assert.doesNotMatch(page, /projectSaveOptions|projectSaveSelection/);
-  assert.match(page, /Save CSV/);
+  assert.match(page, /Save MATLAB CSV/);
   assert.match(page, /download a new CSV/);
   assert.match(page, /importCustomToolFiles\(files\)/);
   assert.match(page, /handleDroppedRecordingFiles\(event\.dataTransfer\)/);

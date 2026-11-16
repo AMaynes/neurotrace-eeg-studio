@@ -23,7 +23,7 @@ function fixture(overrides = {}) {
   const values = { labelsVisible: true };
   const state = {
     MAX_DISPLAY_GAIN, stepDisplayGain,
-    directoryCatalog: null, olderReviews: null, showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showSettings: false, showChannels: false, showImport: false,
+    directoryCatalog: null, olderReviews: null, pendingLabel: null, showDirectorySessions: false, showEphysLabelPicker: false, showLabelVisibilityFilter: false, showSettings: false, showChannels: false, showImport: false,
     showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
     queueDetailEntry: null, confirmCommit: [], hasRecording: true, activeSessionContentView: "recording",
     meta: { durationSec: 90 }, viewStartRef: { current: 0 }, viewStart: 0, timebase: 20, gain: 1,
