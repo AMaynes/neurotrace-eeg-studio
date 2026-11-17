@@ -9,7 +9,6 @@ import { directoryEventCache, setDirectoryEventQuery, supportsDirectoryEventSear
 // Execute the actual component and effect lifecycle; scanning is tested separately
 // against a worker double. Rendering must never read recording bytes itself.
 const componentSource = await readFile(new URL("../app/directory-sessions.tsx", import.meta.url), "utf8");
-const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const compiled = ts.transpileModule(componentSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
@@ -90,20 +89,6 @@ function harness(count, options = {}) {
     search(tree, query) { this.type(tree, query); this.button(this.render(), "Search event labels").props.onClick(); },
   };
 }
-
-function content(tree) {
-  if (Array.isArray(tree)) return tree.map(content).join("");
-  if (typeof tree === "string" || typeof tree === "number") return String(tree);
-  return tree && typeof tree === "object" ? content(tree.props?.children) : "";
-}
-
-const ready = (...labels) => ({ state: "ready", labels, warnings: [] });
-
-
-
-
-
-
 
 test("directory catalog renders at most 50 entries and paginates without reading recordings", () => {
   const ui = harness(123);
