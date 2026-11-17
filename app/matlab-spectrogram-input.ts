@@ -56,7 +56,7 @@ export function matlabSpectrogramInputPlan(
     readDuration: count / sampleRate,
     dataStart: origin,
     baselineTime: viewStart + (clickIndex + 1) / sampleRate,
-    label: explicit.length > 1 ? `Selected channels · ${explicit.length} averaged`
+    label: explicit.length > 1 ? `Average of ${explicit.map((index) => meta.channelLabels[index]).join(" + ")}`
       : explicit.length ? meta.channelLabels[explicit[0]]
       : group ? `${group} raw group (${sourceIndices.length})` : meta.channelLabels[primarySourceIndex],
   };

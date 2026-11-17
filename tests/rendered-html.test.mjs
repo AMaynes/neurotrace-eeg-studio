@@ -443,7 +443,7 @@ test("accepts additive directory companions while retaining actionable damaged-r
   assert.match(modal, /chooseImportType\("edf"\)/);
   assert.match(modal, /chooseImportType\("mat"\)/);
   assert.match(modal, /chooseImportType\("mat-dat"\)/);
-  assert.match(modal, /chooseImportType\("neurotrace"\)/);
+  assert.doesNotMatch(modal, /chooseImportType\("neurotrace"\)/);
   assert.doesNotMatch(modal, /import-requirements/);
   assert.match(modal, /<DirectoryImportFilters plan=\{stagedDirectoryPlan\} busy=\{importBusy\} onLoad=\{submitGuidedImport\}/);
   assert.match(page, /analyzeBidsCompanions\(mergedFiles/);
@@ -669,7 +669,7 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
   assert.match(page, /enabledEphysLabelIds\.has\(item\.id\)/, "disabled types are filtered from the palette");
   assert.match(page, /className="modal ephys-label-picker" role="dialog" aria-modal="true"/, "the picker opens outside the sidebar as a modal");
   assert.ok(page.indexOf('id="ephys-label-picker"') > page.indexOf('</aside>'), "the picker is not clipped by the right panel");
-  assert.match(page, /const modalOpen = pendingLabel !== null \|\| olderReviews !== null \|\| showLabelLibrary \|\| showLabelVisibilityFilter \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
+  assert.match(page, /const modalOpen = pendingLabel !== null \|\| olderReviews !== null \|\| showLabelLibrary \|\| showEphysLabelPicker \|\|/, "label dialogs participate in focus trapping and background inertness");
   assert.match(page, /else if \(showEphysLabelPicker\) setShowEphysLabelPicker\(false\)/, "Escape closes the picker without clearing the waveform selection");
   assert.match(page, /aria-label="Close ePhys label picker"/);
   assert.match(css, /\.ephys-label-picker\s*\{[^}]*width:\s*min\(520px, calc\(100vw - 32px\)\)/, "the popup fits narrow viewports independently of the sidebar");
@@ -679,13 +679,13 @@ test("lets reviewers choose which ePhys label types appear in the right panel", 
 
 test("toggles all label types without deleting annotations or changing palette preferences", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const buttonStart = page.indexOf('className="label-visibility-toggle"');
+  const buttonStart = page.indexOf('data-tutorial="label-visibility"');
   const button = page.slice(buttonStart, page.indexOf('</button>', buttonStart));
-  assert.ok(buttonStart > page.indexOf('<aside className="right-sidebar"'));
+  assert.ok(buttonStart < page.indexOf('<aside className="right-sidebar"'));
   assert.match(button, /Hide all labels/);
   assert.match(button, /Show all labels/);
   assert.match(button, /setLabelsVisible\(\(visible\) => !visible\)/);
-  assert.match(button, /setSelectedAnnotationIds\(new Set\(\)\)/, "hidden labels cannot remain selected for accidental deletion");
+  assert.match(button, /clearLabelFilterSelection\(\)/, "hidden labels cannot remain selected for accidental deletion");
   assert.doesNotMatch(button, /setAnnotations|setEnabledEphysLabelIds|setBottomTracksOpen/, "visibility preserves saved data and independent display preferences");
   assert.match(page, /const waveformAnnotations = labelsVisible \? displayAnnotations : \[\]/);
   assert.match(page, /waveformAnnotations\.length > MAX_INTERACTIVE_TIMELINE_ANNOTATIONS/);
@@ -751,7 +751,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
     /\[activeCandidateTime, activeSessionContentView,[^\]]*inspection(?:Dragging|Range)/,
     "the DOM inspection rectangle updates without retracing busy waveform paths",
   );
-  assert.match(page, /const focused = combined \|\| \(channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
+  assert.match(page, /const focused = combined \|\| \(spectrogramChannels\.length === 0 && channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
   assert.doesNotMatch(page, /inspectionHighlighted|inspection-highlighted/);
   assert.match(css, /\.right-panel-mode-switch\s*\{/);
   assert.match(css, /\.box-zoom-button\s*\{[^}]*width:\s*31px/);
@@ -783,7 +783,7 @@ test("toggles live resource usage from the control left of Help and Settings", a
   const actionsStart = page.indexOf('<div className="top-actions utility-actions">');
   const actionsEnd = page.indexOf("</div>", actionsStart);
   const actions = page.slice(actionsStart, actionsEnd);
-  const savePosition = actions.indexOf("Save annotations CSV");
+  const savePosition = actions.indexOf("Save review");
   const uploadPosition = actions.indexOf("Upload recording or companion files");
   const resourcePosition = actions.indexOf("Show resource usage");
   const helpPosition = actions.indexOf("Open Help");
@@ -830,22 +830,14 @@ test("toggles live resource usage from the control left of Help and Settings", a
   assert.match(css, /\.resource-glyph\s*\{/);
 });
 
-test("saves MATLAB CSV instead of a custom project and still accepts inert custom definitions", async () => {
+test("signed Save downloads CSV and JSON while custom definitions remain inert", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-
-  assert.match(page, /writeMatlabAnnotations\(handle, rows\)/);
-  assert.doesNotMatch(page, /createNeurotraceProjectArchive/);
-  assert.match(page, /showSaveFilePicker\?: ProjectSavePicker/);
-  assert.match(page, /startIn:\s*"downloads"/);
-  assert.match(page, /"text\/csv": \["\.csv"\]/);
-  assert.doesNotMatch(page, /projectSaveOptions|projectSaveSelection/);
-  assert.match(page, /Save MATLAB CSV/);
-  assert.match(page, /download a new CSV/);
+  assert.match(page, /Reviewing signature/);
+  assert.match(page, /Download CSV \+ JSON/);
+  assert.match(page, /downloadBlob\(names\.annotations/);
+  assert.match(page, /downloadBlob\(names\.workspace/);
+  assert.doesNotMatch(page, /showDirectoryPicker|createNeurotraceProjectArchive/);
   assert.match(page, /importCustomToolFiles\(files\)/);
-  assert.match(page, /handleDroppedRecordingFiles\(event\.dataTransfer\)/);
-  for (const kind of ["Dictionaries", "equations", "filters", "labels", "channel groups"]) {
-    assert.match(page, new RegExp(kind, "i"));
-  }
 });
 
 test("keeps Session Map focused on whole-recording navigation", async () => {
@@ -925,7 +917,7 @@ test("uses Instance Queue only to navigate file events, instance labels, and non
   const queueEnd = page.indexOf("</section>", queueStart);
   const queue = page.slice(queueStart, queueEnd);
   assert.match(queue, /filteredQueueEntries\.slice\(0, queueLimit\)\.map\(\(\{ entry, index \}\)/);
-  assert.match(queue, /filteredQueueEntries\[activeFilteredQueueIndex \+ 1\]\.index/);
+  assert.match(queue, /const next = filteredQueueEntries\[activeFilteredQueueIndex \+ 1\]/);
   assert.match(queue, /selectInstanceQueueEntry/);
   assert.match(queue, /className="queue-arrow"[\s\S]*?Open details for/);
   assert.match(queue, /className="queue-confidence"[\s\S]*?<input type="number" min="0" max="100"[\s\S]*?value=\{entry\.confidence\}/);
@@ -1070,7 +1062,7 @@ test("highlights a focused channel and provides compact or vertically scrollable
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /const focused = combined \|\| \(channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
+  assert.match(page, /const focused = combined \|\| \(spectrogramChannels\.length === 0 && channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
   assert.match(page, /aria-pressed=\{focused\}/);
   assert.match(page, /setFocusedChannel\(index\)[\s\S]*?setChannelSelectionActive\(true\)/);
   assert.match(page, /setChannelSelectionActive\(false\)/);

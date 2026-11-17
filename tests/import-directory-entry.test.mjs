@@ -107,7 +107,7 @@ function harness(options = {}) {
   const env = {
     useCallback: (callback) => callback,
     pendingDat: null, importBusy: false, importBusyRef: { current: false },
-    guidedImportReady: false,
+    guidedImportReady: false, folderPreparing: false, pendingAnnotationCsv: null,
     directoryConfirmationRef: { current: null },
     guidedFilesInputRef: { current: null },
     guidedDirectoryInputRef: { current: null },
@@ -120,7 +120,7 @@ function harness(options = {}) {
   };
   for (const [key, value] of Object.entries({ showImport: false, importChoice: null, importPickerKind: null, fileDragActive: false,
     stagedDirectoryPlan: null, stagedImportFiles: [], uploadError: null, reviewerProfileId: "",
-    reviewResumePrompt: null, requestedSavedReview: null, portableReviewFile: null, startBlindReview: false })) state(env, key, value);
+    pendingAnnotationCsv: null, portableReviewFile: null, startBlindReview: false })) state(env, key, value);
   Object.assign(env, options);
   env.setShowImportOpen = (open) => { env.showImport = open; };
   env.setShowImport = (open) => handler("setShowImport", env)(open);
@@ -141,7 +141,7 @@ test("welcome offers file and folder selection before any optional format filter
   const tree = ui.render();
   assert.equal(elements(tree, (node) => node.props?.["aria-label"] === "Recording import mode").length, 0);
   assert.equal(declarations.has("chooseImportMode"), false);
-  for (const label of ["EDF / EDF+", "MAT", "MAT + DAT", "NeuroTrace"]) {
+  for (const label of ["EDF / EDF+", "MAT", "MAT + DAT"]) {
     assert.equal(formatButton(tree, label).props.disabled, false);
     assert.equal(formatButton(tree, label).props["aria-pressed"], false, "no format is selected initially");
   }
@@ -192,7 +192,7 @@ test("the import dialog has separate hidden file and recursive-directory pickers
   assert.equal(ui.env.guidedDirectoryInputRef.current, null);
 });
 
-for (const [format, label, accept] of [["edf", "EDF / EDF+", ".edf"], ["mat", "MAT", ".mat"], ["mat-dat", "MAT + DAT", ".mat,.dat"], ["neurotrace", "NeuroTrace", ".neurotrace"]]) {
+for (const [format, label, accept] of [["edf", "EDF / EDF+", ".edf"], ["mat", "MAT", ".mat"], ["mat-dat", "MAT + DAT", ".mat,.dat"]]) {
   test(`${label} card sets an optional filter without opening Explorer`, () => {
     const ui = harness();
     const unexpectedPicker = { click: () => assert.fail("choosing a format must not skip the file/folder choice") };
@@ -230,7 +230,7 @@ for (const [format, label, accept] of [["edf", "EDF / EDF+", ".edf"], ["mat", "M
   }
 }
 
-for (const [format, label] of [["edf", /EDF/], ["mat", /MAT/], ["mat-dat", /MAT\s*\+\s*DAT/], ["neurotrace", /NeuroTrace/]]) {
+for (const [format, label] of [["edf", /EDF/], ["mat", /MAT/], ["mat-dat", /MAT\s*\+\s*DAT/]]) {
   test(`detected ${format} collection displays its format and lazy action without manual file rows`, () => {
     const ui = harness({ importChoice: format, guidedImportReady: true,
       stagedDirectoryPlan: { format, recordings: [{ id: "one", relativePath: "root/one" }, { id: "two", relativePath: "root/sub/two" }], supportingFiles: [] } });
@@ -251,7 +251,7 @@ test("busy import disables format cards, both inputs, and file/folder actions", 
   ui.env.guidedFilesInputRef.current = { click: () => assert.fail("busy import must not open a competing picker") };
   ui.env.guidedDirectoryInputRef.current = ui.env.guidedFilesInputRef.current;
   const tree = ui.render();
-  for (const label of ["EDF / EDF+", "MAT", "MAT + DAT", "NeuroTrace"]) {
+  for (const label of ["EDF / EDF+", "MAT", "MAT + DAT"]) {
     const card = formatButton(tree, label);
     assert.equal(card.props.disabled, true);
     card.props.onClick();

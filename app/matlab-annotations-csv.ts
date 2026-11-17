@@ -125,7 +125,7 @@ export function serializeMatlabAnnotations(rows: MatlabAnnotationRow[]): string 
 }
 
 /** Strict parsing protects an existing CSV before a save replaces its contents. */
-export function parseMatlabAnnotations(text: string, options: { acceptedOnly?: boolean } = {}): MatlabAnnotationRow[] {
+export function parseCsvRecords(text: string): string[][] {
   if (!text.trim()) return [];
   const records: string[][] = [];
   let record: string[] = [], cell = "", quoted = false, closed = false;
@@ -150,6 +150,13 @@ export function parseMatlabAnnotations(text: string, options: { acceptedOnly?: b
   }
   if (quoted) throw new Error("The existing CSV is incomplete; choose a different file.");
   if (cell || record.length || closed) finishRecord();
+  return records;
+}
+
+/** Strict parsing protects an existing MATLAB CSV before overwriting it. */
+export function parseMatlabAnnotations(text: string, options: { acceptedOnly?: boolean } = {}): MatlabAnnotationRow[] {
+  if (!text.trim()) return [];
+  const records = parseCsvRecords(text);
   if (records.shift()?.join(",") !== MATLAB_ANNOTATION_COLUMNS.join(",")) {
     throw new Error("The selected file is not a MATLAB annotation CSV. Choose a new filename to keep that file unchanged.");
   }

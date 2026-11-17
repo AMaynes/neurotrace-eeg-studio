@@ -33,7 +33,7 @@ function dropEntries(entries) {
 }
 
 test("a plain single recording remains a file selection without reading bytes", () => {
-  for (const name of ["one.edf", "one.MAT", "one.dat", "one.neurotrace"]) {
+  for (const name of ["one.edf", "one.MAT", "one.dat"]) {
     const file = fileAt(name);
     const result = classifyRecordingSelection([file]);
     assert.deepEqual(result, { kind: "files", files: [file] });
@@ -56,8 +56,8 @@ test("an explicit folder selection is recognized even without relative paths", (
   assert.equal(result.kind, "directory");
   assert.equal(result.plan.format, "mat");
 });
-test("flat multiple EDF, MAT, or NeuroTrace sessions automatically become collections", () => {
-  for (const format of ["edf", "mat", "neurotrace"]) {
+test("flat multiple EDF or MAT sessions automatically become collections", () => {
+  for (const format of ["edf", "mat"]) {
     const result = classifyRecordingSelection([fileAt(`a.${format}`), fileAt(`b.${format}`), fileAt("notes.txt")]);
     assert.equal(result.kind, "directory");
     assert.equal(result.plan.format, format);
@@ -80,7 +80,7 @@ test("mixed families are rejected before a first recording can be silently chose
 test("explicit folder formats override automatic detection and exclude other recording types", () => {
   const files = [fileAt("study/one.edf", true), fileAt("study/two.MAT", true), fileAt("study/two.dat", true),
     fileAt("study/review.neurotrace", true), fileAt("study/extra.bdf", true), fileAt("study/metadata.json", true)];
-  for (const [format, expected] of [["edf", [files[0]]], ["mat", [files[1]]], ["mat-dat", [files[2]]], ["neurotrace", [files[3]]]]) {
+  for (const [format, expected] of [["edf", [files[0]]], ["mat", [files[1]]], ["mat-dat", [files[2]]]]) {
     for (const fromDirectory of [true, false]) {
       const result = classifyRecordingSelection(files, fromDirectory, format);
       assert.equal(result.kind, "directory");
@@ -109,25 +109,8 @@ test("DAT-only collections require MAT partners but single DAT is preserved", ()
 test("folder pairs require matching basename in the same directory", () => {
   expectError([fileAt("study/day1/a.mat", true), fileAt("study/day2/a.dat", true)], false, "MISSING_PAIR");
 });
-test("project folders infer NeuroTrace without reading any archive bytes", () => {
-  const single = fileAt("study/a.neurotrace", true);
-  const one = classifyRecordingSelection([single]);
-  assert.equal(one.kind, "directory");
-  assert.equal(one.plan.format, "neurotrace");
-  assert.equal(one.plan.recordings[0].primary, single);
-  const nested = fileAt("study/session-2/a.NEUROTRACE", true);
-  const several = classifyRecordingSelection([nested, single, fileAt("study/metadata.json", true)]);
-  assert.equal(several.plan.format, "neurotrace");
-  assert.deepEqual(several.plan.recordings.map((entry) => entry.primary), [single, nested]);
-  assert.equal(classifyRecordingSelection([fileAt("a.neurotrace")], true).plan.format, "neurotrace");
-});
-test("projects mixed with any recording family reject before opening a subset", () => {
-  for (const extension of ["edf", "mat", "dat", "bdf"]) {
-    expectError([fileAt("a.neurotrace"), fileAt(`b.${extension}`)], false, "MIXED_FORMATS");
-    expectError([fileAt("study/a.neurotrace", true), fileAt(`study/nested/b.${extension}`, true)], true, "MIXED_FORMATS");
-  }
-  expectError([fileAt("a.neurotrace"), fileAt("b.mat"), fileAt("b.dat")], false, "MIXED_FORMATS");
-});
+
+
 test("recognizable unsupported recordings are not treated as harmless collection companions", () => {
   expectError([fileAt("a.edf"), fileAt("b.bdf")], false, "MIXED_FORMATS");
   expectError([fileAt("study/a.nwb", true)], false, "MIXED_FORMATS");
@@ -298,4 +281,13 @@ test("an endless reader cannot bypass the entry limit", async () => {
     createReader() { return { readEntries(success) { success(Array(1000).fill(emptyFolder)); } }; },
   };
   await assert.rejects(collectDroppedRecordingFiles(dropEntries([root]), { allowDirectories: true }), /maximum 100,000/);
+});
+
+
+test("legacy NeuroTrace files cannot be opened, and folders ignore old save artifacts", () => {
+  expectError([fileAt("review.neurotrace")], false, "NO_RECORDINGS");
+  const edf = fileAt("study/01.edf", true);
+  const result = classifyRecordingSelection([edf, fileAt("study/old.neurotrace", true)], true);
+  assert.equal(result.kind, "directory");
+  assert.deepEqual(result.plan.recordings.map(entry => entry.primary), [edf]);
 });

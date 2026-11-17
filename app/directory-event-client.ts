@@ -1,26 +1,29 @@
 /**
- * Per-catalog, memory-only label cache and a bounded worker scheduler. Closing
- * the directory dialog aborts outstanding work; reopening reuses completed scans.
+ * Shared per-folder label cache and bounded worker scheduler. Completed metadata
+ * is reused in memory and IndexedDB; only explicit cancellation stops its reader.
  * File references remain local and no source samples or hashes enter this cache.
  */
 import { directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import.ts";
 import { createEventLabelMatcher } from "./event-keywords.ts";
 import type { DirectoryEventIndex, DirectoryEventRequest, DirectoryTimedEvent } from "./directory-event-index.ts";
+import { readStoredDirectoryIndex, storeDirectoryIndex } from "./directory-event-storage.ts";
 import type { DirectoryEventResponse } from "./directory-event-worker.ts";
 
 export interface DirectoryEventCache {
   entries: Record<string, DirectoryEventIndex>;
   query: string;
 }
-const caches = new WeakMap<DirectoryImportPlan, DirectoryEventCache>();
+const caches = new WeakMap<readonly DirectoryRecording[], DirectoryEventCache>();
+const pendingScans = new WeakMap<DirectoryEventCache, Promise<void>>();
 
 export function supportsDirectoryEventSearch(format: DirectoryImportFormat): boolean {
   return format !== "edf";
 }
 
 export function directoryEventCache(plan: DirectoryImportPlan): DirectoryEventCache {
-  let cache = caches.get(plan);
-  if (!cache) { cache = { entries: {}, query: "" }; caches.set(plan, cache); }
+  const namespace = plan.unfilteredRecordings ?? plan.recordings;
+  let cache = caches.get(namespace);
+  if (!cache) { cache = { entries: {}, query: "" }; caches.set(namespace, cache); }
   return cache;
 }
 
@@ -37,7 +40,7 @@ function eventRequest(plan: DirectoryImportPlan, recording: DirectoryRecording):
 }
 
 /** One pending request per worker. Explicit folder filtering can check several files at once. */
-export async function scanDirectoryEvents(
+async function performDirectoryScan(
   plan: DirectoryImportPlan,
   signal: AbortSignal,
   onUpdate: (id: string | null) => void,
@@ -59,17 +62,21 @@ export async function scanDirectoryEvents(
     const abort = () => { worker?.terminate(); failPending?.(new Error("Directory search canceled.")); };
     signal.addEventListener("abort", abort, { once: true });
     try {
-      try { worker = new Worker(new URL("./directory-event-worker.ts", import.meta.url), { type: "module" }); }
-      catch { fatal = new Error("Background label search is unavailable in this browser. Recordings can still be opened normally."); }
       while (next < pending.length) {
         const entry = pending[next++];
         if (signal.aborted) break;
         onUpdate(entry.id);
         if (signal.aborted) break;
         try {
-          if (fatal || !worker) throw fatal;
           const request = eventRequest(plan, entry);
-          const result = await new Promise<DirectoryEventIndex>((resolve, reject) => {
+          const stored = await readStoredDirectoryIndex(request).catch(() => undefined);
+          if (signal.aborted) break;
+          if (!stored && !worker && !fatal) {
+            try { worker = new Worker(new URL("./directory-event-worker.ts", import.meta.url), { type: "module" }); }
+            catch { fatal = new Error("Background label search is unavailable in this browser. Recordings can still be opened normally."); }
+          }
+          if (!stored && (fatal || !worker)) throw fatal;
+          const result = stored ?? await new Promise<DirectoryEventIndex>((resolve, reject) => {
             failPending = reject;
             worker!.onmessage = (event: MessageEvent<DirectoryEventResponse>) => {
               if (event.data.id === entry.id) resolve(event.data.result);
@@ -82,6 +89,7 @@ export async function scanDirectoryEvents(
             worker!.onmessageerror = () => { fatal = new Error("The background label reader could not return its results."); reject(fatal); };
             worker!.postMessage({ id: entry.id, request });
           });
+          if (!stored && result.state === "ready") void storeDirectoryIndex(request, result).catch(() => {});
           if (!signal.aborted) {
             // A failed retry must not discard already-discovered labels. A fully
             // successful check replaces them with the complete current result.
@@ -101,6 +109,24 @@ export async function scanDirectoryEvents(
   const workerCount = filterImport ? Math.min(4, pending.length, Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 2) - 1)) : 1;
   await Promise.all(Array.from({ length: workerCount }, runWorker));
   if (!signal.aborted) onUpdate(null);
+}
+
+/** Share an in-flight folder index so filter changes never duplicate reads. */
+export async function scanDirectoryEvents(
+  plan: DirectoryImportPlan, signal: AbortSignal, onUpdate: (id: string | null) => void, retry = false, filterImport = false,
+) {
+  if (signal.aborted) return;
+  const cache = directoryEventCache(plan);
+  const pending = pendingScans.get(cache);
+  if (pending) {
+    await pending;
+    if (!signal.aborted) onUpdate(null);
+    return;
+  }
+  const task = performDirectoryScan(plan, signal, onUpdate, retry, filterImport);
+  pendingScans.set(cache, task);
+  try { await task; }
+  finally { if (pendingScans.get(cache) === task) pendingScans.delete(cache); }
 }
 
 /** Preserve source order and companion files, and reuse metadata for the loaded subset. */
@@ -134,6 +160,7 @@ export async function findNextDirectoryEvent(
   signal: AbortSignal,
   knownEvents: (recording: DirectoryRecording) => readonly DirectoryTimedEvent[] | undefined,
   onProgress: (path: string) => void,
+  excludedLabels: readonly string[] = [],
 ): Promise<{ target?: { recording: DirectoryRecording; event: DirectoryTimedEvent }; incomplete: number }> {
   const sourceRecordings = plan.unfilteredRecordings ?? plan.recordings;
   const start = sourceRecordings.findIndex(({ id }) => id === afterId);
@@ -164,7 +191,7 @@ export async function findNextDirectoryEvent(
       if (query.trim() && cached?.state === "ready" && !matches(cached.labels)) continue;
       onProgress(recording.relativePath);
       signal.throwIfAborted();
-      const request = { ...eventRequest(plan, recording), eventQuery: query,
+      const request = { ...eventRequest(plan, recording), eventQuery: query, excludedLabels,
         datBytes: plan.format === "mat-dat" ? recording.primary.size : undefined };
       const reader = worker ??= new Worker(new URL("./directory-event-worker.ts", import.meta.url), { type: "module" });
       const result = await new Promise<DirectoryEventIndex>((resolve, reject) => {

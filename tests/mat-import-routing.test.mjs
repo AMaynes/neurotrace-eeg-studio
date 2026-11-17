@@ -166,6 +166,6 @@ test("recording dialog uses classified imports and retains pending files for a l
   assert.match(page, /resolveMatDatImport\(/);
   assert.doesNotMatch(page, /MatSource\.create\(/);
   assert.match(page, /mergeSelectedFiles\(stagedFiles, files\)/);
-  assert.match(page, /channelCount: legacyMetadata\?\.channelCount \?\? 0/);
+  assert.match(page, /channelCount: legacyMetadata\?\.channelCount \?\? \(Number\(savedRawLayout\?\.channel_count\) \|\| 0\)/);
   assert.match(page, /console\.info\("\[NeuroTrace import\]", resolved\.diagnostics\)/);
 });

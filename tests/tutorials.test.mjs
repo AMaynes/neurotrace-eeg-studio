@@ -12,7 +12,7 @@ import { subscribeTutorialActions } from "../app/tutorial-events.ts";
 const componentSource = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const directorySessions = await readFile(new URL("../app/directory-sessions.tsx", import.meta.url), "utf8");
-const extraSurfaces = (await Promise.all(["directory-review-controls.tsx", "label-visibility-filter.tsx", "directory-import-filters.tsx"].map(name => readFile(new URL(`../app/${name}`, import.meta.url), "utf8")))).join("\n");
+const extraSurfaces = (await Promise.all(["queue-label-dictionary.tsx", "directory-import-filters.tsx"].map(name => readFile(new URL(`../app/${name}`, import.meta.url), "utf8")))).join("\n");
 const syntax = ts.createSourceFile("tutorial-center.tsx", componentSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = syntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "TutorialCenter");
 assert.ok(component);
@@ -698,7 +698,7 @@ test("recent tutorials explain CSV boundaries and keep private or review-changin
     assert.ok(!step.assist || safe.has(step.assist.action), `${id}: ${step.title}`);
   }
   const save = catalog.tutorialLessons.find(lesson => lesson.id === "save-project");
-  assert.match(save.steps.map(step => step.instruction).join(" "), /14 column headers/);
+  assert.match(save.steps.map(step => step.instruction).join(" "), /Download CSV \+ JSON/);
   const source = catalog.tutorialLessons.find(lesson => lesson.id === "review-source-event");
   assert.match(source.steps.at(-1).instruction, /does not itself write the CSV/);
   assert.doesNotMatch(catalog.tutorialBlockReason(source, true, false), /validation/);

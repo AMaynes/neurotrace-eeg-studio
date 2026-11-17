@@ -1,5 +1,4 @@
 import { directoryReviewCache, isReviewCsv, loadDirectoryReviewCsvs } from "../app/directory-review-resume.ts";
-import { recordingReferenceMatches } from "../app/local-recording-identity.ts";
 import { serializeMatlabAnnotations } from "../app/matlab-annotations-csv.ts";
 /** Execute the page's real handlers/effect with patient-free files and state spies. */
 import assert from "node:assert/strict";
@@ -43,7 +42,10 @@ function executable(code, result, env) {
   return new Function(...Object.keys(env), `${javascript}\nreturn ${result};`)(...Object.values(env));
 }
 function handler(name, env, helpers = []) {
-  return executable([...helpers, name].map(declaration).join("\n"), name, { reviewerProfileId: "", portableReviewFile: null, activeReviewIdentity: undefined,
+  return executable([...helpers, name].map(declaration).join("\n"), name, { reviewerProfileId: "", portableReviewFile: null, pendingAnnotationCsv: null, activeReviewIdentity: undefined,
+    sessionTabs: [], directoryCatalogWorkspacesRef: { current: new Map() },
+    setQueueSearch() {}, setFolderPreparing() {}, folderIndexAbortRef: { current: null }, scanDirectoryEvents: async () => {},
+    window: { requestAnimationFrame: (callback) => callback(), setTimeout: (callback) => callback() },
     reviewViewArrival: null, directoryCatalogs: [], directoryReviewCache, isReviewCsv, loadDirectoryReviewCsvs, ...env });
 }
 function state(env, key, initial) {
@@ -122,7 +124,7 @@ test("automatic detection without an explicit folder format does not reuse stale
 test("explicit folder selection keeps the chosen type and never opens ignored recordings", async () => {
   const files = [unreadableFile("work/session.edf"), unreadableFile("work/session.mat"), unreadableFile("work/session.dat"),
     unreadableFile("work/review.neurotrace"), unreadableFile("work/session_events.tsv")];
-  for (const [format, primary] of [["edf", files[0]], ["mat", files[1]], ["mat-dat", files[2]], ["neurotrace", files[3]]]) {
+  for (const [format, primary] of [["edf", files[0]], ["mat", files[1]], ["mat-dat", files[2]]]) {
     const h = stageHarness(format);
     await h.stage(files, true, format);
     assert.equal(h.env.uploadError, null);
@@ -321,7 +323,6 @@ test("confirming a directory opens its first recording without displaying a seco
       assert.equal(recording, plan.recordings[0]);
       assert.equal(options.catalog.plan, plan);
       assert.equal(env.showImport, false);
-      assert.equal(env.directoryEventQuery, "seizure");
       assert.equal(Number(directoryReviewCache(plan).byRecording.get(recording.id)[0].event_time_original_sec), 10);
     },
   };
@@ -918,8 +919,8 @@ test("NeuroTrace directory import routes its archive through the project loader 
   const calls = [];
   const status = { state: "loaded" };
   const h = importHarness({ openNeurotraceProject: async (...args) => { calls.push(args); return status; } });
-  assert.equal(await h.run([archive], "neurotrace"), status);
-  assert.deepEqual(calls, [[archive, true]]);
+  assert.equal((await h.run([archive], "neurotrace")).state, "error");
+  assert.deepEqual(calls, []);
   assert.equal(h.loaded.length, 0, "the archive itself never reaches a waveform decoder");
   assert.equal(h.env.importBusyRef.current, false, "project loader owns its own busy guard");
 });
@@ -944,119 +945,8 @@ test("embedded EDF imports preserve the requested project-session isolation", as
   assert.equal(h.loaded[0].keepSeparateSession, true);
 });
 
-function projectHarness(overrides = {}) {
-  const archive = fileAt("root/review.neurotrace");
-  const project = { recordingFile: new File([new Uint8Array(256)], "signal.edf"), supportingFiles: [], customToolFiles: [],
-    manifest: { title: "Synthetic review", recording: { name: "signal.edf", format: "edf", byteLength: 256, channelCount: 2, durationSec: 10 } } };
-  const calls = { imports: [], applied: [] };
-  const entry = { sessionId: "project-tab", files: [archive] };
-  const env = {
-    recordingReferenceMatches, sourceRef: { current: { meta: { ...project.manifest.recording } } },
-    importBusyRef: { current: false }, hasRecording: false, rawSourceHash: "synthetic-hash", activeSessionId: "project-tab",
-    pendingProjectImportRef: { current: null }, projectFileImportRef: { current: false },
-    directorySessionTabsRef: { current: new Map([["project", entry]]) },
-    readNeurotraceProjectArchive: async (file) => { assert.equal(file, archive); return project; },
-    handleUploadedFiles: async (...args) => { calls.imports.push(args); return { state: "loaded" }; },
-    applyImportedProjectState: (value) => calls.applied.push(value),
-  };
-  for (const [key, value] of Object.entries({ importBusy: false, uploadError: null, toast: "", showImport: true })) state(env, key, value);
-  Object.assign(env, overrides);
-  return { env, project, archive, entry, calls, open: (separate = true) => handler("openNeurotraceProject", env)(archive, separate) };
-}
-
-test("project directory loading scopes embedded files to their archive and restores state only after load succeeds", async () => {
-  const h = projectHarness();
-  h.project.supportingFiles.push(fileAt("signal_events.tsv"));
-  assert.deepEqual(await h.open(), { state: "loaded" });
-  assert.equal(h.project.recordingFile.webkitRelativePath, "root/review.neurotrace/signal.edf");
-  assert.deepEqual(h.entry.files, [h.archive, h.project.recordingFile], "reopen can recognize the embedded source");
-  assert.deepEqual(h.calls.imports, [[[h.project.recordingFile, ...h.project.supportingFiles], true]]);
-  assert.deepEqual(h.calls.applied, [h.project]);
-  assert.equal(h.env.pendingProjectImportRef.current, null);
-  assert.equal(h.env.projectFileImportRef.current, false);
-  assert.equal(h.env.importBusyRef.current, false);
-  assert.equal(h.env.showImport, false);
-});
-
-test("project directory loading preserves pending DAT confirmation without applying review state too soon", async () => {
-  const status = { state: "confirmation" };
-  const h = projectHarness({ handleUploadedFiles: async () => status });
-  h.project.recordingFile = new File([new Uint8Array(256)], "signal.dat");
-  assert.equal(await h.open(), status);
-  assert.equal(h.env.pendingProjectImportRef.current, h.project);
-  assert.deepEqual(h.calls.applied, []);
-  assert.equal(h.env.projectFileImportRef.current, false);
-});
-
-test("a folder project cannot attach a reference-only review onto another open recording", async () => {
-  const h = projectHarness({ hasRecording: true });
-  h.project.recordingFile = null;
-  const result = await h.open();
-  assert.equal(result.state, "error");
-  assert.match(result.message, /original recording/i);
-  assert.deepEqual(h.calls.imports, []);
-  assert.deepEqual(h.calls.applied, []);
-  assert.equal(h.env.uploadError.title, "Recording was not included");
-});
-
-test("ordinary reference-only projects can still restore onto their matching open recording", async () => {
-  const h = projectHarness({ hasRecording: true });
-  h.project.recordingFile = null;
-  h.project.manifest.recording.sourceContentSha256 = "synthetic-hash";
-  assert.deepEqual(await h.open(false), { state: "loaded" });
-  assert.deepEqual(h.calls.applied, [h.project]);
-  assert.equal(h.env.showImport, false);
-});
-
-test("unreadable project archives return actionable errors and release the import guard", async () => {
-  const h = projectHarness({ readNeurotraceProjectArchive: async () => { throw new Error("Synthetic archive corruption"); } });
-  assert.deepEqual(await h.open(), { state: "error", message: "Synthetic archive corruption" });
-  assert.match(h.env.uploadError.title, /could not be opened/i);
-  assert.equal(h.env.importBusyRef.current, false);
-  assert.equal(h.env.importBusy, false);
-  assert.deepEqual(h.calls.applied, []);
-});
-
-test("failed embedded recording loads propagate status and clear pending review state", async () => {
-  for (const status of [{ state: "error", message: "Synthetic decode failure" }, undefined]) {
-    const h = projectHarness({ handleUploadedFiles: async () => status });
-    const result = await h.open();
-    assert.equal(result.state, "error");
-    if (status) assert.equal(result, status);
-    assert.equal(h.env.pendingProjectImportRef.current, null);
-    assert.equal(h.env.projectFileImportRef.current, false);
-    assert.deepEqual(h.calls.applied, []);
-  }
-});
-
-test("unexpected embedded recording failures clear pending project state and remain actionable", async () => {
-  const h = projectHarness({ handleUploadedFiles: async () => { throw new Error("Unexpected synthetic import failure"); } });
-  assert.deepEqual(await h.open(), { state: "error", message: "Unexpected synthetic import failure" });
-  assert.equal(h.env.pendingProjectImportRef.current, null);
-  assert.equal(h.env.projectFileImportRef.current, false);
-  assert.equal(h.env.importBusyRef.current, false);
-  assert.equal(h.env.showImport, true);
-  assert.equal(h.env.uploadError.message, "Unexpected synthetic import failure");
-  assert.deepEqual(h.env.uploadError.files, [h.archive.name]);
-  assert.deepEqual(h.calls.applied, []);
-});
-
-test("failed project review restoration is reported even if its embedded recording loaded", async () => {
-  const h = projectHarness({ applyImportedProjectState: () => { throw new Error("Synthetic state failure"); } });
-  assert.deepEqual(await h.open(), { state: "error", message: "Synthetic state failure" });
-  assert.equal(h.env.pendingProjectImportRef.current, null);
-  assert.equal(h.env.showImport, true);
-  assert.match(h.env.uploadError.title, /warnings/i);
-});
-
-test("project loading refuses competing work while another import is busy", async () => {
-  const h = projectHarness({ importBusyRef: { current: true },
-    readNeurotraceProjectArchive: () => assert.fail("busy imports must not start archive reads") });
-  assert.equal(await h.open(), undefined);
-});
-
 test("uploaded-file routing forwards project isolation and returns the actual load or confirmation status", async () => {
-  for (const extension of ["edf", "neurotrace"]) {
+  for (const extension of ["edf"]) {
     const file = fileAt(`signal.${extension}`);
     const status = { state: "confirmation" };
     const calls = [];

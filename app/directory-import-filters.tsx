@@ -11,8 +11,8 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
   mode?: "load" | "update";
   onLoad: (plan: DirectoryImportPlan) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [keywords, setKeywords] = useState("");
+  const [open, setOpen] = useState(Boolean(plan.eventKeywordFilter));
+  const [keywords, setKeywords] = useState(plan.eventKeywordFilter ?? "");
   const [applied, setApplied] = useState<{ query: string; plan: DirectoryImportPlan; incomplete: number } | null>(null);
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState(0);
@@ -25,8 +25,8 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
 
   if (sourcePlan !== plan) {
     setSourcePlan(plan);
-    setOpen(false);
-    setKeywords("");
+    setOpen(Boolean(plan.eventKeywordFilter));
+    setKeywords(plan.eventKeywordFilter ?? "");
     setApplied(null);
     setChecking(false);
   }
@@ -58,7 +58,7 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
         checkedCount = count;
         setChecked(count);
       }
-    }, true, true);
+    }, false, true);
     if (controller.signal.aborted) return;
     const incomplete = plan.recordings.filter(({ id }) => cache.entries[id]?.state !== "ready").length;
     const filtered = filterDirectoryPlan(plan, query);
@@ -70,7 +70,7 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
 
   return <>
     <button type="button" className="button secondary directory-import-filter-toggle" aria-expanded={open} disabled={busy}
-      onClick={() => { if (open) { cancel(); setKeywords(""); setApplied(null); if (mode === "update") onLoad(plan); } setOpen(!open); }}>
+      onClick={() => { if (open) { cancel(); setKeywords(""); setApplied(null); if (mode === "update") onLoad({ ...plan, eventKeywordFilter: undefined }); } setOpen(!open); }}>
       {open ? "Remove filters" : mode === "update" ? "Change folder filters" : "Add filters"}
     </button>
     {open && <div className="directory-import-filter">

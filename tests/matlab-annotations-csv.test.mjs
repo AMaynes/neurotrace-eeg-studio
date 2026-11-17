@@ -142,59 +142,11 @@ function evaluate(code, expression, env) {
   return new Function(...Object.keys(env), `${js}\nreturn ${expression};`)(...Object.values(env));
 }
 
-test("production Save opens a CSV picker and writes the exact contract; fallback downloads CSV only", async () => {
-  for (const supportsPicker of [true, false]) {
-    let written, filename, options;
-    const actions = [], errors = [];
-    const env = { projectSaveBusy: false, hasRecording: true, sourceVerificationRef: { current: false }, importBusyRef: { current: false },
-      setProjectSaveError: (message) => errors.push(message), reviewer: "AM", meta: {}, setProjectSaveBusy() {},
-      collectCsvRows: () => [row()], serializeMatlabAnnotations, writeMatlabAnnotations, csvFileName: "Patient_AM_annotations.csv",
-      setShowProjectSave() {}, setToast() {}, notifyTutorialAction: (action) => actions.push(action),
-      downloadBlob: (name, blob) => { filename = name; written = blob; },
-      window: supportsPicker ? { showSaveFilePicker: async (args) => { options = args; return {
-        getFile: async () => new Blob(), createWritable: async () => ({ write: async (blob) => { written = blob; }, close: async () => {} }),
-      }; } } : {},
-    };
-    const save = evaluate(`const save = ${variables.get("saveAnnotationsCsv").getText(ast)};`, "save", env);
-    await save();
-    assert.deepEqual(errors, [""]);
-    assert.deepEqual(actions, ["annotations-saved"]);
-    assert.equal(await written.text(), serializeMatlabAnnotations([row()]));
-    if (supportsPicker) assert.deepEqual(options.types[0].accept, { "text/csv": [".csv"] });
-    else assert.equal(filename, "Patient_AM_annotations.csv");
-  }
-});
 
-test("production directory save gathers closed, open and active reviews without stale active snapshots", () => {
-  const cache = new MatlabReviewCsvCache();
-  cache.update("closed", "directory", [{ ...row(), mat_path: "closed.mat" }]);
-  const open = { ...input(), hasRecording: true, sessionKey: "open", sourceInterpretation: { companion_mat_path: "open.mat" } };
-  const data = input(); data.candidates[0].badChannels = "LATEST";
-  const collect = evaluate(`const collect = ${variables.get("collectCsvRows").getText(ast)};`, "collect", {
-    directoryCatalogs: [], mergeMatlabAnnotationRows, ...data, csvDirectoryId: "directory", sessionKey: "active", activeSessionId: "active-tab", primaryFile: null,
-    sessionTabs: [{ id: "open-tab", directoryId: "directory" }, { id: "active-tab", directoryId: "directory" }, { id: "unrelated-tab", directoryId: "other" }],
-    sessionSnapshotsRef: { current: new Map([["open-tab", open], ["active-tab", open]]) }, matlabCsvCacheRef: { current: cache }, matlabAnnotationRows,
-  });
-  const rows = collect();
-  assert.equal(rows.length, 3);
-  assert.equal(rows[2].bad_channels, "LATEST");
-});
 
-test("production Save cancellation and disk errors never emit success or close the dialog", async () => {
-  for (const error of [new DOMException("Canceled", "AbortError"), new Error("disk full")]) {
-    const errors = [], busy = [];
-    const save = evaluate(`const save = ${variables.get("saveAnnotationsCsv").getText(ast)};`, "save", {
-      projectSaveBusy: false, hasRecording: true, sourceVerificationRef: { current: false }, importBusyRef: { current: false },
-      setProjectSaveError: (message) => errors.push(message), reviewer: "AM", meta: {}, setProjectSaveBusy: (value) => busy.push(value),
-      collectCsvRows: () => [row()], serializeMatlabAnnotations, csvFileName: "patient_AM_annotations.csv",
-      window: { showSaveFilePicker: async () => { throw error; } },
-      setShowProjectSave: () => assert.fail("must stay open"), setToast() {}, notifyTutorialAction: () => assert.fail("must not emit success"),
-    });
-    await save();
-    assert.deepEqual(busy, [true, false]);
-    assert.deepEqual(errors, error.name === "AbortError" ? [""] : ["", "disk full"]);
-  }
-});
+
+
+
 
 test("bad-channel notes survive real local-recovery migration and queue reconciliation", () => {
   const funcs = ["migrateCandidateList", "reconcileCandidateQueue"].map((name) => functions.get(name).getText(ast)).join("\n");

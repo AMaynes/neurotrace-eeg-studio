@@ -1,3 +1,4 @@
+import type { CsvRecording } from "./recording-labels-csv.ts";
 import type { DirectoryImportPlan } from "./directory-import.ts";
 import { MATLAB_ANNOTATION_COLUMNS, type MatlabAnnotationRow, type MatlabCsvFileHandle } from "./matlab-annotations-csv.ts";
 import type { NeurotraceCustomToolAsset } from "./neurotrace-project.ts";
@@ -211,44 +212,89 @@ export async function writeReviewWorkspacePair(directory: ReviewOutputDirectory,
     new Blob([csv], { type: "text/csv;charset=utf-8" }));
 }
 
-export type SavedReviewSummary = {
-  folderKey: string;
-  reviewerId: string;
-  reviewSessionId: number;
-  instanceId: string;
-  folderName: string;
-  recordingPath: string;
-  updatedAt: string;
-  visitedCount: number;
-  labelCount: number;
-};
 
-/** Only return summaries belonging to the selected reviewer. */
-export async function listSavedReviews(reviewerId: string): Promise<SavedReviewSummary[]> {
-  const id = normalizeReviewerId(reviewerId);
-  if (!id) return [];
-  const db = await database();
-  return new Promise((resolve, reject) => {
-    const reviews: SavedReviewSummary[] = [];
-    const request = db.transaction("reviews").objectStore("reviews").openCursor();
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) {
-        resolve(reviews.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
-        return;
+
+function recordingPathLookup(entries: readonly { id: string; path: string }[]) {
+  const suffixes = new Map<string, string[]>();
+  for (const entry of entries) {
+    const parts = entry.path.replaceAll("\\", "/").replace(/^directory:/, "").toLowerCase().split("/");
+    for (let offset = 0; offset < parts.length; offset++) {
+      const suffix = parts.slice(offset).join("/");
+      const ids = suffixes.get(suffix) ?? [];
+      ids.push(entry.id);
+      suffixes.set(suffix, ids);
+    }
+  }
+  return (paths: readonly string[]) => {
+    let best = 0;
+    let matches = new Set<string>();
+    for (const path of paths) {
+      const parts = path.replaceAll("\\", "/").replace(/^directory:/, "").toLowerCase().split("/");
+      for (let offset = 0; offset < parts.length; offset++) {
+        const ids = suffixes.get(parts.slice(offset).join("/"));
+        const length = parts.length - offset;
+        if (!ids || length < best) continue;
+        if (length > best) { best = length; matches = new Set(); }
+        ids.forEach((id) => matches.add(id));
+        break;
       }
-      const review = cursor.value as ReviewWorkspace;
-      if (review.reviewerId === id && review.position) {
-        const recordingPath = review.position.replace(/^directory:/, "");
-        reviews.push({
-          folderKey: review.folderKey, reviewerId: id, reviewSessionId: review.reviewSessionId, instanceId: review.instanceId,
-          folderName: typeof review.settings.folderName === "string" ? review.settings.folderName : recordingPath.split("/")[0],
-          recordingPath, updatedAt: review.updatedAt, visitedCount: Object.keys(review.recordings).length,
-          labelCount: Object.values(review.recordings).reduce((count, recording) => count + (Array.isArray(recording.review.annotations) ? recording.review.annotations.length : 0), 0),
-        });
-      }
-      cursor.continue();
+    }
+    return matches.size === 1 ? [...matches][0] : undefined;
+  };
+}
+
+/** Match portable recording references by path, falling back only to a unique filename. */
+export async function reviewWorkspaceFromCsv(
+  imported: { recordings: CsvRecording[]; reviewer: string; reviewSessionId: number },
+  plan: DirectoryImportPlan, reviewerId: string, pass: number,
+) {
+  const recordings = plan.unfilteredRecordings ?? plan.recordings;
+  const resolve = recordingPathLookup(recordings.map((entry) => ({ id: entry.id, path: entry.relativePath })));
+  const byId = new Map(recordings.map((entry) => [entry.id, entry]));
+  const review = newReviewWorkspace(await reviewFolderKey(plan), reviewerId, pass, false);
+  for (const saved of imported.recordings) {
+    const id = resolve([saved.recording, saved.sourcePath ?? ""].filter(Boolean));
+    if (!id) throw new Error(`Select the original recording for ${saved.recording}; its path could not be matched uniquely.`);
+    const recording = byId.get(id)!;
+    const expectedFile = saved.files?.find((file) => file.name.toLowerCase() === recording.primary.name.toLowerCase());
+    if (expectedFile && expectedFile.size !== recording.primary.size) throw new Error(`${saved.recording} has a different file size from the saved review.`);
+    review.recordings[recording.id] = {
+      visitedAt: review.updatedAt, csvRows: [], view: {},
+      review: { version: 2, annotations: saved.annotations, candidates: saved.candidates ?? [], activeCandidate: 0,
+        reviewer: reviewerId, recordingLabelsImported: saved.recordingLabelsImported !== false, savedAt: review.updatedAt,
+        sourceInterpretation: saved.interpretation ?? null },
     };
-    request.onerror = () => reject(request.error);
+    for (const annotation of saved.annotations) {
+      const dictionary = annotation.dictionaryLabel as DictionaryLabel | undefined;
+      if (dictionary && !review.library.labels.some((label) => label.id === dictionary.id)) review.library.labels.push(dictionary);
+    }
+  }
+  review.position = plan.recordings.find((recording) => review.recordings[recording.id])?.id ?? null;
+  return review;
+}
+
+
+/** Reconnect an explicitly imported JSON after the user selects a containing folder. */
+export async function reconnectReviewWorkspace(workspace: ReviewWorkspace, plan: DirectoryImportPlan) {
+  const key = await reviewFolderKey(plan);
+  if (workspace.folderKey === key) return workspace;
+  const references = workspace.settings.recordingReferences;
+  if (!Array.isArray(references) || !references.length) throw new Error("Select the original recording folder for this workspace.");
+  const rows: CsvRecording[] = references.map((value: unknown) => {
+    if (!object(value) || typeof value.recording !== "string" || !Array.isArray(value.files)) {
+      throw new Error("The workspace recording references are incomplete.");
+    }
+    return { recording: value.recording, annotations: [], files: value.files as CsvRecording["files"] };
   });
+  const connected = await reviewWorkspaceFromCsv({ recordings: rows, reviewer: workspace.reviewerId, reviewSessionId: workspace.reviewSessionId },
+    plan, workspace.reviewerId, workspace.reviewSessionId);
+  const resolve = recordingPathLookup(Object.keys(connected.recordings).map((id) => ({ id, path: id })));
+  const mapping = new Map<string, string>();
+  for (const oldId of Object.keys(workspace.recordings)) {
+    const match = resolve([oldId]);
+    if (!match) throw new Error(`The saved recording ${oldId} is missing or ambiguous in this selection.`);
+    mapping.set(oldId, match);
+  }
+  return { ...workspace, folderKey: key, position: workspace.position ? mapping.get(workspace.position) ?? null : null,
+    recordings: Object.fromEntries(Object.entries(workspace.recordings).map(([id, recording]) => [mapping.get(id)!, recording])) };
 }

@@ -43,3 +43,33 @@ test("manual labels created before ID entry receive the active reviewer in CSV",
   assert.match(rows[2], /,detected,,/);
   assert.match(rows[3], /,reviewer,R018,/);
 });
+
+test("portable CSV retains unlabeled recording references and round-trips full annotation data", async () => {
+  const { parseRecordingLabelsCsv } = await import("../app/recording-labels-csv.ts");
+  const source = { ...label, dictionaryLabel: { id: "dict-1", name: "Ambiguous, marker", code: "AM", description: "A note" },
+    notes: "Line one\nLine two", recordingLabel: undefined };
+  const csv = serializeRecordingLabels([
+    { recording: "study/session.edf", reviewer: "R017", sourcePath: "/data/study/session.edf", format: "edf",
+      files: [{ name: "session.edf", path: "/data/study/session.edf", size: 32 }], reviewSessionId: 4, annotations: [source],
+      candidates: [{ id: "event", time: 2, status: "skipped" }], recordingLabelsImported: true },
+    { recording: "study/empty.edf", reviewer: "R017", annotations: [], format: "edf",
+      files: [{ name: "empty.edf", path: "study/empty.edf", size: 16 }], recordingLabelsImported: false },
+  ], () => source.dictionaryLabel.name, true);
+  const parsed = parseRecordingLabelsCsv(csv);
+  assert.equal(parsed.recordings.length, 2);
+  assert.deepEqual(parsed.recordings[0].annotations[0], JSON.parse(JSON.stringify(source)));
+  assert.equal(parsed.recordings[0].sourcePath, "/data/study/session.edf");
+  assert.equal(parsed.recordings[0].recordingLabelsImported, true);
+  assert.equal(parsed.recordings[1].annotations.length, 0);
+  assert.equal(parsed.recordings[1].recordingLabelsImported, false);
+  assert.equal(parsed.reviewSessionId, 4);
+});
+
+test("paths use absolute information only when the host or recording mapping supplies it", async () => {
+  const { recordingSourcePath } = await import("../app/recording-labels-csv.ts");
+  const file = new File([], "source.dat");
+  assert.equal(recordingSourcePath(file), "source.dat");
+  assert.equal(recordingSourcePath(file, { data_dir_hint: "/data/study" }), "/data/study/source.dat");
+  Object.defineProperty(file, "path", { value: "/actual/source.dat" });
+  assert.equal(recordingSourcePath(file), "/actual/source.dat");
+});

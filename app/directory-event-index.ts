@@ -23,6 +23,7 @@ export interface DirectoryEventRequest {
   eventTables: File[];
   /** When present, also return the earliest timed occurrence that matches. */
   eventQuery?: string;
+  excludedLabels?: readonly string[];
   datBytes?: number;
 }
 
@@ -46,6 +47,7 @@ export async function readDirectoryEventIndex(request: DirectoryEventRequest): P
   const labels = new Set<string>();
   const warnings: string[] = [];
   const matches = request.eventQuery === undefined ? undefined : createEventLabelMatcher(request.eventQuery);
+  const excluded = new Set(request.excludedLabels?.map((label) => label.trim().toLowerCase()));
   let firstEvent: DirectoryTimedEvent | undefined;
   const add = (value: unknown) => {
     if (typeof value !== "string" || !value.trim()) return;
@@ -55,7 +57,7 @@ export async function readDirectoryEventIndex(request: DirectoryEventRequest): P
   const addEvent = (label: unknown, time: unknown, duration = Infinity) => {
     add(label);
     if (typeof label !== "string" || !label.trim() || typeof time !== "number"
-      || !Number.isFinite(time) || time < 0 || time >= duration || !matches?.([label])) return;
+      || !Number.isFinite(time) || time < 0 || time >= duration || excluded.has(label.trim().toLowerCase()) || !matches?.([label])) return;
     if (!firstEvent || time < firstEvent.timeSec) firstEvent = { label: label.trim(), timeSec: time };
   };
   const attempt = async (read: () => Promise<void>) => {

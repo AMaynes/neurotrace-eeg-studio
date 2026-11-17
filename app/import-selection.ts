@@ -23,6 +23,10 @@ export function isUnmappedDatSelection(files: readonly File[]): boolean {
  */
 export function classifyRecordingSelection(files: readonly File[], fromDirectory = false, selectedFormat: DirectoryImportFormat | null = null): RecordingSelection {
   const directory = fromDirectory || files.some((file) => Boolean(file.webkitRelativePath));
+  if (selectedFormat === "neurotrace" || (!directory && files.some((file) => extensionOf(file) === "neurotrace"))) {
+    throw new DirectoryImportError("NO_RECORDINGS", "Open saved reviews with their workspace JSON or annotation CSV.");
+  }
+  files = files.filter((file) => extensionOf(file) !== "neurotrace");
   if (!files.length && directory) {
     throw new DirectoryImportError("EMPTY_DIRECTORY", "The selected directory is empty. Choose a directory containing recordings.");
   }
@@ -30,26 +34,24 @@ export function classifyRecordingSelection(files: readonly File[], fromDirectory
   let edf = 0;
   let mat = 0;
   let dat = 0;
-  let projects = 0;
   let otherRecordings = 0;
   for (const file of files) {
     const extension = extensionOf(file);
     if (extension === "edf") edf += 1;
     else if (extension === "mat") mat += 1;
     else if (extension === "dat") dat += 1;
-    else if (extension === "neurotrace") projects += 1;
     else if (OTHER_RECORDING_EXTENSIONS.has(extension)) otherRecordings += 1;
   }
   // A MAT and its DAT describe one session, not two. Sidecars never increase
   // the session count, and companion-only folders keep additive file import.
-  const sessionCount = edf + Math.max(mat, dat) + projects + otherRecordings;
+  const sessionCount = edf + Math.max(mat, dat) + otherRecordings;
   if (!sessionCount || (!directory && sessionCount <= 1)) return { kind: "files", files: [...files] };
 
-  const format: DirectoryImportFormat | null = edf ? "edf" : dat ? "mat-dat" : mat ? "mat" : projects ? "neurotrace" : null;
+  const format: DirectoryImportFormat | null = edf ? "edf" : dat ? "mat-dat" : mat ? "mat" : null;
   if (!format) {
     const paths = files.filter((file) => extensionOf(file) === "neurotrace" || OTHER_RECORDING_EXTENSIONS.has(extensionOf(file)))
       .map((file) => file.webkitRelativePath || file.name);
-    throw new DirectoryImportError("MIXED_FORMATS", "Collections support EDF, standalone MAT, matching MAT + DAT pairs, or NeuroTrace projects. Choose a supported type, then Files or Folder. Every session in a collection must use the same format.", paths);
+    throw new DirectoryImportError("MIXED_FORMATS", "Collections support EDF, standalone MAT, or matching MAT + DAT pairs. Choose a supported type, then Files or Folder. Every session in a collection must use the same format.", paths);
   }
   return { kind: "directory", plan: planDirectoryImport(files, format, { rejectOtherFormats: true }) };
 }

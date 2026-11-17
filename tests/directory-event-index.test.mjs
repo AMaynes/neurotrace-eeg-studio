@@ -455,6 +455,7 @@ test("canceling a scan terminates it immediately, ignores late results, and resu
     const controller = new AbortController();
     const updates = [];
     const promise = scanDirectoryEvents(plan, controller.signal, (id) => updates.push(id));
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(message.id, plan.recordings[0].id);
     controller.abort();
     const worker = workers[0];
@@ -508,4 +509,29 @@ test("next event follows updated folder filters when the current recording is ex
     new AbortController().signal, () => [{ label: "Stim", timeSec: 5 }], () => {});
   assert.equal(result.target.recording, plan.recordings[2]);
   assert.equal(result.target.event.timeSec, 5);
+});
+
+
+test("filter subsets share the completed folder index without repeated metadata reads", async () => {
+  const { filterDirectoryPlan } = await import("../app/directory-event-client.ts");
+  const plan = planDirectoryImport([fileAt("study/a.edf"), fileAt("study/b.edf")], "edf");
+  const original = directoryEventCache(plan);
+  original.entries[plan.recordings[0].id] = { state: "ready", labels: ["seizure"], warnings: [] };
+  original.entries[plan.recordings[1].id] = { state: "ready", labels: ["sleep"], warnings: [] };
+  const filtered = filterDirectoryPlan(plan, "seizure");
+  assert.equal(directoryEventCache(filtered), original);
+  const restored = { ...filtered, recordings: [...filtered.unfilteredRecordings] };
+  assert.equal(directoryEventCache(restored), original);
+  const workers = globalThis.Worker;
+  globalThis.Worker = class { constructor() { assert.fail("cached filters should not start workers"); } };
+  try { await scanDirectoryEvents(restored, new AbortController().signal, () => {}, false, true); }
+  finally { if (workers === undefined) delete globalThis.Worker; else globalThis.Worker = workers; }
+});
+
+
+test("hidden label types are skipped for cross-session navigation without dropping them from the index", async () => {
+  const result = await readDirectoryEventIndex({ format: "mat", file: eventMat(), eventTables: [],
+    eventQuery: "", excludedLabels: ["seizure onset"] });
+  assert.deepEqual(result.firstEvent, { label: "Stim β", timeSec: 2 });
+  assert.ok(result.labels.includes("Seizure onset"));
 });

@@ -109,3 +109,35 @@ test("an interrupted first JSON write leaves the pair retryable", async () => {
   assert.equal(directory.files.size, 2);
   assert.equal(await directory.files.get(names.annotations).text(), "labels");
 });
+
+test("CSV restores annotations without JSON and rejects ambiguous recording names", async () => {
+  const { reviewWorkspaceFromCsv } = await import("../app/review-workspace.ts");
+  const plan = planDirectoryImport([recording("new/day1/session.edf"), recording("new/day2/session.edf")], "edf");
+  const annotations = [{ id: "manual", labelId: "clinical", start: 1, end: 2 }];
+  const imported = { reviewer: "R017", reviewSessionId: 2, recordings: [
+    { recording: "old/day1/session.edf", annotations, candidates: [], recordingLabelsImported: false },
+    { recording: "old/day2/session.edf", annotations: [] },
+  ] };
+  const review = await reviewWorkspaceFromCsv(imported, plan, "R017", 2);
+  assert.deepEqual(review.recordings[plan.recordings[0].id].review.annotations, annotations);
+  assert.equal(review.recordings[plan.recordings[0].id].review.recordingLabelsImported, false);
+  await assert.rejects(reviewWorkspaceFromCsv({ ...imported, recordings: [{ recording: "session.edf", annotations }] }, plan, "R017", 2), /uniquely/);
+});
+
+test("JSON reconnects moved folder references while keeping exact view and settings", async () => {
+  const { reconnectReviewWorkspace } = await import("../app/review-workspace.ts");
+  const plan = planDirectoryImport([recording("new/day1/session.edf"), recording("new/day2/session.edf")], "edf");
+  const review = newReviewWorkspace("1".repeat(64), "R017", 4, false);
+  review.position = "directory:old/day2/session.edf";
+  review.recordings[review.position] = { visitedAt: review.updatedAt, review: { annotations: [], candidates: [] },
+    csvRows: [], view: { viewStart: 12.25, timebase: 7.5 } };
+  review.settings = { gain: 2, recordingReferences: [
+    { recording: "old/day1/session.edf", files: [{ name: "session.edf", path: "old/day1/session.edf", size: 16 }] },
+    { recording: "old/day2/session.edf", files: [{ name: "session.edf", path: "old/day2/session.edf", size: 16 }] },
+  ] };
+  const restored = await reconnectReviewWorkspace(review, plan);
+  assert.equal(restored.position, plan.recordings[1].id);
+  assert.equal(restored.recordings[restored.position].view.viewStart, 12.25);
+  assert.equal(restored.recordings[restored.position].view.timebase, 7.5);
+  assert.equal(restored.settings.gain, 2);
+});

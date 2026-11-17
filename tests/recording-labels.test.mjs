@@ -296,7 +296,7 @@ test("filtered queue navigation selects the original annotation without expandin
     detail: "Recording label · imported", status: "suggestion", time: index,
   }));
   const { filteredQueueEntries } = compile(["filteredQueueEntries"], {
-    queueSearch: "TARGET imported", instanceQueueEntries: entries, matchesLabelKeywords: () => true, hiddenLabelTypes: new Set(), useMemo: (callback) => callback(),
+    queueSearch: "TARGET", instanceQueueEntries: entries, matchesLabelKeywords: (labels) => labels.some((label) => label?.includes("target") || label?.includes("Custom target")), hiddenLabelTypes: new Set(), useMemo: (callback) => callback(),
   });
   assert.deepEqual(filteredQueueEntries.map((item) => item.index), [999]);
   let selected, time, limit = 100;
@@ -323,7 +323,7 @@ test("viewer previews labels before verification, then restores saved review and
   assert.ok((page.match(/recordingLabelsImported: recordingLabelsImportedRef.current/g) ?? []).length >= 2,
     "session snapshots and local recovery retain import completion; CSV intentionally omits workspace state");
   assert.match(page, /filteredQueueEntries.slice\(0, queueLimit\)/);
-  assert.match(page, /setQueueSearch\(event.target.value\)/);
+  assert.match(page, /changeLabelKeywords\(event.target.value\)/);
   assert.match(page, /Original recording label/);
   assert.match(page, /annotationLabel\(item\)\?\.name/);
   assert.match(page, /saved.recordingLabel !== undefined && !validRecordingLabel/);
