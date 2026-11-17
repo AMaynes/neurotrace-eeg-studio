@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DirectoryImportPlan, DirectoryRecording } from "./directory-import";
 import { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords } from "./directory-event-index";
 import { directoryEventCache, scanDirectoryEvents, setDirectoryEventQuery, supportsDirectoryEventSearch } from "./directory-event-client";
 import "./directory-sessions.css";
+import { DirectoryImportFilters } from "./directory-import-filters";
 import { DirectoryReviewControls } from "./directory-review-controls";
 
 export type DirectorySessionStatus = {
@@ -18,6 +19,7 @@ type DirectorySessionsProps = {
   statuses: Record<string, DirectorySessionStatus>;
   onOpen(recording: DirectoryRecording): void;
   onPrepareResume?(): void;
+  onFilter?(plan: DirectoryImportPlan): void;
   reviewMode?: boolean;
   reviewProgress?(recording: DirectoryRecording): string | undefined;
   canOpen?(recording: DirectoryRecording): boolean;
@@ -35,7 +37,8 @@ const STATUS_LABELS = {
 };
 
 /** On-demand session catalog with a cancellable, metadata-only event-label index. */
-export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear, onPrepareResume, reviewMode, reviewProgress, canOpen }: DirectorySessionsProps) {
+export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear, onPrepareResume, reviewMode, reviewProgress, canOpen, onFilter }: DirectorySessionsProps) {
+  const fullPlan = useMemo(() => plan.unfilteredRecordings ? { ...plan, recordings: [...plan.unfilteredRecordings], eventKeywordFilter: undefined } : plan, [plan]);
   const searchSupported = supportsDirectoryEventSearch(plan.format) || Boolean(plan.unfilteredRecordings);
   const cache = directoryEventCache(plan);
   const [requestedPage, setRequestedPage] = useState(0);
@@ -104,6 +107,10 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
         {errorCount > 0 && <span>{errorCount.toLocaleString()} need attention</span>}
       </div>
       {!reviewMode && <DirectoryReviewControls plan={plan} busy={busy} onBusyChange={setReviewBusy} onResume={onOpen} onPrepareResume={onPrepareResume} />}
+      {onFilter && <section className="directory-folder-filters" aria-label="Folder filters">
+        {plan.eventKeywordFilter && <p>Folder filter · {plan.eventKeywordFilter}</p>}
+        <DirectoryImportFilters plan={fullPlan} busy={busy} mode="update" onLoad={onFilter} />
+      </section>}
       <div className="directory-event-search">
         <label htmlFor="directory-event-query">Filter sessions by event label</label>
         <div className="directory-event-search-row" data-unsupported={!searchSupported || undefined}

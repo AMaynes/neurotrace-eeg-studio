@@ -2905,3 +2905,84 @@ textarea:focus-visible {
   outline: 1px dashed currentColor;
   outline-offset: -2px;
 }
+
+.channel-average-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.channel-average-controls button[aria-pressed="true"] {
+  color: var(--mint);
+  border-color: var(--mint);
+}
+
+.channel-rail button.channel-group-label {
+  pointer-events: auto;
+  height: 24px;
+  min-height: 24px;
+  justify-content: center;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.channel-rail button.channel-group-label:hover,
+.channel-rail button.channel-group-label.selected {
+  border-color: var(--mint);
+  background: var(--mint-dark);
+}
+
+.saved-reviews {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 10px 0;
+}
+
+.saved-reviews ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 210px;
+  overflow: auto;
+}
+
+.saved-reviews li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.saved-reviews li > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.saved-reviews li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-reviews small {
+  color: var(--muted);
+}
+
+.directory-folder-filters {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}

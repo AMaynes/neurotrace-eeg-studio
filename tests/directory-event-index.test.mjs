@@ -500,3 +500,12 @@ test("failed checks retry without rereading ready entries, and cancellation befo
     assert.equal(cache.entries[plan.recordings[1].id].state, "ready");
   } finally { if (previous === undefined) delete globalThis.Worker; else globalThis.Worker = previous; }
 });
+
+test("next event follows updated folder filters when the current recording is excluded", async () => {
+  const plan = planDirectoryImport(["a", "b", "c"].map(name => fileAt(`folder/${name}.edf`)), "edf");
+  const filtered = { ...plan, recordings: [plan.recordings[0], plan.recordings[2]], unfilteredRecordings: plan.recordings };
+  const result = await findNextDirectoryEvent(filtered, plan.recordings[1].id, "stim",
+    new AbortController().signal, () => [{ label: "Stim", timeSec: 5 }], () => {});
+  assert.equal(result.target.recording, plan.recordings[2]);
+  assert.equal(result.target.event.timeSec, 5);
+});

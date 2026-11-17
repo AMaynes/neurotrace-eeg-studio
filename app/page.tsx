@@ -154,11 +154,12 @@ import {
 } from "./neurotrace-project";
 import { matlabAnnotationRows, matlabAnnotationFilename, serializeMatlabAnnotations, writeMatlabAnnotations, mergeMatlabAnnotationRows, MatlabReviewCsvCache, type MatlabCsvFileHandle, type MatlabAnnotationRow } from "./matlab-annotations-csv";
 import { serializeRecordingLabels } from "./recording-labels-csv";
+import { SavedReviews } from "./saved-reviews";
 import { LabelLibraryEditor } from "./label-library";
 import { canOpenReviewRecording, emptyLabelLibrary, isReviewWorkspaceFile, listReviewWorkspaces,
   newReviewWorkspace, normalizeReviewerId, parseLabelLibrary, persistReviewWorkspace, readReviewWorkspace,
   reviewFolderKey, reviewWorkspaceNames, writeReviewWorkspacePair, type DictionaryLabel, type LabelLibrary,
-  type ReviewOutputDirectory, type ReviewWorkspace } from "./review-workspace";
+  type SavedReviewSummary, type ReviewOutputDirectory, type ReviewWorkspace } from "./review-workspace";
 
 type Reliability = "gold" | "silver" | "bronze" | "gray";
 type Geometry = "point" | "interval" | "window" | "session";
@@ -508,6 +509,7 @@ type SessionWorkspaceSnapshot = {
   selectedChannels: number[];
   focusedChannel: number;
   spectrogramChannels?: number[];
+  channelAverageSelection?: boolean;
   annotations: Annotation[];
   recordingLabelsImported: boolean;
   selectedAnnotationId: string | null;
@@ -2033,12 +2035,14 @@ export default function Home() {
   const [selectedChannels, setSelectedChannels] = useState<Set<number>>(() => new Set());
   const [focusedChannel, setFocusedChannel] = useState(0);
   const [spectrogramChannels, setSpectrogramChannels] = useState<number[]>([]);
+  const [channelAverageSelection, setChannelAverageSelection] = useState(false);
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
   const [anatomicalGroups, setAnatomicalGroups] = useState(true);
   const [preparedDisplay, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
   const channelGroupingMode = meta.format === "edf" || meta.format === "edf+" ? "name" : "matlab";
   const display = useMemo(() => anatomicalGroups ? orderGroupedDisplayRows(preparedDisplay, channelGroupingMode) : preparedDisplay,
     [anatomicalGroups, channelGroupingMode, preparedDisplay]);
+  const spectrogramResultsRef = useRef(new Map<string, MatlabSpectrogramResult>());
   const [spectrogramState, setSpectrogramState] = useState<{
     requestKey: string;
     result: MatlabSpectrogramResult | null;
@@ -2148,6 +2152,7 @@ export default function Home() {
   const [showImport, setShowImportOpen] = useState(false);
   const [importPickerKind, setImportPickerKind] = useState<"files" | "directory" | null>(null);
   const [stagedImportFiles, setStagedImportFiles] = useState<File[]>([]);
+  const [requestedSavedReview, setRequestedSavedReview] = useState<SavedReviewSummary | null>(null);
   const [portableReviewFile, setPortableReviewFile] = useState<File | null>(null);
   const [reviewResumePrompt, setReviewResumePrompt] = useState<{ plan: DirectoryImportPlan; review: ReviewWorkspace; nextId: number } | null>(null);
   const setShowImport = useCallback((open: boolean) => {
@@ -2157,6 +2162,7 @@ export default function Home() {
       setStagedImportFiles([]);
       setReviewResumePrompt(null);
       setPortableReviewFile(null);
+      setRequestedSavedReview(null);
     }
   }, []);
   const [stagedDirectoryPlan, setStagedDirectoryPlan] = useState<DirectoryImportPlan | null>(null);
@@ -2536,6 +2542,7 @@ export default function Home() {
       filters: { ...filters },
       selectedChannels: [...selectedChannels],
       focusedChannel,
+      channelAverageSelection,
       spectrogramChannels,
       annotations: annotationsRef.current,
       recordingLabelsImported: recordingLabelsImportedRef.current,
@@ -2590,7 +2597,7 @@ export default function Home() {
           view: {
             viewStart: snapshot.viewStart, timebase, gain, montage, filters, traceDisplayMode,
             cursor: { time: cursorTime, locked: cursorLocked }, selectedChannels: snapshot.selectedChannels,
-            focusedChannel, channelSelectionActive, selectedAnnotationId, selection, snapMode, spectrogramOpen, spectrogramChannels, spectrogramAnchor,
+            focusedChannel, channelSelectionActive, channelAverageSelection, selectedAnnotationId, selection, snapMode, spectrogramOpen, spectrogramChannels, spectrogramAnchor,
             anatomicalGroups, expandedChannels, channelScrollTop: snapshot.channelScrollTop,
             waveformVerticalViewport, spectrogramFrequencyRange,
           },
@@ -2600,6 +2607,7 @@ export default function Home() {
         managed.library = labelLibrary;
         managed.customTools = customTools;
         managed.settings = {
+          folderName: primaryFile?.webkitRelativePath?.split("/")[0] || meta.name,
           controlBindings, hiddenLabelTypes: [...hiddenLabelTypes], labelKeywords, labelsVisible,
           directoryEventQuery, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, rightPanelOpen, rightPanelView, bottomTracksOpen,
         };
@@ -2631,7 +2639,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, anatomicalGroups, bottomTracksOpen, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, directoryEventQuery, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
+  }, [activeCandidate, activeSessionId, anatomicalGroups, bottomTracksOpen, channelAverageSelection, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, directoryEventQuery, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2652,7 +2660,7 @@ export default function Home() {
     if (!activeReviewIdentity || !hasRecording || verifyingSource || importBusy || reviewViewArrival || playing) return;
     const timer = window.setTimeout(() => flushSessionRef.current(), 650);
     return () => window.clearTimeout(timer);
-  }, [activeReviewIdentity, activeCandidate, annotations, anatomicalGroups, bottomTracksOpen, candidates, channelSelectionActive, controlBindings, cursorLocked, cursorTime,
+  }, [activeReviewIdentity, activeCandidate, annotations, anatomicalGroups, bottomTracksOpen, candidates, channelAverageSelection, channelSelectionActive, controlBindings, cursorLocked, cursorTime,
     customTools, directoryEventQuery, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, importBusy,
     labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, montage, playing, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels,
     selection, sessionKey, snapMode, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramFrequencyRange, spectrogramOpen, timebase,
@@ -2709,6 +2717,7 @@ export default function Home() {
     setSelectedChannels(new Set(snapshot.selectedChannels));
     setFocusedChannel(snapshot.focusedChannel);
     setSpectrogramChannels(snapshot.spectrogramChannels ?? []);
+    setChannelAverageSelection(snapshot.channelAverageSelection === true);
     setChannelSelectionActive(false);
     setSpectrogramState(null);
     setSpectrogramAnchor(null);
@@ -4630,6 +4639,11 @@ export default function Home() {
       return;
     }
 
+    const cached = spectrogramResultsRef.current.get(requestKey);
+    if (cached) {
+      setSpectrogramState({ requestKey, result: cached, progress: 1, error: "" });
+      return;
+    }
     const abortController = new AbortController();
     const reader = createMatlabFileReader(source, { signal: abortController.signal });
     const operation = performanceDiagnostics.beginDecode({
@@ -4660,6 +4674,14 @@ export default function Home() {
       .then((result) => {
         if (abortController.signal.aborted || sourceRef.current !== source) return;
         operation.finish({ completedBytes: plan.sampleCount * plan.sourceIndices.length * 4, durationMs: result.metrics.computeMs });
+        const cache = spectrogramResultsRef.current;
+        cache.set(requestKey, result);
+        let bytes = [...cache.values()].reduce((sum, entry) => sum + entry.metrics.outputBytes, 0);
+        while (cache.size > 4 || bytes > 64 * 1024 * 1024) {
+          const oldest = cache.keys().next().value!;
+          bytes -= cache.get(oldest)!.metrics.outputBytes;
+          cache.delete(oldest);
+        }
         setSpectrogramState({ requestKey, result, progress: 1, error: "" });
       })
       .catch((error) => {
@@ -5980,6 +6002,7 @@ export default function Home() {
     setSpectrogramState(null);
     setSpectrogramAnchor(null);
     setSpectrogramChannels([]);
+    setChannelAverageSelection(false);
     // Do not clear cross-session LRUs here; entries are source-keyed and their
     // global byte ceilings evict the least-recently used recording as needed.
     setDisplay(EMPTY_DISPLAY);
@@ -6181,7 +6204,7 @@ export default function Home() {
     setSourceInterpretation(applyMatlabExportIdentity(interpretation, restoredMatlabExportIdentity ?? csvIdentity) ?? null);
     setCandidates(restoredCandidates);
     setActiveCandidate(restoredActiveCandidate);
-    setReviewer(managedReview?.reviewerId ?? restoredReviewer ?? "");
+    setReviewer(managedReview?.reviewerId ?? (restoredReviewer || normalizeReviewerId(reviewerProfileId)));
     if (managedReview) {
       setLabelLibrary(managedReview.library);
       setCustomTools(managedReview.customTools);
@@ -6203,7 +6226,7 @@ export default function Home() {
       if (previousSnapshot && activeSessionIdRef.current === targetSessionId) applySessionSnapshot(previousSnapshot);
       throw error;
     }
-  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, detachDirectorySession, sessionTabs, setShowImport, storeActiveSession]);
+  }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, detachDirectorySession, reviewerProfileId, sessionTabs, setShowImport, storeActiveSession]);
 
   const openOlderReviews = () => {
     setOlderReviewKey("");
@@ -6669,6 +6692,7 @@ export default function Home() {
       if (channels) setSelectedChannels(new Set(channels));
       setFocusedChannel(clamp(Math.floor(number(view.focusedChannel, 0)), 0, Math.max(0, meta.channelCount - 1)));
       setChannelSelectionActive(view.channelSelectionActive === true);
+      setChannelAverageSelection(view.channelAverageSelection === true);
       if (view.cursor && typeof view.cursor === "object") {
         const cursor = view.cursor as { time?: unknown; locked?: unknown };
         setCursorTime(clamp(number(cursor.time, 0), 0, duration));
@@ -7258,6 +7282,13 @@ export default function Home() {
           if (workspace?.reviewerId === reviewerId && workspace.folderKey === folderKey) candidates.push(workspace);
         }
         let selected: ReviewWorkspace | undefined;
+        if (requestedSavedReview) {
+          if (requestedSavedReview.folderKey !== folderKey || requestedSavedReview.reviewerId !== reviewerId) {
+            throw new Error("Choose the original recording folder for this saved review.");
+          }
+          selected = local.find((review) => review.instanceId === requestedSavedReview.instanceId);
+          if (!selected) throw new Error("This browser autosave could not be found. Select its workspace JSON.");
+        }
         if (portableReviewFile) {
           selected = await readReviewWorkspace(portableReviewFile);
           if (selected.reviewerId !== reviewerId || selected.folderKey !== folderKey) {
@@ -7593,7 +7624,7 @@ export default function Home() {
             item.review.recordingLabelsImported = true;
           } catch { missingLabels.push(recording); }
         }
-        labels.push({ recording, annotations });
+        labels.push({ recording, annotations, reviewer: review.reviewerId });
       }
       const incompleteMessage = missingLabels.length
         ? `Could not read all detected labels for ${missingLabels.slice(0, 3).join(", ")}${missingLabels.length > 3 ? ` and ${missingLabels.length - 3} more` : ""}.`
@@ -7761,7 +7792,7 @@ export default function Home() {
         try { annotations = await completeExportLabels(source, () => annotationsRef.current); }
         catch { incomplete = true; }
       }
-      const csv = serializeRecordingLabels([{ recording: meta.name, annotations }], csvLabelName);
+      const csv = serializeRecordingLabels([{ recording: meta.name, annotations, reviewer }], csvLabelName);
       const name = meta.name.replace(/\.[^.]+$/, "");
       downloadBlob(`${name}_labels.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
       setShowProjectSave(false);
@@ -8292,6 +8323,8 @@ export default function Home() {
               setShowProjectSave(true);
             }}
           ><span aria-hidden="true">⇩</span></button>
+          <button type="button" className="button secondary saved-reviews-trigger" disabled={importBusy}
+            onClick={() => { setUploadError(null); setShowImport(true); }}>Saved reviews</button>
           <button
             className="utility-button upload-recording-button"
             data-tutorial="upload"
@@ -8659,6 +8692,15 @@ export default function Home() {
             <ul aria-label="Display warning details">{display.warnings.map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}</ul>
           </details>}
 
+          <div className="channel-average-controls">
+            <button type="button" className="button secondary" aria-pressed={channelAverageSelection}
+              onClick={() => setChannelAverageSelection((current) => !current)}>Select channels to average</button>
+            <span>{spectrogramChannels.length ? `${spectrogramChannels.length} channel${spectrogramChannels.length === 1 ? "" : "s"} selected` : "Shift-click channels or click a group name"}</span>
+            {spectrogramChannels.length > 0 && <>
+              <button type="button" className="button secondary" onClick={() => setSpectrogramOpen(true)}>Show averaged spectrogram</button>
+              <button type="button" className="button quiet" onClick={() => { setSpectrogramChannels([]); setChannelAverageSelection(false); setChannelSelectionActive(false); }}>Clear channel selection</button>
+            </>}
+          </div>
           <div ref={viewerRef} className={`signal-and-tracks ${spectrogramOpen ? "with-spectrogram" : ""}`}>
             <div
               ref={waveformScrollRef}
@@ -8700,8 +8742,8 @@ export default function Home() {
                     aria-label={anatomicalGroups ? label : undefined}
                     title={`${anatomicalGroups ? `${label} · ` : ""}${!displayReadoutReady ? "Signal readout unavailable" : formatCursorAmplitude(rowReadout)}`}
                     onClick={(event) => {
-                      if (event.shiftKey && sourceIndex >= 0) {
-                        const previous = channelSelectionActive ? display.primarySourceIndices[focusedChannel] : undefined;
+                      if ((event.shiftKey || event.ctrlKey || event.metaKey || channelAverageSelection) && sourceIndex >= 0) {
+                        const previous = !channelAverageSelection && channelSelectionActive ? display.primarySourceIndices[focusedChannel] : undefined;
                         setSpectrogramChannels((current) => {
                           if (current.includes(sourceIndex)) return current.filter((id) => id !== sourceIndex);
                           const initial = previous !== undefined && previous >= 0 && previous !== sourceIndex ? [previous] : [];
@@ -8716,7 +8758,23 @@ export default function Home() {
                 })}
                 {channelRowLayout.groups.map(({ name, startRow, endRow }) => {
                   const style = channelGroupLabelStyle(startRow, endRow);
-                  return style && <div key={`${name}-${startRow}`} className="channel-group-label" style={style} aria-hidden="true">{name}</div>;
+                  const sources = [...new Set((montage === "bipolar" ? display.sourceIndices.slice(startRow, endRow + 1).flat()
+                    : display.primarySourceIndices.slice(startRow, endRow + 1)).filter((index) => index >= 0))];
+                  const selected = sources.length > 0 && sources.every((index) => spectrogramChannels.includes(index));
+                  return style && <button type="button" key={`${name}-${startRow}`} className={`channel-group-label ${selected ? "selected" : ""}`}
+                    style={style} aria-label={`Select ${name} channel group`} aria-pressed={selected}
+                    title={`Select all ${name} channels for the spectrogram. Shift-click to combine groups.`}
+                    onClick={(event) => {
+                      setSpectrogramChannels((current) => {
+                        if (event.shiftKey || event.ctrlKey || event.metaKey || channelAverageSelection) {
+                          return selected ? current.filter((index) => !sources.includes(index)) : [...new Set([...current, ...sources])];
+                        }
+                        return sources;
+                      });
+                      setFocusedChannel(startRow);
+                      setChannelSelectionActive(true);
+                      notifyTutorialAction("channel-focused");
+                    }}>{name}</button>;
                 })}
               </div>
               <div className="canvas-column">
@@ -9058,6 +9116,12 @@ export default function Home() {
         busy={importBusy || Boolean(queuedDirectoryOpen)}
         statuses={directoryStatuses}
         onOpen={openDirectoryRecording}
+        onFilter={(plan) => {
+          storeActiveSession();
+          setDirectoryCatalogs((current) => current.map((catalog) => catalog.id === directoryCatalog.id ? { ...catalog, plan } : catalog));
+          setDirectoryCatalog({ ...directoryCatalog, plan });
+          setToast(`Folder filter updated · ${plan.recordings.length} matching recordings`);
+        }}
         onPrepareResume={() => {
           storeActiveSession();
           addDirectoryReviewRows(directoryCatalog.plan, matlabCsvCacheRef.current.rows(directoryCatalog.id));
@@ -9101,6 +9165,17 @@ export default function Home() {
                 <button type="button" className="button" data-tutorial="import-folder" disabled={importBusy} onClick={() => openImportPicker("directory")}>Folder</button>
               </div>
             </section>
+            <SavedReviews reviewerId={reviewerProfileId} busy={importBusy} onReviewerChange={(id) => {
+              setReviewerProfileId(id);
+              setRequestedSavedReview(null);
+            }} onChoose={(review) => {
+              setRequestedSavedReview(review);
+              setReviewerProfileId(review.reviewerId);
+              setPortableReviewFile(null);
+              setUploadError(null);
+              guidedDirectoryInputRef.current?.click();
+            }} />
+            {requestedSavedReview && <p role="status">Select the original {requestedSavedReview.folderName} folder to continue review {requestedSavedReview.reviewSessionId}.</p>}
             <p>Choose an optional format filter for mixed folders.</p>
             <div className="format-cards" data-tutorial="import-formats" role="group" aria-label="Recording formats">
               <button type="button" aria-label="EDF / EDF+" aria-pressed={importChoice === "edf"} disabled={importBusy} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>Calibrated .edf recordings</span></button>
@@ -9150,9 +9225,7 @@ export default function Home() {
                 </div>
               </section> : <>
                 {stagedDirectoryPlan.format !== "neurotrace" && <div className="review-folder-setup">
-                  <label className="form-field"><span>Reviewer ID</span><input value={reviewerProfileId} maxLength={32} placeholder="R017"
-                    disabled={importBusy} onChange={(event) => setReviewerProfileId(event.target.value)} /></label>
-                  <small>Enter your ID for autosave and folder recovery. Leave blank to browse.</small>
+                  <small>{reviewerProfileId ? `Reviewing as ${reviewerProfileId}` : "Enter a reviewer ID above for autosave. Leave blank to browse."}</small>
                   <label><input type="checkbox" checked={startBlindReview} disabled={importBusy} onChange={(event) => setStartBlindReview(event.target.checked)} /> Blind review (forward only)</label>
                   <label className="form-field"><span>Open workspace JSON (optional)</span><input type="file" accept=".json,application/json"
                     disabled={importBusy} onChange={(event) => setPortableReviewFile(event.target.files?.[0] ?? null)} /></label>
@@ -9548,7 +9621,7 @@ function spectrogramAnalysisRange(spectrum: MatlabSpectrogramResult) {
 }
 
 function spectrogramAnalysisNote(spectrum: MatlabSpectrogramResult) {
-  return spectrum.tiled ? "Full-window wavelet overview · zoom in for detail" : "";
+  return spectrum.tiled ? `Full-window wavelet overview${(spectrum.timeStride ?? 1) > 1 ? " · sampled power" : ""} · zoom in for detail` : "";
 }
 
 function matlabJet(value: number) {

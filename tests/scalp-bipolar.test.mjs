@@ -44,7 +44,9 @@ test("legacy T3/T4/T5/T6 aliases and case match modern temporal channels", () =>
   assert.deepEqual(result.labels, EXPECTED_PAIRS.map(([, , label]) => label));
   assert.deepEqual(result.sourceIndices, EXPECTED_PAIRS.map(([first, second]) => [first, second]));
   assert.equal(canonicalScalpElectrode(" EEG  fp1 "), "Fp1");
-  for (const label of ["SEEG Fp1", "Fp01", "Fp1-REF", "Fp1-F7", "xFp1", "EEGFp1"]) {
+  assert.equal(canonicalScalpElectrode("Fp1-REF"), "Fp1");
+  assert.equal(canonicalScalpElectrode("SEEG Fp1"), "Fp1");
+  for (const label of ["Fp01", "Fp1-F7", "xFp1", "EEGFp1"]) {
     assert.equal(canonicalScalpElectrode(label), null, label);
   }
 });
@@ -100,8 +102,8 @@ test("scalp electrodes never silently enter anatomical numeric pairing", () => {
     const labels = ["eeg Fp1", "eeg F7", depthLabel];
     assert.equal(bipolarMontageKind(labels), "mixed");
     const result = buildMontage(signals(labels), labels, "bipolar");
-    assert.equal(result.data.length, 0);
-    assert.match(result.warnings.join(" "), /mixed scalp and anatomical/);
+    assert.deepEqual(result.labels, ["Fp1-F7"]);
+    assert.deepEqual(result.sourceIndices, [[0, 1]]);
   }
 });
 
@@ -131,4 +133,23 @@ test("full-catalog provenance must identify each input exactly once", () => {
     { allChannelLabels: labels, sourceChannelIndices: [0, 2] },
     { channelUnits: ["µV"] },
   ]) assert.throws(() => buildMontage(data, labels, "bipolar", new Set(), undefined, undefined, options));
+});
+
+test("prefixed depth contacts form anatomical pairs with acquisition order and polarity", () => {
+  const labels = ["EEG LA1-REF", "EEG LA2-REF", "SEEG RB1", "SEEG RB2"];
+  const data = signals(labels);
+  const montage = buildMontage(data, labels, "bipolar");
+  assert.equal(bipolarMontageKind(labels), "anatomical");
+  assert.deepEqual(montage.labels, ["LA1-2", "RB1-2"]);
+  assert.deepEqual(montage.sourceIndices, [[0, 1], [2, 3]]);
+  assert.deepEqual([...montage.data[0]], [...data[1]].map((value, n) => value - data[0][n]));
+});
+
+test("mixed recordings derive scalp and depth pairs independently", () => {
+  const labels = ["eeg Fp1", "eeg F7", "SEEG LA1", "SEEG LA2"];
+  const data = signals(labels);
+  const montage = buildMontage(data, labels, "bipolar");
+  assert.deepEqual(montage.labels, ["Fp1-F7", "LA1-2"]);
+  assert.deepEqual([...montage.data[0]], [...data[0]].map((value, n) => value - data[1][n]));
+  assert.deepEqual([...montage.data[1]], [...data[3]].map((value, n) => value - data[2][n]));
 });

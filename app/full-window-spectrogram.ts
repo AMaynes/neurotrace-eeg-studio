@@ -62,12 +62,16 @@ export async function computeFullWindowSpectrogram(
     onProgress(total, total);
     return result;
   }
-  const halo = Math.min(Math.ceil(8 * sampleRate), Math.floor(tileSize / 4));
+  // At long zooms, sample wavelet power at four points per output column.
+  // Keep the ordinary exact/tiled path at shorter views.
+  const stride = total / sampleRate >= 600 && total >= tileSize * 2
+    ? Math.min(tileSize / 4, 2 ** Math.max(0, Math.floor(Math.log2(total / (SPECTROGRAM_MAX_COLUMNS * 4))))) : 1;
+  const halo = Math.ceil(Math.min(Math.ceil(8 * sampleRate), Math.floor(tileSize / 4)) / stride) * stride;
   const coreSize = tileSize - 2 * halo;
   const width = Math.min(SPECTROGRAM_MAX_COLUMNS, total);
   // Input planning has already snapped the click to a source sample.
   const clicked = Math.max(0, Math.min(total - 1, Math.round((baselineTime - dataStart) * sampleRate)));
-  const usedBaselineFallback = clicked < 5;
+  const usedBaselineFallback = clicked < 5 * stride;
   const baselineEnd = usedBaselineFallback ? Math.round(total / 2) - 1 : clicked;
   let frequencies: Float64Array = new Float64Array();
   let power = new Float64Array(), logSum = new Float64Array();
@@ -85,7 +89,7 @@ export async function computeFullWindowSpectrogram(
       onProgress(from + take, total);
       continue;
     }
-    const tile = computeMatlabSpectrogramPower({ data, sampleRate, dataStart: 0, baselineTime: 0 });
+    const tile = computeMatlabSpectrogramPower({ data, sampleRate, dataStart: 0, baselineTime: 0 }, stride);
     computeMs += tile.metrics.computeMs;
     tile.warnings.forEach((warning) => warnings.add(warning));
     if (!frequencies.length) {
@@ -95,14 +99,15 @@ export async function computeFullWindowSpectrogram(
       baselineMean = new Float64Array(tile.height);
       baselineM2 = new Float64Array(tile.height);
     }
-    const preCount = Math.max(0, Math.min(take, baselineEnd - from));
+    const retained = Math.ceil(take / stride);
+    const preCount = Math.ceil(Math.max(0, Math.min(take, baselineEnd - from)) / stride);
     for (let bin = 0; bin < tile.height; bin++) {
       let mean = baselineMean[bin], m2 = baselineM2[bin], n = baselineFrameCount;
-      for (let index = 0; index < take; index++) {
-        const column = Math.min(width - 1, Math.floor((from + index) * width / total));
-        const value = tile.power[bin * tile.width + halo + index];
+      for (let index = 0; index < retained; index++) {
+        const column = Math.min(width - 1, Math.floor((from + index * stride) * width / total));
+        const value = tile.power[bin * tile.width + halo / stride + index];
         const log = 10 * Math.log10(value + EPS);
-        const withinTileColumn = index - Math.max(0, Math.ceil(column * total / width) - from) + 1;
+        const withinTileColumn = index - Math.max(0, Math.ceil((Math.ceil(column * total / width) - from) / stride)) + 1;
         const count = counts[column] + withinTileColumn;
         const position = bin * width + column;
         power[position] += (value - power[position]) / count;
@@ -116,7 +121,7 @@ export async function computeFullWindowSpectrogram(
       }
       baselineMean[bin] = mean; baselineM2[bin] = m2;
     }
-    for (let index = 0; index < take; index++) counts[Math.min(width - 1, Math.floor((from + index) * width / total))]++;
+    for (let index = 0; index < retained; index++) counts[Math.min(width - 1, Math.floor((from + index * stride) * width / total))]++;
     baselineFrameCount += preCount;
     onProgress(from + take, total);
   }
@@ -125,7 +130,7 @@ export async function computeFullWindowSpectrogram(
   const zScores = new Float64Array(power.length);
   for (let bin = 0; bin < frequencies.length; bin++) for (let column = 0; column < width; column++) {
     const position = bin * width + column;
-    const expected = Math.ceil((column + 1) * total / width) - Math.ceil(column * total / width);
+    const expected = Math.ceil(Math.ceil((column + 1) * total / width) / stride) - Math.ceil(Math.ceil(column * total / width) / stride);
     if (counts[column] !== expected) { power[position] = zScores[position] = NaN; continue; }
     zScores[position] = (logSum[position] - baselineMean[bin]) / baselineStd[bin];
   }
@@ -136,6 +141,6 @@ export async function computeFullWindowSpectrogram(
   const outputBytes = [power, zScores, frequencies, times, baselineMean, baselineStd].reduce((sum, a) => sum + a.byteLength, 0);
   return { power, zScores, frequencies, times, dataStart: dataStart - 1 / sampleRate, sampleRate,
     width, height: frequencies.length, baselineMean, baselineStd, baselineFrameCount, usedBaselineFallback,
-    colorLimit, warnings: [...warnings], tiled: true,
+    colorLimit, warnings: [...warnings], tiled: true, timeStride: stride,
     metrics: { inputBytes, outputBytes, computeMs, workerRoundTripMs: performance.now() - started } };
 }

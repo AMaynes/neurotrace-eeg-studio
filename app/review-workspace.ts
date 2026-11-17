@@ -210,3 +210,45 @@ export async function writeReviewWorkspacePair(directory: ReviewOutputDirectory,
   await writeReviewFile(csvFile ?? await directory.getFileHandle(names.annotations, { create: true }),
     new Blob([csv], { type: "text/csv;charset=utf-8" }));
 }
+
+export type SavedReviewSummary = {
+  folderKey: string;
+  reviewerId: string;
+  reviewSessionId: number;
+  instanceId: string;
+  folderName: string;
+  recordingPath: string;
+  updatedAt: string;
+  visitedCount: number;
+  labelCount: number;
+};
+
+/** Only return summaries belonging to the selected reviewer. */
+export async function listSavedReviews(reviewerId: string): Promise<SavedReviewSummary[]> {
+  const id = normalizeReviewerId(reviewerId);
+  if (!id) return [];
+  const db = await database();
+  return new Promise((resolve, reject) => {
+    const reviews: SavedReviewSummary[] = [];
+    const request = db.transaction("reviews").objectStore("reviews").openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve(reviews.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+        return;
+      }
+      const review = cursor.value as ReviewWorkspace;
+      if (review.reviewerId === id && review.position) {
+        const recordingPath = review.position.replace(/^directory:/, "");
+        reviews.push({
+          folderKey: review.folderKey, reviewerId: id, reviewSessionId: review.reviewSessionId, instanceId: review.instanceId,
+          folderName: typeof review.settings.folderName === "string" ? review.settings.folderName : recordingPath.split("/")[0],
+          recordingPath, updatedAt: review.updatedAt, visitedCount: Object.keys(review.recordings).length,
+          labelCount: Object.values(review.recordings).reduce((count, recording) => count + (Array.isArray(recording.review.annotations) ? recording.review.annotations.length : 0), 0),
+        });
+      }
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error);
+  });
+}

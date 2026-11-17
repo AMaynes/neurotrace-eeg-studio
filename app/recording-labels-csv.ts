@@ -27,13 +27,13 @@ function labelSource(annotation: ExportedLabel): "detected" | "reviewer" | "lega
 
 /** Export all annotation rows, including when there are no rows yet. */
 export function serializeRecordingLabels<T extends ExportedLabel>(
-  recordings: readonly { recording: string; annotations: readonly T[] }[],
+  recordings: readonly { recording: string; annotations: readonly T[]; reviewer?: string }[],
   labelName: (annotation: T) => string,
 ): string {
   const header = "recording,annotation_id,label,label_type,start_sec,end_sec,track,confidence_pct,status,origin,label_source,reviewer,notes,updated_at";
-  const rows = recordings.flatMap(({ recording, annotations }) => annotations.map((item) => [
+  const rows = recordings.flatMap(({ recording, annotations, reviewer }) => annotations.map((item) => [
     recording, item.id, typeof item.sourceLabel === "string" ? item.sourceLabel : labelName(item), item.labelId, item.start, item.end, item.track, item.confidence,
-    item.status, item.origin, labelSource(item), item.reviewer, item.notes, item.updatedAt,
+    item.status, item.origin, labelSource(item), item.reviewer || (labelSource(item) === "reviewer" ? reviewer ?? "" : ""), item.notes, item.updatedAt,
   ].map(csvCell).join(",")));
   return [header, ...rows, ""].join("\r\n");
 }

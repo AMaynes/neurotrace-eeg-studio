@@ -189,9 +189,9 @@ test("shared group labels align with row baselines in compact, expanded, and ver
   const style = (overrides = {}) => compile(declaration("channelGroupLabelStyle"), { ...base, ...overrides }, "channelGroupLabelStyle");
   assert.ok(Math.abs(style()(0, 1).top - (28 + (800 - 72) / 3 + 18)) < 1e-9);
   assert.ok(Math.abs(style({ expandedChannels: true })(2, 3).top - (28 + 2 * (800 - 96) / 3 + 72)) < 1e-9);
-  assert.ok(Math.abs(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(0, 1).top - (28 + 800 * 1.5 / 2.75)) < 1e-9);
+  assert.ok(Math.abs(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(0, 1).top - (28 + 800 * 2 / 3.5)) < 1e-9);
   assert.equal(style({ waveformVerticalViewport: { top: 0, bottom: .5 } })(2, 3), null);
-  assert.ok(Math.abs(style({ waveformVerticalViewport: { top: .5, bottom: 1 } })(2, 3).top - (28 + 800 * 1.25 / 2.75)) < 1e-9);
+  assert.ok(Math.abs(style({ waveformVerticalViewport: { top: .5, bottom: 1 } })(2, 3).top - (28 + 800 * 1.5 / 3.5)) < 1e-9);
 });
 
 test("channel changes clamp focus to visible grouped rows while empty loading views retain session focus", () => {

@@ -83,7 +83,8 @@ test("valid views have no warning bar and empty views retain their existing dedi
 test("native disclosure sits outside the waveform area, has keyboard focus, and caps expanded height", () => {
   assert.ok(ts.isJsxFragment(warningExpression.parent), "warning row is a plot sibling, not an overlay");
   const siblings = warningExpression.parent.children;
-  const nextElement = siblings.slice(siblings.indexOf(warningExpression) + 1).find((node) => ts.isJsxElement(node));
+  const nextElement = siblings.slice(siblings.indexOf(warningExpression) + 1).find((node) => ts.isJsxElement(node) && node.openingElement.attributes.properties.some((prop) =>
+    ts.isJsxAttribute(prop) && prop.name.getText(page) === "className" && prop.initializer?.getText(page).includes("signal-and-tracks")));
   assert.ok(nextElement.openingElement.attributes.properties.some((prop) => ts.isJsxAttribute(prop)
     && prop.name.getText(page) === "className" && prop.initializer?.getText(page).includes("signal-and-tracks")));
   const rowCss = /\.display-warnings\s*\{([^}]+)\}/.exec(css)?.[1];

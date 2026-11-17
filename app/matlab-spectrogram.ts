@@ -49,6 +49,7 @@ export interface MatlabSpectrogramResult {
   warnings: string[];
   /** Long windows are computed in overlapping tiles, then time-bin averaged. */
   tiled?: boolean;
+  timeStride?: number;
   metrics: { computeMs: number; inputBytes: number; outputBytes: number; inputCopyMs?: number; workerRoundTripMs?: number };
 }
 
@@ -211,6 +212,28 @@ function gaborBin(plan: ExactDftPlan, fftReal: Float64Array, fftImaginary: Float
   plan.transform(real, imaginary, true);
 }
 
+/**
+ * Fold the filtered DFT before a shorter inverse transform. This returns exact
+ * full-rate Gabor coefficients at stride-spaced samples without filtering or
+ * decimating the raw signal. M/N compensates for the shorter inverse FFT.
+ */
+function sampledGaborBin(plan: ExactDftPlan, fftReal: Float64Array, fftImaginary: Float64Array,
+  rate: number, frequency: number, real: Float64Array, imaginary: Float64Array) {
+  real.fill(0);
+  imaginary.fill(0);
+  const scale = 5 / frequency;
+  const factor = (4 * Math.PI) ** 0.25 * Math.sqrt(scale) * real.length / fftReal.length;
+  for (let index = 0; index < fftReal.length; index++) {
+    const omega = (index <= Math.floor(fftReal.length / 2) ? index : index - fftReal.length) * rate / fftReal.length;
+    const displacement = scale * omega - 5;
+    const response = factor * Math.exp(-0.5 * displacement * displacement);
+    const target = index % real.length;
+    real[target] += fftReal[index] * response;
+    imaginary[target] += fftImaginary[index] * response;
+  }
+  plan.transform(real, imaginary, true);
+}
+
 /** One exact complex bin; also exposes phase for independent numerical audits. */
 export function computeMatlabGaborCoefficients(data: Float32Array | Float64Array, sampleRate: number, frequency: number) {
   validateMatlabSpectrogramRequest({ data: [data], sampleRate, dataStart: 0, baselineTime: 0 });
@@ -239,14 +262,19 @@ export function matlabPercentile(values: Float64Array, percentile: number) {
 }
 
 /** Raw group power, shared by exact views and bounded full-window tiles. */
-export function computeMatlabSpectrogramPower(request: MatlabSpectrogramRequest) {
+export function computeMatlabSpectrogramPower(request: MatlabSpectrogramRequest, timeStride = 1) {
   const started = performance.now();
   const { samples, inputBytes, frequencies } = validateMatlabSpectrogramRequest(request);
   const { sampleRate } = request;
-  const power = new Float64Array(samples * frequencies.length);
+  if (!Number.isSafeInteger(timeStride) || timeStride < 1 || samples % timeStride !== 0) {
+    throw new RangeError("Spectrogram time stride must divide the tile sample count.");
+  }
+  const width = samples / timeStride;
+  const power = new Float64Array(width * frequencies.length);
   const plan = new ExactDftPlan(samples);
-  const real = new Float64Array(samples);
-  const imaginary = new Float64Array(samples);
+  const inversePlan = timeStride === 1 ? plan : new ExactDftPlan(width);
+  const real = new Float64Array(width);
+  const imaginary = new Float64Array(width);
   let invalidBins = 0;
   for (const frequency of frequencies) if (!validGaborScale(samples, sampleRate, frequency)) invalidBins += 1;
   for (const channel of request.data) {
@@ -256,9 +284,10 @@ export function computeMatlabSpectrogramPower(request: MatlabSpectrogramRequest)
     plan.transform(fftReal, fftImaginary);
     for (let bin = 0; bin < frequencies.length; bin += 1) {
       if (!validGaborScale(samples, sampleRate, frequencies[bin])) continue;
-      gaborBin(plan, fftReal, fftImaginary, sampleRate, frequencies[bin], real, imaginary);
-      for (let index = 0; index < samples; index += 1) {
-        power[bin * samples + index] += real[index] ** 2 + imaginary[index] ** 2;
+      if (timeStride === 1) gaborBin(plan, fftReal, fftImaginary, sampleRate, frequencies[bin], real, imaginary);
+      else sampledGaborBin(inversePlan, fftReal, fftImaginary, sampleRate, frequencies[bin], real, imaginary);
+      for (let index = 0; index < width; index += 1) {
+        power[bin * width + index] += real[index] ** 2 + imaginary[index] ** 2;
       }
     }
   }
@@ -269,7 +298,7 @@ export function computeMatlabSpectrogramPower(request: MatlabSpectrogramRequest)
   const warnings: string[] = [];
   if (frequencies.length < MATLAB_SPECTROGRAM_BINS) warnings.push(`Frequencies above this recording's ${sampleRate / 2} Hz Nyquist limit are omitted. Retained wavelet bins keep their original frequencies.`);
   if (invalidBins) warnings.push(`${invalidBins} frequency bins lie outside awt_freqlist's valid scale interval and remain zero-power, matching MATLAB.`);
-  return { power, frequencies, width: samples, height: frequencies.length, warnings,
+  return { power, frequencies, width, height: frequencies.length, warnings,
     metrics: { computeMs: Math.max(0, performance.now() - started), inputBytes, outputBytes: power.byteLength + frequencies.byteLength } };
 }
 

@@ -7,7 +7,13 @@ type Catalog = { id: string; plan: DirectoryImportPlan };
 export function adjacentDirectoryRecording(catalog: Catalog, tab: OwnedTab | undefined, direction: -1 | 1) {
   if (!tab || tab.directoryId !== catalog.id || !tab.directoryRecordingId) return undefined;
   const index = catalog.plan.recordings.findIndex((recording) => recording.id === tab.directoryRecordingId);
-  return index < 0 ? undefined : catalog.plan.recordings[index + direction];
+  if (index >= 0) return catalog.plan.recordings[index + direction];
+  const all = catalog.plan.unfilteredRecordings;
+  const sourceIndex = all?.findIndex((recording) => recording.id === tab.directoryRecordingId) ?? -1;
+  if (!all || sourceIndex < 0) return undefined;
+  const included = new Set(catalog.plan.recordings.map((recording) => recording.id));
+  const candidates = direction === 1 ? all.slice(sourceIndex + 1) : all.slice(0, sourceIndex).reverse();
+  return candidates.find((recording) => included.has(recording.id));
 }
 
 export type DirectoryTabHeader = {

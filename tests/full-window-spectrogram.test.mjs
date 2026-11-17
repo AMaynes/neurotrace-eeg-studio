@@ -140,7 +140,7 @@ visit(syntax); assert.ok(effect);
 const effectCode = ts.transpileModule(`const run = ${effect.getText(syntax)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText + "\nreturn run();";
 function harness() {
   const states = [], requests = [], readers = [], p = plan(24000, 200, 100.006, 180);
-  const env = { sourceRef: { current: {} }, spectrogramOpen: true, hasRecording: true,
+  const env = { spectrogramResultsRef: { current: new Map() }, sourceRef: { current: {} }, spectrogramOpen: true, hasRecording: true,
     spectrogramInputPlan: { plan: p, requestKey: "first" }, setSpectrogramState: (value) => states.push(value),
     createMatlabFileReader() { const reader = { disposeCount: 0, dispose() { this.disposeCount++; } }; readers.push(reader); return reader; },
     performanceDiagnostics: { beginDecode: () => ({ update() {}, finish() {}, cancel() {}, fail() {} }) },
@@ -179,4 +179,45 @@ test("cancelled results, progress, and late errors cannot replace a new window",
     await tick(); assert.equal(h.states.length, count); assert.equal(h.states.at(-1).result, fresh);
     assert.equal(h.readers[0].disposeCount >= 1, true); cleanup();
   }
+});
+
+test("sampled Gabor power equals the full transform at the retained source samples", async () => {
+  const { computeMatlabSpectrogramPower } = await import("../app/matlab-spectrogram.ts");
+  const data = [samples(8192), samples(8192).map((value, i) => value + Math.sin(i * .2))];
+  const request = { data, sampleRate: 256, dataStart: 0, baselineTime: 12 };
+  const full = computeMatlabSpectrogramPower(request);
+  const sampled = computeMatlabSpectrogramPower(request, 16);
+  assert.equal(sampled.width, full.width / 16);
+  for (let bin = 0; bin < full.height; bin++) {
+    for (let time = 0; time < sampled.width; time++) {
+      const expected = full.power[bin * full.width + time * 16];
+      const actual = sampled.power[bin * sampled.width + time];
+      assert.ok(Math.abs(actual - expected) <= 1e-9 * Math.max(1, Math.abs(expected)), `bin ${bin}, time ${time}`);
+    }
+  }
+});
+
+test("twenty-minute overview retains the full time/frequency range with bounded sampled output", async () => {
+  const duration = 1200, rate = 256, total = duration * rate;
+  const input = Float64Array.from({ length: total }, (_, n) =>
+    (n < total / 2 ? 1 : 2) * Math.sin(2 * Math.PI * 10 * n / rate));
+  const result = await computeFullWindowSpectrogram(plan(total, rate), async (offset, count) => [input.slice(offset, offset + count)]);
+  assert.ok(result.timeStride > 1);
+  assert.equal(result.width, 2048);
+  assert.equal(result.frequencies[0], 1);
+  const last = result.dataStart + result.times.at(-1) + duration / result.width / 2;
+  assert.ok(Math.abs(last - duration) < 1e-9);
+  assert.ok(result.zScores.every(Number.isFinite));
+});
+
+test("reopening the same completed spectrogram reuses its bounded result", async () => {
+  const h = harness();
+  const cleanup = h.run();
+  const result = { metrics: { computeMs: 10, outputBytes: 1024 } };
+  h.requests[0].resolve(result);
+  await tick();
+  cleanup();
+  h.run();
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.states.at(-1).result, result);
 });

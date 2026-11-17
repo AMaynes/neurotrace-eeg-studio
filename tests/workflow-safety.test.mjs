@@ -95,7 +95,7 @@ test("unmanaged review identity stays with its recording", async () => {
   const page = await pageSource();
   assert.match(page, /setReviewerProfileId\(localStorage\.getItem\("neurotrace:reviewer-id"\)/);
   assert.match(page, /reviewer:\s*""[\s\S]*?sessionSnapshotsRef\.current\.set\(id,\s*snapshot\)/);
-  assert.match(page, /setReviewer\(managedReview\?\.reviewerId\s*\?\?\s*restoredReviewer\s*\?\?\s*""\)/);
+  assert.match(page, /setReviewer\(managedReview\?\.reviewerId\s*\?\?\s*\(restoredReviewer\s*\|\|\s*normalizeReviewerId\(reviewerProfileId\)\)\)/);
   assert.match(page, /reviewer:\s*managed\?\.reviewerId\s*\?\?\s*snapshot\.reviewer/);
 });
 

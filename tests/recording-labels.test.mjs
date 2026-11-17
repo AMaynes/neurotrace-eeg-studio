@@ -353,7 +353,7 @@ async function loadHarness({ recovered, projectReview, edf = false } = {}) {
   const diagnostics = () => ({ update() {}, finish() {}, cancel() {}, fail() {} });
   const scope = {
     ...recovery, EDFSource, RawDatSource, localRecordingIdentity, recordingLabelAnnotations, mergeRecordingLabels,
-    activeSessionId: "active", sessionTabs: [], activeSessionIdRef: { current: "active" },
+    reviewerProfileId: "", normalizeReviewerId: (id) => id, activeSessionId: "active", sessionTabs: [], activeSessionIdRef: { current: "active" },
     pendingProjectImportRef: { current: projectReview ? { review: projectReview } : null },
     pendingEdfReviewNavigationRef: { current: null }, zoomViewRef: { current: { timebase: 20 } },
     sourceVerificationAbortRef: { current: null }, sourceVerificationRef: { current: false },

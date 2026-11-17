@@ -3,7 +3,7 @@
 import { anatomicalChannelGroup, orderElectrodeChannelIndices } from "./eeg-core.ts";
 
 // Minimum gap; spare viewport space is shared equally by all gaps, including the edges.
-export const ELECTRODE_GROUP_GAP_ROWS = 0.5;
+export const ELECTRODE_GROUP_GAP_ROWS = 1;
 export type ChannelGroupingMode = "matlab" | "name";
 
 /** Parse display names only; source labels and montage pairing remain unchanged. */

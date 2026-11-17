@@ -21,10 +21,39 @@ const SCALP_NAMES = new Map(SCALP_CHAINS.flat().map((name) => [name.toUpperCase(
 const TEMPORAL_ALIASES: Readonly<Record<string, string>> = { T3: "T7", T4: "T8", T5: "P7", T6: "P8" };
 const SCALP_AUXILIARY_NAMES = new Set(["FPZ", "OZ", "IZ", "FCZ", "CPZ", "A1", "A2", "M1", "M2", "T1", "T2", "PG1", "PG2", "SPO2", "ETCO2"]);
 
-/** Only a leading EEG token and case are normalized; derived/reference labels are not guessed. */
+/** Normalize explicit acquisition prefixes and reference suffixes without treating derived pairs as contacts. */
 export function canonicalScalpElectrode(label: string): string | null {
-  const key = label.trim().replace(/^EEG\s+/i, "").toUpperCase();
+  const key = plainContactName(label).toUpperCase();
   return TEMPORAL_ALIASES[key] ?? SCALP_NAMES.get(key) ?? null;
+}
+
+function plainContactName(label: string) {
+  return label.trim().replace(/^(?:EEG|SEEG|ECOG|IEEG)[\s:_-]+/i, "")
+    .replace(/[-_\s]+(?:REF|LE|AR|AVG|CAR)$/i, "").trim();
+}
+
+/** Acquisition-order depth neighbors, excluding scalp and ambiguous contact names. */
+export function anatomicalBipolarPairs(labels: readonly string[]): { pairs: BipolarPair[]; warnings: string[] } {
+  const groups = new Map<string, { index: number; contact: string; name: string }[]>();
+  const counts = new Map<string, number>();
+  labels.forEach((label, index) => {
+    const plain = plainContactName(label);
+    if (canonicalScalpElectrode(label) || SCALP_AUXILIARY_NAMES.has(plain.toUpperCase())) return;
+    const match = /^([A-Za-z]+)[ _]*(\d+)$/.exec(plain);
+    if (!match || ANATOMICAL_EXCLUDED_GROUPS.has(match[1].toUpperCase())) return;
+    const group = match[1].toUpperCase(), name = `${group}${Number(match[2])}`;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+    const contacts = groups.get(group) ?? [];
+    contacts.push({ index, contact: match[2], name });
+    groups.set(group, contacts);
+  });
+  const pairs = [...groups].flatMap(([group, contacts]) => contacts.slice(1).flatMap((second, index) => {
+    const first = contacts[index];
+    return counts.get(first.name) === 1 && counts.get(second.name) === 1
+      ? [{ first: first.index, second: second.index, label: `${group}${first.contact}-${second.contact}` }] : [];
+  }));
+  const ambiguous = [...counts].filter(([, count]) => count > 1).map(([name]) => name);
+  return { pairs, warnings: ambiguous.length ? [`Duplicate anatomical contacts (${ambiguous.join(", ")}) were omitted from bipolar pairs.`] : [] };
 }
 
 /** Classify the complete recording, so hiding a channel cannot select another montage family. */
@@ -36,11 +65,9 @@ export function bipolarMontageKind(labels: readonly string[]): BipolarMontageKin
       scalp = true;
       continue;
     }
-    // Classification may notice a prefixed depth name, but anatomical pairing
-    // still uses the original MATLAB acceptance rules in eeg-core.
-    const plain = label.trim().replace(/^(?:EEG|SEEG)\s+/i, "");
+    const plain = plainContactName(label);
     if (SCALP_AUXILIARY_NAMES.has(plain.toUpperCase())) continue;
-    const contact = /^([A-Za-z]+)\d+$/.exec(plain);
+    const contact = /^([A-Za-z]+)[ _]*\d+$/.exec(plain);
     if (contact && !ANATOMICAL_EXCLUDED_GROUPS.has(contact[1].toUpperCase())) anatomical = true;
   }
   return scalp && anatomical ? "mixed" : scalp ? "scalp" : anatomical ? "anatomical" : "unavailable";
@@ -50,7 +77,7 @@ export function bipolarMontageLabel(labels: readonly string[]): string {
   const kind = bipolarMontageKind(labels);
   return kind === "scalp" ? "Longitudinal bipolar"
     : kind === "anatomical" ? "Anatomical bipolar"
-      : "Bipolar (unavailable)";
+      : kind === "mixed" ? "Bipolar (scalp + anatomical)" : "Bipolar (unavailable)";
 }
 
 export interface BipolarPair {

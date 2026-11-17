@@ -5,9 +5,10 @@ import { directoryEventCache, filterDirectoryPlan, scanDirectoryEvents } from ".
 import type { DirectoryImportPlan } from "./directory-import";
 import { eventKeywords } from "./event-keywords";
 
-export function DirectoryImportFilters({ plan, busy, onLoad }: {
+export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
   plan: DirectoryImportPlan;
   busy: boolean;
+  mode?: "load" | "update";
   onLoad: (plan: DirectoryImportPlan) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -69,8 +70,8 @@ export function DirectoryImportFilters({ plan, busy, onLoad }: {
 
   return <>
     <button type="button" className="button secondary directory-import-filter-toggle" aria-expanded={open} disabled={busy}
-      onClick={() => { if (open) { cancel(); setKeywords(""); setApplied(null); } setOpen(!open); }}>
-      {open ? "Remove filters" : "Add filters"}
+      onClick={() => { if (open) { cancel(); setKeywords(""); setApplied(null); if (mode === "update") onLoad(plan); } setOpen(!open); }}>
+      {open ? "Remove filters" : mode === "update" ? "Change folder filters" : "Add filters"}
     </button>
     {open && <div className="directory-import-filter">
       <label className="label-keyword-field">Include recordings with event labels matching
@@ -87,7 +88,7 @@ export function DirectoryImportFilters({ plan, busy, onLoad }: {
       {ready && applied && <p role="status">{applied.plan.recordings.length} of {total} sessions match.
         {applied.incomplete > 0 && ` Could not fully check ${applied.incomplete} session${applied.incomplete === 1 ? "" : "s"}. Only confirmed matches are included.`}</p>}
     </div>}
-    {ready && selected && selected.recordings.length > 0 && <div className="directory-import-summary directory-import-preview">
+    {mode === "load" && ready && selected && selected.recordings.length > 0 && <div className="directory-import-summary directory-import-preview">
       <ul aria-label={query ? "Matching recording paths" : "Recording paths"}>{selected.recordings.slice(0, 5).map((recording) =>
         <li key={recording.id}>{recording.relativePath}</li>)}</ul>
       {selected.recordings.length > 5 && <small>And {selected.recordings.length - 5} more sessions.</small>}
@@ -100,7 +101,7 @@ export function DirectoryImportFilters({ plan, busy, onLoad }: {
           if (!ready) void apply(true);
           else if (selected?.recordings.length) onLoad(selected);
         }}>
-        {checking ? "Checking labels…" : busy ? "Opening…" : query && !ready ? "Load matching sessions" : `Load ${selected?.recordings.length ?? 0} sessions`}
+        {checking ? "Checking labels…" : busy ? "Opening…" : mode === "update" ? "Apply to folder" : query && !ready ? "Load matching sessions" : `Load ${selected?.recordings.length ?? 0} sessions`}
       </button>
     </footer>
   </>;

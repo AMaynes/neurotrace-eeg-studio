@@ -20,7 +20,7 @@
 import { Mat73WorkerClient } from "./mat73-worker-client.ts";
 import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
 import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
-import { ANATOMICAL_EXCLUDED_GROUPS, bipolarMontageKind, scalpBipolarPairs, type BipolarMontageKind, type BipolarPair } from "./bipolar-montage.ts";
+import { ANATOMICAL_EXCLUDED_GROUPS, anatomicalBipolarPairs, bipolarMontageKind, canonicalScalpElectrode, scalpBipolarPairs, type BipolarMontageKind, type BipolarPair } from "./bipolar-montage.ts";
 import { decodeMatRecordingLabels, type RecordingLabel } from "./recording-labels.ts";
 import { visitMatEventLabelMatrices } from "./mat-event-reader.ts";
 
@@ -4016,10 +4016,8 @@ export function buildMontage<T extends SignalSamples>(
 
   const allLabels = options.allChannelLabels ?? labels;
   const kind = options.bipolarKind ?? bipolarMontageKind(allLabels);
-  if (kind === "mixed" || kind === "unavailable") {
-    warnings.push(kind === "mixed"
-      ? "Bipolar view is unavailable for mixed scalp and anatomical channel names; use recorded reference or an explicitly defined montage."
-      : "No recognized scalp or anatomical electrode names were available for bipolar derivation.");
+  if (kind === "unavailable") {
+    warnings.push("No recognized scalp or anatomical electrode names were available for bipolar derivation.");
     return { data: [], labels: [], sampleRates: sampleRates ? [] : undefined,
       sampleStartSecs: sampleStartSecs ? [] : undefined, sourceIndices: [], primarySourceIndices: [], mode, warnings };
   }
@@ -4035,7 +4033,15 @@ export function buildMontage<T extends SignalSamples>(
     groups.set(contact.group, group);
   }
   let pairs: BipolarPair[];
-  if (kind === "scalp") {
+  if (kind === "mixed") {
+    const scalp = scalpBipolarPairs(allLabels), anatomical = anatomicalBipolarPairs(allLabels);
+    pairs = [...scalp.pairs, ...anatomical.pairs];
+    warnings.push(...scalp.warnings, ...anatomical.warnings);
+  } else if (kind === "anatomical" && allLabels.some((label) => /^(?:EEG|SEEG|ECOG|IEEG)[\s:_-]|[-_\s]+(?:REF|LE|AR|AVG|CAR)$/i.test(label.trim()))) {
+    const plan = anatomicalBipolarPairs(allLabels);
+    pairs = plan.pairs;
+    warnings.push(...plan.warnings);
+  } else if (kind === "scalp") {
     const plan = scalpBipolarPairs(allLabels);
     pairs = plan.pairs;
     warnings.push(...plan.warnings);
@@ -4064,6 +4070,7 @@ export function buildMontage<T extends SignalSamples>(
   const primarySourceIndices: number[] = [];
   const outputSampleStartSecs: number[] = [];
   for (const pair of pairs) {
+      const scalpPair = kind === "scalp" || (kind === "mixed" && canonicalScalpElectrode(labels[pair.first]) !== null);
       if (!validSet.has(pair.first) || !validSet.has(pair.second)) {
         warnings.push(`${pair.label} was omitted because one of its source channels is excluded.`);
         continue;
@@ -4097,14 +4104,14 @@ export function buildMontage<T extends SignalSamples>(
         // Scalp labels use positive-minus-negative input. The legacy anatomical
         // convention deliberately remains following-contact minus current-contact.
         derived[sample] = Number.isFinite(firstData[sample]) && Number.isFinite(secondData[sample])
-          ? kind === "scalp" ? firstData[sample] - secondData[sample] : secondData[sample] - firstData[sample]
+          ? scalpPair ? firstData[sample] - secondData[sample] : secondData[sample] - firstData[sample]
           : Number.NaN;
       }
       outputData.push(derived);
       outputLabels.push(pair.label);
       sourceIndices.push([pair.first, pair.second]);
-      primarySourceIndices.push(kind === "scalp" ? pair.first : pair.second);
-      const outputStartSec = kind === "scalp" ? firstStartSec : secondStartSec;
+      primarySourceIndices.push(scalpPair ? pair.first : pair.second);
+      const outputStartSec = scalpPair ? firstStartSec : secondStartSec;
       if (outputStartSec !== undefined) outputSampleStartSecs.push(outputStartSec);
   }
   if (outputData.length === 0 && kind === "anatomical") {

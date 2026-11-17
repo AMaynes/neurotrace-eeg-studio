@@ -27,6 +27,7 @@ function harness(count, options = {}) {
   const exports = {};
   new Function("require", "exports", compiled)((name) => {
     if (name === "react") return {
+      useMemo: (compute) => compute(),
       useState(initial) {
         const index = cursor++;
         if (!(index in hooks)) hooks[index] = typeof initial === "function" ? initial() : initial;
@@ -46,6 +47,7 @@ function harness(count, options = {}) {
       directoryEventCache, setDirectoryEventQuery, supportsDirectoryEventSearch,
       scanDirectoryEvents: async (plan, signal, notify, retry) => { scans.push({ plan, signal, notify, retry }); },
     };
+    if (name === "./directory-import-filters") return { DirectoryImportFilters: () => null };
     if (name === "./directory-review-controls") return { DirectoryReviewControls: () => null };
     if (name.endsWith(".css")) return {};
     return require(name);

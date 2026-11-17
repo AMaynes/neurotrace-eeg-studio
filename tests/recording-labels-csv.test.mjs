@@ -32,3 +32,14 @@ test("a recording with no labels still has a usable CSV header", () => {
   const csv = serializeRecordingLabels([{ recording: "empty.edf", annotations: [] }], () => "");
   assert.match(csv, /^recording,annotation_id,label,.*label_source,.*\r\n$/);
 });
+
+test("manual labels created before ID entry receive the active reviewer in CSV", () => {
+  const csv = serializeRecordingLabels([{ recording: "test.edf", reviewer: "R017", annotations: [
+    { ...label, reviewer: "" }, { ...label, id: "original", reviewer: "", origin: "imported" },
+    { ...label, id: "owned", reviewer: "R018" },
+  ] }], () => "Marker");
+  const rows = csv.trimEnd().split("\r\n");
+  assert.match(rows[1], /,reviewer,R017,/);
+  assert.match(rows[2], /,detected,,/);
+  assert.match(rows[3], /,reviewer,R018,/);
+});

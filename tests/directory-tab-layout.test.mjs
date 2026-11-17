@@ -83,3 +83,12 @@ test("production header occupies the shared grid above tabs and scrolls with its
   assert.match(css, /min-height: calc\(650px - var\(--topbar-height\)\)/);
   assert.doesNotMatch(css, /top: 58px/, "responsive panels must move down with the two-row header");
 });
+
+test("folder navigation finds the next matching file when a new filter excludes the current recording", () => {
+  const full = catalog("folder", ["folder/01.edf", "folder/02.edf", "folder/03.edf"]);
+  const filtered = { ...full, plan: { ...full.plan, unfilteredRecordings: full.plan.recordings,
+    recordings: [full.plan.recordings[0], full.plan.recordings[2]] } };
+  const tab = { id: "middle", directoryId: "folder", directoryRecordingId: full.plan.recordings[1].id };
+  assert.equal(adjacentDirectoryRecording(filtered, tab, 1), full.plan.recordings[2]);
+  assert.equal(adjacentDirectoryRecording(filtered, tab, -1), full.plan.recordings[0]);
+});

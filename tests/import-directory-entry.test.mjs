@@ -114,12 +114,13 @@ function harness(options = {}) {
     fileDragDepthRef: { current: 0 },
     handleDroppedRecordingFiles: (...args) => actions.push(["dropped", ...args]),
     stageDetectedImport: (event) => actions.push(["detected", event]),
+    SavedReviews: () => null,
     DirectoryImportFilters: filterExports.DirectoryImportFilters,
     submitGuidedImport: () => actions.push(["submit"]),
   };
   for (const [key, value] of Object.entries({ showImport: false, importChoice: null, importPickerKind: null, fileDragActive: false,
     stagedDirectoryPlan: null, stagedImportFiles: [], uploadError: null, reviewerProfileId: "",
-    reviewResumePrompt: null, portableReviewFile: null, startBlindReview: false })) state(env, key, value);
+    reviewResumePrompt: null, requestedSavedReview: null, portableReviewFile: null, startBlindReview: false })) state(env, key, value);
   Object.assign(env, options);
   env.setShowImportOpen = (open) => { env.showImport = open; };
   env.setShowImport = (open) => handler("setShowImport", env)(open);

@@ -135,8 +135,10 @@ export async function findNextDirectoryEvent(
   knownEvents: (recording: DirectoryRecording) => readonly DirectoryTimedEvent[] | undefined,
   onProgress: (path: string) => void,
 ): Promise<{ target?: { recording: DirectoryRecording; event: DirectoryTimedEvent }; incomplete: number }> {
-  const start = plan.recordings.findIndex(({ id }) => id === afterId);
+  const sourceRecordings = plan.unfilteredRecordings ?? plan.recordings;
+  const start = sourceRecordings.findIndex(({ id }) => id === afterId);
   if (start < 0) return { incomplete: 0 };
+  const included = new Set(plan.recordings.map(({ id }) => id));
   const { entries } = directoryEventCache(plan);
   const matches = createEventLabelMatcher(query);
   let worker: Worker | undefined;
@@ -148,9 +150,10 @@ export async function findNextDirectoryEvent(
   };
   signal.addEventListener("abort", abort, { once: true });
   try {
-    for (let index = start + 1; index < plan.recordings.length; index++) {
+    for (let index = start + 1; index < sourceRecordings.length; index++) {
       signal.throwIfAborted();
-      const recording = plan.recordings[index];
+      const recording = sourceRecordings[index];
+      if (!included.has(recording.id)) continue;
       const known = knownEvents(recording);
       if (known) {
         const event = nextTimedEvent(known, query);
