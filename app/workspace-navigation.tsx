@@ -5,8 +5,9 @@ import { WORKSPACE_TOOLS, type WorkspaceToolId } from "./workspace-layout";
 import "./workspace-navigation.css";
 
 /** Small, keyboard-accessible tabs shared by the sidebar and its label sections. */
-export function WorkspaceTabs<T extends string>({ id, label, tabs, value, onChange }: {
+export function WorkspaceTabs<T extends string>({ id, label, tabs, value, onChange, numbered = false }: {
   id: string; label: string; tabs: readonly { id: T; label: string }[]; value: T; onChange: (value: T) => void;
+  numbered?: boolean;
 }) {
   return <div className="workspace-tabs" role="tablist" aria-label={label}>
     {tabs.map((tab, index) => <button key={tab.id} id={`${id}-tab-${tab.id}`} role="tab" data-tutorial={`${id}-${tab.id}`}
@@ -19,7 +20,7 @@ export function WorkspaceTabs<T extends string>({ id, label, tabs, value, onChan
         event.preventDefault();
         onChange(tabs[next].id);
         document.getElementById(`${id}-tab-${tabs[next].id}`)?.focus();
-      }}>{tab.label}</button>)}
+      }}>{numbered && <span className="workspace-tab-number" aria-hidden="true">{index + 1}</span>}{tab.label}</button>)}
   </div>;
 }
 

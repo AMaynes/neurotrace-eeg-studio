@@ -13,6 +13,32 @@
 .workspace-tabs > button[aria-selected="true"] { border-bottom-color: var(--mint); background: #112735; color: var(--blue); }
 .workspace-tabs > button:hover { color: var(--ink); }
 .workspace-sidebar-body, .labels-workspace, .labels-tab-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sidebar-pane-stack { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); overflow: hidden; }
+.sidebar-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.sidebar-pane + .sidebar-pane { border-top: 1px solid var(--border-strong); }
+.sidebar-pane-heading { flex: 0 0 auto; min-height: 37px; display: flex; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--border); background: #0e1d24; }
+.workspace-sidebar-body .sidebar-pane-heading h2 { margin: 0; font-size: 11px; font-weight: 650; }
+.sidebar-pane-content { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 12px; }
+.sidebar-pane-content .sidebar-info-grid { gap: 10px; font-size: 10px; line-height: 1.4; }
+.sidebar-pane-content .sidebar-info-grid dt { flex-shrink: 1; }
+.sidebar-pane-content .sidebar-info-grid dd { max-width: 60%; }
+.folder-files-button { width: 100%; margin-top: 14px; }
+.sidebar-empty-message { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.sidebar-pane-content .patient-info-disclosure { padding: 12px 0; margin-top: 10px; }
+.sidebar-pane-content .general-info-panel { padding: 14px 0 0; background: transparent; gap: 10px; }
+.sidebar-pane-content .general-info-heading { padding: 0; }
+.sidebar-pane-content .general-info-heading h3 { margin: 0; font-size: 11px; color: var(--ink); }
+.sidebar-pane-content .general-info-empty { min-height: 0; padding: 8px 0; border: 0; background: transparent; align-items: flex-start; }
+.pane-performance .sidebar-pane-content { padding: 0; }
+.pane-performance .resource-panel { padding: 12px; background: transparent; }
+.pane-performance .resource-panel-heading { display: none; }
+.pane-performance .resource-operation-card { padding: 9px; }
+.view-pane-stack { grid-template-rows: minmax(0, 1fr) auto; }
+.pane-lower-visibility .sidebar-pane-content { flex: 0 0 auto; padding: 9px 12px; position: relative; }
+.pane-visibility-choice { display: flex; align-items: center; gap: 8px; min-height: 30px; color: #c7dce2; font-size: 11px; cursor: pointer; }
+.lower-pane-pin { position: absolute; right: 12px; top: 12px; }
+.workspace-tab-number { margin-right: 4px; color: var(--faint); font: 9px ui-monospace, monospace; }
+.workspace-tabs > button[aria-selected="true"] .workspace-tab-number { color: var(--blue); }
 .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .workspace-sidebar-body h2 { margin: 0 0 10px; color: #c7dce2; font-size: 12px; font-weight: 650; }
 .sidebar-info-section { padding: 16px 14px; border-bottom: 1px solid var(--border); font-size: 11px; }
@@ -46,6 +72,14 @@
 .view-tool-row .compact-toggle, .view-tool-row .trace-display-toggle, .view-tool-row .spectrum-button { justify-content: flex-start; padding-left: 8px; }
 .view-tool-row .gain-control { margin: 0; }
 .view-tool-row .gain-control > span, .view-tool-row .toolbar-select > span, .view-tool-row .spectrum-button b { display: block; }
+.view-spectrogram-controls { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.view-spectrogram-controls h3 { margin: 0 0 8px; font-size: 11px; }
+.view-spectrogram-controls .spectrogram-toolbar { position: static; flex-wrap: wrap; justify-content: flex-start; max-width: 100%; height: auto; padding: 0; background: transparent; }
+.view-spectrogram-controls .spectrogram-frequency-control { width: 100%; }
+.view-spectrogram-controls .spectrogram-source-names { display: none; }
+.view-settings .filter-drawer { display: flex; flex-direction: column; align-items: stretch; gap: 9px; padding: 10px 0; margin: 0; border: 0; border-bottom: 1px solid var(--border); background: transparent; }
+.view-settings .filter-drawer > div { min-width: 0; width: auto; }
+.view-settings .filter-drawer label { justify-content: space-between; }
 .view-tool-row .tool-pin { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); color: var(--muted); cursor: pointer; }
 .sidebar-channels { padding-top: 20px; }
 .sidebar-channels > header { display: flex; align-items: center; justify-content: space-between; }

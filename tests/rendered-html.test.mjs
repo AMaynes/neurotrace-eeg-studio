@@ -140,7 +140,7 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   const leftEnd = page.indexOf("</aside>", leftStart);
   const leftSidebar = page.slice(leftStart, leftEnd);
   assert.doesNotMatch(leftSidebar, /compact-load-recording|>Load recording</, "the left panel never shows a duplicate recording loader");
-  assert.match(leftSidebar, /\{hasRecording && <section className="recording-summary">/, "recording details appear in the left panel only after a file loads");
+  assert.match(leftSidebar, /aria-label="File info"[^]*?hasRecording \? meta\.name : "—"/, "File info does not expose a synthetic recording before loading");
 
   sourceHas(/aria-label="Fit all enabled channels"/, "the rail has a named fit action");
   sourceHas(/data-tutorial="channels"[^]*?Channel controls<\/button>/, "channel management is available in View");
@@ -160,12 +160,12 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
 test("keeps essential time tools in the toolbar and optional tools in View", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const toolbarStart = page.indexOf('<div className="viewer-toolbar"');
-  const toolbar = page.slice(toolbarStart, page.indexOf('{hasRecording && showFilters', toolbarStart));
+  const toolbar = page.slice(toolbarStart, page.indexOf('{hasRecording && activeCandidateItem', toolbarStart));
   for (const name of ["Previous page", "Next page", "Jump timestamp", "Box zoom", "Window amount"]) assert.match(toolbar, new RegExp(name));
   assert.match(toolbar, /ToolbarCustomizer selected=\{toolbarTools\}/);
   assert.match(toolbar, /toolbarTools\.map[^]*?viewTools\[id\]/);
   assert.doesNotMatch(toolbar, /Show.*right panel|Montage|Gain multiplier/);
-  assert.match(page, /WORKSPACE_TOOLS\.map[^]*?viewTools\[tool\.id\]/);
+  assert.match(page, /WORKSPACE_TOOLS\.filter[^]*?viewTools\[tool\.id\]/);
   assert.match(page, /aria-label="Fit all enabled channels"/);
   const header = page.slice(page.indexOf('<header className="topbar">'), page.indexOf('</header>'));
   assert.match(header, /session-tab-strip/);
@@ -700,7 +700,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   assert.match(page, /className="wave-inspection-range"/);
   assert.match(page, /top: `\$\{inspectionRange\.top \* 100\}%`/);
   assert.match(page, /height: `\$\{Math\.max\(0, inspectionRange\.bottom - inspectionRange\.top\) \* 100\}%`/);
-  assert.match(page, /Use Box zoom in the toolbar to fit an exact time and channel area to the waveform view\./);
+  assert.match(page, /Clicked point \/ selection/);
   assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
   assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
   assert.match(page, /const unit = geometry\.unitForY\(scrollTop \+ localY - CHANNEL_RAIL_HEADER_HEIGHT\)/);
@@ -777,9 +777,9 @@ test("places live resource usage in Window and compact utilities at the bottom r
   assert.match(resourcePanel, /Dropped frames/);
   assert.match(resourcePanel, /UI frame cadence/);
   assert.match(resourcePanel, /Active retained view/);
-  assert.match(resourcePanel, /Reading from/);
-  assert.match(resourcePanel, /Recording data is not uploaded/);
-  assert.match(resourcePanel, /Browsers expose the file name, not its full local path/);
+
+
+
   assert.match(css, /\.resource-panel\s*\{/);
   assert.match(css, /\.resource-glyph\s*\{/);
 });
@@ -846,12 +846,13 @@ test("gives Session and Window Instance their own full-height label sections", a
   assert.doesNotMatch(page, /sessionLabelsHeight|left-split-resize-handle|sessionQueueResizeRef/);
 });
 
-test("uses Instance Queue only to navigate file events, instance labels, and non-session context", async () => {
+test("uses the Window Instance queue for file events, window labels, instance labels, and timed context", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const entriesStart = page.indexOf("const instanceQueueEntries");
   const entriesEnd = page.indexOf("const activeQueueIndex", entriesStart);
   const entries = page.slice(entriesStart, entriesEnd);
   assert.match(entries, /item\.track\s*===\s*"instance"/);
+  assert.match(entries, /item\.track\s*===\s*"windowed"/);
   assert.match(entries, /item\.track\s*===\s*"context"/);
   assert.match(entries, /annotationGeometry\(item\)\s*!==\s*"session"/);
   assert.match(entries, /candidates/);

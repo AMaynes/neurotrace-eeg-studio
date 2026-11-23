@@ -347,11 +347,11 @@ test("finite clipped waveform samples remain connected when zoom rebuilds the tr
 test("detects recording modality instead of accepting a manual recording-type selection", async () => {
   const page = await pageSource();
   const detection = section(page, "const recordingType = useMemo", "const [viewStart");
-  const summary = section(page, "{hasRecording && <section className=\"recording-summary\">", "</section>}");
+  const summary = section(page, 'aria-label="File info"', "</section>");
 
   assert.match(detection, /detectRecordingType\(/);
   assert.match(detection, /channelLabels:\s*meta\.channelLabels/);
-  assert.match(summary, /<strong>\{recordingType\}<\/strong>/);
+  assert.match(summary, /hasRecording \? recordingType : "—"/);
   assert.doesNotMatch(summary, /<select/);
   assert.doesNotMatch(page, /setRecordingType|channelLabels\.length\s*>\s*64\s*\?\s*"SEEG \/ iEEG"/);
 });

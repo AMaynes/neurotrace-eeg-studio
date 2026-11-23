@@ -130,11 +130,12 @@ function pageValues(names, scope) {
 test("hidden types disappear from timed views, session labels and queues while saved data and queue indices remain intact", () => {
   const annotations = Object.freeze([
     Object.freeze(fileLabel("stim", "Stimulation")), Object.freeze(fileLabel("rest", "Rest")),
+    Object.freeze({ id: "window", labelId: "ictal", track: "windowed", geometry: "interval", start: 2, end: 5, confidence: 90 }),
     Object.freeze({ id: "context", labelId: "medication", start: 0, end: 10, track: "context", geometry: "session", confidence: 0 }),
   ]);
   const candidates = Object.freeze([{ id: "source", label: "Stimulation", time: 1, status: "queued", confidence: 0 }]);
   const before = JSON.stringify({ annotations, candidates });
-  const scope = { annotations, candidates, labelLibrary: { aliases: [], labels: [] }, hiddenLabelTypes: new Set([recordingLabelTypeKey("Stimulation"), "annotation:medication"]),
+  const scope = { annotations, candidates, labelLibrary: { aliases: [], labels: [] }, hiddenLabelTypes: new Set([recordingLabelTypeKey("Stimulation"), "annotation:medication", "annotation:ictal"]),
     annotationLabelTypeKey, recordingLabelTypeKey, matchesLabelKeywords: () => true, useMemo: (callback) => callback(),
     annotationGeometry: (item) => item.geometry, annotationLabel: (item) => ({ name: item.recordingLabel?.label ?? item.labelId }),
     clamp: (value, min, max) => Math.min(max, Math.max(min, value)), queueSearch: "",
@@ -146,14 +147,15 @@ test("hidden types disappear from timed views, session labels and queues while s
   assert.deepEqual(result.sessionContextAnnotations, []);
   assert.deepEqual(result.renderAnnotations.map((item) => item.id), ["rest"]);
   assert.deepEqual(result.bottomAnnotations.map((item) => item.id), ["rest"]);
-  assert.equal(result.instanceQueueEntries.length, 3, "source indices refer to the complete queue");
+  assert.equal(result.instanceQueueEntries.length, 4, "source indices refer to the complete queue");
   assert.equal(result.filteredQueueEntries.length, 1);
   const match = result.filteredQueueEntries[0];
   assert.equal(result.instanceQueueEntries[match.index].id, "rest");
   assert.equal(JSON.stringify({ annotations, candidates }), before);
   const restored = pageValues(["displayAnnotations", "instanceQueueEntries", "filteredQueueEntries"], { ...scope, hiddenLabelTypes: new Set() });
-  assert.equal(restored.displayAnnotations.length, 3);
-  assert.equal(restored.filteredQueueEntries.length, 3);
+  assert.equal(restored.displayAnnotations.length, 4);
+  assert.equal(restored.filteredQueueEntries.length, 4);
+  assert.equal(restored.instanceQueueEntries.find(entry => entry.id === "window").detail, "Window label");
 });
 
 test("changing a type filter clears annotation selection without editing annotations", () => {

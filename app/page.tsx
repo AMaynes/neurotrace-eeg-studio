@@ -30,6 +30,7 @@ import {
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   DemoSource,
   EDFSource,
@@ -1519,12 +1520,7 @@ function sampleSnapOrigin(display: DisplayWindow, sampleRate: number) {
   return display.timingConvention === "matlab-window" ? display.viewStart + 1 / sampleRate : 0;
 }
 
-function shortFileName(name: string, max = 26) {
-  if (name.length <= max) return name;
-  const dot = name.lastIndexOf(".");
-  const ext = dot >= 0 ? name.slice(dot) : "";
-  return `${name.slice(0, max - ext.length - 1)}…${ext}`;
-}
+
 
 function formatAmplitude(value: number, unit = "µV") {
   if (!Number.isFinite(value)) return `— ${unit}`;
@@ -2090,6 +2086,7 @@ export default function Home() {
   }, [cursorTime, playing]);
   useLayoutEffect(() => { playbackDisplayRef.current = display; }, [display]);
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
+  const [spectrogramToolsHost, setSpectrogramToolsHost] = useState<HTMLDivElement | null>(null);
   const [expandedChannels, setExpandedChannels] = useState(false);
   const [channelGroupGap, setChannelGroupGap] = useState<number | null>(null);
   const channelGapResizeRef = useRef<{ startY: number; startGap: number } | null>(null);
@@ -2320,7 +2317,7 @@ export default function Home() {
   const selectedCandidateDecisionLocked = Boolean(selectedAnnotation?.candidateId && selectedAnnotation.status === "committed");
   const instanceQueueEntries = useMemo(() => {
     const annotationEntries = annotations
-      .filter((item) => item.track === "instance" || (item.track === "context" && annotationGeometry(item) !== "session"))
+      .filter((item) => item.track === "instance" || item.track === "windowed" || (item.track === "context" && annotationGeometry(item) !== "session"))
       .map((item) => ({
         kind: "annotation" as const,
         id: item.id,
@@ -2328,7 +2325,7 @@ export default function Home() {
         label: annotationLabel(item, labelLibrary)?.name ?? item.labelId,
         originalLabel: annotationLabel(item)?.name ?? item.labelId,
         visibilityKey: annotationLabelTypeKey(item),
-        detail: item.recordingLabel ? "Recording label · imported" : item.track === "context" ? "Context event" : "Instance label",
+        detail: item.recordingLabel ? "Recording label · imported" : item.track === "context" ? "Context event" : item.track === "windowed" ? "Window label" : "Instance label",
         status: item.status,
         confidence: Math.round(clamp(item.confidence, 0, 100)),
         locked: Boolean(item.candidateId && item.status === "committed"),
@@ -8129,7 +8126,7 @@ export default function Home() {
       >{anatomicalGroups ? "Ungroup" : "Group"}</button>
     ),
     filters: (
-      <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
+      <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => { setShowFilters((value) => !value); setSidebarTab("view"); setLeftPanelOpen(true); }}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
     ),
     gain: (
       <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain">
@@ -8309,103 +8306,131 @@ export default function Home() {
             <button className="sidebar-mobile-close" aria-label="Hide workspace sidebar" onClick={() => setLeftPanelOpen(false)}>‹</button>
           </div>
           <div className="workspace-sidebar-body" role="tabpanel" id={`workspace-panel-${sidebarTab}`} aria-labelledby={`workspace-tab-${sidebarTab}`}>
-            {sidebarTab === "files" && <div className="sidebar-scroll">
-              {hasRecording && <section className="recording-summary">
-                <>
-                  <div className="recording-file-line"><strong title={meta.name}>{shortFileName(meta.name)}</strong><span>File type: {meta.format.toUpperCase()}</span></div>
-                  <div className="recording-stats">{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</div>
-                  <div className="recording-type-line"><span>Recording type:</span><strong>{recordingType}</strong></div>
-                </>
-              </section>}
-
-              <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
-                <span>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
-              </button>
-
-              <section className="sidebar-info-section">
-                <h2>Folder</h2>
-                {directoryCatalog ? <>
-                  <strong>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</strong>
-                  <p>{directoryCatalog.plan.recordings.length} recordings</p>
-                  <button className="button secondary" onClick={() => setShowDirectorySessions(true)}>Files &amp; folder filters</button>
-                </> : <p>{hasRecording ? "Individual recording" : "No folder loaded"}</p>}
+            {sidebarTab === "files" && <div className="sidebar-pane-stack" data-pane-layout="folder-file">
+              <section className="sidebar-pane" aria-label="Folder info">
+                <header className="sidebar-pane-heading"><h2>Folder info</h2></header>
+                <div className="sidebar-pane-content">
+                  {directoryCatalog ? <>
+                    <dl className="sidebar-info-grid">
+                      <div><dt>Folder</dt><dd>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</dd></div>
+                      <div><dt>Recordings</dt><dd>{directoryCatalog.plan.recordings.length}</dd></div>
+                      <div><dt>Open files</dt><dd>{sessionTabs.filter(tab => tab.directoryId === directoryCatalog.id).length}</dd></div>
+                      <div><dt>File type</dt><dd>{directoryCatalog.plan.format.toUpperCase()}</dd></div>
+                      <div><dt>Reviewer</dt><dd>{directoryCatalog.review?.reviewerId || reviewer || "—"}</dd></div>
+                    </dl>
+                    <button className="button secondary folder-files-button" onClick={() => setShowDirectorySessions(true)}>Files &amp; folder filters</button>
+                  </> : <p className="sidebar-empty-message">{hasRecording ? "Individual file loaded. No folder selected." : "No folder selected."}</p>}
+                </div>
               </section>
-              <section className="sidebar-info-section">
-                <h2>File information</h2>
-                <dl className="sidebar-info-grid">
-                  <div><dt>Name</dt><dd title={meta.name}>{hasRecording ? meta.name : "—"}</dd></div>
-                  <div><dt>Format</dt><dd>{hasRecording ? meta.format.toUpperCase() : "—"}</dd></div>
-                  <div><dt>Size</dt><dd>{primaryFile ? formatByteCount(primaryFile.size) : "—"}</dd></div>
-                  <div><dt>Duration</dt><dd>{hasRecording ? formatClock(meta.durationSec, true) : "—"}</dd></div>
-                  <div><dt>Channels</dt><dd>{hasRecording ? meta.channelLabels.length : "—"}</dd></div>
-                  <div><dt>Sample rate</dt><dd>{hasRecording ? `${primarySampleRate(meta)} Hz` : "—"}</dd></div>
-                  <div><dt>Detected labels</dt><dd>{annotations.filter(item => item.recordingLabel).length}</dd></div>
-                  <div><dt>Added labels</dt><dd>{annotations.filter(item => !item.recordingLabel).length}</dd></div>
-                  <div><dt>File path</dt><dd>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
-                </dl>
+              <section className="sidebar-pane" aria-label="File info">
+                <header className="sidebar-pane-heading"><h2>File info</h2></header>
+                <div className="sidebar-pane-content">
+                  <dl className="sidebar-info-grid">
+                    <div><dt>File name</dt><dd title={meta.name}>{hasRecording ? meta.name : "—"}</dd></div>
+                    <div><dt>File type</dt><dd>{hasRecording ? meta.format.toUpperCase() : "—"}</dd></div>
+                    <div><dt>File size</dt><dd>{hasRecording ? formatByteCount(primaryFile?.size ?? meta.byteLength ?? 0) : "—"}</dd></div>
+                    <div><dt>Channels</dt><dd>{hasRecording ? meta.channelLabels.length : "—"}</dd></div>
+                    <div><dt>Recording type</dt><dd>{hasRecording ? recordingType : "—"}</dd></div>
+                    <div><dt>Sampling rate</dt><dd>{hasRecording ? `${primarySampleRate(meta)} Hz` : "—"}</dd></div>
+                    <div><dt>Recording duration</dt><dd>{hasRecording ? formatClock(meta.durationSec, true) : "—"}</dd></div>
+                    <div><dt>Existing labels</dt><dd>{annotations.filter(item => item.recordingLabel).length}</dd></div>
+                    <div><dt>Created labels</dt><dd>{annotations.filter(item => !item.recordingLabel).length}</dd></div>
+                    <div><dt>Total labels</dt><dd>{annotations.length}</dd></div>
+                    <div><dt>Signal values</dt><dd>{hasRecording ? meta.sampleRates.reduce((count, rate) => count + Math.round(rate * meta.durationSec), 0).toLocaleString() : "—"}</dd></div>
+                    <div><dt>Montage</dt><dd>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
+                    <div><dt>Current filters</dt><dd>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
+                    <div><dt>File path</dt><dd>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
+                    <div><dt>Access</dt><dd>{sourceReadProfile(meta.format, hasRecording).access}</dd></div>
+                  </dl>
+                  <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
+                    <span>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
+                  </button>
+                  <UploadedFilesPanel bundle={companionBundle} compact />
+                </div>
               </section>
-              <UploadedFilesPanel bundle={companionBundle} compact />
             </div>}
-            {sidebarTab === "window" && <div className="sidebar-scroll" data-tutorial="window-info">
-              <section className="sidebar-info-section">
-                <h2>Current window</h2>
-                <dl className="sidebar-info-grid">
-                  <div><dt>Start</dt><dd>{formatClock(viewStart, true)}</dd></div>
-                  <div><dt>End</dt><dd>{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
-                  <div><dt>Duration</dt><dd>{timebase.toLocaleString()} s</dd></div>
-                  <div><dt>Displayed rows</dt><dd>{display.labels.length}</dd></div>
-                  <div><dt>Signal values</dt><dd>{display.data.reduce((count, channel) => count + channel.length, 0).toLocaleString()}</dd></div>
-                  <div><dt>Montage</dt><dd>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
-                  <div><dt>Filters</dt><dd>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
-                </dl>
+            {sidebarTab === "window" && <div className="sidebar-pane-stack" data-pane-layout="window-performance" data-tutorial="window-info">
+              <section className="sidebar-pane" aria-label="Window info">
+                <header className="sidebar-pane-heading"><h2>Window info</h2></header>
+                <div className="sidebar-pane-content">
+                  <dl className="sidebar-info-grid">
+                    <div><dt>Window start</dt><dd>{formatClock(viewStart, true)}</dd></div>
+                    <div><dt>Window end</dt><dd>{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
+                    <div><dt>Window duration</dt><dd>{timebase.toLocaleString()} s</dd></div>
+                    <div><dt>Window memory usage</dt><dd>{formatByteCount(activeDisplayVisibleBytes)}</dd></div>
+                    <div><dt>Window loaded / loading</dt><dd>{verifyingSource ? "Opening recording" : loadingSignal || display.processingThroughSec !== undefined ? "Loading…" : display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase ? "Partially loaded" : display.data.length ? "Loaded" : "No data loaded"}</dd></div>
+                  </dl>
+                  <GeneralInfoPanel
+                    meta={meta}
+                    display={display}
+                    annotations={displayAnnotations}
+                    focusedChannel={focusedChannel}
+                    cursorTime={cursorTime}
+                    cursorReadout={cursorReadout}
+                    inspectionRange={inspectionRange}
+                    selection={selection}
+                    channelSelectionActive={channelSelectionActive}
+                    timebase={timebase}
+                    hasRecording={hasRecording}
+                  />
+                </div>
               </section>
-              <GeneralInfoPanel
-                meta={meta}
-                display={display}
-                annotations={displayAnnotations}
-                focusedChannel={focusedChannel}
-                cursorTime={cursorTime}
-                cursorReadout={cursorReadout}
-                inspectionRange={inspectionRange}
-                selection={selection}
-                channelSelectionActive={channelSelectionActive}
-                montage={montage}
-                viewStart={viewStart}
-                timebase={timebase}
-                hasRecording={hasRecording}
-              />
-              <ResourceUsagePanel
-                meta={meta}
-                hasRecording={hasRecording}
-                verifyingSource={verifyingSource}
-                loadingSignal={loadingSignal}
-                sourceHash={sourceHash}
-                recoveryStatus={recoveryStatus}
-                viewStart={viewStart}
-                timebase={timebase}
-                visibleChannelCount={display.labels.length}
-                selectedChannelCount={selectedChannels.size}
-                openSessionCount={sessionTabs.length}
-                activeDisplayBytes={activeDisplayBytes}
-                activeDisplayVisibleBytes={activeDisplayVisibleBytes}
-                readCacheUsage={readResourceCacheUsage}
-              />
+              <section className="sidebar-pane pane-performance" aria-label="Performance and loading info">
+                <header className="sidebar-pane-heading"><h2>Performance &amp; loading info</h2></header>
+                <div className="sidebar-pane-content">
+                  <ResourceUsagePanel
+                    meta={meta}
+                    hasRecording={hasRecording}
+                    verifyingSource={verifyingSource}
+                    loadingSignal={loadingSignal}
+
+                    recoveryStatus={recoveryStatus}
+
+                    activeDisplayBytes={activeDisplayBytes}
+                    activeDisplayVisibleBytes={activeDisplayVisibleBytes}
+                    readCacheUsage={readResourceCacheUsage}
+                  />
+                </div>
+              </section>
             </div>}
-            {sidebarTab === "view" && <div className="sidebar-scroll view-settings" data-tutorial="view-tools">
-              <h2>Viewing tools</h2>
-              {WORKSPACE_TOOLS.map(tool => <div className="view-tool-row" key={tool.id}>
-                {toolbarTools.includes(tool.id) ? <span>{tool.label} <small>in toolbar</small></span> : viewTools[tool.id]}
-                <button className="tool-pin" aria-label={`${toolbarTools.includes(tool.id) ? "Remove" : "Add"} ${tool.label} ${toolbarTools.includes(tool.id) ? "from" : "to"} toolbar`}
-                  aria-pressed={toolbarTools.includes(tool.id)} title="Show this tool in the top toolbar"
-                  onClick={() => setToolbarTools(current => current.includes(tool.id) ? current.filter(id => id !== tool.id) : [...current, tool.id])}>{toolbarTools.includes(tool.id) ? "−" : "+"}</button>
-              </div>)}
-              <button className="button secondary fit-channels-button" disabled={!hasRecording} onClick={fitEnabledChannels}>Fit all enabled channels</button>
-              <ChannelVisibilityControls labels={meta.channelLabels} groups={channelOptions} selected={selectedChannels}
-                search={channelSearch} onSearch={setChannelSearch} disabled={!hasRecording}
-                onChange={setChannelVisibility} />
+            {sidebarTab === "view" && <div className="sidebar-pane-stack view-pane-stack" data-pane-layout="view-visibility">
+              <section className="sidebar-pane" aria-label="All viewing tools" data-tutorial="view-tools">
+                <header className="sidebar-pane-heading"><h2>All viewing tools</h2></header>
+                <div className="sidebar-pane-content view-settings">
+                  {WORKSPACE_TOOLS.filter(tool => tool.id !== "tracks").map(tool => <div className="view-tool-row" key={tool.id}>
+                    {viewTools[tool.id]}
+                    <button className="tool-pin" aria-label={`${toolbarTools.includes(tool.id) ? "Remove" : "Add"} ${tool.label} ${toolbarTools.includes(tool.id) ? "from" : "to"} toolbar`}
+                      aria-pressed={toolbarTools.includes(tool.id)} title="Add or remove a toolbar copy; this control stays in View"
+                      onClick={() => setToolbarTools(current => current.includes(tool.id) ? current.filter(id => id !== tool.id) : [...current, tool.id])}>{toolbarTools.includes(tool.id) ? "−" : "+"}</button>
+                  </div>)}
+                  {hasRecording && showFilters && <div className="filter-drawer">
+                    <div><strong>Display processing</strong><span>Default: MATLAB FIR + automatic 1×/2× sampling. Custom mode uses a separate, non-MATLAB processing pipeline. Source samples remain unchanged.</span></div>
+                    <label>High-pass <input type="number" min="0" step="0.1" value={filters.highPassHz} onChange={(event) => setFilters((current) => ({ ...current, highPassHz: Number(event.target.value) }))} /> Hz</label>
+                    <label>Low-pass <input type="number" min="1" step="1" value={filters.lowPassHz} onChange={(event) => setFilters((current) => ({ ...current, lowPassHz: Number(event.target.value) }))} /> Hz</label>
+                    <label>Notch <select value={filters.notchHz} onChange={(event) => setFilters((current) => ({ ...current, notchHz: Number(event.target.value) as 0 | 50 | 60 }))}><option value="0">Off</option><option value="50">50 Hz</option><option value="60">60 Hz</option></select></label>
+                    <label className="switch-label"><input type="checkbox" checked={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.checked }))} /><span /> Custom mode</label>
+                    <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to MATLAB</button>
+                  </div>}
+                  <div ref={setSpectrogramToolsHost} />
+                  <button className="button secondary fit-channels-button" disabled={!hasRecording} onClick={fitEnabledChannels}>Fit all enabled channels</button>
+                  <ChannelVisibilityControls labels={hasRecording ? meta.channelLabels : []} groups={hasRecording ? channelOptions : []} selected={selectedChannels}
+                    search={channelSearch} onSearch={setChannelSearch} disabled={!hasRecording}
+                    onChange={setChannelVisibility} />
+                </div>
+              </section>
+              <section className="sidebar-pane pane-lower-visibility" aria-label="Lower pane visibility">
+                <header className="sidebar-pane-heading"><h2>Lower pane visibility</h2></header>
+                <div className="sidebar-pane-content">
+                  <label className="pane-visibility-choice"><input type="checkbox" checked={bottomTracksOpen} onChange={event => setBottomTracksOpen(event.target.checked)} /><span>Label tracks</span></label>
+                  <label className="pane-visibility-choice"><input type="checkbox" checked={spectrogramOpen} disabled={!hasRecording} onChange={event => setSpectrogramOpen(event.target.checked)} /><span>Spectrogram</span></label>
+                  <button className="tool-pin lower-pane-pin" aria-label={`${toolbarTools.includes("tracks") ? "Remove" : "Add"} Label tracks ${toolbarTools.includes("tracks") ? "from" : "to"} toolbar`}
+                    aria-pressed={toolbarTools.includes("tracks")}
+                    onClick={() => setToolbarTools(current => current.includes("tracks") ? current.filter(id => id !== "tracks") : [...current, "tracks"])}>{toolbarTools.includes("tracks") ? "−" : "+"}</button>
+                </div>
+              </section>
             </div>}
             {sidebarTab === "labels" && <div className="labels-workspace">
-              <WorkspaceTabs label="Label sections" id="labels" tabs={LABEL_TABS} value={labelsTab} onChange={setLabelsTab} />
+              <WorkspaceTabs label="Label sections" id="labels" numbered tabs={LABEL_TABS} value={labelsTab} onChange={setLabelsTab} />
               <div className={`labels-tab-body labels-${labelsTab}`} role="tabpanel" id={`labels-panel-${labelsTab}`} aria-labelledby={`labels-tab-${labelsTab}`}>
                 {labelsTab === "session" && <>
                   <button className="session-map-row" disabled={!hasRecording} onClick={() => setShowSessionMap(true)}><span>Session Map</span><b aria-hidden="true">↗</b></button>
@@ -8658,14 +8683,7 @@ export default function Home() {
             <ToolbarCustomizer selected={toolbarTools} onChange={setToolbarTools} />
           </div>
 
-          {hasRecording && showFilters && <div className="filter-drawer">
-            <div><strong>Display processing</strong><span>Default: MATLAB FIR + automatic 1×/2× sampling. Custom mode uses a separate, non-MATLAB processing pipeline. Source samples remain unchanged.</span></div>
-            <label>High-pass <input type="number" min="0" step="0.1" value={filters.highPassHz} onChange={(event) => setFilters((current) => ({ ...current, highPassHz: Number(event.target.value) }))} /> Hz</label>
-            <label>Low-pass <input type="number" min="1" step="1" value={filters.lowPassHz} onChange={(event) => setFilters((current) => ({ ...current, lowPassHz: Number(event.target.value) }))} /> Hz</label>
-            <label>Notch <select value={filters.notchHz} onChange={(event) => setFilters((current) => ({ ...current, notchHz: Number(event.target.value) as 0 | 50 | 60 }))}><option value="0">Off</option><option value="50">50 Hz</option><option value="60">60 Hz</option></select></label>
-            <label className="switch-label"><input type="checkbox" checked={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.checked }))} /><span /> Custom mode</label>
-            <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to MATLAB</button>
-          </div>}
+
 
           {hasRecording && activeCandidateItem && activeCandidateVisible && <section className="candidate-review-bar" data-tutorial="source-review" aria-label="Source event review" data-review-status={activeCandidateItem.status}>
             <div className="candidate-review-identity">
@@ -8860,6 +8878,7 @@ export default function Home() {
             </div>
 
             {spectrogramOpen && <SpectrogramPanel
+              toolsHost={spectrogramToolsHost}
               controlBindings={controlBindings}
               waveformCanvasRef={canvasRef}
               spectrum={matchingSpectrogram?.result ?? null}
@@ -9476,6 +9495,7 @@ type SpectrogramZoomBox = {
 };
 
 type SpectrogramPanelProps = {
+  toolsHost?: HTMLDivElement | null;
   controlBindings: ControlBindings;
   waveformCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   spectrum: MatlabSpectrogramResult | null;
@@ -9601,6 +9621,7 @@ function rasterizeMatlabSpectrogram(
 }
 
 function SpectrogramPanel({
+  toolsHost = null,
   controlBindings,
   waveformCanvasRef,
   spectrum,
@@ -9878,7 +9899,55 @@ function SpectrogramPanel({
     notifyTutorialAction("spectrogram-panned");
   };
 
+  // Both toolbar copies share the plot's frequency, interaction, and color state.
+  const controls = (
+      <div className="spectrogram-toolbar" data-tutorial="spectrogram-controls" aria-label="Spectrogram controls">
+        <button type="button" className={tool === "browse" ? "active" : ""} data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); notifyTutorialAction("spectrogram-browse"); }} title={`Browse: click to center, hold and drag to pan · ${shortcutHint(controlBindings, "spectrogramBrowse")}`}>B</button>
+        <button type="button" className={tool === "box-zoom" ? "active" : ""} data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => { setTool("box-zoom"); notifyTutorialAction("spectrogram-zoom-tool"); }} title={`Box zoom: drag a time-frequency area to fit it to the view · ${shortcutHint(controlBindings, "spectrogramZoom")}`}>Z</button>
+        <div className="spectrogram-frequency-control" role="group" aria-label="Displayed frequency range">
+          <span>Frequency range</span>
+          <button
+            type="button"
+            aria-label="Lower maximum displayed frequency"
+            disabled={effectiveDisplayMaxHz - effectiveDisplayMinHz <= minimumDisplayHz}
+            onClick={() => { onFrequencyRangeChange({ min: effectiveDisplayMinHz, max: Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
+            title="Show a narrower, lower-frequency range"
+          >−</button>
+          <output aria-live="polite">{formatSpectrogramFrequency(effectiveDisplayMinHz)}–{formatSpectrogramFrequency(effectiveDisplayMaxHz)} Hz</output>
+          <button
+            type="button"
+            aria-label="Raise maximum displayed frequency"
+            disabled={effectiveDisplayMaxHz >= maximumDisplayHz}
+            onClick={() => { onFrequencyRangeChange({ min: effectiveDisplayMinHz, max: Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
+            title="Show a wider frequency range"
+          >+</button>
+          <button
+            type="button"
+            aria-label="Reset displayed frequency range"
+            data-tutorial="spectrogram-reset"
+            onClick={() => {
+              onFrequencyRangeChange({ min: 0, max: maximumDisplayHz });
+              notifyTutorialAction("spectrogram-adjusted");
+            }}
+            title="Reset to the default frequency range"
+          >↺</button>
+        </div>
+        <span style={{ fontSize: 9, whiteSpace: "nowrap" }} title="Standard deviations from the pre-click log-power baseline">Wavelet Z-score</span>
+        <button type="button" onClick={() => { setColorLimitShift((value) => clamp(value + 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }} title={`Raise color limits · ${shortcutHint(controlBindings, "spectrogramColorDown")}`}>C−</button>
+        <button type="button" onClick={() => { setColorLimitShift((value) => clamp(value - 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }} title={`Lower color limits · ${shortcutHint(controlBindings, "spectrogramColorUp")}`}>C+</button>
+        {!!spectrum?.warnings.length && <details style={{ position: "relative", fontSize: 9, color: "#e9c475" }}>
+          <summary style={{ cursor: "pointer", whiteSpace: "nowrap" }} aria-label="Spectrogram calculation warnings">Warnings ({spectrum.warnings.length})</summary>
+          <div role="status" style={{ position: "absolute", top: 22, right: 0, width: 300, maxHeight: 90, overflowY: "auto", background: "#071216", border: "1px solid #8b7040", padding: 8 }}>
+            {spectrum.warnings.map((warning) => <p key={warning} style={{ margin: "0 0 4px" }}>{warning}</p>)}
+          </div>
+        </details>}
+        <button type="button" onClick={onHelp} aria-label="Open spectrogram tutorials" title="Spectrogram tutorials">?</button>
+        <span className="spectrogram-source-names" title={label}>{label}</span>
+      </div>
+  );
+
   return <div ref={panelRef} className={`spectrogram-panel tool-${tool}`} style={{ height: spectrogramHeight }}>
+    {toolsHost && createPortal(<section className="view-spectrogram-controls" aria-label="Spectrogram viewing tools"><h3>Spectrogram tools</h3>{controls}</section>, toolsHost)}
     <button
       className="spectrogram-resize-handle"
       type="button"
@@ -9928,49 +9997,7 @@ function SpectrogramPanel({
       </div>
     </div>
     <div className="spectrogram-canvas-shell">
-      <div className="spectrogram-toolbar" data-tutorial="spectrogram-controls" aria-label="Spectrogram controls">
-        <button type="button" className={tool === "browse" ? "active" : ""} data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); notifyTutorialAction("spectrogram-browse"); }} title={`Browse: click to center, hold and drag to pan · ${shortcutHint(controlBindings, "spectrogramBrowse")}`}>B</button>
-        <button type="button" className={tool === "box-zoom" ? "active" : ""} data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => { setTool("box-zoom"); notifyTutorialAction("spectrogram-zoom-tool"); }} title={`Box zoom: drag a time-frequency area to fit it to the view · ${shortcutHint(controlBindings, "spectrogramZoom")}`}>Z</button>
-        <div className="spectrogram-frequency-control" role="group" aria-label="Displayed frequency range">
-          <span>Frequency range</span>
-          <button
-            type="button"
-            aria-label="Lower maximum displayed frequency"
-            disabled={effectiveDisplayMaxHz - effectiveDisplayMinHz <= minimumDisplayHz}
-            onClick={() => { onFrequencyRangeChange({ min: effectiveDisplayMinHz, max: Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
-            title="Show a narrower, lower-frequency range"
-          >−</button>
-          <output aria-live="polite">{formatSpectrogramFrequency(effectiveDisplayMinHz)}–{formatSpectrogramFrequency(effectiveDisplayMaxHz)} Hz</output>
-          <button
-            type="button"
-            aria-label="Raise maximum displayed frequency"
-            disabled={effectiveDisplayMaxHz >= maximumDisplayHz}
-            onClick={() => { onFrequencyRangeChange({ min: effectiveDisplayMinHz, max: Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
-            title="Show a wider frequency range"
-          >+</button>
-          <button
-            type="button"
-            aria-label="Reset displayed frequency range"
-            data-tutorial="spectrogram-reset"
-            onClick={() => {
-              onFrequencyRangeChange({ min: 0, max: maximumDisplayHz });
-              notifyTutorialAction("spectrogram-adjusted");
-            }}
-            title="Reset to the default frequency range"
-          >↺</button>
-        </div>
-        <span style={{ fontSize: 9, whiteSpace: "nowrap" }} title="Standard deviations from the pre-click log-power baseline">Wavelet Z-score</span>
-        <button type="button" onClick={() => { setColorLimitShift((value) => clamp(value + 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }} title={`Raise color limits · ${shortcutHint(controlBindings, "spectrogramColorDown")}`}>C−</button>
-        <button type="button" onClick={() => { setColorLimitShift((value) => clamp(value - 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }} title={`Lower color limits · ${shortcutHint(controlBindings, "spectrogramColorUp")}`}>C+</button>
-        {!!spectrum?.warnings.length && <details style={{ position: "relative", fontSize: 9, color: "#e9c475" }}>
-          <summary style={{ cursor: "pointer", whiteSpace: "nowrap" }} aria-label="Spectrogram calculation warnings">Warnings ({spectrum.warnings.length})</summary>
-          <div role="status" style={{ position: "absolute", top: 22, right: 0, width: 300, maxHeight: 90, overflowY: "auto", background: "#071216", border: "1px solid #8b7040", padding: 8 }}>
-            {spectrum.warnings.map((warning) => <p key={warning} style={{ margin: "0 0 4px" }}>{warning}</p>)}
-          </div>
-        </details>}
-        <button type="button" onClick={onHelp} aria-label="Open spectrogram tutorials" title="Spectrogram tutorials">?</button>
-        <span className="spectrogram-source-names" title={label}>{label}</span>
-      </div>
+      {controls}
       <canvas
         ref={ref}
         data-tutorial="spectrogram-plot"
@@ -10231,8 +10258,6 @@ function GeneralInfoPanel({
   inspectionRange,
   selection,
   channelSelectionActive,
-  montage,
-  viewStart,
   timebase,
   hasRecording,
 }: {
@@ -10245,8 +10270,6 @@ function GeneralInfoPanel({
   inspectionRange: InspectionBox | null;
   selection: { start: number; end: number } | null;
   channelSelectionActive: boolean;
-  montage: MontageMode;
-  viewStart: number;
   timebase: number;
   hasRecording: boolean;
 }) {
@@ -10260,10 +10283,6 @@ function GeneralInfoPanel({
   const selectedChannelLabels = inspectionRange?.channelLabels.length
     ? inspectionRange.channelLabels.map(formatDisplayChannelLabel)
     : [displayLabel];
-  const sourceIndices = display.sourceIndices[focusedChannel] ?? [];
-  const sourceLabels = sourceIndices.map((index) => meta.channelLabels[index]).filter(Boolean);
-  const primarySourceIndex = display.primarySourceIndices[focusedChannel];
-  const primarySourceLabel = meta.channelLabels[primarySourceIndex] ?? sourceLabels[0] ?? "—";
   const sampleRate = sourceRateForDisplayRow(display, meta, focusedChannel);
   const pointTolerance = Math.max(sampleRate > 0 ? 1 / sampleRate : 0, timebase * 0.005);
   const relatedAnnotations = hasWaveformSelection ? annotations.filter((annotation) => {
@@ -10274,22 +10293,11 @@ function GeneralInfoPanel({
     }
     return annotation.start <= rangeEnd && annotation.end >= rangeStart;
   }).sort((left, right) => Math.abs(left.start - rangeStart) - Math.abs(right.start - rangeStart)).slice(0, 6) : [];
-  const montageLabel = montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels);
 
   return <section className="general-info-panel" aria-label="General waveform information">
-    <header className="general-info-heading">
-      <span>WAVEFORM INSPECTOR</span>
-      <h2>General info</h2>
-      <p>Shows the current waveform point or range. Use Box zoom in the toolbar to fit an exact time and channel area to the waveform view.</p>
-    </header>
+    <header className="general-info-heading"><h3>Clicked point / selection</h3></header>
 
-    {!hasRecording ? <div className="general-info-empty"><span>⌁</span><strong>No recording loaded</strong><p>Load a recording, then select a point or area in the waveform.</p></div> : !hasWaveformSelection ? <div className="general-info-empty ready"><span>⌖</span><strong>Ready to inspect</strong><p>Choose any waveform row. Your selected channel, timing, amplitude, source, and nearby labels will appear here.</p></div> : <>
-      <section className="general-info-focus-card">
-        <span>{isArea ? "SELECTED AREA" : "CLICKED POINT"}</span>
-        <strong>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : formatClock(rangeStart, true)}</strong>
-        <small>{isArea ? `${formatClock(rangeStart, true)}–${formatClock(rangeEnd, true)} · ${selectedChannelLabels.length} channel${selectedChannelLabels.length === 1 ? "" : "s"}` : `${displayLabel} · ${formatCursorAmplitude(cursorReadout)}`}</small>
-      </section>
-
+    {!hasRecording ? <div className="general-info-empty"><p>No recording loaded.</p></div> : !hasWaveformSelection ? <div className="general-info-empty ready"><p>Click the recording to inspect a point or selection.</p></div> : <>
       <section className="general-info-section">
         <header><h3>Selection</h3><span>{inspectionRange?.dragged ? "ZOOMED RANGE" : isArea ? "SELECTED RANGE" : "POINT"}</span></header>
         <dl>
@@ -10302,20 +10310,8 @@ function GeneralInfoPanel({
         </dl>
       </section>
 
-      <section className="general-info-section">
-        <header><h3>Signal source</h3><span>{meta.format.toUpperCase()}</span></header>
-        <dl>
-          <div><dt>Displayed channel</dt><dd>{displayLabel}</dd></div>
-          <div><dt>Primary source</dt><dd>{primarySourceLabel}</dd></div>
-          <div><dt>Source channels</dt><dd>{sourceLabels.length ? sourceLabels.join(" · ") : "—"}</dd></div>
-          <div><dt>Sample rate</dt><dd>{sampleRate > 0 ? `${sampleRate.toLocaleString()} Hz` : "—"}</dd></div>
-          <div><dt>Montage</dt><dd>{montageLabel}</dd></div>
-          <div><dt>Visible window</dt><dd>{formatClock(viewStart, true)}–{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
-        </dl>
-      </section>
-
       <section className="general-info-section nearby-labels">
-        <header><h3>Labels in area</h3><span>{relatedAnnotations.length}</span></header>
+        <header><h3>{isArea ? "Labels in selection" : "Labels at clicked point"}</h3><span>{relatedAnnotations.length}</span></header>
         {relatedAnnotations.length ? <div>{relatedAnnotations.map((annotation) => {
           const label = annotationLabel(annotation);
           const point = annotationGeometry(annotation) === "point";
@@ -10331,13 +10327,7 @@ function ResourceUsagePanel({
   hasRecording,
   verifyingSource,
   loadingSignal,
-  sourceHash,
   recoveryStatus,
-  viewStart,
-  timebase,
-  visibleChannelCount,
-  selectedChannelCount,
-  openSessionCount,
   activeDisplayBytes,
   activeDisplayVisibleBytes,
   readCacheUsage,
@@ -10346,13 +10336,7 @@ function ResourceUsagePanel({
   hasRecording: boolean;
   verifyingSource: boolean;
   loadingSignal: boolean;
-  sourceHash: string;
   recoveryStatus: "saved" | "error";
-  viewStart: number;
-  timebase: number;
-  visibleChannelCount: number;
-  selectedChannelCount: number;
-  openSessionCount: number;
   activeDisplayBytes: number;
   activeDisplayVisibleBytes: number;
   readCacheUsage: () => ResourceCacheUsage;
@@ -10414,17 +10398,9 @@ function ResourceUsagePanel({
     };
   }, [readCacheUsage]);
 
-  const profile = sourceReadProfile(meta.format, hasRecording);
   const signalCacheBytes = cacheUsage.rawBytes + cacheUsage.processedBytes + cacheUsage.envelopeBytes;
   const cacheEntries = cacheUsage.rawEntries + cacheUsage.processedEntries + cacheUsage.envelopeEntries;
-  const decodedSourceBytes = estimatedDecodedSourceBytes(meta);
-  const integrityStatus = !hasRecording
-    ? "Idle"
-    : verifyingSource
-      ? "Opening recording"
-      : sourceHash
-        ? "Ready"
-        : "Preview available";
+  const decodedSourceBytes = hasRecording ? estimatedDecodedSourceBytes(meta) : 0;
   const activeOperation = performanceUsage.activeOperations[0] ?? null;
   const mainThreadPercent = performanceUsage.mainThread.utilizationEstimate * 100;
   const transientObservationBytes = Math.max(
@@ -10521,22 +10497,8 @@ function ResourceUsagePanel({
       </dl>
     </section>
 
-    <section className="resource-detail-section source-read-section">
-      <header><h3>Reading from</h3><span>{hasRecording ? meta.format.toUpperCase() : "IDLE"}</span></header>
-      <div className="resource-source-file"><i>{hasRecording ? meta.format.replace("raw-int16-le", "DAT").toUpperCase() : "—"}</i><div><strong title={hasRecording ? meta.name : undefined}>{hasRecording ? meta.name : "No source selected"}</strong><span>{hasRecording ? formatByteCount(meta.byteLength) : "Choose a local recording"}</span></div></div>
-      <dl>
-        <div><dt>Origin</dt><dd>{profile.origin}</dd></div>
-        <div><dt>Access</dt><dd>{profile.access}</dd></div>
-        <div><dt>Visible window</dt><dd>{hasRecording ? `${formatClock(viewStart, true)}–${formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}` : "—"}</dd></div>
-        <div><dt>Channels</dt><dd>{hasRecording ? `${visibleChannelCount} shown · ${selectedChannelCount} selected` : "—"}</dd></div>
-        <div><dt>Recording status</dt><dd>{integrityStatus}</dd></div>
-        <div><dt>Network</dt><dd>Recording data is not uploaded</dd></div>
-      </dl>
-      <p>{profile.detail} Browsers expose the file name, not its full local path.</p>
-    </section>
-
     <section className="resource-detail-section resource-session-section">
-      <header><h3>Workspace</h3><span>{openSessionCount} open tab{openSessionCount === 1 ? "" : "s"}</span></header>
+      <header><h3>Loading &amp; recovery</h3></header>
       <dl>
         <div><dt>Local recovery</dt><dd className={recoveryStatus === "saved" ? "healthy" : "warning"}>{recoveryStatus === "saved" ? "Saved" : "Unavailable"}</dd></div>
         <div><dt>Processing</dt><dd>{processingStatus}</dd></div>
