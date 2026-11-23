@@ -100,6 +100,7 @@ import { buildBackgroundRecordingOverview } from "./background-recording-overvie
 import { listOlderBrowserReviews, type BrowserReviewEntry } from "./legacy-browser-recovery";
 import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { parseRecordingTimestamp } from "./recording-timestamp";
+import { editWindowAmount, formatWindowAmount, parseWindowAmount, windowAmountPresentation, WINDOW_TIME_UNITS, WINDOW_UNIT_LABELS, WINDOW_UNIT_SECONDS, type WindowTimeUnit } from "./window-amount";
 import { nextPlaybackStep, playbackWindowReady } from "./playback";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
 import { normalizeChannelGroupGap, buildChannelRowLayout, channelNameGroup, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, channelGroupOrder, orderGroupedDisplayRows, remapDisplayFocus } from "./channel-layout";
@@ -170,7 +171,6 @@ type TrackId = "context" | "windowed" | "instance";
 type AnnotationStatus = "draft" | "committed" | "suggestion";
 type AnnotationOrigin = "manual" | "imported" | "detector" | "legacy";
 type PlacementIntent = "native" | "instance" | "windowed" | "context-instance" | "context-window";
-type WindowTimeUnit = "ms" | "s" | "m" | "hrs";
 type AnnotationDragPatch = Pick<Annotation, "start" | "end" | "track" | "geometry">;
 type AnnotationSelectionBox = { left: number; top: number; width: number; height: number };
 type InspectionBox = {
@@ -1227,9 +1227,6 @@ const LOCAL_ENVELOPE_REFINEMENT = 4;
 // column support nearby zooms without rebuilding a large pyramid after a pan
 // or shifting coarse bucket centers when the cached span changes.
 const INCREMENTAL_ENVELOPE_REFINEMENT = 2;
-const WINDOW_TIME_UNITS: WindowTimeUnit[] = ["ms", "s", "m", "hrs"];
-const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, m: 60, hrs: 3_600 };
-const WINDOW_AMOUNT_STEP = .1;
 const WINDOW_ZOOM_STEP_SECONDS = .1;
 const MIN_TIME_WINDOW_SECONDS = WINDOW_ZOOM_STEP_SECONDS;
 // Fewer samples cannot form a stable trace or survive the AR(2) whitening
@@ -1499,12 +1496,6 @@ function expectedEDFRecordBytes(source: EDFSource, startSec: number, durationSec
   );
   return Math.max(0, lastRecord - firstRecord) * source.header.bytesPerDataRecord;
 }
-
-function formatWindowAmount(value: number) {
-  if (!Number.isFinite(value)) return "";
-  return Number(value.toPrecision(9)).toString();
-}
-
 function quantizeWindowZoom(value: number) {
   return Number((Math.round(value / WINDOW_ZOOM_STEP_SECONDS) * WINDOW_ZOOM_STEP_SECONDS).toFixed(10));
 }
@@ -2019,6 +2010,7 @@ export default function Home() {
   const [timebase, setTimebase] = useState(20);
   const [windowDraftUnit, setWindowDraftUnit] = useState<WindowTimeUnit>("s");
   const [windowDraftValue, setWindowDraftValue] = useState<string | null>(null);
+  const windowAmountInputRef = useRef<HTMLInputElement>(null);
   const [gain, setGain] = useState(1);
   const [traceDisplayMode, setTraceDisplayMode] = useState<TraceDisplayMode>("clamped");
   const [montage, setMontage] = useState<MontageMode>("referential");
@@ -2993,34 +2985,21 @@ export default function Home() {
     notifyTutorialAction("waveform-zoomed");
   }, [setTimeWindow, timebase]);
 
-  const windowUnitSeconds = WINDOW_UNIT_SECONDS[windowDraftUnit];
-  const windowDraftDisplayValue = windowDraftValue ?? formatWindowAmount(timebase / windowUnitSeconds);
-  const windowDraftMaximum = Math.max(Number.EPSILON, meta.durationSec / windowUnitSeconds);
-  const windowDraftMinimum = Math.min(minimumRenderableWindow / windowUnitSeconds, windowDraftMaximum);
-  const windowDraftStep = WINDOW_AMOUNT_STEP;
+  const windowPresentation = windowAmountPresentation(timebase, windowDraftUnit);
+  const windowDisplayUnit = windowDraftValue === null ? windowPresentation.unit : windowDraftUnit;
+  const windowUnitSeconds = WINDOW_UNIT_SECONDS[windowDisplayUnit];
+  const windowDraftDisplayValue = windowDraftValue ?? windowPresentation.amount;
   const cycleWindowDraftUnit = () => {
-    setWindowDraftValue((current) => current ?? formatWindowAmount(timebase / windowUnitSeconds));
-    const currentIndex = WINDOW_TIME_UNITS.indexOf(windowDraftUnit);
+    setWindowDraftValue(current => current ?? windowDraftDisplayValue);
+    const currentIndex = WINDOW_TIME_UNITS.indexOf(windowDisplayUnit);
     setWindowDraftUnit(WINDOW_TIME_UNITS[(currentIndex + 1) % WINDOW_TIME_UNITS.length]);
-  };
-  const adjustWindowDraft = (
-    direction: -1 | 1,
-    modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
-  ) => {
-    if (!hasRecording) return;
-    const numericValue = Number(windowDraftDisplayValue);
-    const currentValue = Number.isFinite(numericValue) && numericValue > 0
-      ? numericValue
-      : windowDraftMinimum;
-    let step = WINDOW_AMOUNT_STEP;
-    if (modifiers.shiftKey) step = modifiers.ctrlKey || modifiers.metaKey ? 10 : 1;
-    setWindowDraftValue(formatWindowAmount(clamp(currentValue + direction * step, windowDraftMinimum, windowDraftMaximum)));
+    windowAmountInputRef.current?.focus();
   };
   const syncWindowDraft = () => {
     if (!hasRecording) return;
-    const numericValue = Number(windowDraftDisplayValue);
-    if (!windowDraftDisplayValue.trim() || !Number.isFinite(numericValue) || numericValue <= 0) {
-      setToast("Enter a valid positive window amount before syncing");
+    const numericValue = parseWindowAmount(windowDraftDisplayValue);
+    if (numericValue === null) {
+      setToast("Enter a positive window amount up to 999.9");
       return;
     }
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
@@ -3028,7 +3007,8 @@ export default function Home() {
     const nextWindow = clamp(numericValue * windowUnitSeconds, minimumWindow, maximumWindow);
     setTimeWindow(nextWindow);
     setWindowDraftValue(null);
-    setToast(`Window synced to ${formatWindowAmount(nextWindow / windowUnitSeconds)} ${windowDraftUnit}`);
+    const applied = windowAmountPresentation(nextWindow, windowDisplayUnit);
+    setToast(`Window set to ${applied.amount} ${WINDOW_UNIT_LABELS[applied.unit]}`);
     notifyTutorialAction("window-applied");
   };
 
@@ -8639,26 +8619,31 @@ export default function Home() {
               />
             </form>
             <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
-              <span className="window-control-label">Window</span>
-              <label className="window-amount-field"><input
+              <label className="window-amount-field"><span className="window-control-label">Window:</span><input
+                ref={windowAmountInputRef}
                 disabled={!hasRecording}
-                aria-label={`Window amount in ${windowDraftUnit}`}
-                type="number"
-                min={windowDraftMinimum}
-                max={windowDraftMaximum}
-                step={windowDraftStep}
+                aria-label={`Window amount in ${WINDOW_UNIT_LABELS[windowDisplayUnit]}`}
+                title="Enter an amount up to 999.9 and press Enter to apply. Rounded to one decimal place."
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                spellCheck={false}
                 value={windowDraftDisplayValue}
-                onChange={(event) => setWindowDraftValue(event.target.value)}
+                onChange={event => {
+                  const value = editWindowAmount(event.target.value);
+                  if (value !== null) {
+                    setWindowDraftUnit(windowDisplayUnit);
+                    setWindowDraftValue(value);
+                  }
+                }}
+                onBlur={() => {
+                  if (windowDraftValue === null) return;
+                  const amount = parseWindowAmount(windowDraftValue);
+                  if (amount !== null) setWindowDraftValue(formatWindowAmount(amount));
+                }}
                 onKeyDown={(event) => { if (matchesShortcut(event, controlBindings, "windowApply")) { event.preventDefault(); syncWindowDraft(); } }}
               /></label>
-              <div className="window-unit-picker">
-                <button disabled={!hasRecording} aria-label="Cycle window time unit" title="Cycle time unit" onClick={cycleWindowDraftUnit}><b>{windowDraftUnit}</b><span aria-hidden="true">…</span></button>
-              </div>
-              <div className="window-step-buttons">
-                <button disabled={!hasRecording} aria-label="Increase window amount" title="Increase by 0.1 · Shift: 1 · Ctrl/Cmd+Shift: 10" onClick={(event) => adjustWindowDraft(1, event)}>+</button>
-                <button disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease by 0.1 · Shift: 1 · Ctrl/Cmd+Shift: 10" onClick={(event) => adjustWindowDraft(-1, event)}>−</button>
-              </div>
-              <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
+              <button className="window-unit-button" disabled={!hasRecording} aria-label="Cycle window time unit" title="Click to cycle ms, sec, min, hrs, days; press Enter to apply" onClick={cycleWindowDraftUnit}>{WINDOW_UNIT_LABELS[windowDisplayUnit]}</button>
             </div>
             <button
               className={`tool-button box-zoom-button ${boxZoomActive ? "active" : ""}`}

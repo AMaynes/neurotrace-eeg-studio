@@ -471,21 +471,13 @@ textarea:focus-visible {
 .trace-display-toggle.active { border-color: #3d648d; background: #132941; color: #e8f3ff; box-shadow: inset 0 -2px 0 var(--mint); }
 .trace-display-toggle.active > span { color: var(--mint); }
 
-.time-window-control { height: 40px; display: flex; align-items: center; gap: 3px; padding: 3px 4px; border: 1px solid #263d45; border-radius: 5px; background: #102027; }
-.time-window-control.pending { border-color: #3b71a0; box-shadow: inset 0 -2px 0 rgba(90, 169, 255, .5); }
-.time-window-control button { width: 21px; height: 25px; padding: 0; border: 0; border-radius: 3px; background: #192b32; color: #c9d8d9; cursor: pointer; }
-.window-control-label { color: #71868c; font-size: 7px; font-weight: 700; letter-spacing: .06em; line-height: 1; text-transform: uppercase; }
-.window-unit-picker { width: 24px; align-self: stretch; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
-.window-unit-picker b { min-width: 20px; padding: 0; color: #a9c0c4; text-align: center; font: 8px ui-monospace, monospace; line-height: 1; }
-.window-unit-picker > button { width: 20px; height: 11px; display: grid; place-items: center; border-radius: 2px; background: #192b32; color: #789198; font-size: 10px; line-height: 1; }
-.window-unit-picker > button:hover { background: #1a3037; color: #d7e6e7; }
-.time-window-control label { height: 27px; display: flex; align-items: center; border: 1px solid #263e46; border-radius: 3px; background: #0d1b20; }
-.time-window-control input { width: 58px; height: 25px; padding: 0 5px; border: 0; background: transparent; color: #d7e3e2; text-align: right; font: 9px ui-monospace, monospace; }
-.time-window-control input::-webkit-inner-spin-button { display: none; }
-.time-window-control .window-sync-button { width: 18px; height: 21px; display: flex; align-items: center; justify-content: center; color: var(--mint); font-size: 11px; }
-.time-window-control .window-sync-button:not(:disabled):hover { background: #17332d; }
-.window-step-buttons { display: flex; flex-direction: column; gap: 1px; }
-.time-window-control .window-step-buttons button { width: 21px; height: 15px; display: grid; place-items: center; font-size: 11px; line-height: 1; }
+.time-window-control { height: 32px; display: flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; }
+.time-window-control label { display: flex; align-items: center; gap: 5px; }
+.window-control-label { color: #9cb1b9; font-size: 10px; white-space: nowrap; }
+.time-window-control input { width: 60px; height: 32px; padding: 0 7px; border: 0; border-radius: 4px; background: #0d1b20; color: #d7e3e2; text-align: right; font: 11px ui-monospace, monospace; }
+.time-window-control.pending input { color: var(--blue); }
+.time-window-control .window-unit-button { height: 32px; min-width: 30px; padding: 0 4px; border: 0; background: transparent; color: #a9c0c4; font: 11px ui-monospace, monospace; cursor: pointer; }
+.time-window-control .window-unit-button:hover { color: var(--mint); }
 
 .timestamp-jump { flex-shrink: 0; margin: 0; padding: 0; border: 0; background: transparent; }
 .timestamp-jump input { width: 154px; height: 32px; padding: 0 10px; border: 0; border-radius: 4px; background: #0d1b20; color: #d7e3e2; font: 10px ui-monospace, monospace; }

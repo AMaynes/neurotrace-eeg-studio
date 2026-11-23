@@ -172,65 +172,31 @@ test("keeps essential time tools in the toolbar and optional tools in View", asy
   assert.doesNotMatch(header, /Open Help|Open Settings|Save review/);
 });
 
-test("stages a unit-aware window amount until Sync applies it", async () => {
+test("keeps the window entry compact with one clickable unit and no steppers", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /type WindowTimeUnit = "ms" \| "s" \| "m" \| "hrs"/);
-  assert.match(page, /const WINDOW_TIME_UNITS: WindowTimeUnit\[\] = \["ms", "s", "m", "hrs"\]/);
-  assert.match(page, /const WINDOW_AMOUNT_STEP = \.1/);
-  assert.match(page, /const WINDOW_ZOOM_STEP_SECONDS = \.1/);
-  assert.match(page, /const MIN_TIME_WINDOW_SECONDS = WINDOW_ZOOM_STEP_SECONDS/);
-  assert.match(page, /const \[windowDraftValue, setWindowDraftValue\] = useState<string \| null>\(null\)/);
-
-  const controlsStart = page.indexOf('<div className={`time-window-control');
-  const controlsEnd = page.indexOf('<div className="gain-control"', controlsStart);
-  const controls = page.slice(controlsStart, controlsEnd);
-  assert.match(controls, /className="window-unit-picker"/);
+  const start = page.indexOf('<div className={`time-window-control');
+  const controls = page.slice(start, page.indexOf('</div>', start));
+  assert.match(controls, />Window:</);
+  assert.match(controls, /type="text"[\s\S]*?inputMode="decimal"/);
+  assert.match(controls, /editWindowAmount\(event.target.value\)/);
+  assert.match(controls, /setWindowDraftUnit\(windowDisplayUnit\)/);
+  assert.match(controls, /matchesShortcut\(event, controlBindings, "windowApply"\)/);
   assert.match(controls, /aria-label="Cycle window time unit"[\s\S]*?onClick=\{cycleWindowDraftUnit\}/);
-  assert.doesNotMatch(controls, /Previous window time unit|Next window time unit/);
-  const unitPicker = controls.slice(controls.indexOf('className="window-unit-picker"'), controls.indexOf("</div>", controls.indexOf('className="window-unit-picker"')));
-  assert.equal((unitPicker.match(/<button/g) ?? []).length, 1, "the unit has one change button beneath it");
-  assert.match(controls, /min=\{windowDraftMinimum\}/);
-  assert.match(controls, /max=\{windowDraftMaximum\}/);
-  assert.match(controls, /step=\{windowDraftStep\}/);
-  assert.match(controls, /onChange=\{\(event\) => setWindowDraftValue\(event\.target\.value\)\}/);
-  assert.doesNotMatch(controls, /onChange=\{[^}]*setTimeWindow/, "editing the staged amount does not reload the waveform");
-  assert.match(controls, /aria-label="Decrease window amount"[\s\S]*?adjustWindowDraft\(-1, event\)/);
-  assert.match(controls, /aria-label="Increase window amount"[\s\S]*?adjustWindowDraft\(1, event\)/);
-  assert.doesNotMatch(controls, /zoomTimeWindow\(/, "the amount buttons stage numeric changes instead of immediately zooming");
-  assert.match(controls, /className="window-sync-button"/);
-  assert.match(controls, /onClick=\{syncWindowDraft\}/);
-  assert.match(controls, /className="window-sync-button"[\s\S]*?<span aria-hidden="true">✓<\/span><\/button>/);
-  assert.doesNotMatch(controls, />Sync</, "the icon-only Sync button does not repeat its accessible name visually");
-  assert.match(controls, /className="window-amount-field"[\s\S]*?className="window-unit-picker"[\s\S]*?className="window-step-buttons"[\s\S]*?aria-label="Increase window amount"[\s\S]*?aria-label="Decrease window amount"[\s\S]*?className="window-sync-button"/, "the amount, unit, vertical plus/minus controls, and Sync action appear in that order");
+  assert.equal((controls.match(/<button/g) ?? []).length, 1);
+  assert.doesNotMatch(controls, /window-step-buttons|window-sync-button|type="number"|adjustWindowDraft/);
+  assert.match(css, /\.time-window-control\s*\{[^}]*border: 0;[^}]*background: transparent/);
+  assert.match(css, /\.time-window-control input\s*\{[^}]*border: 0;/);
+});
 
-  const gainStart = page.indexOf('<div className="gain-control"', controlsEnd);
-  const gainEnd = page.indexOf('<div className="toolbar-spacer"', gainStart);
-  const gainControls = page.slice(gainStart, gainEnd);
-  assert.match(gainControls, /aria-label="Gain multiplier"[\s\S]*?min=\{MIN_DISPLAY_GAIN\} max=\{MAX_DISPLAY_GAIN\}[\s\S]*?className="gain-step-buttons"[\s\S]*?aria-label="Increase gain"[\s\S]*?aria-label="Decrease gain"/, "editable gain and stacked plus/minus controls precede the trace toggle");
-  const traceTogglePosition = gainControls.indexOf("trace-display-toggle");
-  assert.ok(traceTogglePosition > gainControls.indexOf("gain-control"), "the trace display toggle sits immediately after gain");
+test("keeps editable gain and its trace display control together in View tools", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const gainControls = page.slice(page.indexOf('const viewTools:'), page.indexOf('className="app-shell'));
+  assert.match(gainControls, /aria-label="Gain multiplier"[\s\S]*?min=\{MIN_DISPLAY_GAIN\} max=\{MAX_DISPLAY_GAIN\}[\s\S]*?className="gain-step-buttons"[\s\S]*?aria-label="Increase gain"[\s\S]*?aria-label="Decrease gain"/);
   assert.match(gainControls, /aria-label="Allow channel traces to overlap"[\s\S]*?aria-pressed=\{traceDisplayMode === "overlap"\}/);
   assert.match(gainControls, /Clamped[\s\S]*?Overlap/);
-
-  const windowLogic = page.slice(page.indexOf("const setTimeWindow"), page.indexOf("const commitMutation"));
-  assert.match(windowLogic, /maximumWindow = Math\.max\(Number\.EPSILON, meta\.durationSec\)/);
-  assert.doesNotMatch(windowLogic, /Math\.min\(300/, "the full recording duration is accepted");
-  assert.match(windowLogic, /numericValue \* windowUnitSeconds/);
-  assert.match(windowLogic, /let step = WINDOW_AMOUNT_STEP[\s\S]*?modifiers\.shiftKey[\s\S]*?modifiers\.ctrlKey \|\| modifiers\.metaKey \? 10 : 1/);
-  assert.match(windowLogic, /currentValue \+ direction \* step/);
-  assert.match(windowLogic, /timebase \+ \(direction === "in" \? -WINDOW_ZOOM_STEP_SECONDS : WINDOW_ZOOM_STEP_SECONDS\)/);
-  assert.match(windowLogic, /setTimeWindow\(nextWindow\)/);
-  assert.match(windowLogic, /setWindowDraftValue\(null\)/);
-  assert.match(css, /\.window-unit-picker\s*\{/);
-  assert.match(css, /\.window-unit-picker\s*\{[^}]*flex-direction:\s*column/);
-  assert.match(css, /\.time-window-control\.pending\s*\{/);
-  assert.match(css, /\.window-sync-button\s*\{[^}]*width:\s*18px[^}]*height:\s*21px/s);
-  assert.match(css, /\.window-step-buttons\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/);
-  assert.match(css, /\.gain-step-buttons\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/);
-  assert.match(css, /\.trace-display-toggle\s*\{[^}]*height:\s*40px/);
 });
 
 test("visually subdues controls that are temporarily unavailable", async () => {
