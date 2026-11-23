@@ -144,7 +144,7 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
 
   sourceHas(/aria-label="Fit all enabled channels"/, "the rail has a named fit action");
   sourceHas(/data-tutorial="channels"[^]*?Channel controls<\/button>/, "channel management is available in View");
-  sourceHas(/className=\{`channel-layout-button[\s\S]*?waveformVerticalViewport \? "↕" : "E"/, "the channel layout and vertical-reset control sits beside Channels");
+  sourceHas(/className="channel-visibility-bar"[^]*?aria-label="Show or hide channels"/, "channel controls open from the long left bar");
   sourceHas(/aria-label="(?:Open )?Help"/, "Help trigger has an accessible name");
   sourceHas(/aria-label="(?:Open )?Settings"/, "Settings trigger has an accessible name");
 
@@ -982,7 +982,8 @@ test("highlights a focused channel and provides compact or vertically scrollable
   assert.match(page, /setChannelSelectionActive\(false\)/);
   assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
   assert.match(page, /--channel-content-height/);
-  assert.match(page, /aria-pressed=\{expandedChannels \|\| Boolean\(waveformVerticalViewport\)\}/);
+  assert.match(page, /className="channel-fit-button"[^]*?onClick=\{fitEnabledChannels\}/);
+  assert.doesNotMatch(page, /channel-layout-button|Use expanded scrollable channel layout/);
   assert.match(css, /\.waveform-wrap\.channel-scroll-mode[\s\S]*?height:\s*0[\s\S]*?overflow-y:\s*scroll/);
   assert.match(css, /\.waveform-wrap\.channel-scroll-mode \.canvas-column\s*\{\s*overflow:\s*visible/);
   assert.match(css, /\.channel-rail button\.focused/);

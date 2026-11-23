@@ -5143,7 +5143,7 @@ export default function Home() {
       position: "absolute",
       top: CHANNEL_RAIL_HEADER_HEIGHT + clippedTop,
       right: 0,
-      left: 0,
+      left: "var(--channel-toggle-width)",
       height: Math.max(1, clippedBottom - clippedTop),
     };
   }, [channelRowLayout, channelViewportHeight, expandedChannels, waveformVerticalViewport]);
@@ -5154,7 +5154,7 @@ export default function Home() {
     const midpoint = (channelRowLayout.rowStartUnits[startRow] + channelRowLayout.rowStartUnits[endRow] + 1) / 2;
     const screenMidpoint = geometry.yForUnit(midpoint);
     if (!expandedChannels && (screenMidpoint < 0 || screenMidpoint > plotHeight)) return null;
-    return { position: "absolute", left: 0, top: CHANNEL_RAIL_HEADER_HEIGHT + screenMidpoint, transform: "translateY(-50%)" };
+    return { position: "absolute", left: "var(--channel-toggle-width)", top: CHANNEL_RAIL_HEADER_HEIGHT + screenMidpoint, transform: "translateY(-50%)" };
   };
 
   const timeFromPointer = useCallback((event: { clientX: number }, element: HTMLElement, row: number, bypass = false) => {
@@ -8083,7 +8083,7 @@ export default function Home() {
   const fitEnabledChannels = () => {
     setChannelGroupGap(null);
     changeZoomView({ expandedChannels: false, verticalViewport: null, channelScrollTop: 0 });
-    setToast("All enabled channels fit to the recording view");
+    setToast("All enabled channels fitted with equal group spacing");
   };
   const viewTools: Record<WorkspaceToolId, React.ReactNode> = {
     spectrogram: (
@@ -8729,21 +8729,10 @@ export default function Home() {
               onScroll={updateExpandedChannelViewport}
             >
               <div className={`channel-rail ${channelRowLayout.groups.length ? "anatomical-groups" : ""} ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
-                <button className="channel-manager-button" aria-label="Fit all enabled channels" title="Fit all enabled channels to the screen" onClick={fitEnabledChannels}>≡</button>
-                <button
-                  className={`channel-layout-button ${expandedChannels || waveformVerticalViewport ? "active" : ""}`}
-                  aria-label={waveformVerticalViewport ? "Reset vertical box zoom" : `${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`}
-                  aria-pressed={expandedChannels || Boolean(waveformVerticalViewport)}
-                  title={waveformVerticalViewport ? "Fit all channels" : `${expandedChannels ? "Compact channels" : "Expand channels and scroll vertically"}`}
-                  onClick={() => {
-                    if (waveformVerticalViewport) {
-                      changeZoomView({ verticalViewport: null });
-                      setToast("Full channel view restored");
-                    } else {
-                      changeZoomView({ expandedChannels: !expandedChannels, channelScrollTop: 0 });
-                    }
-                  }}
-                >{waveformVerticalViewport ? "↕" : "E"}</button>
+                <button className="channel-fit-button" aria-label="Fit all enabled channels" title="Fit all enabled channels and distribute group spacing equally" onClick={fitEnabledChannels}>≡</button>
+                <button className="channel-visibility-bar" data-tutorial="channel-visibility" aria-label="Show or hide channels"
+                  aria-haspopup="dialog" aria-expanded={showChannels} aria-controls="channel-controls-dialog"
+                  title="Show or hide individual channels and groups" onClick={() => setShowChannels(true)}><span aria-hidden="true">Channels</span></button>
                 {display.labels.map((label, index) => {
                   const rowStyle = channelRailRowStyle(index);
                   if (!rowStyle) return null;
@@ -9215,7 +9204,7 @@ export default function Home() {
       }}>Commit with advisory</button></div></div></div>}
 
       {showChannels && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowChannels(false); }}>
-        <div className="modal channel-modal" data-tutorial="channel-dialog" role="dialog" aria-modal="true" aria-label="Channel controls" tabIndex={-1}>
+        <div id="channel-controls-dialog" className="modal channel-modal" data-tutorial="channel-dialog" role="dialog" aria-modal="true" aria-label="Channel controls" tabIndex={-1}>
           <button className="modal-close" onClick={() => setShowChannels(false)} aria-label="Close channel controls">×</button>
           <h2>Show or hide channels</h2>
           <div className="detected-channels"><strong>Detected channels:</strong><span>{meta.channelLabels.length} total · {selectedChannels.size} source channels selected · {display.labels.length} displayed rows</span></div>
