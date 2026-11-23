@@ -551,7 +551,7 @@ textarea:focus-visible {
 .directory-event-controls input { width: min(190px, 35vw); height: 29px; padding: 4px 7px; color: var(--ink); background: #0d1b20; border: 1px solid var(--border-strong); border-radius: 4px; }
 .directory-event-controls .button { min-height: 29px; padding: 5px 9px; }
 .directory-event-progress { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.overview-block { position: relative; z-index: 23; height: 18px; flex: 0 0 18px; padding: 2px 12px 3px; border-bottom: 1px solid var(--border); background: #0a161b; }
+.overview-block { position: relative; height: 18px; flex: 0 0 18px; padding: 2px 12px 3px; border-bottom: 1px solid var(--border); background: #0a161b; }
 .overview-label { position: absolute; z-index: 10; bottom: 100%; left: 12px; right: 12px; height: 20px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 5px; background: #0a161bf2; opacity: 0; pointer-events: none; }
 .overview-label span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #637982; font-size: 7px; letter-spacing: .12em; font-weight: 750; }
 .overview-label strong { flex-shrink: 0; white-space: nowrap; color: #94a9ae; font: 8px ui-monospace, monospace; font-weight: 500; }
@@ -572,6 +572,7 @@ textarea:focus-visible {
 .overview-block:hover .overview-time,
 .overview-block:focus-within .overview-label,
 .overview-block:focus-within .overview-time { opacity: 1; }
+.overview-block:is(:hover, :focus-within) { z-index: 23; }
 
 .signal-and-tracks { --signal-label-width: 82px; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: contain; }
 .waveform-wrap { min-height: 245px; flex: 1; display: grid; grid-template-columns: var(--signal-label-width) minmax(0, 1fr); border-bottom: 1px solid #20333a; background: #071216; }
