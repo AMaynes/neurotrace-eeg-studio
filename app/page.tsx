@@ -4826,6 +4826,11 @@ export default function Home() {
         : 0;
       const rowTopForChannel = (channel: number) => plotTop + yForUnit(channelRowLayout.rowStartUnits[channel])
         - rowScrollOffset;
+      // Selection stores source identities, while montage/group rows can be reordered.
+      const selectedSources = new Set(spectrogramChannels);
+      const isSelectedChannel = (channel: number) => selectedSources.size
+        ? selectedSources.has(display.primarySourceIndices[channel])
+        : channelSelectionActive && channel === focusedChannel;
 
       if (activeCandidateVisible && activeCandidateTime !== null && activeCandidateTime >= displayStart && activeCandidateTime <= displayEnd) {
         const eventX = ((activeCandidateTime - displayStart) / timebase) * width;
@@ -4845,7 +4850,7 @@ export default function Home() {
         const rowTop = rowTopForChannel(channel);
         const center = rowTop + rowHeight * 0.5;
         if (rowTop + rowHeight < plotTop || rowTop > height) continue;
-        if (channelSelectionActive && channel === focusedChannel) {
+        if (isSelectedChannel(channel)) {
           context.fillStyle = "rgba(90, 169, 255, .065)";
           context.fillRect(0, rowTop, width, rowHeight);
           if (rowHeight >= 2) {
@@ -4898,9 +4903,7 @@ export default function Home() {
       }
 
       const traceOrder = display.data.map((_, index) => index).sort((left, right) => {
-        if (channelSelectionActive && left === focusedChannel) return 1;
-        if (channelSelectionActive && right === focusedChannel) return -1;
-        return left - right;
+        return Number(isSelectedChannel(left)) - Number(isSelectedChannel(right)) || left - right;
       });
       const confineTracesToRows = traceDisplayMode === "clamped";
       for (const channel of traceOrder) {
@@ -4914,7 +4917,7 @@ export default function Home() {
         const scale = legacyRawCountDisplay
           ? (rowHeight * gain) / LEGACY_RAW_COUNTS_PER_ROW
           : (rowHeight * 0.36 * gain) / 100;
-        const selected = channelSelectionActive && channel === focusedChannel;
+        const selected = isSelectedChannel(channel);
         let overflow = false;
         context.save();
         context.beginPath();
@@ -5068,7 +5071,7 @@ export default function Home() {
       performanceDiagnostics.removeCanvasSurface("waveform");
       performanceDiagnostics.removeCanvasSurface("waveform-frame");
     };
-  }, [activeCandidateTime, activeSessionContentView, activeCandidateVisible, displayAnnotations, channelRowLayout, channelSelectionActive, display, displaySettingsKey, expandedChannels, focusedChannel, gain, labelLibrary, labelsVisible, legacyRawCountDisplay, markOnset, meta.durationSec, montage, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
+  }, [activeCandidateTime, activeSessionContentView, activeCandidateVisible, displayAnnotations, channelRowLayout, channelSelectionActive, display, displaySettingsKey, expandedChannels, focusedChannel, gain, labelLibrary, labelsVisible, legacyRawCountDisplay, markOnset, meta.durationSec, montage, spectrogramChannels, timebase, traceDisplayMode, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;

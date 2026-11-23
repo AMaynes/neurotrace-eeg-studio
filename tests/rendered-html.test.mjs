@@ -735,7 +735,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
   assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
   assert.match(page, /const unit = geometry\.unitForY\(scrollTop \+ localY - CHANNEL_RAIL_HEADER_HEIGHT\)/);
-  assert.match(page, /const selected = channelSelectionActive && channel === focusedChannel/);
+  assert.match(page, /const selected = isSelectedChannel\(channel\)/);
   const panelSwitchStart = page.indexOf('const selectRightPanelTool = (view: "labels" | "inspect")');
   const panelSwitchEnd = page.indexOf("const activeDisplayViews", panelSwitchStart);
   const panelSwitch = page.slice(panelSwitchStart, panelSwitchEnd);
@@ -1107,7 +1107,7 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(continuousTrace, /value\s*-\s*baseline/, "direct traces are centered on that baseline");
   assert.match(continuousTrace, /confineToRow[\s\S]*?confineTraceYValueToRow\(rawY,\s*rowTop,\s*rowHeight\)[\s\S]*?confineTraceYValueToRow\(rawY,\s*plotTop,\s*plotHeight\)/, "overlap mode uses the whole plot instead of the source row as its vertical boundary");
   assert.match(continuousTrace, /if \(!Number\.isFinite\(value\)[\s\S]*?connected\s*=\s*false/, "non-finite source gaps break the drawn trace");
-  assert.match(draw, /const traceOrder[\s\S]*?focusedChannel/, "the focused trace is drawn last for readability");
+  assert.match(draw, /const traceOrder[\s\S]*?isSelectedChannel\(left\)[\s\S]*?isSelectedChannel\(right\)/, "selected traces are drawn last for readability");
   assert.match(draw, /legacyRawCountDisplay[\s\S]*?LEGACY_RAW_COUNTS_PER_ROW/, "uncalibrated legacy DAT uses MATLAB's raw-count row spacing");
   assert.match(draw, /barValue\s*=\s*\(legacyRawCountDisplay\s*\?\s*5_000\s*:\s*100\)\s*\/\s*gain/, "the scale bar stays inside one row as gain changes");
 

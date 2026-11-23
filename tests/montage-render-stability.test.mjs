@@ -32,11 +32,14 @@ function fixture(mode = "referential", source, labels = ["LA1", "LA2", "LA3", "R
 }
 
 function harness(display = fixture(), overrides = {}) {
-  const traces = [], ribbons = [], presentations = [];
+  const traces = [], ribbons = [], presentations = [], highlights = [];
   let clears = 0, finishes = 0;
   const context = new Proxy({
     measureText: () => ({ width: 30 }),
-    fillRect() { clears++; },
+    fillRect(x, y, width, height) {
+      clears++;
+      if (context.fillStyle === "rgba(90, 169, 255, .065)") highlights.push({ x, y, width, height });
+    },
   }, { get: (target, key) => key in target ? target[key] : () => {} });
   const env = {
     waveformFrameRef: { current: null }, meta: { durationSec: 100 },
@@ -50,11 +53,12 @@ function harness(display = fixture(), overrides = {}) {
     activeCandidateTime: null, activeCandidateVisible: false, CHANNEL_RAIL_HEADER_HEIGHT: 28,
     expandedChannels: true, channelRowLayout: buildChannelRowLayout(display.labels, false), channelPlotGeometry,
     waveformVerticalViewport: null, waveformScrollRef: { current: { scrollTop: 0 } },
-    channelScrollOffsetRef: { current: 120 }, channelSelectionActive: false, focusedChannel: 0,
+    channelScrollOffsetRef: { current: 120 }, channelSelectionActive: false, focusedChannel: 0, spectrogramChannels: [],
     labelsVisible: false, annotations: [], traceDisplayMode: "clamped", legacyRawCountDisplay: false,
     gain: 1, LEGACY_RAW_COUNTS_PER_ROW: 15000,
     drawContinuousTrace(_context, values, start, interval, offset, view, duration, width, center, rowTop, rowHeight, baseline, scale, clamped) {
-      traces.push({ values: [...values], start, interval, offset, view, duration, width, center, rowTop, rowHeight, baseline, scale, clamped });
+      traces.push({ values: [...values], start, interval, offset, view, duration, width, center, rowTop, rowHeight, baseline, scale, clamped,
+        strokeStyle: _context.strokeStyle, lineWidth: _context.lineWidth });
       return false;
     },
     drawSampleClippingRibbon(_context, _min, _max, _gaps, _start, _interval, _view, _duration, _width, rowTop, rowHeight, baseline, scale) {
@@ -65,9 +69,9 @@ function harness(display = fixture(), overrides = {}) {
     markOnset: null, waveDrawRef: { current: () => {} }, ...overrides,
   };
   const cleanup = new Function(...Object.keys(env), effectCode)(...Object.values(env));
-  return { env, traces, ribbons, presentations, cleanup, get clears() { return clears; }, get finishes() { return finishes; },
+  return { env, traces, ribbons, presentations, highlights, cleanup, get clears() { return clears; }, get finishes() { return finishes; },
     redraw(scrollTop) {
-      traces.length = 0; ribbons.length = 0;
+      traces.length = 0; ribbons.length = 0; highlights.length = 0;
       if (scrollTop !== undefined) env.waveformScrollRef.current.scrollTop = scrollTop;
       env.waveDrawRef.current();
     } };
@@ -167,5 +171,44 @@ test("real paint distributes groups across the viewport with equal outer and inn
       assert.deepEqual(h.traces.map((trace) => trace.values), display.data.map((values) => [...values]));
       h.cleanup();
     }
+  }
+});
+
+test("group selection highlights all three waveforms with matching brightness in clamped and overlap views", () => {
+  const display = fixture("referential", undefined, ["C3", "Cz", "C4", "Fp1", "Fp2"]);
+  for (const traceDisplayMode of ["clamped", "overlap"]) {
+    const h = harness(display, { channelSelectionActive: true, focusedChannel: 0,
+      spectrogramChannels: [0, 1, 2], expandedChannels: false, traceDisplayMode });
+    const selected = h.traces.filter(trace => trace.lineWidth === 1.25);
+    assert.equal(selected.length, 3, "every selected channel has a bright trace");
+    assert.equal(h.highlights.length, 3, "every selected row has a background highlight");
+    assert.ok(selected.every(trace => trace.strokeStyle === "rgba(242, 255, 251, 1)"));
+    assert.deepEqual(selected.map(trace => trace.rowTop), h.highlights.map(box => box.y));
+    assert.deepEqual(h.traces.slice(-3), selected, "all selected traces paint after unselected traces");
+    h.cleanup();
+  }
+});
+
+test("Shift selection follows source identity after row reordering and excludes a deselected focused row", () => {
+  const display = fixture();
+  display.primarySourceIndices = [5, 2, 4, 0, 3, 1];
+  const h = harness(display, { channelSelectionActive: true, focusedChannel: 0, spectrogramChannels: [2, 4, 1], expandedChannels: false });
+  const expected = [1, 2, 5].map(row => display.data[row][0]);
+  assert.deepEqual(h.traces.filter(trace => trace.lineWidth === 1.25).map(trace => trace.values[0]), expected);
+  assert.equal(h.highlights.length, 3);
+  assert.equal(h.traces.find(trace => trace.values[0] === display.data[0][0]).lineWidth, .85,
+    "the last focused row stays unselected when its source is no longer selected");
+  h.cleanup();
+});
+
+test("plain channel focus highlights one row and clearing selection removes every highlight", () => {
+  const display = fixture();
+  for (const channelSelectionActive of [true, false]) {
+    const h = harness(display, { channelSelectionActive, focusedChannel: 2 });
+    assert.equal(h.highlights.length, channelSelectionActive ? 1 : 0);
+    const selected = h.traces.filter(trace => trace.lineWidth === 1.25);
+    assert.equal(selected.length, channelSelectionActive ? 1 : 0);
+    if (channelSelectionActive) assert.deepEqual(selected[0].values, [...display.data[2]]);
+    h.cleanup();
   }
 });
