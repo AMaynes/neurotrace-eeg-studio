@@ -1,11 +1,12 @@
 /** Bounded, full-view MATLAB processing; reduction happens after filter/montage. */
-import { buildMontage, montageInputPolicy, type MontageMode, type SignalReadOptions, type SignalSource, type WindowData } from "./eeg-core.ts";
+import { buildMontage, montageInputPolicy, type DisplayFilterSettings, type MontageMode, type SignalReadOptions, type SignalSource, type WindowData } from "./eeg-core.ts";
 import type { BipolarMontageKind } from "./bipolar-montage.ts";
 import { matlabDisplayChunkInputRange, matlabDisplayDecimationFactor, type MatlabDisplayFactor, type MatlabDisplaySamples } from "./matlab-display-processing.ts";
 import { createMatlabDisplayWorkerPool } from "./matlab-display-worker-pool.ts";
 import { createMatlabRawFlatlineDetector, detectMatlabTileFlatlines } from "./matlab-raw-flatlines.ts";
 import { MATLAB_TILE_BASE, type MatlabDisplayTileCache } from "./matlab-display-tiles.ts";
 import { buildCachedMatlabDisplay } from "./matlab-cached-display.ts";
+import { buildRecordingDisplayWindow, type RecordingDisplayCache } from "./recording-display-window.ts";
 export { createMatlabRawFlatlineDetector } from "./matlab-raw-flatlines.ts";
 
 export interface MatlabDisplayEnvelope {
@@ -18,6 +19,9 @@ export interface MatlabDisplayEnvelope {
 
 export interface MatlabDisplayWindow {
   data: Float64Array[];
+  /** Fixed recording reference when using recording-aligned preparation. */
+  traceBaselines?: number[];
+  recordingAnchored?: boolean;
   envelopes: (MatlabDisplayEnvelope | null)[];
   labels: string[];
   units: string[];
@@ -44,6 +48,9 @@ export interface MatlabDisplayWindowRequest {
   pixelWidth: number;
   channelIndices: readonly number[];
   montage: MontageMode;
+  /** Global sample phase and block context for stable browser panning. */
+  recordingAnchored?: boolean;
+  displayFilters?: DisplayFilterSettings;
   allChannelLabels?: readonly string[];
   bipolarKind?: BipolarMontageKind;
   /** Recording-global source indices or exact names, not chunk-local positions. */
@@ -51,6 +58,7 @@ export interface MatlabDisplayWindowRequest {
 }
 
 export interface MatlabDisplayWindowOptions extends SignalReadOptions {
+  recordingCache?: RecordingDisplayCache;
   /** Injectable existing file-worker adapter. It must return calibrated source samples. */
   readWindow?: (
     startSec: number, durationSec: number, channelIndices: readonly number[], options: SignalReadOptions,
@@ -92,6 +100,7 @@ export async function buildMatlabDisplayWindow(
   request: MatlabDisplayWindowRequest,
   options: MatlabDisplayWindowOptions = {},
 ): Promise<MatlabDisplayWindow> {
+  if (request.recordingAnchored) return buildRecordingDisplayWindow(request, options);
   checkAborted(options.signal);
   const { source, startSec, durationSec, pixelWidth, montage } = request;
   if (!Number.isFinite(startSec) || startSec < 0 || !Number.isFinite(durationSec) || durationSec <= 0

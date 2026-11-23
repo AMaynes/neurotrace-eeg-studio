@@ -9,6 +9,7 @@ import { recordingOverviewDisplayPolicy } from "../app/overview-display-policy.t
 import { RecordingOverviewCache, recordingOverviewPlan } from "../app/recording-overview.ts";
 import { channelGroupOrder } from "../app/channel-layout.ts";
 import { centerDisplayWindow } from "../app/trace-centering.ts";
+import { retainDisplayOverlap } from "../app/display-overlap.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const syntax = ts.createSourceFile("page.tsx", page, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -103,17 +104,18 @@ async function harness({ duration = 300, coarse = false, verifying = true, rawDe
       cleanup?.(); dependencies = nextDependencies; cleanup = callback();
     },
     EDFSource, RawDatSource, bipolarMontageKind, mergeNearbyFlatlineRegions,
-    recordingOverviewDisplayPolicy, recordingOverviewPlan, centerDisplayWindow, channelGroupOrder, zoomViewRef: { current: { anatomicalGroups: false } },
+    recordingOverviewDisplayPolicy, recordingOverviewPlan, centerDisplayWindow, retainDisplayOverlap, channelGroupOrder, zoomViewRef: { current: { anatomicalGroups: false } },
     buildMatlabDisplayWindow: builder, createMatlabFileReader: createReader,
     buildEDFFileWindowOffThread: fileWorker, buildRawDatFileWindowOffThread: fileWorker,
     performanceDiagnostics: { beginSourceRead: operation("read"), beginDecode: operation("decode"), recordDecode() {} }, primarySampleRate: (meta) => meta.sampleRate,
-    playbackBufferRangeRef: { current: null }, playbackDisplayRef: { current: null }, setPlaybackBuffering() {}, playbackRequestRevision: 0, playbackPendingViewRef: { current: null }, playbackStateRef: { current: { timeSec: 0, playing: false } }, viewStartRef: { current: 0 },
+    playbackBufferRangeRef: { current: null }, playbackDisplayRef: { current: { settingsKey: "", data: [], warnings: [] } }, setPlaybackBuffering() {}, playbackRequestRevision: 0, playbackPendingViewRef: { current: null }, playbackStateRef: { current: { timeSec: 0, playing: false } }, viewStartRef: { current: 0 },
     commitViewStart(start) { env.viewStartRef.current = start; env.playbackPendingViewRef.current = null; env.playbackBufferRangeRef.current = null; }, setCursorTime(time) { env.playbackStateRef.current.timeSec = time; },
     setPlaying(playing) { env.playbackStateRef.current.playing = playing; }, setSignalViewStart(start) { env.signalViewStart = start; },
     sourceRef: { current: source }, sourceVerificationRef: { current: verifying }, displayAbortRef: { current: null }, displayRequestIdRef: { current: 0 },
     displayAppliedRequestIdRef: { current: 0 }, displayPreviewReadyRef: { current: false }, displayRefreshPendingRef: { current: null }, displayRefreshActiveRef: { current: false },
     recordingOverviewCacheRef: { current: cache }, overviewBuildSourceRef: { current: verifying ? source : null },
     envelopeWindowCacheRef: { current: rawDetail ? [{ source, channelKey: "0,1", startSec: 0, endSec: duration, levels: [rawEnvelope(source, 40)], byteLength: 2048 * 2 * 17 }] : [] },
+    recordingDisplayCacheRef: { current: null }, createRecordingDisplayCache: () => ({}),
     matlabWindowCacheRef: { current: [] }, matlabTileCacheRef: { current: null }, createMatlabDisplayTileCache: () => ({}),
     setDisplay: (display) => displays.push(display), setLoadingSignal: (value) => loading.push(value),
     setFocusedChannel: (update) => { focused = update(focused); }, setToast: (message) => toasts.push(message),
@@ -129,6 +131,7 @@ test("5/15-minute default views start exact MATLAB processing without awaiting f
   for (const duration of [300, 900]) {
     const h = await harness({ duration }); h.render();
     assert.equal(h.calls.length, 1); assert.equal(h.env.sourceVerificationRef.current, true);
+    assert.equal(h.calls[0].request.recordingAnchored, true);
     assert.equal(h.calls[0].request.durationSec, duration); assert.equal(h.calls[0].request.pixelWidth, 1600);
     assert.equal(h.calls[0].options.fallbackToMainThread, false); assert.equal(h.loading.at(-1), true);
     assert.equal(h.displays.length, 0, "unfinished/raw data cannot masquerade as MATLAB filtering");
@@ -281,7 +284,7 @@ test("partial exact results remain provisional and cannot overwrite a newer view
   const prefix = processedFixture(first.request, 12);
   first.options.onPartial(prefix, 120);
   assert.equal(h.displays.at(-1).processingThroughSec, 120);
-  assert.equal(h.displays.at(-1).unreadAfterSec, 120);
+  assert.equal(h.displays.at(-1).unreadAfterSec, undefined, "a pending left block cannot mask already loaded right-side data");
   assert.equal(h.loading.at(-1), false);
   assert.equal(h.env.matlabWindowCacheRef.current.length, 0, 'partial views are never completed cache entries');
   h.render({ signalViewStart: 60 }); await tick();
@@ -300,6 +303,7 @@ test("a read failure after partial display clears provisional progress and expos
   call.options.onPartial(processedFixture(call.request, 12), 50);
   call.fail(new Error('disk read failed')); await tick();
   assert.equal(h.displays.at(-1).processingThroughSec, undefined);
+  assert.equal(h.displays.at(-1).data[0][0], 12, "a failed missing-block read cannot erase the prepared overlap");
   assert.ok(h.displays.at(-1).warnings.some(w => w.includes('disk read failed')));
   assert.equal(h.env.matlabWindowCacheRef.current.length, 0);
   h.dispose();
@@ -384,4 +388,36 @@ test("background verification completion preserves the wider playback buffer and
   assert.equal(h.displays.at(-1).viewDuration, 25);
   assert.equal(h.displays.length, publications + 1);
   h.dispose();
+});
+
+
+test("partial left-edge loads keep all already published overlap at its original timestamps", async () => {
+  const h = await harness({ duration: 20 }); h.render();
+  const old = h.calls[0].finish(40); old.recordingAnchored = true; old.traceBaselines = [10, 11];
+  await tick();
+  h.render({ signalViewStart: 5 });
+  const call = h.calls.at(-1), partial = processedFixture(call.request, NaN);
+  partial.recordingAnchored = true; partial.traceBaselines = [10, 11];
+  call.options.onPartial(partial, 5);
+  const retained = h.displays.at(-1);
+  assert.equal(retained.viewStart, 5);
+  assert.deepEqual([...retained.data[0].subarray(0, 48)], Array(48).fill(40));
+  assert.ok([...retained.data[0].subarray(48)].every(Number.isNaN));
+  const complete = call.finish(60); complete.recordingAnchored = true; complete.traceBaselines = [10, 11];
+  await tick();
+  assert.deepEqual([...h.displays.at(-1).data[0].subarray(0, 48)], Array(48).fill(40));
+  assert.deepEqual([...h.displays.at(-1).data[0].subarray(48)], Array(16).fill(60));
+  h.dispose();
+});
+
+
+test("custom-filter file views use the recording-aligned cache instead of a moving filter window", async () => {
+  const h = await harness({ duration: 20 });
+  const filters = { enabled: true, highPassHz: 1, lowPassHz: 80, notchHz: 60 };
+  h.render({ filters });
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].request.recordingAnchored, true);
+  assert.deepEqual(h.calls[0].request.displayFilters, filters);
+  assert.equal(h.calls[0].options.recordingCache, h.env.recordingDisplayCacheRef.current);
+  h.calls[0].finish(); await tick(); h.dispose();
 });

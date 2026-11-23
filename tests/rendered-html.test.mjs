@@ -1101,7 +1101,7 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(page, /const matlabAnatomicalLayout\s*=\s*meta\.format\s*===\s*"raw-int16-le"[\s\S]*?recordingType\s*===\s*"SEEG \/ iEEG"/);
   assert.match(page, /matlabAnatomicalLayout[\s\S]*?orderAnatomicalChannelIndices\(meta\.channelLabels, selectedIndices\)/, "intracranial recordings use MATLAB anatomical channel ordering");
   assert.match(page, /channelRowFromFraction\(\s*channelRowLayout/);
-  assert.match(page, /const centered = centerDisplayWindow\(next\)/, "every prepared view is centered before publication");
+  assert.match(page, /const centered = retainDisplayOverlap\(centerDisplayWindow\(next\), playbackDisplayRef\.current\)/, "every prepared view is centered before publication");
   assert.match(draw, /display\.traceBaselines\[channel\]/, "painting uses the prepared automatic center");
   assert.doesNotMatch(page, /traceBaselineCacheRef|setTraceCenters|recenter-button/, "old first-window and manual centers cannot leak across views");
   assert.match(continuousTrace, /value\s*-\s*baseline/, "direct traces are centered on that baseline");

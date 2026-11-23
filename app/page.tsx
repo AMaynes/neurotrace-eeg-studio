@@ -121,6 +121,8 @@ import { useTutorialMilestones } from "./tutorial-progress";
 import { previousWaveformBoxView, recordZoomChange, type ZoomView, type ZoomHistoryEntry, type ZoomGestureState, type SpectrogramFrequencyRange } from "./zoom-history";
 import { MAX_DISPLAY_GAIN, MIN_DISPLAY_GAIN, normalizeDisplayGain, stepDisplayGain } from "./display-gain";
 import { centerDisplayWindow } from "./trace-centering";
+import { createRecordingDisplayCache } from "./recording-display-window";
+import { retainDisplayOverlap } from "./display-overlap";
 import { clusterTimelineDensity } from "./timeline-density";
 import {
   clippingExcessIntensity,
@@ -413,8 +415,9 @@ type DisplayWindow = {
   /** Processing identity prevents old values appearing under newly selected controls. */
   settingsKey?: string;
   data: SignalSamples[];
-  /** Automatic visible-window centers, fixed for all paints of this prepared data. */
+  /** Recording references stay fixed during panning, progressive loads, and painting. */
   traceBaselines: number[];
+  recordingAnchored?: boolean;
   /** Exact source extrema retained for clipping and dropout metadata. */
   envelopes: Array<{
     minima: SignalSamples;
@@ -1948,6 +1951,7 @@ export default function Home() {
   const rawWindowCacheRef = useRef<RawWindowCache[]>([]);
   const matlabWindowCacheRef = useRef<Array<{ source: SignalSource; key: string; value: MatlabDisplayWindow }>>([]);
   const matlabTileCacheRef = useRef<ReturnType<typeof createMatlabDisplayTileCache> | null>(null);
+  const recordingDisplayCacheRef = useRef<ReturnType<typeof createRecordingDisplayCache> | null>(null);
   const processedWindowCacheRef = useRef<ProcessedWindowCache[]>([]);
   const envelopeWindowCacheRef = useRef<EnvelopeWindowCache[]>([]);
   const recordingOverviewCacheRef = useRef(new RecordingOverviewCache());
@@ -1986,8 +1990,10 @@ export default function Home() {
     rawEntries: rawWindowCacheRef.current.length,
     processedBytes: processedWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0)
       + matlabWindowCacheRef.current.reduce((sum, entry) => sum + entry.value.byteLength, 0)
-      + (matlabTileCacheRef.current?.byteLength ?? 0),
-    processedEntries: processedWindowCacheRef.current.length + matlabWindowCacheRef.current.length + (matlabTileCacheRef.current?.size ?? 0),
+      + (matlabTileCacheRef.current?.byteLength ?? 0)
+      + (recordingDisplayCacheRef.current?.samples.byteLength ?? 0) + (recordingDisplayCacheRef.current?.summaries.byteLength ?? 0),
+    processedEntries: processedWindowCacheRef.current.length + matlabWindowCacheRef.current.length + (matlabTileCacheRef.current?.size ?? 0)
+      + (recordingDisplayCacheRef.current?.samples.size ?? 0) + (recordingDisplayCacheRef.current?.summaries.size ?? 0),
     envelopeBytes: envelopeWindowCacheRef.current.reduce((sum, entry) => sum + entry.byteLength, 0)
       + recordingOverviewCacheRef.current.byteLength,
     envelopeEntries: envelopeWindowCacheRef.current.length + recordingOverviewCacheRef.current.size,
@@ -3744,7 +3750,7 @@ export default function Home() {
           if (playbackPage && (next.processingThroughSec !== undefined || next.refiningOverview || next.indexedThroughSec !== undefined)) {
             return false;
           }
-          const centered = centerDisplayWindow(next);
+          const centered = retainDisplayOverlap(centerDisplayWindow(next), playbackDisplayRef.current);
           if (playbackPage) centered.playbackBuffer = true;
           // Grouping may change while processing is in flight. Use its current
           // value and clamp focus to visible rows, including progressive views.
@@ -3753,6 +3759,7 @@ export default function Home() {
             : centered.labels.length;
           if (visibleRows) setFocusedChannel((current) => clamp(current, 0, visibleRows - 1));
           setDisplay(centered);
+          playbackDisplayRef.current = centered;
           if (playbackPage) {
             // The viewport keeps scrolling within the previous complete buffer.
             // A prefetched replacement overlaps that viewport and extends ahead.
@@ -3762,8 +3769,10 @@ export default function Home() {
           }
           return true;
         };
-        if (!filters.enabled) {
+        // File-backed views share recording-aligned blocks, including custom filters.
+        if (!filters.enabled || source.meta.format !== "demo") {
           matlabTileCacheRef.current ??= createMatlabDisplayTileCache();
+          recordingDisplayCacheRef.current ??= createRecordingDisplayCache();
           const key = JSON.stringify([displaySettingsKey, signalViewStart, timebase, waveformWidth, indices]);
           let prepared = matlabWindowCacheRef.current.find((entry) => entry.source === source && entry.key === key)?.value;
           if (!prepared) {
@@ -3772,14 +3781,16 @@ export default function Home() {
             try {
               prepared = await buildMatlabDisplayWindow({ source, startSec: signalViewStart, durationSec: timebase,
                 pixelWidth: waveformWidth, channelIndices: indices, montage, allChannelLabels: meta.channelLabels,
+                recordingAnchored: true, displayFilters: filters,
                 bipolarKind: bipolarMontageKind(meta.channelLabels) }, {
                 signal: abortController.signal, fallbackToMainThread: false, maxChunkDurationSec: 120, maxChunkBytes: 8 * 1024 * 1024,
                 cache: matlabTileCacheRef.current,
+                recordingCache: recordingDisplayCacheRef.current,
                 onPartial: (partial, through) => {
                   if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
-                  if (!publishDisplay({ ...partial, settingsKey: displaySettingsKey, traceBaselines: [],
+                  if (!publishDisplay({ ...partial, settingsKey: displaySettingsKey, traceBaselines: partial.traceBaselines ?? [],
                     timingConvention: "matlab-window", viewStart: signalViewStart, viewDuration: timebase,
-                    processingThroughSec: through, unreadAfterSec: through })) return;
+                    processingThroughSec: through })) return;
                   displayAppliedRequestIdRef.current = requestId;
                   displayPreviewReadyRef.current = true;
                   setLoadingSignal(false);
@@ -3801,7 +3812,7 @@ export default function Home() {
           }
           if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
           const nextDisplay: DisplayWindow = { ...prepared, settingsKey: displaySettingsKey,
-            traceBaselines: [],
+            traceBaselines: prepared.traceBaselines ?? [],
             timingConvention: "matlab-window", viewStart: signalViewStart, viewDuration: timebase,
             flatlineRegions: mergeNearbyFlatlineRegions(prepared.flatlineRegions, FLATLINE_DISPLAY_MERGE_GAP_SECONDS) };
           displayAppliedRequestIdRef.current = requestId;
@@ -4573,7 +4584,11 @@ export default function Home() {
           setToast(message);
           return;
         }
-        setDisplay({ ...EMPTY_DISPLAY, viewStart: signalViewStart, warnings: [message] });
+        const retained = playbackDisplayRef.current;
+        setDisplay(retained.settingsKey === displaySettingsKey && retained.data.length
+          ? { ...retained, processingThroughSec: undefined, unreadAfterSec: undefined,
+            warnings: [...new Set([...retained.warnings, message])] }
+          : { ...EMPTY_DISPLAY, viewStart: signalViewStart, warnings: [message] });
         setToast(message);
       }
     };

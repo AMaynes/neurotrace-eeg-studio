@@ -1,9 +1,10 @@
-/** Automatic, display-only centers for the current time window. Samples stay unchanged. */
+/** Preserve fixed recording references; legacy callers can still request a visible-window center. */
 import { robustTraceBaseline } from "./waveform-geometry.ts";
 
 type TraceCenterWindow = {
   data: (Float32Array | Float64Array)[];
   traceBaselines: number[];
+  recordingAnchored?: boolean;
   startSecs: number[];
   sampleRates: number[];
   envelopes: ({ startSec: number; bucketDurationSec: number; gaps: Uint8Array } | null)[];
@@ -13,11 +14,13 @@ type TraceCenterWindow = {
 
 /**
  * Run once when a prepared window is published, never during canvas painting or
- * vertical scrolling. Centers depend only on the current row's visible samples,
- * not which montage, session, or earlier time window happened to be viewed first.
+ * vertical scrolling. Recording-aligned references are authoritative and never
+ * follow the viewport. Legacy reference helpers use the visible-row median.
  * Both the trace and its clipping ribbon use these same immutable offsets.
  */
 export function centerDisplayWindow<T extends TraceCenterWindow>(display: T): T {
+  // Recording-aligned builders supply fixed references; never replace them with a viewport median.
+  if (display.recordingAnchored && display.traceBaselines.length === display.data.length && display.traceBaselines.every(Number.isFinite)) return display;
   const start = display.viewStart ?? Number.NaN;
   const end = start + (display.viewDuration ?? Number.NaN);
   const traceBaselines = display.data.map((values, row) => {
