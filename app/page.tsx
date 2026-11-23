@@ -2209,7 +2209,7 @@ export default function Home() {
   const [rightPanelView, setRightPanelView] = useState<"labels" | "inspect" | "resources">("labels");
   const [lastRightPanelToolView, setLastRightPanelToolView] = useState<"labels" | "inspect">("labels");
   const [bottomTracksOpen, setBottomTracksOpen] = useState(true);
-  const [contextTrackHeight, setContextTrackHeight] = useState(76);
+  const [contextTrackHeightOverride, setContextTrackHeightOverride] = useState<number | null>(null);
   const [sessionLabelsHeight, setSessionLabelsHeight] = useState(145);
   const [pendingDat, setPendingDat] = useState<File | null>(null);
   const [pendingLegacyMatFile, setPendingLegacyMatFile] = useState<File | null>(null);
@@ -5656,7 +5656,7 @@ export default function Home() {
     const onMove = (event: PointerEvent) => {
       const resize = contextResizeRef.current;
       if (!resize) return;
-      setContextTrackHeight(clamp(resize.startHeight - (event.clientY - resize.startY), 44, 420));
+      setContextTrackHeightOverride(clamp(resize.startHeight - (event.clientY - resize.startY), 44, 420));
     };
     const onUp = () => {
       contextResizeRef.current = null;
@@ -7964,6 +7964,9 @@ export default function Home() {
     [bottomAnnotations, timelineUsesDensity],
   );
   const contextLaneHeight = 34;
+  // Fit visible labels until the user chooses a height by dragging the track edge.
+  const contextTrackHeight = contextTrackHeightOverride
+    ?? clamp(contextLaneLayout.laneCount * contextLaneHeight + 10, 46, 420);
   const contextLaneCapacity = Math.max(1, Math.floor((contextTrackHeight - 10) / contextLaneHeight));
   const contextLaneStep = contextLaneLayout.laneCount <= contextLaneCapacity
     ? contextLaneHeight
