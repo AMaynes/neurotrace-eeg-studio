@@ -1,0 +1,87 @@
+/* One sidebar owns secondary controls; the recording keeps the remaining width. */
+.neuro-app .unified-workspace { grid-template-columns: 300px minmax(0, 1fr); }
+.neuro-app .unified-workspace.left-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
+.unified-workspace .left-sidebar { grid-column: 1; position: relative; top: auto; bottom: auto; left: auto; width: auto; }
+.unified-workspace .review-surface { grid-column: 2; min-width: 0; }
+.workspace-sidebar-nav { display: flex; flex: 0 0 auto; }
+.workspace-sidebar-nav .workspace-tabs { flex: 1; }
+.sidebar-mobile-close { display: none; }
+.directory-tab-close { flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.directory-tab-close:hover { color: var(--coral); }
+.workspace-tabs { display: flex; flex: 0 0 auto; min-height: 42px; border-bottom: 1px solid var(--border); background: #0b171c; }
+.workspace-tabs > button { flex: 1; min-width: 0; padding: 9px 5px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #8ca4ae; cursor: pointer; font-size: 11px; }
+.workspace-tabs > button[aria-selected="true"] { border-bottom-color: var(--mint); background: #112735; color: var(--blue); }
+.workspace-tabs > button:hover { color: var(--ink); }
+.workspace-sidebar-body, .labels-workspace, .labels-tab-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.workspace-sidebar-body h2 { margin: 0 0 10px; color: #c7dce2; font-size: 12px; font-weight: 650; }
+.sidebar-info-section { padding: 16px 14px; border-bottom: 1px solid var(--border); font-size: 11px; }
+.sidebar-info-section > strong { display: block; overflow-wrap: anywhere; }
+.sidebar-info-section p { color: var(--muted); line-height: 1.5; }
+.sidebar-info-grid { margin: 0; display: grid; gap: 9px; }
+.sidebar-info-grid > div { display: flex; gap: 12px; justify-content: space-between; }
+.sidebar-info-grid dt { flex: 0 0 auto; color: var(--muted); }
+.sidebar-info-grid dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; color: #d5e6e9; }
+.labels-workspace > .workspace-tabs { min-height: 37px; }
+.labels-workspace > .workspace-tabs button { font-size: 10px; }
+.unified-workspace .session-labels-section { flex: 1; height: auto; max-height: none; min-height: 0; }
+.unified-workspace .labels-session { overflow-y: auto; }
+.unified-workspace .labels-session .session-label-list { flex: 1; max-height: none; }
+.unified-workspace .queue-section { flex: 1; min-height: 0; overflow: hidden; }
+.unified-workspace .queue-list { min-height: 0; overflow-y: auto; }
+.unified-workspace .ontology-search-row { gap: 5px; padding: 12px 10px; }
+.unified-workspace .ontology-search-row input { min-width: 0; }
+.unified-workspace .ontology-search-row button { padding: 0 8px; font-size: 10px; }
+.unified-workspace .compact-context-palette, .unified-workspace .compact-ephys-palette { padding: 14px 12px; }
+.unified-workspace .general-info-panel { flex: 0 0 auto; min-height: 0; overflow: visible; }
+.unified-workspace .general-info-empty { min-height: 100px; }
+.unified-workspace .resource-panel { flex: 0 0 auto; min-height: 0; overflow: visible; }
+.view-settings { padding: 16px 12px; }
+.view-tool-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 45px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.view-tool-row > :first-child { min-width: 0; flex: 1; }
+.view-tool-row > span { font-size: 11px; }
+.view-tool-row small { color: var(--faint); }
+.view-tool-row .toolbar-select { display: flex; gap: 8px; }
+.view-tool-row .toolbar-select select { width: 100%; max-width: 190px; }
+.view-tool-row .compact-toggle, .view-tool-row .trace-display-toggle, .view-tool-row .spectrum-button { justify-content: flex-start; padding-left: 8px; }
+.view-tool-row .gain-control { margin: 0; }
+.view-tool-row .gain-control > span, .view-tool-row .toolbar-select > span, .view-tool-row .spectrum-button b { display: block; }
+.view-tool-row .tool-pin { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); color: var(--muted); cursor: pointer; }
+.sidebar-channels { padding-top: 20px; }
+.sidebar-channels > header { display: flex; align-items: center; justify-content: space-between; }
+.sidebar-channels > header h2 { margin: 0; }
+.sidebar-channels > header span, .sidebar-channels p { font-size: 10px; color: var(--muted); }
+.sidebar-channels > input { width: 100%; height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg); color: var(--ink); font-size: 11px; }
+.sidebar-channel-actions { display: flex; gap: 6px; margin: 8px 0 12px; }
+.sidebar-channel-actions button { flex: 1; padding: 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); font-size: 10px; cursor: pointer; }
+.sidebar-channel-group { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.sidebar-channel-heading { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; background: #10212a; padding: 7px 8px; color: #6f858f; border-radius: 4px; cursor: pointer; }
+.sidebar-channel-heading[data-state="enabled"], .sidebar-channel-heading[data-state="partial"] { color: var(--blue); }
+.sidebar-channel-heading span { font-size: 9px; }
+.sidebar-channel-group > div { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 0 2px; }
+.sidebar-channel-group > div button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid #24353d; border-radius: 4px; padding: 6px 8px; background: #0a151a; color: #71858d; font-size: 10px; cursor: pointer; }
+.sidebar-channel-group > div button[aria-pressed="true"] { border-color: #3d719a; background: #142e42; color: #d0e9ff; }
+.neuro-app .unified-workspace .viewer-toolbar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; overflow: visible; min-height: 54px; padding: 8px 10px; position: relative; z-index: 22; }
+.unified-workspace .viewer-toolbar .transport-group { margin-left: 0; }
+.unified-workspace .viewer-toolbar .toolbar-spacer { display: none; }
+.pinned-toolbar-tool { display: flex; align-items: center; }
+.unified-workspace .box-zoom-button > span { display: inline; }
+.unified-workspace .window-unit-picker > button { height: 28px; gap: 1px; }
+.fit-channels-button { margin-top: 12px; width: 100%; }
+.toolbar-customizer { position: relative; margin-left: auto; }
+.toolbar-add { width: 32px; height: 32px; border: 1px solid #315060; border-radius: 5px; background: #102029; color: var(--blue); font-size: 22px; cursor: pointer; }
+.toolbar-tool-picker { position: absolute; z-index: 60; top: calc(100% + 8px); right: 0; width: 210px; padding: 12px; border: 1px solid var(--border-strong); border-radius: 7px; background: #102029; box-shadow: var(--shadow); }
+.toolbar-tool-picker strong { display: block; font-size: 11px; margin-bottom: 9px; }
+.toolbar-tool-picker label { display: flex; align-items: center; gap: 9px; padding: 7px 3px; font-size: 11px; cursor: pointer; }
+.unified-workspace > .utility-actions { position: fixed; z-index: 35; bottom: 5px; right: 8px; height: auto; width: auto; display: flex; gap: 5px; margin: 0; padding: 3px; border: 1px solid var(--border); border-radius: 6px; background: #0b171c; }
+.unified-workspace > .utility-actions .utility-button { width: 27px; height: 27px; border-radius: 4px; }
+.unified-workspace .command-strip { padding-right: 155px; }
+.channel-gap-handle { position: absolute; z-index: 5; height: 8px; left: 0; right: 0; border: 0; border-top: 1px solid #29434b; background: transparent; cursor: ns-resize; touch-action: none; }
+.channel-gap-handle:hover, .channel-gap-handle:focus-visible { border-top-color: var(--mint); background: #5aa9ff18; }
+@media (max-width: 760px) {
+  .neuro-app .unified-workspace, .neuro-app .unified-workspace.left-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .unified-workspace .left-sidebar { position: fixed; top: var(--topbar-height); bottom: 0; left: 0; width: min(300px, 85vw); z-index: 25; box-shadow: 15px 0 40px #0008; }
+  .unified-workspace.left-collapsed .left-sidebar { display: none; }
+  .sidebar-mobile-close { display: block; width: 28px; border: 0; border-bottom: 1px solid var(--border); background: var(--panel); color: var(--muted); cursor: pointer; }
+  .unified-workspace .review-surface { grid-column: 1; }
+}

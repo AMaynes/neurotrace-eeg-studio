@@ -63,6 +63,8 @@ export function channelGroupOrder(labels: readonly string[], mode: ChannelGroupi
 }
 
 export type ChannelRowLayout = {
+  /** User-selected CSS pixels per group gap; absent uses automatic fit spacing. */
+  groupGapPx?: number;
   rowStartUnits: number[];
   /** Integer CSS grid lines; fractional spacing is represented by separate tracks. */
   rowGridLines: number[];
@@ -104,7 +106,8 @@ export function channelPlotGeometry(
   if (grouped && (expanded || !viewport)) {
     const rowCount = layout.rowStartUnits.length;
     const gapUnits = layout.totalUnits - rowCount;
-    const gapScale = Math.max(rowHeight, (availableHeight - rowCount * rowHeight) / gapUnits);
+    const gapScale = (expanded ? layout.groupGapPx : undefined)
+      ?? Math.max(rowHeight, (availableHeight - rowCount * rowHeight) / gapUnits);
     let rowTops: number[] | undefined;
     return {
       rowHeight,
@@ -129,7 +132,7 @@ export function channelPlotGeometry(
 }
 
 /** Shared channel spacing with fixed gaps between groups, regardless of contact count. */
-export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean, mode: ChannelGroupingMode = "matlab"): ChannelRowLayout {
+export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean, mode: ChannelGroupingMode = "matlab", groupGapPx: number | null = null): ChannelRowLayout {
   const rowStartUnits: number[] = [];
   const rowGridLines: number[] = [];
   const tracks: string[] = [];
@@ -168,7 +171,13 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
     }
     padding(block.endRow === labels.length - 1 ? edgePadding * 2 : edgePadding);
   }
-  return { rowStartUnits, rowGridLines, gridTemplateRows: tracks.join(" ") || "1fr", totalUnits: Math.max(1, units), groupStarts, groups, contactLabels };
+  const selectedGap = normalizeChannelGroupGap(groupGapPx);
+  return { rowStartUnits, rowGridLines, gridTemplateRows: tracks.join(" ") || "1fr", totalUnits: Math.max(1, units), groupStarts, groups, contactLabels,
+    ...(selectedGap !== null ? { groupGapPx: selectedGap } : {}) };
+}
+
+export function normalizeChannelGroupGap(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(240, Math.max(8, value)) : null;
 }
 
 /** Gap hits deliberately resolve to no channel, so annotations cannot target a separator. */

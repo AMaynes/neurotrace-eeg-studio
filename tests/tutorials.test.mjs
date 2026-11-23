@@ -198,7 +198,7 @@ test("contextual spectrogram help selects its topic and reveals hidden controls 
   const ui = harness({ topic: "spectrogram" });
   assert.match(ui.markup(), /Read the spectrogram/);
   ui.click("Start walkthrough →"); ui.click("Next →");
-  assert.match(ui.markup(), /Open Spectrogram in Signal tools/);
+  assert.match(ui.markup(), /Open Spectrogram from View/);
   assert.deepEqual(ui.actions, []);
   assert.doesNotMatch(ui.markup(), />Do it for me</, "explaining axes and colors is not an action");
   ui.click("Show this area");
@@ -288,7 +288,7 @@ test("the workspace tour stays informational even when its panels are opened", (
   for (let index = 0; index < lesson.steps.length; index++) {
     assert.doesNotMatch(ui.markup(), />Do it for me</);
     ui.emit("label-panel-opened");
-    assert.match(ui.markup(), new RegExp(`STEP ${index + 1} OF 4`), "opening a panel cannot complete a reading step");
+    assert.match(ui.markup(), new RegExp(`STEP ${index + 1} OF ${lesson.steps.length}`), "opening a panel cannot complete a reading step");
     ui.click("Next →");
   }
   assert.deepEqual(ui.actions, []);

@@ -43,9 +43,9 @@ function harness() {
     timebase: 20, gain: 1, montage: "recorded", filters: {}, traceDisplayMode: "clamped", cursorTime: 107, cursorLocked: true,
     selectedChannels: [0,1], focusedChannel: 1, channelSelectionActive: true, selectedAnnotationId: null, selection: null,
     snapMode: "none", spectrogramOpen: false, spectrogramChannels: [0,1], spectrogramAnchor: 107, anatomicalGroups: true,
-    expandedChannels: false, waveformVerticalViewport: null, spectrogramFrequencyRange: {min: 0,max: 50}, controlBindings: {},
+    expandedChannels: false, channelGroupGap: 48, waveformVerticalViewport: null, spectrogramFrequencyRange: {min: 0,max: 50}, controlBindings: {},
     hiddenLabelTypes: new Set(), labelKeywords: "sz", labelsVisible: true, queueAcrossSessions: true,
-    enabledEphysLabelIds: new Set(["ictal"]), leftPanelOpen: true, rightPanelOpen: true, rightPanelView: "labels", bottomTracksOpen: true,
+    enabledEphysLabelIds: new Set(["ictal"]), leftPanelOpen: true, sidebarTab: "view", labelsTab: "create", toolbarTools: ["spectrogram", "gain"], bottomTracksOpen: true,
     labelLibrary: {aliases: [],labels: []}, customTools: [], localStorage: {getItem: () => null},
     recordingSourcePath, serializeRecordingLabels, csvLabelName: () => "Ictal", reviewWorkspaceNames,
     downloadBlob: (name,blob) => downloads.push({name,blob}), setReviewer: id => state.reviewer = id,
@@ -71,6 +71,9 @@ test("one signature downloads exactly CSV and JSON, retaining other opened sessi
   assert.deepEqual(json.recordings[json.position].view.spectrogramChannels,[0,1]);
   assert.equal(json.recordings["second.edf"].review.annotations.length,1);
   assert.equal(json.settings.recordingReferences.length,2);
+  assert.equal(json.recordings[json.position].view.channelGroupGap,48);
+  assert.deepEqual(json.settings.toolbarTools,["spectrogram","gain"]);
+  assert.equal(json.settings.sidebarTab,"view");
 });
 test("an invalid reviewing signature downloads nothing", async () => {
   const h = harness(); await h.action("../bad");

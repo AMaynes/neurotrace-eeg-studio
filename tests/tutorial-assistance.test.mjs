@@ -32,7 +32,7 @@ function fixture(overrides = {}) {
     ...overrides,
   };
   for (const name of ["setShowDirectorySessions", "setShowSettings", "setShowImport", "setProjectSaveError", "setShowProjectSave", "setPlaying", "setViewStartSafe",
-    "setLeftPanelOpen", "selectRightPanelTool", "setBottomTracksOpen", "setTimeWindow", "setWindowDraftValue",
+    "setSidebarTab", "setLabelsTab", "setLeftPanelOpen", "selectSidebarTool", "setBottomTracksOpen", "setTimeWindow", "setWindowDraftValue",
     "setShowChannels", "changeZoomView", "setShowFilters", "setSpectrogramOpen", "setChannelSelectionActive",
     "setBoxZoomActive", "setActiveTool", "setMarkOnset", "setSelection", "setCursorTime", "setCursorLocked",
     "setSpectrogramChannels", "setShowEphysLabelPicker", "setShowSessionContextPicker", "setLabelsVisible", "setRightPanelOpen", "setShowLabelVisibilityFilter"]) {
@@ -149,9 +149,9 @@ test("new assistance reveals resume and label-filter controls without selecting 
   assert.deepEqual(catalog.changes, [["setShowDirectorySessions", true]]);
   const labels = fixture();
   assert.equal(labels.assist("open-label-filter"), true);
-  assert.deepEqual(labels.changes, [["setLeftPanelOpen", true], ["setShowLabelVisibilityFilter", true]]);
+  assert.deepEqual(labels.changes, [["setLeftPanelOpen", true], ["setSidebarTab", "labels"], ["setLabelsTab", "events"], ["setShowLabelVisibilityFilter", true]]);
   const modal = fixture({ showLabelVisibilityFilter: true });
   assert.equal(modal.assist("open-label-filter"), true);
   assert.equal(modal.assist("open-directory-list"), false);
-  assert.deepEqual(modal.changes, [["setLeftPanelOpen", true], ["setShowLabelVisibilityFilter", true]]);
+  assert.deepEqual(modal.changes, [["setLeftPanelOpen", true], ["setSidebarTab", "labels"], ["setLabelsTab", "events"], ["setShowLabelVisibilityFilter", true]]);
 });

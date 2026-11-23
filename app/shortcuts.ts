@@ -42,8 +42,6 @@ export const SHORTCUTS = [
   { id: "topicNext", scope: "tutorialTabs", label: "Next tutorial topic", keys: ["ArrowRight"] },
   { id: "topicFirst", scope: "tutorialTabs", label: "First tutorial topic", keys: ["Home"] },
   { id: "topicLast", scope: "tutorialTabs", label: "Last tutorial topic", keys: ["End"] },
-  { id: "queueShrink", scope: "queueResize", label: "Shrink session labels panel 10 px", keys: ["ArrowUp"] },
-  { id: "queueGrow", scope: "queueResize", label: "Grow session labels panel 10 px", keys: ["ArrowDown"] },
   { id: "spectrogramGrow", scope: "spectrogramResize", label: "Grow spectrogram 20 px", keys: ["ArrowUp"] },
   { id: "spectrogramShrink", scope: "spectrogramResize", label: "Shrink spectrogram 20 px", keys: ["ArrowDown"] },
   { id: "coachLeft", scope: "coach", label: "Move walkthrough left 10 px", keys: ["ArrowLeft"] },
@@ -67,7 +65,7 @@ export const SHORTCUT_GROUPS: { scopes: ShortcutScope[]; title: string; note: st
   { scopes: ["workspace", "viewer", "waveform"], title: "Viewer, labels & history", note: "Viewer shortcuts work outside fields and toolbar buttons. Undo/redo also work from the spectrogram and walkthrough; undo without Ctrl/⌘ cancels a pending ictal onset first. Waveform commit shortcuts require waveform focus." },
   { scopes: ["spectrogram"], title: "Spectrogram", note: "Click or focus the spectrogram plot first." },
   { scopes: ["sessionTabs", "tutorialTabs"], title: "Session & tutorial tabs", note: "Focus a tab in the corresponding tab strip first." },
-  { scopes: ["queueResize", "spectrogramResize", "windowInput", "gainInput"], title: "Panel sizing, time window & gain", note: "Focus the corresponding divider, Window input, or Gain input first. Gain also applies when leaving its field; Clear selection cancels an uncommitted gain entry without clearing viewer selections." },
+  { scopes: ["spectrogramResize", "windowInput", "gainInput"], title: "Panel sizing, time window & gain", note: "Focus the corresponding divider, Window input, or Gain input first. Gain also applies when leaving its field; Clear selection cancels an uncommitted gain entry without clearing viewer selections." },
   { scopes: ["coach"], title: "Walkthrough positioning", note: "Focus the walkthrough’s Move handle first. Placement still avoids covering the highlighted target." },
 ];
 

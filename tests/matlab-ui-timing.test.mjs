@@ -1,3 +1,4 @@
+import { normalizeChannelGroupGap } from "../app/channel-layout.ts";
 /** Execute the real pointer/annotation/export paths, not a duplicate timing formula. */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -223,7 +224,7 @@ test("loading a source or applying a session snapshot clears the previous record
   for (const name of ["loadSource", "applySessionSnapshot"]) {
     const callback = variables.get(name).initializer.arguments[0];
     const setters = new Map();
-    const env = { sourceMeta: pure.sourceMeta, normalizeDisplayGain, EMPTY_DISPLAY: {}, activeSessionId: "next-session", sessionTabs: [],
+    const env = { normalizeChannelGroupGap, sourceMeta: pure.sourceMeta, normalizeDisplayGain, EMPTY_DISPLAY: {}, activeSessionId: "next-session", sessionTabs: [],
       emptyLabelLibrary: () => ({ aliases: [], labels: [] }),
       emptyBidsCompanionBundle: () => ({}), DEFAULT_FILTERS: { enabled: false },
       window: { cancelAnimationFrame() {} }, commitViewStart() {}, storeActiveSession() {}, cancelPendingViewFrames() {} };

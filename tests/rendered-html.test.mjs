@@ -39,14 +39,12 @@ test("renders the NeuroTrace clinical EEG workspace", async () => {
   assert.match(html, /<title>NeuroTrace — Clinical EEG Studio<\/title>/i);
   assert.match(html, /NEUROTRACE/);
   assert.match(html, /Clinical EEG Studio/);
-  assert.match(html, /Context palette/);
-  assert.match(html, /Clinical Observation/);
-  assert.match(html, /Medication/);
-  assert.match(html, />Other</);
-  assert.match(html, /Label palette/);
-  assert.match(html, />Ictal</);
-  assert.match(html, /Choose visible ePhys label types/);
-  assert.doesNotMatch(html, /GPDs|LPDs|BIPDs|GRDA|LRDA|N1 sleep|N2 sleep|N3 sleep|REM sleep/, "only Ictal is shown by default");
+  assert.match(html, /Workspace sections/);
+  assert.match(html, /Folder \/ File/);
+  assert.match(html, /Label sections/);
+  assert.match(html, /Window \/ Instance/);
+  assert.match(html, /Instance Queue/);
+  assert.doesNotMatch(html, /right-sidebar/, "the recording no longer loses space to a second sidebar");
   assert.match(html, /Load a recording to begin/);
   assert.match(html, /Open Settings/);
   assert.match(html, /og\.png/);
@@ -94,7 +92,7 @@ test("ships product source without starter preview artifacts", async () => {
 
 test("keeps context and model-label palettes visually and semantically separate", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const sidebarStart = page.indexOf('<aside className="right-sidebar"');
+  const sidebarStart = page.indexOf('{labelsTab === "create"');
   const sidebarEnd = page.indexOf("</aside>", sidebarStart);
   const sidebar = page.slice(sidebarStart, sidebarEnd);
   const contextPosition = sidebar.indexOf("Context palette");
@@ -132,7 +130,7 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   assert.match(emptyState, /Welcome to NeuroTrace/, "the empty state introduces the workspace before file selection");
   assert.match(emptyState, /Load (?:(?:a|an EEG) )?recording to begin/i, "the empty state has a direct load action");
   assert.match(emptyState, /EDF[\s\S]*MAT/i, "the empty state identifies supported EEG formats");
-  assert.match(emptyState, /stays on this device[\s\S]*top-right for guidance/i, "the introduction points users to privacy and help information");
+  assert.match(emptyState, /stays on this device[\s\S]*bottom-right for guidance/i, "the introduction points users to privacy and help information");
   assert.match(emptyState, /For help or to report bugs[\s\S]*href="mailto:alex\.maynes2001@gmail\.com"[\s\S]*alex\.maynes2001@gmail\.com/, "the introduction provides a direct support and bug-report email");
   assert.ok(emptyState.indexOf("empty-intro") < emptyState.indexOf("empty-load-prompt"), "the introduction occupies the upper section above the load prompt");
   assert.match(emptyState, /<button type="button" className="empty-load-prompt" onClick=\{\(\) => setShowImport\(true\)\}/, "only the lower load prompt opens file selection");
@@ -144,8 +142,8 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   assert.doesNotMatch(leftSidebar, /compact-load-recording|>Load recording</, "the left panel never shows a duplicate recording loader");
   assert.match(leftSidebar, /\{hasRecording && <section className="recording-summary">/, "recording details appear in the left panel only after a file loads");
 
-  sourceHas(/aria-label="Manage channels"/, "Channels has an accessible action name");
-  sourceHas(/>\s*Channels\s*<\/button>/, "the compact channel action is visible as Channels");
+  sourceHas(/aria-label="Fit all enabled channels"/, "the rail has a named fit action");
+  sourceHas(/data-tutorial="channels"[^]*?Channel controls<\/button>/, "channel management is available in View");
   sourceHas(/className=\{`channel-layout-button[\s\S]*?waveformVerticalViewport \? "↕" : "E"/, "the channel layout and vertical-reset control sits beside Channels");
   sourceHas(/aria-label="(?:Open )?Help"/, "Help trigger has an accessible name");
   sourceHas(/aria-label="(?:Open )?Settings"/, "Settings trigger has an accessible name");
@@ -159,36 +157,19 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   sourceHas(/aria-modal="true"/, "workspace dialogs are exposed as modal");
 });
 
-test("keeps requested signal tools in the primary toolbar without legacy clutter", async () => {
+test("keeps essential time tools in the toolbar and optional tools in View", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const toolbarStart = page.indexOf('<div className="viewer-toolbar"');
-  const toolbarEnd = page.indexOf('<div className="overview-block"', toolbarStart);
-  assert.ok(toolbarStart >= 0 && toolbarEnd > toolbarStart, "primary viewer toolbar is present");
-
-  const toolbar = page.slice(toolbarStart, toolbarEnd);
-  for (const control of ["Spectrogram", "Montage", "Filters", "Window", "Gain"]) {
-    assert.match(toolbar, new RegExp(control, "i"), `${control} remains accessible from the primary toolbar`);
-  }
-  assert.doesNotMatch(toolbar, />\s*(?:Cursor|Select)\s*</i);
-  assert.doesNotMatch(toolbar, /Mark seizure|Manage ontology/i);
-  assert.match(page, /className="channel-manager-button"[\s\S]{0,160}>Channels<\/button>/, "Channels is in the recording rail");
-  assert.match(toolbar, /className=\{`panel-bottom-button/);
-  assert.match(toolbar, /aria-pressed=\{bottomTracksOpen\}/);
-  assert.match(toolbar, /setBottomTracksOpen\(\(value\)\s*=>\s*!value\)/);
-
-  const headerStart = page.indexOf('<header className="topbar">');
-  const headerEnd = page.indexOf("</header>", headerStart);
-  const header = page.slice(headerStart, headerEnd);
-  assert.match(header, /Open Help/);
-  assert.match(header, /Open Settings/);
+  const toolbar = page.slice(toolbarStart, page.indexOf('{hasRecording && showFilters', toolbarStart));
+  for (const name of ["Previous page", "Next page", "Jump timestamp", "Box zoom", "Window amount"]) assert.match(toolbar, new RegExp(name));
+  assert.match(toolbar, /ToolbarCustomizer selected=\{toolbarTools\}/);
+  assert.match(toolbar, /toolbarTools\.map[^]*?viewTools\[id\]/);
+  assert.doesNotMatch(toolbar, /Show.*right panel|Montage|Gain multiplier/);
+  assert.match(page, /WORKSPACE_TOOLS\.map[^]*?viewTools\[tool\.id\]/);
+  assert.match(page, /aria-label="Fit all enabled channels"/);
+  const header = page.slice(page.indexOf('<header className="topbar">'), page.indexOf('</header>'));
   assert.match(header, /session-tab-strip/);
-
-  const commandStart = page.indexOf('<footer className="command-strip">');
-  const commandEnd = page.indexOf("</footer>", commandStart);
-  assert.ok(commandStart >= 0 && commandEnd > commandStart, "status strip is present");
-  const commandStrip = page.slice(commandStart, commandEnd);
-  assert.doesNotMatch(commandStrip, /className="strip-actions"/);
-  assert.doesNotMatch(commandStrip, />\s*(?:Spectrogram|Controls|Settings|Help)\s*</i);
+  assert.doesNotMatch(header, /Open Help|Open Settings|Save review/);
 });
 
 test("stages a unit-aware window amount until Sync applies it", async () => {
@@ -635,23 +616,14 @@ test("resizes the spectrogram vertically from its top edge", async () => {
   assert.match(handleRule, /touch-action:\s*none/);
 });
 
-test("keeps the right panel label view ordered like the ontology palette", async () => {
+test("keeps label creation ordered under Labels Create in the single sidebar", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const sidebarStart = page.indexOf('<aside className="right-sidebar"');
-  const sidebarEnd = page.indexOf("</aside>", sidebarStart);
-  assert.ok(sidebarStart >= 0 && sidebarEnd > sidebarStart, "the right label panel is present");
-  const sidebar = page.slice(sidebarStart, sidebarEnd);
-
-  const switchPosition = sidebar.indexOf("right-panel-mode-switch");
-  const searchPosition = sidebar.search(/Search ontology/i);
-  const contextPosition = sidebar.indexOf("Context Labels");
-  const ephysPosition = sidebar.indexOf("ePhys Labels");
-  assert.ok(switchPosition >= 0, "the panel mode switch is available at the top of the right panel");
-  assert.ok(searchPosition > switchPosition, "ontology search follows the panel mode switch");
-  assert.ok(searchPosition >= 0, "ontology search is available at the top of the right panel");
-  assert.ok(contextPosition > searchPosition, "context labels follow ontology search");
-  assert.ok(ephysPosition > contextPosition, "ePhys labels follow context labels");
-  assert.doesNotMatch(sidebar, /<QcPanel|\bQC\b/, "QC does not compete with the label palette");
+  const start = page.indexOf('{labelsTab === "create"');
+  const creation = page.slice(start, page.indexOf('</aside>', start));
+  assert.ok(start > page.indexOf('<aside className="left-sidebar"'));
+  assert.ok(creation.indexOf('Search ontology') < creation.indexOf('Context Labels'));
+  assert.ok(creation.indexOf('Context Labels') < creation.indexOf('ePhys Labels'));
+  assert.doesNotMatch(page, /<aside className="right-sidebar"/);
 });
 
 test("lets reviewers choose which ePhys label types appear in the right panel", async () => {
@@ -681,7 +653,7 @@ test("toggles all label types without deleting annotations or changing palette p
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const buttonStart = page.indexOf('data-tutorial="label-visibility"');
   const button = page.slice(buttonStart, page.indexOf('</button>', buttonStart));
-  assert.ok(buttonStart < page.indexOf('<aside className="right-sidebar"'));
+  assert.ok(buttonStart > page.indexOf('{labelsTab === "events"'));
   assert.match(button, /Hide all labels/);
   assert.match(button, /Show all labels/);
   assert.match(button, /setLabelsVisible\(\(visible\) => !visible\)/);
@@ -702,17 +674,14 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /useState<"labels" \| "inspect" \| "resources">\("labels"\)/);
-  assert.match(page, /className="right-panel-mode-switch" role="tablist" aria-label="Right panel tools"/);
-  assert.match(page, /role="tab"[^>]*>[\s\S]{0,80}Labeling tools/);
-  assert.match(page, /role="tab"[^>]*>[\s\S]{0,80}General info/);
-  assert.match(page, /rightPanelView === "inspect" \? <GeneralInfoPanel/);
+  assert.match(page, /useState<WorkspaceTab>\("labels"\)/);
+  assert.match(page, /sidebarTab === "window"[^]*?<GeneralInfoPanel/);
   assert.match(page, /const \[boxZoomActive, setBoxZoomActive\] = useState\(false\)/);
   assert.match(page, /const inspectionMode = boxZoomActive/);
   const boxZoomButton = page.indexOf('className={`tool-button box-zoom-button');
-  const transportControls = page.indexOf('<div className="transport-group"', boxZoomButton);
-  assert.ok(boxZoomButton >= 0 && transportControls > boxZoomButton, "Box zoom sits immediately left of the page and play controls");
-  assert.match(page.slice(boxZoomButton, transportControls), /aria-label="Box zoom"[\s\S]*?aria-pressed=\{boxZoomActive\}/);
+  const transportControls = page.indexOf('<div className="transport-group"');
+  assert.ok(boxZoomButton > transportControls, "transport starts the simplified time toolbar");
+  assert.match(page.slice(boxZoomButton, page.indexOf("</button>", boxZoomButton)), /aria-label="Box zoom"[\s\S]*?aria-pressed=\{boxZoomActive\}/);
 
   const pointerStart = page.indexOf("const onWavePointerDown");
   const pointerEnd = page.indexOf("const onLabelDrop", pointerStart);
@@ -736,10 +705,10 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
   assert.match(page, /const unit = geometry\.unitForY\(scrollTop \+ localY - CHANNEL_RAIL_HEADER_HEIGHT\)/);
   assert.match(page, /const selected = isSelectedChannel\(channel\)/);
-  const panelSwitchStart = page.indexOf('const selectRightPanelTool = (view: "labels" | "inspect")');
+  const panelSwitchStart = page.indexOf('const selectSidebarTool = (view: "labels" | "inspect")');
   const panelSwitchEnd = page.indexOf("const activeDisplayViews", panelSwitchStart);
   const panelSwitch = page.slice(panelSwitchStart, panelSwitchEnd);
-  assert.ok(panelSwitchStart >= 0 && panelSwitchEnd > panelSwitchStart, "the right-panel mode switch is present");
+  assert.ok(panelSwitchStart >= 0 && panelSwitchEnd > panelSwitchStart, "the sidebar selection action is present");
   assert.doesNotMatch(panelSwitch, /setWaveformVerticalViewport\(null\)/, "switching back to Labeling preserves waveform zoom");
   assert.doesNotMatch(panelSwitch, /setSelection\(null\)|setInspectionRange\(null\)/, "opening General Info preserves the current waveform selection");
   assert.match(page, /inspectionRange=\{inspectionRange\}[\s\S]*?selection=\{selection\}[\s\S]*?channelSelectionActive=\{channelSelectionActive\}/);
@@ -773,39 +742,24 @@ test("keeps every prepared waveform as one continuous centerline", async () => {
   assert.doesNotMatch(drawing, /drawGroupedExtrema|drawOverviewEnvelope|pixelEnvelope/, "no zoom path turns extrema into extra traces");
 });
 
-test("toggles live resource usage from the control left of Help and Settings", async () => {
+test("places live resource usage in Window and compact utilities at the bottom right", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-
-  assert.match(page, /const \[rightPanelView,\s*setRightPanelView\]\s*=\s*useState<"labels" \| "inspect" \| "resources">\("labels"\)/);
+  const windowStart = page.indexOf('{sidebarTab === "window"');
+  const windowPanel = page.slice(windowStart, page.indexOf('{sidebarTab === "view"', windowStart));
+  assert.match(windowPanel, /<ResourceUsagePanel/);
+  assert.match(windowPanel, /<GeneralInfoPanel/);
   const actionsStart = page.indexOf('<div className="top-actions utility-actions">');
-  const actionsEnd = page.indexOf("</div>", actionsStart);
-  const actions = page.slice(actionsStart, actionsEnd);
-  const savePosition = actions.indexOf("Save review");
-  const uploadPosition = actions.indexOf("Upload recording or companion files");
-  const resourcePosition = actions.indexOf("Show resource usage");
-  const helpPosition = actions.indexOf("Open Help");
-  const settingsPosition = actions.indexOf("Open Settings");
-  assert.ok(resourcePosition >= 0, "the resource control is present in the top-right utility group");
-  assert.ok(savePosition >= 0 && savePosition < uploadPosition, "upload sits directly to the right of project download");
-  assert.ok(uploadPosition < resourcePosition, "upload remains grouped with project download");
-  assert.ok(resourcePosition < helpPosition && helpPosition < settingsPosition, "resource usage sits immediately before Help and Settings");
-  assert.match(actions, /className="utility-button save-project-button"[\s\S]*?<span aria-hidden="true">⇩<\/span><\/button>/, "save remains an icon-only utility control");
-  assert.match(actions, /className="utility-button upload-recording-button"[\s\S]*?aria-expanded=\{showImport\}[\s\S]*?aria-controls="recording-import-dialog"[\s\S]*?<span aria-hidden="true">⇧<\/span><\/button>/, "upload opens the existing recording dialog");
-  assert.match(actions, /aria-haspopup="dialog"[\s\S]*?aria-expanded=\{showProjectSave\}[\s\S]*?aria-controls="project-save-dialog"/, "save communicates whether its dialog is open");
-  assert.match(css, /\.upload-recording-button\s*\{[^}]*margin-right:\s*auto[^}]*\}/, "upload and download are visually separated from resource usage");
-  assert.doesNotMatch(css.match(/\.save-project-button\s*\{[^}]*\}/)?.[0] ?? "", /border|background|color/, "save inherits the neutral utility-button resting style");
-  assert.match(css, /\.save-project-button\[aria-expanded="true"\],[\s\S]{0,100}\{[^}]*color:\s*var\(--mint\)/, "save turns blue only while its dialog is open");
-  assert.match(page, /id="recording-import-dialog" className="modal import-modal"/, "upload targets the existing import dialog");
-  assert.match(actions, /setRightPanelView\("resources"\)[\s\S]*?setRightPanelOpen\(true\)/);
-
-  const sidebarStart = page.indexOf('<aside className="right-sidebar"');
-  const sidebarEnd = page.indexOf("</aside>", sidebarStart);
-  const sidebar = page.slice(sidebarStart, sidebarEnd);
-  assert.match(sidebar, /rightPanelView\s*===\s*"resources"\s*\?\s*<ResourceUsagePanel/);
-
+  const actions = page.slice(actionsStart, page.indexOf('</div>', actionsStart));
+  assert.ok(actions.indexOf('Save review') < actions.indexOf('Upload recording or companion files'));
+  assert.ok(actions.indexOf('Upload recording or companion files') < actions.indexOf('Open Help'));
+  assert.ok(actions.indexOf('Open Help') < actions.indexOf('Open Settings'));
+  assert.match(actions, /aria-expanded=\{showProjectSave\}/);
+  assert.match(actions, /aria-controls="recording-import-dialog"/);
+  const layoutCss = await readFile(new URL("../app/workspace-navigation.css", import.meta.url), "utf8");
+  assert.match(layoutCss, /utility-actions[^}]*position: fixed[^}]*bottom:/);
   const resourcePanelStart = page.indexOf("function ResourceUsagePanel");
   const resourcePanelEnd = page.indexOf("function SessionMap", resourcePanelStart);
   const resourcePanel = page.slice(resourcePanelStart, resourcePanelEnd);
@@ -864,7 +818,7 @@ test("opens patient information as a modal instead of expanding the left panel",
   const leftEnd = page.indexOf("</aside>", leftStart);
   const left = page.slice(leftStart, leftEnd);
   assert.match(left, /setShowPatientInfo\(true\)/);
-  assert.doesNotMatch(left, /patient-info-panel|aria-expanded|patientInfoOpen/);
+  assert.doesNotMatch(left, /patient-info-panel|patientInfoOpen/);
   assert.ok(
     left.indexOf('className="patient-info-disclosure"') < left.indexOf('className="session-map-row"'),
     "Patient Info appears above Session Map",
@@ -881,22 +835,15 @@ test("opens patient information as a modal instead of expanding the left panel",
   assert.match(modal, /Export model-ready bundle/);
 });
 
-test("starts with a compact Session Labels area and resizes it against Instance Queue", async () => {
+test("gives Session and Window Instance their own full-height label sections", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/workspace-navigation.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /const \[sessionLabelsHeight,\s*setSessionLabelsHeight\]\s*=\s*useState\(145\)/);
-  assert.match(page, /className="session-labels-section"[^>]*ref=\{sessionLabelsSectionRef\}[^>]*height:\s*sessionLabelsHeight/);
-  assert.match(page, /className="left-split-resize-handle"/);
-  assert.match(page, /Resize Session Labels and Instance Queue/);
-  assert.match(page, /availableHeight:\s*sessionHeight\s*\+\s*queueHeight/);
-  assert.match(page, /resize\.startHeight\s*\+\s*\(event\.clientY\s*-\s*resize\.startY\)/);
-  assert.match(page, /ref=\{queueSectionRef\}/);
-  assert.match(page, /shortcutAction\(event, controlBindings, \["queueResize"\]\)/);
-  assert.match(page, /action === "queueGrow" \? 10 : -10/);
-  assert.match(css, /\.left-sidebar \.session-labels-section\s*\{[^}]*flex:\s*0 0 auto;[^}]*min-height:\s*105px;/);
-  assert.match(css, /\.left-split-resize-handle\s*\{[^}]*height:\s*9px;[^}]*cursor:\s*ns-resize;/);
+  assert.match(page, /labelsTab === "session"[^]*?session-labels-section/);
+  assert.match(page, /labelsTab === "events"[^]*?queue-section/);
+  assert.match(css, /session-labels-section[^}]*flex: 1;[^}]*height: auto;/);
+  assert.doesNotMatch(page, /sessionLabelsHeight|left-split-resize-handle|sessionQueueResizeRef/);
 });
 
 test("uses Instance Queue only to navigate file events, instance labels, and non-session context", async () => {

@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { normalizeWorkspaceLayout } from "../app/workspace-layout.ts";
+import { buildChannelRowLayout, channelPlotGeometry, channelRowFromFraction, normalizeChannelGroupGap } from "../app/channel-layout.ts";
+
+test("new workspaces start with event labels and only the essential toolbar", () => {
+  assert.deepEqual(normalizeWorkspaceLayout({}), { sidebarTab: "labels", labelsTab: "events", toolbarTools: [] });
+});
+
+test("saved sidebar and tool choices retain order and reject unknown or duplicate controls", () => {
+  assert.deepEqual(normalizeWorkspaceLayout({ sidebarTab: "view", labelsTab: "create", toolbarTools: ["gain", "unknown", "gain", "spectrogram", null] }),
+    { sidebarTab: "view", labelsTab: "create", toolbarTools: ["gain", "spectrogram"] });
+});
+
+test("older inspector and resource JSON opens the Window tab without restoring a second sidebar", () => {
+  for (const rightPanelView of ["inspect", "resources"]) assert.equal(normalizeWorkspaceLayout({ rightPanelView }).sidebarTab, "window");
+  assert.equal(normalizeWorkspaceLayout({ rightPanelView: "labels", sidebarTab: "unknown" }).sidebarTab, "labels");
+});
+
+test("a chosen group gap stays uniform and hit testing follows the same geometry", () => {
+  for (const gap of [8, 40, 120, 240]) {
+    const layout = buildChannelRowLayout(["C3", "Cz", "C4", "Fp1", "Fp2", "P3"], true, "name", gap);
+    const geometry = channelPlotGeometry(layout, 500, true);
+    for (const { startRow } of layout.groups.slice(1)) {
+      const previousEnd = geometry.yForUnit(layout.rowStartUnits[startRow - 1]) + geometry.rowHeight;
+      assert.equal(geometry.yForUnit(layout.rowStartUnits[startRow]) - previousEnd, gap);
+      assert.equal(channelRowFromFraction(layout, geometry.unitForY(previousEnd + gap / 2) / layout.totalUnits), null);
+    }
+    layout.rowStartUnits.forEach((start, row) => {
+      const y = geometry.yForUnit(start) + geometry.rowHeight / 2;
+      assert.equal(channelRowFromFraction(layout, geometry.unitForY(y) / layout.totalUnits), row);
+    });
+  }
+});
+
+test("fit restores automatic spacing and saved malformed spacing cannot corrupt geometry", () => {
+  for (const value of [null, undefined, "50", NaN, Infinity]) assert.equal(normalizeChannelGroupGap(value), null);
+  assert.equal(normalizeChannelGroupGap(-20), 8);
+  assert.equal(normalizeChannelGroupGap(1000), 240);
+  const layout = buildChannelRowLayout(["C3", "Fp1", "P3"], true, "name");
+  for (const height of [200, 600]) assert.equal(channelPlotGeometry(layout, height, false).contentHeight, height);
+  const expandedLayout = buildChannelRowLayout(["C3", "Fp1", "P3"], true, "name", 240);
+  assert.equal(channelPlotGeometry(expandedLayout, 200, false).contentHeight, 200, "returning to compact mode fits every enabled row even after increasing gaps");
+});

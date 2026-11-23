@@ -68,6 +68,8 @@ import { DirectoryImportFilters } from "./directory-import-filters";
 import { directoryReviewCache, indexReviewRows, isReviewCsv, loadDirectoryReviewCsvs, reviewRowMatches } from "./directory-review-resume";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { SessionTabTitle } from "./session-tab-title";
+import { WorkspaceTabs, ToolbarCustomizer, ChannelVisibilityControls } from "./workspace-navigation";
+import { WORKSPACE_TABS, LABEL_TABS, WORKSPACE_TOOLS, normalizeWorkspaceLayout, type WorkspaceTab, type LabelTab, type WorkspaceToolId } from "./workspace-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "./import-selection";
 import { scanDirectoryEvents, findNextDirectoryEvent, nextTimedEvent } from "./directory-event-client";
 import type { DirectoryTimedEvent } from "./directory-event-index";
@@ -99,7 +101,7 @@ import { formatTimeGridClock, measuredTimeGridInterval } from "./time-grid";
 import { parseRecordingTimestamp } from "./recording-timestamp";
 import { nextPlaybackStep, playbackWindowReady } from "./playback";
 import { visitWaveformPeakSamples } from "./waveform-peak-path";
-import { buildChannelRowLayout, channelNameGroup, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, channelGroupOrder, orderGroupedDisplayRows, remapDisplayFocus } from "./channel-layout";
+import { normalizeChannelGroupGap, buildChannelRowLayout, channelNameGroup, channelPlotGeometry, channelRowFromFraction, matlabDisplayGroup, channelGroupOrder, orderGroupedDisplayRows, remapDisplayFocus } from "./channel-layout";
 import { mergeAdjacentEnvelopeWindows, planAlignedEnvelopeRequest, planEnvelopeExtension } from "./envelope-cache";
 import {
   RecordingOverviewCache,
@@ -513,6 +515,7 @@ type SessionWorkspaceSnapshot = {
   snapMode: SnapMode;
   spectrogramOpen: boolean;
   expandedChannels: boolean;
+  channelGroupGap?: number | null;
   anatomicalGroups: boolean;
   candidates: Candidate[];
   activeCandidate: number;
@@ -1965,9 +1968,6 @@ export default function Home() {
     inspectionBox?: InspectionBox;
   } | null>(null);
   const contextResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
-  const sessionQueueResizeRef = useRef<{ startY: number; startHeight: number; availableHeight: number } | null>(null);
-  const sessionLabelsSectionRef = useRef<HTMLElement>(null);
-  const queueSectionRef = useRef<HTMLElement>(null);
   const dragFrameRef = useRef<number | null>(null);
   const pendingAnnotationDragRef = useRef<Record<string, AnnotationDragPatch> | null>(null);
   const dragAnnotationRef = useRef<{
@@ -2091,6 +2091,8 @@ export default function Home() {
   useLayoutEffect(() => { playbackDisplayRef.current = display; }, [display]);
   const [spectrogramOpen, setSpectrogramOpen] = useState(false);
   const [expandedChannels, setExpandedChannels] = useState(false);
+  const [channelGroupGap, setChannelGroupGap] = useState<number | null>(null);
+  const channelGapResizeRef = useRef<{ startY: number; startGap: number } | null>(null);
   const [spectrogramFrequencyRange, setSpectrogramFrequencyRange] = useState<SpectrogramFrequencyRange>({ min: 0, max: 150 });
   const zoomViewRef = useRef<ZoomView>({ viewStart, timebase, gain, verticalViewport: waveformVerticalViewport, expandedChannels, anatomicalGroups, channelScrollTop: 0, frequencyRange: spectrogramFrequencyRange });
   useLayoutEffect(() => {
@@ -2205,12 +2207,27 @@ export default function Home() {
   const [projectSaveBusy, setProjectSaveBusy] = useState(false);
   const [projectSaveError, setProjectSaveError] = useState("");
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [rightPanelView, setRightPanelView] = useState<"labels" | "inspect" | "resources">("labels");
-  const [lastRightPanelToolView, setLastRightPanelToolView] = useState<"labels" | "inspect">("labels");
+  const [sidebarTab, setSidebarTab] = useState<WorkspaceTab>("labels");
+  const [labelsTab, setLabelsTab] = useState<LabelTab>("events");
+  const [toolbarTools, setToolbarTools] = useState<WorkspaceToolId[]>([]);
+  const [layoutPreferencesReady, setLayoutPreferencesReady] = useState(false);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const layout = normalizeWorkspaceLayout(JSON.parse(localStorage.getItem("neurotrace:workspace-layout") || "{}"));
+        setSidebarTab(layout.sidebarTab); setLabelsTab(layout.labelsTab); setToolbarTools(layout.toolbarTools);
+      } catch { /* Defaults work when local preferences are unavailable. */ }
+      setLayoutPreferencesReady(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+  useEffect(() => {
+    if (!layoutPreferencesReady) return;
+    try { localStorage.setItem("neurotrace:workspace-layout", JSON.stringify({ sidebarTab, labelsTab, toolbarTools })); }
+    catch { /* Preference storage does not affect recording review. */ }
+  }, [layoutPreferencesReady, sidebarTab, labelsTab, toolbarTools]);
   const [bottomTracksOpen, setBottomTracksOpen] = useState(true);
   const [contextTrackHeightOverride, setContextTrackHeightOverride] = useState<number | null>(null);
-  const [sessionLabelsHeight, setSessionLabelsHeight] = useState(145);
   const [pendingDat, setPendingDat] = useState<File | null>(null);
   const [pendingLegacyMatFile, setPendingLegacyMatFile] = useState<File | null>(null);
   const [pendingLegacyMeta, setPendingLegacyMeta] = useState<LegacyMatMetadata | null>(null);
@@ -2292,8 +2309,8 @@ export default function Home() {
   }, [datChannelNamesText, datMapping.channelCount]);
   const datLayout = pendingDat ? describeRawDatLayout(pendingDat.size, datMapping.channelCount, datMapping.sampleRate) : null;
   const channelRowLayout = useMemo(
-    () => buildChannelRowLayout(display.labels, anatomicalGroups, channelGroupingMode),
-    [display.labels, anatomicalGroups, channelGroupingMode],
+    () => buildChannelRowLayout(display.labels, anatomicalGroups, channelGroupingMode, channelGroupGap),
+    [display.labels, anatomicalGroups, channelGroupingMode, channelGroupGap],
   );
   const channelGeometry = channelPlotGeometry(channelRowLayout, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
   const activeCandidateOnset = activeCandidateAnnotation?.start ?? markOnset;
@@ -2432,29 +2449,6 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const onMove = (event: PointerEvent) => {
-      const resize = sessionQueueResizeRef.current;
-      if (!resize) return;
-      setSessionLabelsHeight(clamp(
-        resize.startHeight + (event.clientY - resize.startY),
-        105,
-        Math.max(105, resize.availableHeight - 155),
-      ));
-    };
-    const onUp = () => {
-      sessionQueueResizeRef.current = null;
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-    };
-  }, []);
-
-  useEffect(() => {
     try {
       localStorage.setItem("neurotrace:controls", JSON.stringify(controlBindings));
     } catch { /* local preferences are optional */ }
@@ -2549,6 +2543,7 @@ export default function Home() {
       snapMode,
       spectrogramOpen,
       expandedChannels,
+      channelGroupGap,
       anatomicalGroups,
       waveformVerticalViewport,
       channelScrollTop: pendingZoomScrollRef.current ?? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current,
@@ -2594,7 +2589,7 @@ export default function Home() {
             viewStart: snapshot.viewStart, timebase, gain, montage, filters, traceDisplayMode,
             cursor: { time: cursorTime, locked: cursorLocked }, selectedChannels: snapshot.selectedChannels,
             focusedChannel, channelSelectionActive, selectedAnnotationId, selection, snapMode, spectrogramOpen, spectrogramChannels, spectrogramAnchor,
-            anatomicalGroups, expandedChannels, channelScrollTop: snapshot.channelScrollTop,
+            anatomicalGroups, expandedChannels, channelGroupGap, channelScrollTop: snapshot.channelScrollTop,
             waveformVerticalViewport, spectrogramFrequencyRange,
           },
         };
@@ -2605,7 +2600,7 @@ export default function Home() {
         managed.settings = {
           folderName: primaryFile?.webkitRelativePath?.split("/")[0] || meta.name,
           controlBindings, hiddenLabelTypes: [...hiddenLabelTypes], labelKeywords, labelsVisible,
-          queueAcrossSessions, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, rightPanelOpen, rightPanelView, bottomTracksOpen,
+          queueAcrossSessions, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, sidebarTab, labelsTab, toolbarTools, bottomTracksOpen,
         };
         setReviewAutosaveStatus("saving");
         const task = persistReviewWorkspace(managed);
@@ -2635,7 +2630,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, anatomicalGroups, bottomTracksOpen, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, queueAcrossSessions, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
+  }, [activeCandidate, activeSessionId, anatomicalGroups, bottomTracksOpen, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, queueAcrossSessions, enabledEphysLabelIds, expandedChannels, channelGroupGap, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, sidebarTab, labelsTab, toolbarTools, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2657,8 +2652,8 @@ export default function Home() {
     const timer = window.setTimeout(() => flushSessionRef.current(), 650);
     return () => window.clearTimeout(timer);
   }, [activeReviewIdentity, activeCandidate, annotations, anatomicalGroups, bottomTracksOpen, candidates, channelSelectionActive, controlBindings, cursorLocked, cursorTime,
-    customTools, queueAcrossSessions, enabledEphysLabelIds, expandedChannels, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, importBusy,
-    labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, montage, playing, reviewViewArrival, rightPanelOpen, rightPanelView, selectedAnnotationId, selectedChannels,
+    customTools, queueAcrossSessions, enabledEphysLabelIds, expandedChannels, channelGroupGap, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, importBusy,
+    labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, montage, playing, reviewViewArrival, sidebarTab, labelsTab, toolbarTools, selectedAnnotationId, selectedChannels,
     selection, sessionKey, snapMode, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramFrequencyRange, spectrogramOpen, timebase,
     traceDisplayMode, verifyingSource, viewStart, waveformVerticalViewport]);
 
@@ -2690,6 +2685,7 @@ export default function Home() {
     pointerRef.current = null;
     pendingCursorRef.current = null;
     contextResizeRef.current = null;
+    channelGapResizeRef.current = null;
     pendingEdfReviewNavigationRef.current = null;
     sourceRef.current = snapshot.source;
     setActiveRecordingOverview(recordingOverviewCacheRef.current.get(snapshot.source));
@@ -2736,6 +2732,7 @@ export default function Home() {
     setSnapMode(snapshot.snapMode);
     setSpectrogramOpen(snapshot.spectrogramOpen);
     setExpandedChannels(snapshot.expandedChannels ?? false);
+    setChannelGroupGap(normalizeChannelGroupGap(snapshot.channelGroupGap));
     setAnatomicalGroups(snapshot.anatomicalGroups ?? true);
     setCandidates(snapshot.candidates);
     setActiveCandidate(snapshot.activeCandidate);
@@ -5654,11 +5651,17 @@ export default function Home() {
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
+      const gap = channelGapResizeRef.current;
+      if (gap) {
+        setChannelGroupGap(normalizeChannelGroupGap(gap.startGap + event.clientY - gap.startY));
+        return;
+      }
       const resize = contextResizeRef.current;
       if (!resize) return;
       setContextTrackHeightOverride(clamp(resize.startHeight - (event.clientY - resize.startY), 44, 420));
     };
     const onUp = () => {
+      channelGapResizeRef.current = null;
       contextResizeRef.current = null;
     };
     window.addEventListener("pointermove", onMove);
@@ -6031,6 +6034,7 @@ export default function Home() {
     setWindowDraftUnit("s");
     setWindowDraftValue(null);
     setExpandedChannels(recommendedChannels.length > 10);
+    setChannelGroupGap(null);
     setCandidates([]);
     setActiveCandidate(0);
     setSelectedAnnotationId(null);
@@ -6538,8 +6542,8 @@ export default function Home() {
           setToast(`${files.length} file${files.length === 1 ? "" : "s"} added · ${bundle.files.filter((file) => file.status === "applied").length} companions applied · ${bundle.events.length} BIDS events found`);
         } else {
           setToast(`${files.length} file${files.length === 1 ? "" : "s"} catalogued · add a supported EDF, MAT, or DAT recording to attach the metadata`);
-          setRightPanelView("inspect");
-          setRightPanelOpen(true);
+          setSidebarTab("files");
+          setLeftPanelOpen(true);
         }
         setShowImport(false);
         return;
@@ -6722,6 +6726,7 @@ export default function Home() {
       setSelectedAnnotationIds(new Set(selected ? [selected] : []));
       if (view.snapMode === "none" || view.snapMode === "1s" || view.snapMode === "100ms" || view.snapMode === "sample") setSnapMode(view.snapMode);
       setExpandedChannels(view.expandedChannels === true);
+      setChannelGroupGap(normalizeChannelGroupGap(view.channelGroupGap));
       setAnatomicalGroups(view.anatomicalGroups !== false);
       const vertical = view.waveformVerticalViewport as { top?: unknown; bottom?: unknown } | null | undefined;
       const top = number(vertical?.top, -1), bottom = number(vertical?.bottom, -1);
@@ -7131,7 +7136,7 @@ export default function Home() {
     channelsOpen: showChannels, montage, gain, clamp: traceDisplayMode,
     groups: anatomicalGroups, playing, labelFilterOpen: showLabelVisibilityFilter, olderReviewOpen: olderReviews !== null,
     filtersOpen: showFilters, boxZoom: boxZoomActive, spectrogramOpen,
-    labelsPanelOpen: rightPanelOpen && rightPanelView === "labels",
+    labelsPanelOpen: leftPanelOpen && sidebarTab === "labels" && labelsTab === "create",
     labelPickerOpen: showEphysLabelPicker, sessionLabelPickerOpen: showSessionContextPicker,
     labelsVisible, saveOpen: showProjectSave,
   });
@@ -7179,8 +7184,12 @@ export default function Home() {
     setLabelsVisible(settings.labelsVisible !== false);
     if (Array.isArray(settings.enabledEphysLabelIds)) setEnabledEphysLabelIds(new Set(textList(settings.enabledEphysLabelIds)));
     if (typeof settings.leftPanelOpen === "boolean") setLeftPanelOpen(settings.leftPanelOpen);
-    if (typeof settings.rightPanelOpen === "boolean") setRightPanelOpen(settings.rightPanelOpen);
-    if (settings.rightPanelView === "labels" || settings.rightPanelView === "inspect" || settings.rightPanelView === "resources") setRightPanelView(settings.rightPanelView);
+    if ("sidebarTab" in settings || "labelsTab" in settings || "toolbarTools" in settings || "rightPanelView" in settings) {
+      const layout = normalizeWorkspaceLayout(settings);
+      setSidebarTab(layout.sidebarTab);
+      setLabelsTab(layout.labelsTab);
+      setToolbarTools(layout.toolbarTools);
+    }
     if (typeof settings.bottomTracksOpen === "boolean") setBottomTracksOpen(settings.bottomTracksOpen);
     setQueueAcrossSessions(settings.queueAcrossSessions === true);
     setLabelLibrary(review.library);
@@ -7555,11 +7564,11 @@ export default function Home() {
             matlabExportIdentity: matlabExportIdentityFromInterpretation(sourceInterpretation), sourceInterpretation, savedAt: review.updatedAt },
           view: { viewStart: snapshot.viewStart, timebase, gain, montage, filters, traceDisplayMode, cursor: { time: cursorTime, locked: cursorLocked },
             selectedChannels: [...selectedChannels], focusedChannel, channelSelectionActive, selectedAnnotationId, selection, snapMode,
-            spectrogramOpen, spectrogramChannels, spectrogramAnchor, anatomicalGroups, expandedChannels,
+            spectrogramOpen, spectrogramChannels, spectrogramAnchor, anatomicalGroups, expandedChannels, channelGroupGap,
             channelScrollTop: snapshot.channelScrollTop, waveformVerticalViewport, spectrogramFrequencyRange },
         };
         review.settings = { controlBindings, hiddenLabelTypes: [...hiddenLabelTypes], labelKeywords, labelsVisible,
-          queueAcrossSessions, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, rightPanelOpen, rightPanelView, bottomTracksOpen };
+          queueAcrossSessions, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, sidebarTab, labelsTab, toolbarTools, bottomTracksOpen };
         review.library = labelLibrary;
         review.customTools = customTools;
       }
@@ -7579,7 +7588,7 @@ export default function Home() {
                 montage: snapshot.montage, filters: snapshot.filters, traceDisplayMode: snapshot.traceDisplayMode,
                 cursor: { time: snapshot.cursorTime, locked: snapshot.cursorLocked }, selectedChannels: snapshot.selectedChannels,
                 focusedChannel: snapshot.focusedChannel, spectrogramChannels: snapshot.spectrogramChannels,
-                anatomicalGroups: snapshot.anatomicalGroups, expandedChannels: snapshot.expandedChannels,
+                anatomicalGroups: snapshot.anatomicalGroups, expandedChannels: snapshot.expandedChannels, channelGroupGap: snapshot.channelGroupGap,
                 channelScrollTop: snapshot.channelScrollTop, waveformVerticalViewport: snapshot.waveformVerticalViewport },
             };
           } else {
@@ -7637,22 +7646,27 @@ export default function Home() {
     } finally { setProjectSaveBusy(false); }
   };
 
-  const closeReviewerFolder = async () => {
-    if (!directoryCatalog || importBusyRef.current || queuedDirectoryOpenRef.current) return;
-    const id = directoryCatalog.id;
+  const closeReviewerFolder = async (catalogId = directoryCatalog?.id) => {
+    if (!catalogId || importBusyRef.current || queuedDirectoryOpenRef.current || reviewViewArrival) return;
+    const id = catalogId;
     const workspace = directoryCatalogWorkspacesRef.current.get(id);
-    const managed = workspace?.review;
-    if (!managed) { clearDirectoryCatalog(); return; }
+    if (!workspace) return;
+    const managed = workspace.review;
     const closing = sessionTabs.filter((tab) => tab.directoryId === id);
     const activeClosing = closing.some((tab) => tab.id === activeSessionId);
     if (activeClosing) flushSessionRef.current();
     importBusyRef.current = true;
     setImportBusy(true);
     let savedLocally = true;
-    try { await persistReviewWorkspace(managed); }
-    catch {
+    try {
+      if (managed) await persistReviewWorkspace(managed);
+      else if (closing.some(tab => sessionSnapshotsRef.current.get(tab.id)?.recoveryStatus === "error")) {
+        setToast("Save this folder before closing; local recovery is unavailable");
+        return;
+      }
+    } catch {
       savedLocally = false;
-      if (workspace?.savedToDiskAt !== managed.updatedAt && !window.confirm(
+      if (workspace?.savedToDiskAt !== managed?.updatedAt && !window.confirm(
         "Browser autosave failed. Close this folder anyway? Save downloads a portable copy.",
       )) return;
     } finally {
@@ -7679,11 +7693,13 @@ export default function Home() {
     }
     setSessionTabs(remaining);
     directoryCatalogWorkspacesRef.current.delete(id);
-    directoryCatalogIdRef.current = null;
-    directorySessionTabsRef.current = new Map();
     setDirectoryCatalogs((current) => current.filter((catalog) => catalog.id !== id));
-    setDirectoryCatalog(null);
-    setDirectoryStatuses({});
+    if (directoryCatalogIdRef.current === id) {
+      directoryCatalogIdRef.current = null;
+      directorySessionTabsRef.current = new Map();
+      setDirectoryCatalog(null);
+      setDirectoryStatuses({});
+    }
     setShowDirectorySessions(false);
     setToast(savedLocally ? "Folder closed. Review progress was autosaved." : "Folder closed. Browser autosave was unavailable.");
   };
@@ -7920,6 +7936,7 @@ export default function Home() {
     return [...groups];
   }, [channelGroupingMode, meta.channelLabels]);
   const setChannelVisibility = (indices: number[], enabled: boolean) => {
+    if (!enabled) clearChannelSelection();
     setSelectedChannels((current) => {
       const next = new Set(current);
       for (const index of indices) {
@@ -7979,11 +7996,10 @@ export default function Home() {
     { id: "instance", label: "ePhys Instance Labels" },
   ];
   const gridDivisions = timebase <= 30 ? Math.max(2, Math.ceil(timebase / 5)) : 10;
-  const resourcePanelActive = rightPanelOpen && rightPanelView === "resources";
-  const selectRightPanelTool = (view: "labels" | "inspect") => {
-    setLastRightPanelToolView(view);
-    setRightPanelView(view);
-    setRightPanelOpen(true);
+  const selectSidebarTool = (view: "labels" | "inspect") => {
+    setLeftPanelOpen(true);
+    setSidebarTab(view === "inspect" ? "window" : "labels");
+    if (view === "labels") setLabelsTab("create");
     if (view === "inspect") {
       setToast(inspectionRange || selection || channelSelectionActive
         ? "General info opened for the current waveform selection"
@@ -8027,7 +8043,7 @@ export default function Home() {
       return true;
     };
     switch (action) {
-      case "show-label-panel": selectRightPanelTool("labels"); return true;
+      case "show-label-panel": selectSidebarTool("labels"); return true;
       case "show-label-tracks": setBottomTracksOpen(true); return true;
       case "jump-overview": case "page-forward": return moveTime(timebase);
       case "pan-waveform": return moveTime(1);
@@ -8042,10 +8058,10 @@ export default function Home() {
       case "enable-waveform-zoom": return boxZoomActive || clickControl("waveform-zoom");
       case "disable-waveform-zoom": return !boxZoomActive || clickControl("waveform-zoom");
       case "open-channels": setShowChannels(true); return true;
-      case "open-label-filter": setLeftPanelOpen(true); setShowLabelVisibilityFilter(true); return true;
+      case "open-label-filter": setLeftPanelOpen(true); setSidebarTab("labels"); setLabelsTab("events"); setShowLabelVisibilityFilter(true); return true;
       case "increase-gain": changeZoomView({ gain: stepDisplayGain(gain, gain >= MAX_DISPLAY_GAIN ? -1 : 1) }); return true;
       case "toggle-clamp": return clickControl("clamp");
-      case "open-filters": setShowFilters(true); return true;
+      case "open-filters": setLeftPanelOpen(true); setSidebarTab("view"); setShowFilters(true); return true;
       case "open-spectrogram": setSpectrogramOpen(true); return true;
       case "clear-channel-focus": clearChannelSelection(); return true;
       case "spectrogram-browse": return clickControl("spectrogram-browse");
@@ -8065,10 +8081,10 @@ export default function Home() {
         setCursorLocked(true);
         return true;
       }
-      case "open-label-picker": selectRightPanelTool("labels"); setShowEphysLabelPicker(true); return true;
+      case "open-label-picker": selectSidebarTool("labels"); setShowEphysLabelPicker(true); return true;
       case "open-session-label-picker":
         if (!reviewReady) return false;
-        setLeftPanelOpen(true); setShowSessionContextPicker(true); return true;
+        setLeftPanelOpen(true); setSidebarTab("labels"); setLabelsTab("session"); setShowSessionContextPicker(true); return true;
       case "toggle-labels": setLabelsVisible((value) => !value); return true;
     }
   };
@@ -8086,6 +8102,80 @@ export default function Home() {
       ? spectrogramState
       : null;
   const spectrogramLabel = spectrogramInputPlan.plan?.label ?? "Select a waveform channel";
+
+  const fitEnabledChannels = () => {
+    setChannelGroupGap(null);
+    changeZoomView({ expandedChannels: false, verticalViewport: null, channelScrollTop: 0 });
+    setToast("All enabled channels fit to the recording view");
+  };
+  const viewTools: Record<WorkspaceToolId, React.ReactNode> = {
+    spectrogram: (
+      <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} data-tutorial="spectrogram-toggle" aria-label="Spectrogram" title="Shift-click channel names to average their spectrogram power" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
+    ),
+    montage: (
+      <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">{bipolarMontageLabel(meta.channelLabels)}</option></select></label>
+    ),
+    groups: (
+      <button
+        className={`compact-toggle ${anatomicalGroups ? "active" : ""}`}
+        data-tutorial="channel-groups"
+        aria-label={anatomicalGroups ? "Ungroup channels" : "Group channels"}
+        aria-pressed={anatomicalGroups}
+        disabled={!hasRecording || !anatomicalGroupsAvailable}
+        title={anatomicalGroups ? "Show channels without grouping" : anatomicalGroupsAvailable
+          ? channelGroupingMode === "name" ? "Group channels by name" : "Group anatomical channels as in MATLAB"
+          : "No channel name groups available"}
+        onClick={() => changeZoomView({ anatomicalGroups: !anatomicalGroups, verticalViewport: null, channelScrollTop: 0 })}
+      >{anatomicalGroups ? "Ungroup" : "Group"}</button>
+    ),
+    filters: (
+      <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
+    ),
+    gain: (
+      <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain">
+        <span>Gain</span>
+        <label className="gain-amount-field"><input
+          key={`${activeSessionId}:${sessionKey}:${gain}`}
+          disabled={!hasRecording}
+          aria-label="Gain multiplier"
+          title={`Gain 0.01–4× · ${shortcutHint(controlBindings, "gainApply")} or leave the field to apply · ${shortcutHint(controlBindings, "clear")} to cancel`}
+          type="number" min={MIN_DISPLAY_GAIN} max={MAX_DISPLAY_GAIN} step="0.01"
+          defaultValue={gain}
+          onBlur={(event) => commitGainInput(event.currentTarget)}
+          onKeyDown={(event) => {
+            const apply = matchesShortcut(event, controlBindings, "gainApply");
+            const cancel = matchesShortcut(event, controlBindings, "clear");
+            if (!apply && !cancel) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (cancel) event.currentTarget.value = String(gain);
+            event.currentTarget.blur();
+          }}
+        /><b aria-hidden="true">×</b></label>
+        <div className="gain-step-buttons">
+          <button disabled={!hasRecording || gain >= MAX_DISPLAY_GAIN} aria-label="Increase gain" title="Increase gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, 1) })}>+</button>
+          <button disabled={!hasRecording || gain <= MIN_DISPLAY_GAIN} aria-label="Decrease gain" title="Decrease gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, -1) })}>−</button>
+        </div>
+      </div>
+    ),
+    clamp: (
+      <button
+        className={`trace-display-toggle ${traceDisplayMode === "overlap" ? "active" : ""}`}
+        data-tutorial="clamp"
+        disabled={!hasRecording}
+        aria-label="Allow channel traces to overlap"
+        aria-pressed={traceDisplayMode === "overlap"}
+        title={traceDisplayMode === "clamped" ? "Switch to overlapping channel traces" : "Switch to clamped traces with overflow heat lines"}
+        onClick={() => {
+          const nextMode = traceDisplayMode === "clamped" ? "overlap" : "clamped";
+          setTraceDisplayMode(nextMode);
+          setToast(nextMode === "overlap" ? "Channel traces may now overlap" : "Channel traces clamped with voltage heat lines");
+        }}
+      ><span aria-hidden="true">≋</span><b>{traceDisplayMode === "clamped" ? "Clamped" : "Overlap"}</b></button>
+    ),
+    channels: <button className="compact-toggle" data-tutorial="channels" disabled={!hasRecording} onClick={() => setShowChannels(true)}>Channel controls</button>,
+    tracks: <button className={`compact-toggle ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} onClick={() => setBottomTracksOpen(value => !value)}>Label tracks</button>,
+  };
 
   return (
     <main
@@ -8171,6 +8261,7 @@ export default function Home() {
                     onClick={() => navigateDirectoryRecording(group.catalogId, 1)}><span aria-hidden="true">›</span></button>
                 </div>
                 <span className="directory-tab-count">{group.total}</span>
+                <button className="directory-tab-close" disabled={navigationBusy || Boolean(reviewViewArrival)} aria-label={`Close folder ${group.label}`} title={`Close folder ${group.label}`} onClick={() => void closeReviewerFolder(group.catalogId)}>×</button>
               </div>;
             })}
             {sessionTabs.map((tab, index) => {
@@ -8202,56 +8293,9 @@ export default function Home() {
           </div>
           <button className="add-session-tab" disabled={importBusy} aria-label="Add blank session" title="Add blank session" onClick={createBlankSession}>+</button>
         </nav>
-        <div className="top-actions utility-actions">
-          <button
-            className="utility-button save-project-button"
-            data-tutorial="save"
-            aria-label="Save review"
-            aria-haspopup="dialog"
-            aria-expanded={showProjectSave}
-            aria-controls="project-save-dialog"
-            title="Save review"
-            disabled={!hasRecording || verifyingSource || importBusy || projectSaveBusy}
-            onClick={() => {
-              setProjectSaveError("");
-              setShowProjectSave(true);
-            }}
-          ><span aria-hidden="true">⇩</span></button>
-          <button
-            className="utility-button upload-recording-button"
-            data-tutorial="upload"
-            disabled={importBusy}
-            aria-label="Upload recording or companion files"
-            aria-haspopup="dialog"
-            aria-expanded={showImport}
-            aria-controls="recording-import-dialog"
-            title="Upload a recording, directory, or companion files"
-            onClick={() => {
-              setUploadError(null);
-              setShowImport(true);
-            }}
-          ><span aria-hidden="true">⇧</span></button>
-          <button
-            className={`utility-button ${resourcePanelActive ? "active" : ""}`}
-            aria-label={resourcePanelActive ? "Return to right panel tools" : "Show resource usage"}
-            aria-pressed={resourcePanelActive}
-            title={resourcePanelActive ? "Return to right panel tools" : "Resource usage"}
-            onClick={() => {
-              if (resourcePanelActive) {
-                setRightPanelView(lastRightPanelToolView);
-                return;
-              }
-              if (rightPanelView !== "resources") setLastRightPanelToolView(rightPanelView);
-              setRightPanelView("resources");
-              setRightPanelOpen(true);
-            }}
-          ><span className="resource-glyph" aria-hidden="true"><i /><i /><i /></span></button>
-          <button className="utility-button" data-tutorial="help" aria-label="Open Help" title="Tutorials & walkthroughs" onClick={() => setShowHelp(true)}><span aria-hidden="true">?</span></button>
-          <button className="utility-button" data-tutorial="settings" aria-label="Open Settings" title="Settings" onClick={() => setShowSettings(true)}><span className="settings-glyph" aria-hidden="true">⚙</span></button>
-        </div>
       </header>
 
-      <div className={`workspace-grid ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}
+      <div className={`workspace-grid unified-workspace ${leftPanelOpen ? "" : "left-collapsed"}`}
         onPointerDownCapture={(event) => {
           if (event.button !== 0) return;
           const target = event.target as Element;
@@ -8259,131 +8303,260 @@ export default function Home() {
           if (target.closest("canvas, .channel-rail, .spectrogram-panel, button, input, textarea, select, a, summary, [role='button'], [role='separator'], [role='slider'], [draggable='true'], [contenteditable='true']")) return;
           clearChannelSelection();
         }}>
-        <aside className="left-sidebar" data-tutorial="recording-panel">
-          {hasRecording && <section className="recording-summary">
-            <>
-              <div className="recording-file-line"><strong title={meta.name}>{shortFileName(meta.name)}</strong><span>File type: {meta.format.toUpperCase()}</span></div>
-              <div className="recording-stats">{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</div>
-              <div className="recording-type-line"><span>Recording type:</span><strong>{recordingType}</strong></div>
-            </>
-          </section>}
+        <aside className="left-sidebar" data-tutorial="recording-panel" aria-label="Workspace sidebar">
+          <div className="workspace-sidebar-nav">
+            <WorkspaceTabs label="Workspace sections" id="workspace" tabs={WORKSPACE_TABS} value={sidebarTab} onChange={setSidebarTab} />
+            <button className="sidebar-mobile-close" aria-label="Hide workspace sidebar" onClick={() => setLeftPanelOpen(false)}>‹</button>
+          </div>
+          <div className="workspace-sidebar-body" role="tabpanel" id={`workspace-panel-${sidebarTab}`} aria-labelledby={`workspace-tab-${sidebarTab}`}>
+            {sidebarTab === "files" && <div className="sidebar-scroll">
+              {hasRecording && <section className="recording-summary">
+                <>
+                  <div className="recording-file-line"><strong title={meta.name}>{shortFileName(meta.name)}</strong><span>File type: {meta.format.toUpperCase()}</span></div>
+                  <div className="recording-stats">{formatClock(meta.durationSec)} · {meta.channelLabels.length} ch · {primarySampleRate(meta)} Hz</div>
+                  <div className="recording-type-line"><span>Recording type:</span><strong>{recordingType}</strong></div>
+                </>
+              </section>}
 
-          <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
-            <span>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
-          </button>
+              <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
+                <span>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
+              </button>
 
-          <button className="session-map-row" disabled={!hasRecording} onClick={() => setShowSessionMap(true)}><span>Session Map</span><b aria-hidden="true">↗</b></button>
+              <section className="sidebar-info-section">
+                <h2>Folder</h2>
+                {directoryCatalog ? <>
+                  <strong>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</strong>
+                  <p>{directoryCatalog.plan.recordings.length} recordings</p>
+                  <button className="button secondary" onClick={() => setShowDirectorySessions(true)}>Files &amp; folder filters</button>
+                </> : <p>{hasRecording ? "Individual recording" : "No folder loaded"}</p>}
+              </section>
+              <section className="sidebar-info-section">
+                <h2>File information</h2>
+                <dl className="sidebar-info-grid">
+                  <div><dt>Name</dt><dd title={meta.name}>{hasRecording ? meta.name : "—"}</dd></div>
+                  <div><dt>Format</dt><dd>{hasRecording ? meta.format.toUpperCase() : "—"}</dd></div>
+                  <div><dt>Size</dt><dd>{primaryFile ? formatByteCount(primaryFile.size) : "—"}</dd></div>
+                  <div><dt>Duration</dt><dd>{hasRecording ? formatClock(meta.durationSec, true) : "—"}</dd></div>
+                  <div><dt>Channels</dt><dd>{hasRecording ? meta.channelLabels.length : "—"}</dd></div>
+                  <div><dt>Sample rate</dt><dd>{hasRecording ? `${primarySampleRate(meta)} Hz` : "—"}</dd></div>
+                  <div><dt>Detected labels</dt><dd>{annotations.filter(item => item.recordingLabel).length}</dd></div>
+                  <div><dt>Added labels</dt><dd>{annotations.filter(item => !item.recordingLabel).length}</dd></div>
+                  <div><dt>File path</dt><dd>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
+                </dl>
+              </section>
+              <UploadedFilesPanel bundle={companionBundle} compact />
+            </div>}
+            {sidebarTab === "window" && <div className="sidebar-scroll" data-tutorial="window-info">
+              <section className="sidebar-info-section">
+                <h2>Current window</h2>
+                <dl className="sidebar-info-grid">
+                  <div><dt>Start</dt><dd>{formatClock(viewStart, true)}</dd></div>
+                  <div><dt>End</dt><dd>{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
+                  <div><dt>Duration</dt><dd>{timebase.toLocaleString()} s</dd></div>
+                  <div><dt>Displayed rows</dt><dd>{display.labels.length}</dd></div>
+                  <div><dt>Signal values</dt><dd>{display.data.reduce((count, channel) => count + channel.length, 0).toLocaleString()}</dd></div>
+                  <div><dt>Montage</dt><dd>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
+                  <div><dt>Filters</dt><dd>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
+                </dl>
+              </section>
+              <GeneralInfoPanel
+                meta={meta}
+                display={display}
+                annotations={displayAnnotations}
+                focusedChannel={focusedChannel}
+                cursorTime={cursorTime}
+                cursorReadout={cursorReadout}
+                inspectionRange={inspectionRange}
+                selection={selection}
+                channelSelectionActive={channelSelectionActive}
+                montage={montage}
+                viewStart={viewStart}
+                timebase={timebase}
+                hasRecording={hasRecording}
+              />
+              <ResourceUsagePanel
+                meta={meta}
+                hasRecording={hasRecording}
+                verifyingSource={verifyingSource}
+                loadingSignal={loadingSignal}
+                sourceHash={sourceHash}
+                recoveryStatus={recoveryStatus}
+                viewStart={viewStart}
+                timebase={timebase}
+                visibleChannelCount={display.labels.length}
+                selectedChannelCount={selectedChannels.size}
+                openSessionCount={sessionTabs.length}
+                activeDisplayBytes={activeDisplayBytes}
+                activeDisplayVisibleBytes={activeDisplayVisibleBytes}
+                readCacheUsage={readResourceCacheUsage}
+              />
+            </div>}
+            {sidebarTab === "view" && <div className="sidebar-scroll view-settings" data-tutorial="view-tools">
+              <h2>Viewing tools</h2>
+              {WORKSPACE_TOOLS.map(tool => <div className="view-tool-row" key={tool.id}>
+                {toolbarTools.includes(tool.id) ? <span>{tool.label} <small>in toolbar</small></span> : viewTools[tool.id]}
+                <button className="tool-pin" aria-label={`${toolbarTools.includes(tool.id) ? "Remove" : "Add"} ${tool.label} ${toolbarTools.includes(tool.id) ? "from" : "to"} toolbar`}
+                  aria-pressed={toolbarTools.includes(tool.id)} title="Show this tool in the top toolbar"
+                  onClick={() => setToolbarTools(current => current.includes(tool.id) ? current.filter(id => id !== tool.id) : [...current, tool.id])}>{toolbarTools.includes(tool.id) ? "−" : "+"}</button>
+              </div>)}
+              <button className="button secondary fit-channels-button" disabled={!hasRecording} onClick={fitEnabledChannels}>Fit all enabled channels</button>
+              <ChannelVisibilityControls labels={meta.channelLabels} groups={channelOptions} selected={selectedChannels}
+                search={channelSearch} onSearch={setChannelSearch} disabled={!hasRecording}
+                onChange={setChannelVisibility} />
+            </div>}
+            {sidebarTab === "labels" && <div className="labels-workspace">
+              <WorkspaceTabs label="Label sections" id="labels" tabs={LABEL_TABS} value={labelsTab} onChange={setLabelsTab} />
+              <div className={`labels-tab-body labels-${labelsTab}`} role="tabpanel" id={`labels-panel-${labelsTab}`} aria-labelledby={`labels-tab-${labelsTab}`}>
+                {labelsTab === "session" && <>
+                  <button className="session-map-row" disabled={!hasRecording} onClick={() => setShowSessionMap(true)}><span>Session Map</span><b aria-hidden="true">↗</b></button>
 
-          <section className="session-labels-section" data-tutorial="session-labels" ref={sessionLabelsSectionRef} style={{ height: sessionLabelsHeight }}>
-            <div className="sidebar-centered-heading">
-              <strong>Session Labels</strong>
-              <span>{sessionContextAnnotations.length}</span>
-              <div className="session-context-menu-wrap">
-                <button className="sidebar-add-button" disabled={!reviewReady} aria-label="Add session label" title={verifyingSource ? "Opening recording" : "Add entire-session context"} onClick={() => setShowSessionContextPicker((value) => !value)}>＋</button>
-                {showSessionContextPicker && <div className="session-context-picker" role="menu" aria-label="Entire-session context labels">
-                  <strong>Add entire-session context</strong>
-                  {entireSessionContexts.map((label) => <button key={label.id} role="menuitem" onClick={() => {
-                    placePaletteLabel(label);
-                    setShowSessionContextPicker(false);
-                  }} style={{ "--label-color": label.color } as React.CSSProperties}><i />{label.name}</button>)}
+                  <section className="session-labels-section" data-tutorial="session-labels">
+                    <div className="sidebar-centered-heading">
+                      <strong>Session Labels</strong>
+                      <span>{sessionContextAnnotations.length}</span>
+                      <div className="session-context-menu-wrap">
+                        <button className="sidebar-add-button" disabled={!reviewReady} aria-label="Add session label" title={verifyingSource ? "Opening recording" : "Add entire-session context"} onClick={() => setShowSessionContextPicker((value) => !value)}>＋</button>
+                        {showSessionContextPicker && <div className="session-context-picker" role="menu" aria-label="Entire-session context labels">
+                          <strong>Add entire-session context</strong>
+                          {entireSessionContexts.map((label) => <button key={label.id} role="menuitem" onClick={() => {
+                            placePaletteLabel(label);
+                            setShowSessionContextPicker(false);
+                          }} style={{ "--label-color": label.color } as React.CSSProperties}><i />{label.name}</button>)}
+                        </div>}
+                      </div>
+                    </div>
+                    <div className="session-label-list">
+                      {!labelsVisible ? <div className="empty-session-labels"><strong>Labels hidden</strong><span>Show labels from the Instance Queue to restore them.</span></div> : sessionContextAnnotations.length ? sessionContextAnnotations.map((item) => {
+                        const label = annotationLabel(item, labelLibrary);
+                        return <button key={item.id} className={selectedAnnotationId === item.id ? "active" : ""} onClick={() => {
+                          setSelectedAnnotationId(item.id);
+                          setSelectedAnnotationIds(new Set([item.id]));
+                        }} style={{ "--label-color": label?.color } as React.CSSProperties}>
+                          <i /><span><strong>{label?.name ?? item.labelId}</strong><small>{item.notes || "Entire recording"}</small></span>
+                        </button>;
+                      }) : <div className="empty-session-labels"><strong>No session labels</strong><span>Use + above to add one.</span></div>}
+                    </div>
+                  </section>
+
+                </>}
+                {labelsTab === "events" && <>
+                  <section className="queue-section">
+                    <div className="queue-heading">
+                      <button disabled={activeFilteredQueueIndex <= 0} aria-label="Previous event or instance" title="Previous matching event or instance" onClick={() => selectInstanceQueueEntry(filteredQueueEntries[activeFilteredQueueIndex - 1].index)}>‹</button>
+                      <div><strong>Instance Queue</strong><span>{activeFilteredQueueIndex + 1}/{filteredQueueEntries.length}</span></div>
+                      <button disabled={importBusy || directoryEventProgress !== null || (!queueAcrossSessions && (!filteredQueueEntries.length || activeFilteredQueueIndex >= filteredQueueEntries.length - 1))}
+                        aria-label="Next event or instance" title={queueAcrossSessions ? "Next matching event, including later sessions" : "Next matching event in this session"}
+                        onClick={() => {
+                          const next = filteredQueueEntries[activeFilteredQueueIndex + 1];
+                          if (next) selectInstanceQueueEntry(next.index);
+                          else if (queueAcrossSessions) void navigateDirectoryEvent();
+                        }}>›</button>
+                    </div>
+                    <div className="queue-search-tools">
+                      <label className="queue-search"><span>Find labels / events</span><input type="search" value={queueSearch}
+                        placeholder="seizure, spike…" onChange={(event) => changeLabelKeywords(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return;
+                          event.preventDefault();
+                          const next = filteredQueueEntries[activeFilteredQueueIndex + 1];
+                          if (next) selectInstanceQueueEntry(next.index);
+                          else if (queueAcrossSessions) void navigateDirectoryEvent();
+                        }} /></label>
+                      <button type="button" className="queue-mini-button" aria-label="Continue events across sessions"
+                        data-tutorial="directory-next-event" aria-pressed={queueAcrossSessions}
+                        disabled={!sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId}
+                        title="Toggle next-event navigation across sessions" onClick={() => setQueueAcrossSessions((current) => !current)}>⇥</button>
+                      <button type="button" className="queue-mini-button" data-tutorial="label-visibility"
+                        aria-label={labelsVisible ? "Hide all labels" : "Show all labels"} aria-pressed={!labelsVisible}
+                        title={labelsVisible ? "Hide labels" : "Show labels"}
+                        onClick={() => { setLabelsVisible((visible) => !visible); clearLabelFilterSelection(); }}>◉</button>
+                      <QueueLabelDictionary options={labelTypeOptions} hiddenTypes={hiddenLabelTypes} keywords={queueSearch}
+                        open={showLabelVisibilityFilter} onOpenChange={setShowLabelVisibilityFilter}
+                        onKeywordsChange={changeLabelKeywords} onChange={changeHiddenLabelTypes} />
+                    </div>
+                    {directoryEventProgress && <div className="queue-search-progress" role="status">{directoryEventProgress}
+                      <button type="button" aria-label="Cancel event search" onClick={cancelDirectoryEventSearch}>×</button>
+                    </div>}
+                    <div className="queue-result-count">{filteredQueueEntries.length} match{filteredQueueEntries.length === 1 ? "" : "es"} · {annotations.filter((item) => item.recordingLabel).length} imported recording labels{hiddenLabelTypeCount > 0 ? ` · ${hiddenLabelTypeCount} types hidden` : ""}</div>
+                    <div className="queue-list">
+                      {filteredQueueEntries.length ? filteredQueueEntries.slice(0, queueLimit).map(({ entry, index }) => <div key={`${entry.kind}-${entry.id}`} className={`queue-item ${index === activeQueueIndex ? "active" : ""}`}>
+                        <button className="queue-jump" onClick={() => selectInstanceQueueEntry(index)} aria-label={`Jump to ${entry.label}`} title={entry.label}>
+                          <span className={`queue-status ${entry.status}`} />
+                          <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
+                        </button>
+                        <label className="queue-confidence" title={entry.locked ? "Reopen the source-event decision before editing confidence" : "Editable confidence percentage"}>
+                          <input type="number" min="0" max="100" step="1" disabled={entry.locked} value={entry.confidence} aria-label={`Confidence for ${entry.label}`} onChange={(event) => updateQueueConfidence(entry.kind, entry.id, Number(event.target.value))} />
+                          <span>%</span>
+                        </label>
+                        <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
+                      </div>) : <div className="empty-queue"><strong>{queueSearch || hiddenLabelTypeCount || keywordFilterActive ? "No matching labels" : "No events or instance labels"}</strong><p>{queueSearch || hiddenLabelTypeCount || keywordFilterActive ? "Try another keyword or change the label dictionary." : hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
+                      {filteredQueueEntries.length > queueLimit && <button className="queue-load-more" onClick={() => setQueueLimit((limit) => limit + 100)}>Show next {Math.min(100, filteredQueueEntries.length - queueLimit)} labels</button>}
+                    </div>
+                  </section>
+                </>}
+                {labelsTab === "create" && <div className="sidebar-scroll" data-tutorial="label-panel">
+                  <div className="ontology-search-row">
+                    <input className="palette-search" aria-label="Search label ontology" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
+                    <button type="button" className="button secondary" onClick={() => setShowLabelLibrary(true)}>Label library</button>
+                  </div>
+                  <section className="compact-context-palette" data-tutorial="context-palette">
+                    <h2>Context Labels</h2>
+                    <p className="palette-kind">Context palette · click = instance · selected span = window</p>
+                    <div className="compact-context-only">
+                      {rightContextLabels.map((label) => <button key={label.id} className="compact-palette-button context" disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
+                          event.dataTransfer.setData("application/x-neurotrace-label", label.id);
+                          event.dataTransfer.effectAllowed = "copy";
+                          setDragGhost({ labelId: label.id, time: cursorTime });
+                        }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name} · ${label.geometry === "session" ? "entire recording" : label.geometry === "point" ? "single clinical moment" : "timed context"}`}>
+                          <i />{label.name}
+                        </button>)}
+                    </div>
+                  </section>
+                  {labelLibrary.labels.length > 0 && <section className="compact-context-palette">
+                    <h2>Dictionary labels</h2>
+                    <div className="compact-context-only">{labelLibrary.labels.filter((item) =>
+                      `${item.name} ${item.code}`.toLowerCase().includes(paletteSearch.toLowerCase())).map((item) => {
+                      const label = LABEL_BY_ID.get("dictionary-label")!;
+                      const alias = labelLibrary.aliases.find((entry) => entry.key === `dictionary:${item.id}`);
+                      return <button type="button" key={item.id} className="compact-palette-button context" disabled={!reviewReady}
+                        style={{ "--label-color": label.color } as React.CSSProperties} title={alias?.description || item.description}
+                        onClick={() => placePaletteLabel({ ...label, name: alias?.alias || item.name, short: item.code || item.name, dictionaryLabel: item })}>
+                        <i />{alias?.alias || item.name}
+                      </button>;
+                    })}</div>
+                  </section>}
+                  <section className="compact-ephys-palette" data-tutorial="ephys-palette">
+                    <div className="ephys-palette-heading">
+                      <h2>ePhys Labels</h2>
+                      <div className="ephys-label-menu">
+                        <button
+                          type="button"
+                          className="ephys-label-menu-toggle"
+                          aria-label="Choose visible ePhys label types"
+                          data-tutorial="label-picker"
+                          aria-haspopup="dialog"
+                          aria-expanded={showEphysLabelPicker}
+                          aria-controls="ephys-label-picker"
+                          title="Choose visible ePhys label types"
+                          onClick={() => setShowEphysLabelPicker((value) => !value)}
+                        >…</button>
+                      </div>
+                    </div>
+                    <p><span className="palette-kind">Label palette</span> · click = instance · selected span = window</p>
+                    {rightEphysLabelGroups.length ? <div className="ontology-groups">
+                      {rightEphysLabelGroups.map(({ label: groupLabel, labels }) => <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{labels.map((label) => <button className="compact-palette-button" key={label.id} disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
+                          event.dataTransfer.setData("application/x-neurotrace-label", label.id);
+                          event.dataTransfer.effectAllowed = "copy";
+                          setDragGhost({ labelId: label.id, time: cursorTime });
+                        }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name}${`label:${label.id}` in controlBindings ? ` · ${shortcutHint(controlBindings, `label:${label.id}` as ShortcutAction)}` : ""}`}>
+                          <i />{PALETTE_BUTTON_NAMES[label.id] ?? label.short}
+                        </button>)}</div></div>)}
+                    </div> : <div className="empty-ephys-palette">{enabledEphysLabelIds.size ? "No enabled labels match the search." : "No ePhys label types enabled."}</div>}
+                  </section>
                 </div>}
               </div>
-            </div>
-            <div className="session-label-list">
-              {!labelsVisible ? <div className="empty-session-labels"><strong>Labels hidden</strong><span>Show labels from the Instance Queue to restore them.</span></div> : sessionContextAnnotations.length ? sessionContextAnnotations.map((item) => {
-                const label = annotationLabel(item, labelLibrary);
-                return <button key={item.id} className={selectedAnnotationId === item.id ? "active" : ""} onClick={() => {
-                  setSelectedAnnotationId(item.id);
-                  setSelectedAnnotationIds(new Set([item.id]));
-                }} style={{ "--label-color": label?.color } as React.CSSProperties}>
-                  <i /><span><strong>{label?.name ?? item.labelId}</strong><small>{item.notes || "Entire recording"}</small></span>
-                </button>;
-              }) : <div className="empty-session-labels"><strong>No session labels</strong><span>Use + above to add one.</span></div>}
-            </div>
-          </section>
-
-          <div
-            className="left-split-resize-handle"
-            data-shortcut-scope="queueResize"
-            role="separator"
-            tabIndex={0}
-            aria-label="Resize Session Labels and Instance Queue"
-            aria-orientation="horizontal"
-            aria-valuemin={105}
-            aria-valuemax={320}
-            aria-valuenow={Math.round(sessionLabelsHeight)}
-            title="Drag to resize Session Labels and Instance Queue"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              const sessionHeight = sessionLabelsSectionRef.current?.getBoundingClientRect().height ?? sessionLabelsHeight;
-              const queueHeight = queueSectionRef.current?.getBoundingClientRect().height ?? 170;
-              sessionQueueResizeRef.current = {
-                startY: event.clientY,
-                startHeight: sessionHeight,
-                availableHeight: sessionHeight + queueHeight,
-              };
-            }}
-            onKeyDown={(event) => {
-              const action = shortcutAction(event, controlBindings, ["queueResize"]);
-              if (!action) return;
-              event.preventDefault();
-              setSessionLabelsHeight((height) => clamp(height + (action === "queueGrow" ? 10 : -10), 105, 320));
-            }}
-          ><span /></div>
-
-          <section className="queue-section" ref={queueSectionRef}>
-            <div className="queue-heading">
-              <button disabled={activeFilteredQueueIndex <= 0} aria-label="Previous event or instance" title="Previous matching event or instance" onClick={() => selectInstanceQueueEntry(filteredQueueEntries[activeFilteredQueueIndex - 1].index)}>‹</button>
-              <div><strong>Instance Queue</strong><span>{activeFilteredQueueIndex + 1}/{filteredQueueEntries.length}</span></div>
-              <button disabled={importBusy || directoryEventProgress !== null || (!queueAcrossSessions && (!filteredQueueEntries.length || activeFilteredQueueIndex >= filteredQueueEntries.length - 1))}
-                aria-label="Next event or instance" title={queueAcrossSessions ? "Next matching event, including later sessions" : "Next matching event in this session"}
-                onClick={() => {
-                  const next = filteredQueueEntries[activeFilteredQueueIndex + 1];
-                  if (next) selectInstanceQueueEntry(next.index);
-                  else if (queueAcrossSessions) void navigateDirectoryEvent();
-                }}>›</button>
-            </div>
-            <div className="queue-search-tools">
-              <label className="queue-search"><span>Find labels / events</span><input type="search" value={queueSearch}
-                placeholder="seizure, spike…" onChange={(event) => changeLabelKeywords(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") return;
-                  event.preventDefault();
-                  const next = filteredQueueEntries[activeFilteredQueueIndex + 1];
-                  if (next) selectInstanceQueueEntry(next.index);
-                  else if (queueAcrossSessions) void navigateDirectoryEvent();
-                }} /></label>
-              <button type="button" className="queue-mini-button" aria-label="Continue events across sessions"
-                data-tutorial="directory-next-event" aria-pressed={queueAcrossSessions}
-                disabled={!sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId}
-                title="Toggle next-event navigation across sessions" onClick={() => setQueueAcrossSessions((current) => !current)}>⇥</button>
-              <button type="button" className="queue-mini-button" data-tutorial="label-visibility"
-                aria-label={labelsVisible ? "Hide all labels" : "Show all labels"} aria-pressed={!labelsVisible}
-                title={labelsVisible ? "Hide labels" : "Show labels"}
-                onClick={() => { setLabelsVisible((visible) => !visible); clearLabelFilterSelection(); }}>◉</button>
-              <QueueLabelDictionary options={labelTypeOptions} hiddenTypes={hiddenLabelTypes} keywords={queueSearch}
-                open={showLabelVisibilityFilter} onOpenChange={setShowLabelVisibilityFilter}
-                onKeywordsChange={changeLabelKeywords} onChange={changeHiddenLabelTypes} />
-            </div>
-            {directoryEventProgress && <div className="queue-search-progress" role="status">{directoryEventProgress}
-              <button type="button" aria-label="Cancel event search" onClick={cancelDirectoryEventSearch}>×</button>
             </div>}
-            <div className="queue-result-count">{filteredQueueEntries.length} match{filteredQueueEntries.length === 1 ? "" : "es"} · {annotations.filter((item) => item.recordingLabel).length} imported recording labels{hiddenLabelTypeCount > 0 ? ` · ${hiddenLabelTypeCount} types hidden` : ""}</div>
-            <div className="queue-list">
-              {filteredQueueEntries.length ? filteredQueueEntries.slice(0, queueLimit).map(({ entry, index }) => <div key={`${entry.kind}-${entry.id}`} className={`queue-item ${index === activeQueueIndex ? "active" : ""}`}>
-                <button className="queue-jump" onClick={() => selectInstanceQueueEntry(index)} aria-label={`Jump to ${entry.label}`} title={entry.label}>
-                  <span className={`queue-status ${entry.status}`} />
-                  <span className="queue-copy"><strong>{entry.label}</strong><small>{formatClock(entry.time, true)} · {entry.detail}</small></span>
-                </button>
-                <label className="queue-confidence" title={entry.locked ? "Reopen the source-event decision before editing confidence" : "Editable confidence percentage"}>
-                  <input type="number" min="0" max="100" step="1" disabled={entry.locked} value={entry.confidence} aria-label={`Confidence for ${entry.label}`} onChange={(event) => updateQueueConfidence(entry.kind, entry.id, Number(event.target.value))} />
-                  <span>%</span>
-                </label>
-                <button className="queue-arrow" aria-label={`Open details for ${entry.label}`} title={`Open ${entry.label} details`} onClick={() => setQueueDetailTarget({ kind: entry.kind, id: entry.id })}>›</button>
-              </div>) : <div className="empty-queue"><strong>{queueSearch || hiddenLabelTypeCount || keywordFilterActive ? "No matching labels" : "No events or instance labels"}</strong><p>{queueSearch || hiddenLabelTypeCount || keywordFilterActive ? "Try another keyword or change the label dictionary." : hasRecording ? "File events, instance labels, and timed context appear here." : "Load a recording to begin."}</p></div>}
-              {filteredQueueEntries.length > queueLimit && <button className="queue-load-more" onClick={() => setQueueLimit((limit) => limit + 100)}>Show next {Math.min(100, filteredQueueEntries.length - queueLimit)} labels</button>}
-            </div>
-          </section>
+          </div>
         </aside>
 
         <section className="review-surface" id="active-session-workspace" role="tabpanel">
@@ -8396,48 +8569,11 @@ export default function Home() {
             sourceHash={sourceHash}
           /> : <>
           <div className="viewer-toolbar" data-tutorial="signal-tools">
-            <div className="panel-toggle-pair" aria-label="Workspace panels">
-              <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title={`${leftPanelOpen ? "Hide" : "Show"} recording panel`} onClick={() => setLeftPanelOpen((value) => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
-              <button className={`panel-icon-button ${rightPanelOpen ? "active" : ""}`} aria-label={`${rightPanelOpen ? "Hide" : "Show"} right panel`} aria-pressed={rightPanelOpen} title={`${rightPanelOpen ? "Hide" : "Show"} ${rightPanelView === "resources" ? "resource usage" : rightPanelView === "inspect" ? "general info" : "context and label"} panel`} onClick={() => setRightPanelOpen((value) => !value)}><span className="panel-glyph right" aria-hidden="true"><i /><i /><i /></span></button>
-              <button className={`panel-bottom-button ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} title={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} onClick={() => setBottomTracksOpen((value) => !value)}><span className="bottom-panel-glyph" aria-hidden="true"><i /><i /><i /></span></button>
-            </div>
-            <span className="toolbar-kicker">Signal tools</span>
-            <button className={`spectrum-button ${spectrogramOpen ? "active" : ""}`} data-tutorial="spectrogram-toggle" aria-label="Spectrogram" title="Shift-click channel names to average their spectrogram power" disabled={!hasRecording} onClick={() => setSpectrogramOpen((value) => !value)}><span className="spectrum-glyph" aria-hidden="true"><i /><i /><i /><i /></span><b>Spectrogram</b></button>
-            <label className="toolbar-select" data-tutorial="montage"><span>Montage</span><select aria-label="Montage" disabled={!hasRecording} value={montage} onChange={(event) => setMontage(event.target.value as MontageMode)}><option value="referential">Recorded reference</option><option value="average">Average reference</option><option value="bipolar">{bipolarMontageLabel(meta.channelLabels)}</option></select></label>
-            <button
-              className={`compact-toggle ${anatomicalGroups ? "active" : ""}`}
-              data-tutorial="channel-groups"
-              aria-label={anatomicalGroups ? "Ungroup channels" : "Group channels"}
-              aria-pressed={anatomicalGroups}
-              disabled={!hasRecording || !anatomicalGroupsAvailable}
-              title={anatomicalGroups ? "Show channels without grouping" : anatomicalGroupsAvailable
-                ? channelGroupingMode === "name" ? "Group channels by name" : "Group anatomical channels as in MATLAB"
-                : "No channel name groups available"}
-              onClick={() => changeZoomView({ anatomicalGroups: !anatomicalGroups, verticalViewport: null, channelScrollTop: 0 })}
-            >{anatomicalGroups ? "Ungroup" : "Group"}</button>
-            <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => setShowFilters((value) => !value)}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
-            <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
-              <span className="window-control-label">Window</span>
-              <label className="window-amount-field"><input
-                disabled={!hasRecording}
-                aria-label={`Window amount in ${windowDraftUnit}`}
-                type="number"
-                min={windowDraftMinimum}
-                max={windowDraftMaximum}
-                step={windowDraftStep}
-                value={windowDraftDisplayValue}
-                onChange={(event) => setWindowDraftValue(event.target.value)}
-                onKeyDown={(event) => { if (matchesShortcut(event, controlBindings, "windowApply")) { event.preventDefault(); syncWindowDraft(); } }}
-              /></label>
-              <div className="window-unit-picker">
-                <b>{windowDraftUnit}</b>
-                <button disabled={!hasRecording} aria-label="Cycle window time unit" title="Cycle time unit" onClick={cycleWindowDraftUnit}><span aria-hidden="true">…</span></button>
-              </div>
-              <div className="window-step-buttons">
-                <button disabled={!hasRecording} aria-label="Increase window amount" title="Increase by 0.1 · Shift: 1 · Ctrl/Cmd+Shift: 10" onClick={(event) => adjustWindowDraft(1, event)}>+</button>
-                <button disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease by 0.1 · Shift: 1 · Ctrl/Cmd+Shift: 10" onClick={(event) => adjustWindowDraft(-1, event)}>−</button>
-              </div>
-              <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
+            <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title="Toggle workspace sidebar" onClick={() => setLeftPanelOpen(value => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
+            <div className="transport-group" data-tutorial="transport">
+              <button disabled={!hasRecording} aria-label="Previous page" onClick={() => { setViewStartSafe((value) => value - timebase); notifyTutorialAction("transport-used"); }}>‹</button>
+              <button disabled={!hasRecording} className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => { setPlaying((value) => !value); notifyTutorialAction("transport-used"); }}>{playing ? "Ⅱ" : "▶"}</button>
+              <button disabled={!hasRecording} aria-label="Next page" onClick={() => { setViewStartSafe((value) => value + timebase); notifyTutorialAction("transport-used"); }}>›</button>
             </div>
             <form
               key={`${activeSessionId}:${sessionKey}`}
@@ -8478,45 +8614,28 @@ export default function Home() {
               /></label>
               <button type="submit" disabled={!hasRecording}>Go</button>
             </form>
-              <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain">
-                <span>Gain</span>
-                <label className="gain-amount-field"><input
-                  key={`${activeSessionId}:${sessionKey}:${gain}`}
-                  disabled={!hasRecording}
-                  aria-label="Gain multiplier"
-                  title={`Gain 0.01–4× · ${shortcutHint(controlBindings, "gainApply")} or leave the field to apply · ${shortcutHint(controlBindings, "clear")} to cancel`}
-                  type="number" min={MIN_DISPLAY_GAIN} max={MAX_DISPLAY_GAIN} step="0.01"
-                  defaultValue={gain}
-                  onBlur={(event) => commitGainInput(event.currentTarget)}
-                  onKeyDown={(event) => {
-                    const apply = matchesShortcut(event, controlBindings, "gainApply");
-                    const cancel = matchesShortcut(event, controlBindings, "clear");
-                    if (!apply && !cancel) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (cancel) event.currentTarget.value = String(gain);
-                    event.currentTarget.blur();
-                  }}
-                /><b aria-hidden="true">×</b></label>
-                <div className="gain-step-buttons">
-                  <button disabled={!hasRecording || gain >= MAX_DISPLAY_GAIN} aria-label="Increase gain" title="Increase gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, 1) })}>+</button>
-                  <button disabled={!hasRecording || gain <= MIN_DISPLAY_GAIN} aria-label="Decrease gain" title="Decrease gain" onClick={() => changeZoomView({ gain: stepDisplayGain(readZoomView().gain, -1) })}>−</button>
-                </div>
+            <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
+              <span className="window-control-label">Window</span>
+              <label className="window-amount-field"><input
+                disabled={!hasRecording}
+                aria-label={`Window amount in ${windowDraftUnit}`}
+                type="number"
+                min={windowDraftMinimum}
+                max={windowDraftMaximum}
+                step={windowDraftStep}
+                value={windowDraftDisplayValue}
+                onChange={(event) => setWindowDraftValue(event.target.value)}
+                onKeyDown={(event) => { if (matchesShortcut(event, controlBindings, "windowApply")) { event.preventDefault(); syncWindowDraft(); } }}
+              /></label>
+              <div className="window-unit-picker">
+                <button disabled={!hasRecording} aria-label="Cycle window time unit" title="Cycle time unit" onClick={cycleWindowDraftUnit}><b>{windowDraftUnit}</b><span aria-hidden="true">…</span></button>
               </div>
-            <button
-              className={`trace-display-toggle ${traceDisplayMode === "overlap" ? "active" : ""}`}
-              data-tutorial="clamp"
-              disabled={!hasRecording}
-              aria-label="Allow channel traces to overlap"
-              aria-pressed={traceDisplayMode === "overlap"}
-              title={traceDisplayMode === "clamped" ? "Switch to overlapping channel traces" : "Switch to clamped traces with overflow heat lines"}
-              onClick={() => {
-                const nextMode = traceDisplayMode === "clamped" ? "overlap" : "clamped";
-                setTraceDisplayMode(nextMode);
-                setToast(nextMode === "overlap" ? "Channel traces may now overlap" : "Channel traces clamped with voltage heat lines");
-              }}
-            ><span aria-hidden="true">≋</span><b>{traceDisplayMode === "clamped" ? "Clamped" : "Overlap"}</b></button>
-            <div className="toolbar-spacer" />
+              <div className="window-step-buttons">
+                <button disabled={!hasRecording} aria-label="Increase window amount" title="Increase by 0.1 · Shift: 1 · Ctrl/Cmd+Shift: 10" onClick={(event) => adjustWindowDraft(1, event)}>+</button>
+                <button disabled={!hasRecording} aria-label="Decrease window amount" title="Decrease by 0.1 · Shift: 1 · Ctrl/Cmd+Shift: 10" onClick={(event) => adjustWindowDraft(-1, event)}>−</button>
+              </div>
+              <button className="window-sync-button" disabled={!hasRecording || windowDraftValue === null} aria-label="Sync window amount and unit" title="Apply the staged window amount and unit" onClick={syncWindowDraft}><span aria-hidden="true">✓</span></button>
+            </div>
             <button
               className={`tool-button box-zoom-button ${boxZoomActive ? "active" : ""}`}
               data-tutorial="waveform-zoom"
@@ -8535,11 +8654,8 @@ export default function Home() {
                 setToast(nextActive ? "Box zoom active — drag a rectangle on the waveform" : "Box zoom off — waveform drag creates labeling windows");
               }}
             ><span aria-hidden="true">⌗</span></button>
-            <div className="transport-group" data-tutorial="transport">
-              <button disabled={!hasRecording} aria-label="Previous page" onClick={() => { setViewStartSafe((value) => value - timebase); notifyTutorialAction("transport-used"); }}>‹</button>
-              <button disabled={!hasRecording} className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => { setPlaying((value) => !value); notifyTutorialAction("transport-used"); }}>{playing ? "Ⅱ" : "▶"}</button>
-              <button disabled={!hasRecording} aria-label="Next page" onClick={() => { setViewStartSafe((value) => value + timebase); notifyTutorialAction("transport-used"); }}>›</button>
-            </div>
+            {toolbarTools.map(id => <div className="pinned-toolbar-tool" key={id}>{viewTools[id]}</div>)}
+            <ToolbarCustomizer selected={toolbarTools} onChange={setToolbarTools} />
           </div>
 
           {hasRecording && showFilters && <div className="filter-drawer">
@@ -8611,7 +8727,7 @@ export default function Home() {
               onScroll={updateExpandedChannelViewport}
             >
               <div className={`channel-rail ${channelRowLayout.groups.length ? "anatomical-groups" : ""} ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
-                <button className="channel-manager-button" data-tutorial="channels" aria-label="Manage channels" title="Show or hide channels and groups" onClick={() => setShowChannels(true)}>Channels</button>
+                <button className="channel-manager-button" aria-label="Fit all enabled channels" title="Fit all enabled channels to the screen" onClick={fitEnabledChannels}>≡</button>
                 <button
                   className={`channel-layout-button ${expandedChannels || waveformVerticalViewport ? "active" : ""}`}
                   aria-label={waveformVerticalViewport ? "Reset vertical box zoom" : `${expandedChannels ? "Use compact" : "Use expanded scrollable"} channel layout`}
@@ -8659,6 +8775,26 @@ export default function Home() {
                       notifyTutorialAction("channel-focused");
                     }}
                   ><strong>{anatomicalGroups ? channelRowLayout.contactLabels[index] : formatDisplayChannelLabel(label)}</strong>{!anatomicalGroups && <span>{!displayReadoutReady ? "—" : rowReadout.kind === "range" ? "Overview range" : formatCursorAmplitude(rowReadout)}</span>}</button>;
+                })}
+                {channelRowLayout.groups.slice(1).map(({ name, startRow }) => {
+                  const top = channelGeometry.yForUnit(channelRowLayout.rowStartUnits[startRow]);
+                  const previous = channelGeometry.yForUnit(channelRowLayout.rowStartUnits[startRow - 1]) + channelGeometry.rowHeight;
+                  const gap = top - previous;
+                  return <button key={`gap-${name}-${startRow}`} className="channel-gap-handle" role="separator" aria-orientation="horizontal"
+                    aria-label={`Adjust spacing before ${name} group`} title="Drag to change spacing uniformly between channel groups" tabIndex={0}
+                    style={{ top: CHANNEL_RAIL_HEADER_HEIGHT + previous + gap / 2 - 4 }}
+                    onPointerDown={event => {
+                      if (event.button !== 0) return;
+                      event.preventDefault();
+                      channelGapResizeRef.current = { startY: event.clientY, startGap: gap };
+                      setChannelGroupGap(normalizeChannelGroupGap(gap));
+                      changeZoomView({ expandedChannels: true, verticalViewport: null });
+                    }} onKeyDown={event => {
+                      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                      event.preventDefault();
+                      setChannelGroupGap(normalizeChannelGroupGap(gap + (event.key === "ArrowDown" ? 4 : -4)));
+                      changeZoomView({ expandedChannels: true, verticalViewport: null });
+                    }} />;
                 })}
                 {channelRowLayout.groups.map(({ name, startRow, endRow }) => {
                   const style = channelGroupLabelStyle(startRow, endRow);
@@ -8815,7 +8951,7 @@ export default function Home() {
               <span className="empty-intro-kicker">NEUROTRACE CLINICAL EEG STUDIO</span>
               <strong className="empty-intro-title">Welcome to NeuroTrace</strong>
               <span className="empty-intro-copy">Review and annotate clinical EEG recordings in one focused, browser-based workspace.</span>
-              <span className="empty-intro-support">Your recording stays on this device. Select <b>?</b> in the top-right for guidance, or use Settings to tailor the workspace. For help or to report bugs, email <a href="mailto:alex.maynes2001@gmail.com">alex.maynes2001@gmail.com</a>.</span>
+              <span className="empty-intro-support">Your recording stays on this device. Select <b>?</b> in the bottom-right for guidance, or use Settings to tailor the workspace. For help or to report bugs, email <a href="mailto:alex.maynes2001@gmail.com">alex.maynes2001@gmail.com</a>.</span>
             </span>
             <button type="button" className="empty-load-prompt" onClick={() => setShowImport(true)}>
               <span className="empty-load-mark" aria-hidden="true">＋</span>
@@ -8826,105 +8962,38 @@ export default function Home() {
           </div>}
           </>}
         </section>
-
-        <aside className="right-sidebar" data-tutorial={rightPanelView === "labels" ? "label-panel" : undefined}>
-          {rightPanelView === "resources" ? <ResourceUsagePanel
-            meta={meta}
-            hasRecording={hasRecording}
-            verifyingSource={verifyingSource}
-            loadingSignal={loadingSignal}
-            sourceHash={sourceHash}
-            recoveryStatus={recoveryStatus}
-            viewStart={viewStart}
-            timebase={timebase}
-            visibleChannelCount={display.labels.length}
-            selectedChannelCount={selectedChannels.size}
-            openSessionCount={sessionTabs.length}
-            activeDisplayBytes={activeDisplayBytes}
-            activeDisplayVisibleBytes={activeDisplayVisibleBytes}
-            readCacheUsage={readResourceCacheUsage}
-          /> : <>
-          <div className="right-panel-mode-switch" role="tablist" aria-label="Right panel tools">
-            <button role="tab" aria-selected={rightPanelView === "labels"} className={rightPanelView === "labels" ? "active" : ""} onClick={() => selectRightPanelTool("labels")}><span aria-hidden="true">✎</span>Labeling tools</button>
-            <button role="tab" aria-selected={rightPanelView === "inspect"} className={rightPanelView === "inspect" ? "active" : ""} onClick={() => selectRightPanelTool("inspect")}><span aria-hidden="true">⌖</span>General info</button>
-          </div>
-          {rightPanelView === "inspect" ? <GeneralInfoPanel
-            meta={meta}
-            companionBundle={companionBundle}
-            display={display}
-            annotations={displayAnnotations}
-            focusedChannel={focusedChannel}
-            cursorTime={cursorTime}
-            cursorReadout={cursorReadout}
-            inspectionRange={inspectionRange}
-            selection={selection}
-            channelSelectionActive={channelSelectionActive}
-            montage={montage}
-            viewStart={viewStart}
-            timebase={timebase}
-            hasRecording={hasRecording}
-          /> : <>
-          <div className="ontology-search-row">
-            <input className="palette-search" aria-label="Search label ontology" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
-            <button type="button" className="button secondary" onClick={() => setShowLabelLibrary(true)}>Label library</button>
-          </div>
-          <section className="compact-context-palette" data-tutorial="context-palette">
-            <h2>Context Labels</h2>
-            <p className="palette-kind">Context palette · click = instance · selected span = window</p>
-            <div className="compact-context-only">
-              {rightContextLabels.map((label) => <button key={label.id} className="compact-palette-button context" disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
-                  event.dataTransfer.setData("application/x-neurotrace-label", label.id);
-                  event.dataTransfer.effectAllowed = "copy";
-                  setDragGhost({ labelId: label.id, time: cursorTime });
-                }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name} · ${label.geometry === "session" ? "entire recording" : label.geometry === "point" ? "single clinical moment" : "timed context"}`}>
-                  <i />{label.name}
-                </button>)}
-            </div>
-          </section>
-          {labelLibrary.labels.length > 0 && <section className="compact-context-palette">
-            <h2>Dictionary labels</h2>
-            <div className="compact-context-only">{labelLibrary.labels.filter((item) =>
-              `${item.name} ${item.code}`.toLowerCase().includes(paletteSearch.toLowerCase())).map((item) => {
-              const label = LABEL_BY_ID.get("dictionary-label")!;
-              const alias = labelLibrary.aliases.find((entry) => entry.key === `dictionary:${item.id}`);
-              return <button type="button" key={item.id} className="compact-palette-button context" disabled={!reviewReady}
-                style={{ "--label-color": label.color } as React.CSSProperties} title={alias?.description || item.description}
-                onClick={() => placePaletteLabel({ ...label, name: alias?.alias || item.name, short: item.code || item.name, dictionaryLabel: item })}>
-                <i />{alias?.alias || item.name}
-              </button>;
-            })}</div>
-          </section>}
-          <section className="compact-ephys-palette" data-tutorial="ephys-palette">
-            <div className="ephys-palette-heading">
-              <h2>ePhys Labels</h2>
-              <div className="ephys-label-menu">
-                <button
-                  type="button"
-                  className="ephys-label-menu-toggle"
-                  aria-label="Choose visible ePhys label types"
-                  data-tutorial="label-picker"
-                  aria-haspopup="dialog"
-                  aria-expanded={showEphysLabelPicker}
-                  aria-controls="ephys-label-picker"
-                  title="Choose visible ePhys label types"
-                  onClick={() => setShowEphysLabelPicker((value) => !value)}
-                >…</button>
-              </div>
-            </div>
-            <p><span className="palette-kind">Label palette</span> · click = instance · selected span = window</p>
-            {rightEphysLabelGroups.length ? <div className="ontology-groups">
-              {rightEphysLabelGroups.map(({ label: groupLabel, labels }) => <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{labels.map((label) => <button className="compact-palette-button" key={label.id} disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
-                  event.dataTransfer.setData("application/x-neurotrace-label", label.id);
-                  event.dataTransfer.effectAllowed = "copy";
-                  setDragGhost({ labelId: label.id, time: cursorTime });
-                }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name}${`label:${label.id}` in controlBindings ? ` · ${shortcutHint(controlBindings, `label:${label.id}` as ShortcutAction)}` : ""}`}>
-                  <i />{PALETTE_BUTTON_NAMES[label.id] ?? label.short}
-                </button>)}</div></div>)}
-            </div> : <div className="empty-ephys-palette">{enabledEphysLabelIds.size ? "No enabled labels match the search." : "No ePhys label types enabled."}</div>}
-          </section>
-          </>}
-          </>}
-        </aside>
+        <div className="top-actions utility-actions">
+          <button
+            className="utility-button save-project-button"
+            data-tutorial="save"
+            aria-label="Save review"
+            aria-haspopup="dialog"
+            aria-expanded={showProjectSave}
+            aria-controls="project-save-dialog"
+            title="Save review"
+            disabled={!hasRecording || verifyingSource || importBusy || projectSaveBusy}
+            onClick={() => {
+              setProjectSaveError("");
+              setShowProjectSave(true);
+            }}
+          ><span aria-hidden="true">⇩</span></button>
+          <button
+            className="utility-button upload-recording-button"
+            data-tutorial="upload"
+            disabled={importBusy}
+            aria-label="Upload recording or companion files"
+            aria-haspopup="dialog"
+            aria-expanded={showImport}
+            aria-controls="recording-import-dialog"
+            title="Upload a recording, directory, or companion files"
+            onClick={() => {
+              setUploadError(null);
+              setShowImport(true);
+            }}
+          ><span aria-hidden="true">⇧</span></button>
+          <button className="utility-button" data-tutorial="help" aria-label="Open Help" title="Tutorials & walkthroughs" onClick={() => setShowHelp(true)}><span aria-hidden="true">?</span></button>
+          <button className="utility-button" data-tutorial="settings" aria-label="Open Settings" title="Settings" onClick={() => setShowSettings(true)}><span className="settings-glyph" aria-hidden="true">⚙</span></button>
+        </div>
       </div>
 
       {pendingLabel && <div className="modal-backdrop" onMouseDown={(event) => {
@@ -9194,8 +9263,17 @@ export default function Home() {
         onClose={() => setShowHelp(false)}
         onOpen={() => setShowHelp(true)}
         onReveal={(area) => {
-          if (area === "recording-panel") setLeftPanelOpen(true);
-          else if (area === "label-panel") selectRightPanelTool("labels");
+          if (area === "recording-panel" || area === "event-labels") {
+            setLeftPanelOpen(true); setSidebarTab("labels"); setLabelsTab("events");
+          } else if (area === "session-labels") {
+            setLeftPanelOpen(true); setSidebarTab("labels"); setLabelsTab("session");
+          } else if (area === "view-panel") {
+            setLeftPanelOpen(true); setSidebarTab("view");
+          } else if (area === "window-panel") {
+            setLeftPanelOpen(true); setSidebarTab("window");
+          } else if (area === "file-panel") {
+            setLeftPanelOpen(true); setSidebarTab("files");
+          } else if (area === "label-panel") selectSidebarTool("labels");
           else if (area === "label-tracks") setBottomTracksOpen(true);
           else if (area === "spectrogram" && hasRecording) setSpectrogramOpen(true);
         }}
@@ -10145,7 +10223,6 @@ function FileStructurePanel({
 
 function GeneralInfoPanel({
   meta,
-  companionBundle,
   display,
   annotations,
   focusedChannel,
@@ -10160,7 +10237,6 @@ function GeneralInfoPanel({
   hasRecording,
 }: {
   meta: RecordingMeta;
-  companionBundle: BidsCompanionBundle;
   display: DisplayWindow;
   annotations: Annotation[];
   focusedChannel: number;
@@ -10247,7 +10323,6 @@ function GeneralInfoPanel({
         })}</div> : <p>No labels overlap this {isArea ? "area" : "point"}.</p>}
       </section>
     </>}
-    <UploadedFilesPanel bundle={companionBundle} compact />
   </section>;
 }
 

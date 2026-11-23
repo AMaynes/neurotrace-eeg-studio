@@ -192,9 +192,7 @@ test("all local handlers honor customized bindings without requiring the origina
   const spectrogram = localHandler("spectrogram", { controlBindings: { ...DEFAULT_CONTROLS, spectrogramZoom: ["Alt+x"], spectrogramColorUp: ["c"] }, clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)), setTool: (v) => changes.push(v), setZoomBox() {}, setColorLimitShift: (fn) => changes.push(fn(0)), notifyTutorialAction() {} });
   spectrogram(key("x", { altKey: true })); spectrogram(key("c")); spectrogram(key("z"));
   assert.deepEqual(changes, ["box-zoom", -0.1]);
-  let size = 150;
-  localHandler("queueResize", { controlBindings: { ...DEFAULT_CONTROLS, queueGrow: ["j"] }, clamp: (v) => v, setSessionLabelsHeight: (fn) => { size = fn(size); } })(key("j"));
-  assert.equal(size, 160);
+  let size = 160;
   localHandler("spectrogramResize", { controlBindings: { ...DEFAULT_CONTROLS, spectrogramGrow: ["k"] }, clamp: (v) => v, setSpectrogramHeight: (fn) => { size = fn(size); }, MIN_SPECTROGRAM_HEIGHT: 100, panelRef: {}, availableSpectrogramHeight: () => 500 })(key("k"));
   assert.equal(size, 180);
   let applied = 0;
