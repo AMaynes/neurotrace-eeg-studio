@@ -2031,6 +2031,10 @@ export default function Home() {
   const [focusedChannel, setFocusedChannel] = useState(0);
   const [spectrogramChannels, setSpectrogramChannels] = useState<number[]>([]);
   const [channelSelectionActive, setChannelSelectionActive] = useState(false);
+  const clearChannelSelection = useCallback(() => {
+    setSpectrogramChannels([]);
+    setChannelSelectionActive(false);
+  }, []);
   const [anatomicalGroups, setAnatomicalGroups] = useState(true);
   const [preparedDisplay, setDisplay] = useState<DisplayWindow>(EMPTY_DISPLAY);
   const channelGroupingMode = meta.format === "edf" || meta.format === "edf+" ? "name" : "matlab";
@@ -5243,7 +5247,9 @@ export default function Home() {
   const inspectionMode = boxZoomActive;
 
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (event.button !== 0 || !displayReadoutReady || !display.data.length) return;
+    if (event.button !== 0) return;
+    clearChannelSelection();
+    if (!displayReadoutReady || !display.data.length) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const row = channelRowFromClientY(event.clientY, rect);
     if (row === null) return;
@@ -7803,7 +7809,14 @@ export default function Home() {
         setInspectionRange(null);
         setMarkOnset(null);
         setCursorLocked(false);
-        setChannelSelectionActive(false);
+        clearChannelSelection();
+        pointerRef.current = null;
+        pendingCursorRef.current = null;
+        if (cursorFrameRef.current !== null) {
+          window.cancelAnimationFrame(cursorFrameRef.current);
+          cursorFrameRef.current = null;
+        }
+        setInspectionDragging(false);
         notifyTutorialAction("channel-focus-cleared");
         setDragGhost(null);
         setShowSessionContextPicker(false);
@@ -7867,7 +7880,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, pendingLabel, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, clearChannelSelection, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, pendingLabel, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (Math.max(0, viewStart) / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, ((Math.min(meta.durationSec, viewStart + timebase) - Math.max(0, viewStart)) / Math.max(1, meta.durationSec)) * 100);
@@ -8031,7 +8044,7 @@ export default function Home() {
       case "toggle-clamp": return clickControl("clamp");
       case "open-filters": setShowFilters(true); return true;
       case "open-spectrogram": setSpectrogramOpen(true); return true;
-      case "clear-channel-focus": setChannelSelectionActive(false); return true;
+      case "clear-channel-focus": clearChannelSelection(); return true;
       case "spectrogram-browse": return clickControl("spectrogram-browse");
       case "spectrogram-zoom-tool": return clickControl("spectrogram-zoom");
       case "spectrogram-reset": return clickControl("spectrogram-reset");
@@ -8235,7 +8248,14 @@ export default function Home() {
         </div>
       </header>
 
-      <div className={`workspace-grid ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
+      <div className={`workspace-grid ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}
+        onPointerDownCapture={(event) => {
+          if (event.button !== 0) return;
+          const target = event.target as Element;
+          // Analysis, labeling, and resize controls retain the selection they operate on.
+          if (target.closest("canvas, .channel-rail, .spectrogram-panel, button, input, textarea, select, a, summary, [role='button'], [role='separator'], [role='slider'], [draggable='true'], [contenteditable='true']")) return;
+          clearChannelSelection();
+        }}>
         <aside className="left-sidebar" data-tutorial="recording-panel">
           {hasRecording && <section className="recording-summary">
             <>
@@ -8646,14 +8666,12 @@ export default function Home() {
                     style={style} aria-label={`Select ${name} channel group`} aria-pressed={selected}
                     title={`Select all ${name} channels for the spectrogram. Shift-click to combine groups.`}
                     onClick={(event) => {
-                      setSpectrogramChannels((current) => {
-                        if (event.shiftKey) {
-                          return selected ? current.filter((index) => !sources.includes(index)) : [...new Set([...current, ...sources])];
-                        }
-                        return sources;
-                      });
+                      const next = event.shiftKey
+                        ? selected ? spectrogramChannels.filter((index) => !sources.includes(index)) : [...new Set([...spectrogramChannels, ...sources])]
+                        : sources;
+                      setSpectrogramChannels(next);
                       setFocusedChannel(startRow);
-                      setChannelSelectionActive(true);
+                      setChannelSelectionActive(next.length > 0);
                       notifyTutorialAction("channel-focused");
                     }}>{name}</button>;
                 })}

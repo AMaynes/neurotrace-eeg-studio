@@ -1064,7 +1064,7 @@ test("highlights a focused channel and provides compact or vertically scrollable
 
   assert.match(page, /const focused = combined \|\| \(spectrogramChannels\.length === 0 && channelSelectionActive[\s\S]*?!inspectionDragging[\s\S]*?focusedChannel === index/);
   assert.match(page, /aria-pressed=\{focused\}/);
-  assert.match(page, /setFocusedChannel\(index\)[\s\S]*?setChannelSelectionActive\(true\)/);
+  assert.match(page, /setChannelSelectionActive\(true\)[\s\S]*?setFocusedChannel\(index\)/);
   assert.match(page, /setChannelSelectionActive\(false\)/);
   assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
   assert.match(page, /--channel-content-height/);

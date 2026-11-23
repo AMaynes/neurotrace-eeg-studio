@@ -86,7 +86,7 @@ test("keeps spectrogram bins aligned with continuous horizontal panning", async 
 test("lets Escape clear spectrogram interaction without substituting a different analysis recipe", async () => {
   const page = await readFile(projectFile("app/page.tsx"), "utf8");
   const panel = panelResizeSection(page);
-  assert.match(page, /event\.key === "Escape"[\s\S]*?setChannelSelectionActive\(false\)/);
+  assert.match(page, /event\.key === "Escape"[\s\S]*?clearChannelSelection\(\)/);
   assert.match(page, /const spectrogramSourceIndex = display\.primarySourceIndices\[focusedChannel\]/);
   assert.match(page, /matlabSpectrogramInputPlan\(meta, spectrogramSourceIndex/);
   assert.doesNotMatch(page, /const spectrogramChannelIndices = useMemo/);

@@ -113,7 +113,7 @@ test("global shortcuts leave native controls alone and reserve Enter and Space f
   assert.ok(modalEscape.indexOf("confirmCommit.length") < modalEscape.indexOf("showAnnotationEditor"), "Escape closes the top advisory before its editor");
   assert.doesNotMatch(modalEscape, /setSelectedAnnotationId\(null\)|setSelectedAnnotationIds\(new Set\(\)\)/);
   assert.match(keyboard, /closest\("\.spectrogram-panel"\) && !clearShortcut && !historyShortcut/);
-  assert.match(keyboard, /event\.key === "Escape"[\s\S]*?setChannelSelectionActive\(false\)/);
+  assert.match(keyboard, /event\.key === "Escape"[\s\S]*?clearChannelSelection\(\)/);
   const selectionEscape = section(keyboard, 'if (clearShortcut)', "if (interactiveTarget) return");
   assert.doesNotMatch(selectionEscape, /setWaveformVerticalViewport\(null\)/, "Escape preserves the current waveform zoom");
 });

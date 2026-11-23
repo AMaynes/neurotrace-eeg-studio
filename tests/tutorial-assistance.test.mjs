@@ -35,9 +35,10 @@ function fixture(overrides = {}) {
     "setLeftPanelOpen", "selectRightPanelTool", "setBottomTracksOpen", "setTimeWindow", "setWindowDraftValue",
     "setShowChannels", "changeZoomView", "setShowFilters", "setSpectrogramOpen", "setChannelSelectionActive",
     "setBoxZoomActive", "setActiveTool", "setMarkOnset", "setSelection", "setCursorTime", "setCursorLocked",
-    "setShowEphysLabelPicker", "setShowSessionContextPicker", "setLabelsVisible", "setRightPanelOpen", "setShowLabelVisibilityFilter"]) {
+    "setSpectrogramChannels", "setShowEphysLabelPicker", "setShowSessionContextPicker", "setLabelsVisible", "setRightPanelOpen", "setShowLabelVisibilityFilter"]) {
     state[name] = (value) => changes.push([name, typeof value === "function" ? value(values.labelsVisible) : value]);
   }
+  state.clearChannelSelection = () => { state.setSpectrogramChannels([]); state.setChannelSelectionActive(false); };
   const assist = new Function(...Object.keys(state), `${compiled}\nreturn assistTutorial;`)(...Object.values(state));
   return {
     assist, changes, click, values,

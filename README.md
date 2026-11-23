@@ -216,7 +216,7 @@ Measured locally on 2026-11-01: uncached single-worker processing 12.10 s; initi
 - `app/matlab-spectrogram.ts`, `app/matlab-spectrogram-input.ts`, and `app/full-window-spectrogram*.ts` — Gabor power/baseline computation, raw-group full-window planning, and bounded worker-driven overviews.
 - `app/waveform-geometry.ts` — maintains stable row baselines and bounds clipping/dropout geometry.
 
-Click a group name to select all its contacts. **Shift-click channel names** to combine individual contacts; selected names stay highlighted. Open **Spectrogram** to average their raw-channel power automatically. The spectrogram names the selected channels and states that it is an average. A plain click resets to the focused channel or group. Selected contacts must have matching sample rates. Recent completed results are reused.
+Click a group name to select all its contacts. **Shift-click channel names** to combine individual contacts; selected names stay highlighted. Open **Spectrogram** to average their raw-channel power automatically. The spectrogram names the selected channels and states that it is an average. A plain click on another channel or waveform row replaces the previous selection. Escape or a click on empty workspace clears every selected channel and its waveform highlight. Shift-clicking a selected group again removes it. Selected contacts must have matching sample rates. Recent completed results are reused.
 
 ### Filters
 

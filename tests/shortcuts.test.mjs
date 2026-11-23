@@ -92,10 +92,14 @@ function globalHarness(overrides = {}) {
     queueDetailEntry: null, confirmCommit: [], cursorLocked: false, cursorTime: 10, markOnset: null, importBusy: false, projectSaveBusy: false,
     selectedAnnotationIds: new Set(), selectedAnnotation: null, activeCandidateItem: null,
     dragAnnotationRef: {}, pendingAnnotationDragRef: {}, annotationSelectionRef: {},
+    pointerRef: { current: null }, pendingCursorRef: { current: null }, cursorFrameRef: { current: null },
+    window: { cancelAnimationFrame: (id) => calls.push(["cancelAnimationFrame", id]) },
     filteredQueueEntries: [], activeFilteredQueueIndex: 0, timebase: 10, LABEL_BY_ID: new Map([["ictal", { id: "ictal" }]]),
   };
-  for (const name of ["undo", "redo", "zoomTimeWindow", "moveSelectedAnnotations", "commitSelected", "placePaletteLabel", "setViewStartSafe", "notifyTutorialAction", "setToast", "setShowSettings", "setOlderReviews", "setShowHelp", "setShowDirectorySessions", "setAnnotationDragPreview", "setAnnotationSelectionBox", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setSelection", "setInspectionRange", "setMarkOnset", "setCursorLocked", "setChannelSelectionActive", "setDragGhost", "setShowSessionContextPicker", "setActiveTool", "setBoxZoomActive"]) scope[name] = (...args) => calls.push([name, ...args]);
+  for (const name of ["undo", "redo", "zoomTimeWindow", "moveSelectedAnnotations", "commitSelected", "placePaletteLabel", "setViewStartSafe", "notifyTutorialAction", "setToast", "setShowSettings", "setOlderReviews", "setShowHelp", "setShowDirectorySessions", "setAnnotationDragPreview", "setAnnotationSelectionBox", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setSelection", "setInspectionRange", "setMarkOnset", "setCursorLocked", "setChannelSelectionActive", "setDragGhost", "setShowSessionContextPicker", "setActiveTool", "setBoxZoomActive", "setSpectrogramChannels", "setInspectionDragging"]) scope[name] = (...args) => calls.push([name, ...args]);
   Object.assign(scope, overrides);
+  const clear = nodes.find((node) => ts.isVariableDeclaration(node) && node.name.getText(syntax) === "clearChannelSelection");
+  scope.clearChannelSelection = compileHandler(clear.initializer.getText(syntax), { ...scope, useCallback: (callback) => callback });
   const expression = nodes.find((node) => ts.isVariableDeclaration(node) && node.name.getText(syntax) === "onKey").initializer.getText(syntax);
   const handler = compileHandler(expression, scope);
   return { calls, scope, press(value, options = {}) { const event = key(value, { target: canvas, ...options }); handler(event); return event; } };
@@ -242,4 +246,15 @@ test("Controls lists all bindings and supports capture, conflicts, cancellation,
   ui.nodes.find((node) => node.type === "input").props.onChange({ target: { value: "spectrogram" } }); ui.render();
   assert.ok(ui.nodes.some((node) => node.props["aria-label"] === "Add Browse tool shortcut"));
   assert.ok(!ui.nodes.some((node) => node.props["aria-label"] === "Add Set ictal onset shortcut"));
+});
+
+
+test("Escape clears explicit channel groups and cancels any queued pointer selection", () => {
+  const pointerRef = { current: { pointerId: 1 } }, pendingCursorRef = { current: { row: 2 } }, cursorFrameRef = { current: 77 };
+  const ui = globalHarness({ pointerRef, pendingCursorRef, cursorFrameRef });
+  ui.press("Escape");
+  assert.ok(ui.calls.some(([name, value]) => name === "setSpectrogramChannels" && Array.isArray(value) && !value.length));
+  assert.ok(ui.calls.some(([name, value]) => name === "setChannelSelectionActive" && value === false));
+  assert.ok(ui.calls.some(([name, value]) => name === "cancelAnimationFrame" && value === 77));
+  assert.equal(pointerRef.current, null); assert.equal(pendingCursorRef.current, null); assert.equal(cursorFrameRef.current, null);
 });
