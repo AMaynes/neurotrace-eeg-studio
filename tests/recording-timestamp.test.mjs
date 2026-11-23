@@ -60,9 +60,8 @@ function toolbar({ hasRecording = true, durationSec = 600, timebase = 20 } = {})
   };
   scope.jumpTo = evaluate(jump, scope);
   const tree = evaluate(form, scope);
-  const inputProps = tree.props.children[0].props.children[1].props;
-  const buttonProps = tree.props.children[1].props;
-  return { state, inputProps, buttonProps, submit(value) {
+  const inputProps = tree.props.children.props;
+  return { state, inputProps, submit(value) {
     const input = { value, error: "", reported: false,
       setCustomValidity(message) { this.error = message; }, reportValidity() { this.reported = true; } };
     tree.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => input } } });
@@ -72,7 +71,7 @@ function toolbar({ hasRecording = true, durationSec = 600, timebase = 20 } = {})
 
 test("submitting a timestamp pauses, pins the cursor, and centers without changing the window length", () => {
   const ui = toolbar();
-  assert.equal(ui.buttonProps.type, "submit", "Enter and Go both use the form submission");
+  assert.equal(ui.inputProps.placeholder, "Jump to hh:mm:ss");
   assert.equal(ui.inputProps.required, true);
   assert.equal(ui.submit("01:30.5").error, "");
   assert.deepEqual(ui.state, { viewStart: 80.5, cursor: 90.5, playing: false, locked: true,
@@ -108,7 +107,6 @@ test("invalid and out-of-recording timestamps report an error without moving or 
 test("timestamp navigation stays disabled until a recording is loaded", () => {
   const ui = toolbar({ hasRecording: false });
   assert.equal(ui.inputProps.disabled, true);
-  assert.equal(ui.buttonProps.disabled, true);
   ui.submit("1");
   assert.equal(ui.state.playing, true);
   assert.equal(ui.state.cursor, 0);

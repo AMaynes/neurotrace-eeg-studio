@@ -193,7 +193,7 @@ export const tutorialLessons: readonly TutorialLesson[] = [
     description: "Go directly to recording time in seconds or clock notation.",
     steps: [
       { title: "Find Jump to", target: "timestamp-jump", instruction: "Find Jump to beside Window. It accepts seconds, mm:ss, or hh:mm:ss, including decimals: for example, 90.5 or 00:01:30.5.", unavailable: "Return to the recording toolbar.", tip: "Enter time from the start of the recording, even when the waveform axis is relative to a source event." },
-      { completeOn: ["timestamp-jumped"], title: "Enter a time and go", target: "timestamp-jump", instruction: "Enter a time you want to inspect, then press Enter or click Go. The time must fall within this recording. An invalid entry shows an explanation and leaves the view unchanged.", unavailable: "Load a recording to enable Jump to." },
+      { completeOn: ["timestamp-jumped"], title: "Enter a time and go", target: "timestamp-jump", instruction: "Type a time in the Jump to hh:mm:ss bar, then press Enter. The time must fall within this recording. An invalid entry shows an explanation and leaves the view unchanged.", unavailable: "Load a recording to enable Jump to." },
       { title: "Check the pinned time", target: "waveform", instruction: "The app pauses playback, pins your chosen time, and centers the view where the file boundaries allow. Check the timestamp beside the playhead or in the bottom cursor readout before continuing.", unavailable: "Return to the waveform and enable a channel." },
     ],
   },

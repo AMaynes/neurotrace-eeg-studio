@@ -8625,19 +8625,18 @@ export default function Home() {
                 notifyTutorialAction("transport-used");
               }}
             >
-              <label><span>Jump to</span><input
+              <input
                 name="timestamp"
                 type="text"
                 aria-label="Jump timestamp"
-                placeholder="hh:mm:ss"
-                title="Time from recording start: hh:mm:ss, mm:ss, or seconds (decimals allowed)"
+                placeholder="Jump to hh:mm:ss"
+                title="Time from recording start: hh:mm:ss, mm:ss, or seconds. Press Enter to jump."
                 disabled={!hasRecording}
                 required
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(event) => event.currentTarget.setCustomValidity("")}
-              /></label>
-              <button type="submit" disabled={!hasRecording}>Go</button>
+              />
             </form>
             <div className={`time-window-control ${windowDraftValue !== null ? "pending" : ""}`} data-tutorial="window" role="group" aria-label="Window">
               <span className="window-control-label">Window</span>

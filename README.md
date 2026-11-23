@@ -183,7 +183,7 @@ NeuroTrace runs locally in the browser. It does not upload the recording, and di
 
 ### Loading, memory, panning, and zooming
 
-**Jump to** beside the Window control accepts time from the recording start as `hh:mm:ss`, `mm:ss`, or seconds, including decimals (for example, `00:01:30.5` or `90.5`). Press **Enter** or click **Go** to pause playback and center the view on that time. Times outside the recording are rejected.
+The **Jump to hh:mm:ss** bar beside the Window control accepts time from the recording start as `hh:mm:ss`, `mm:ss`, or seconds, including decimals (for example, `00:01:30.5` or `90.5`). Press **Enter** to pause playback and center the view on that time. Times outside the recording are rejected.
 
 Double-click the waveform to return to the view before the last box zoom. Manual label placement prompts for a confidence percentage. Zooms share the annotation undo/redo chain: **Ctrl/Cmd+Z** undoes the latest edit or zoom, and **Ctrl/Cmd+Shift+Z** redoes it. This includes time-window changes, pinch/keyboard zoom, waveform and spectrogram box zoom (both axes together), frequency range changes, gain, and channel-layout resets. A continuous pinch is one history step. Each session keeps its own history; typing in a text field retains native text undo.
 
