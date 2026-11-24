@@ -8077,10 +8077,10 @@ export default function Home() {
     ),
     groups: (
       <button
-        className={`compact-toggle ${anatomicalGroups ? "active" : ""}`}
+        className={`compact-toggle ${!anatomicalGroups ? "active" : ""}`}
         data-tutorial="channel-groups"
         aria-label={anatomicalGroups ? "Ungroup channels" : "Group channels"}
-        aria-pressed={anatomicalGroups}
+        aria-pressed={!anatomicalGroups}
         disabled={!hasRecording || !anatomicalGroupsAvailable}
         title={anatomicalGroups ? "Show channels without grouping" : anatomicalGroupsAvailable
           ? channelGroupingMode === "name" ? "Group channels by name" : "Group anatomical channels as in MATLAB"
