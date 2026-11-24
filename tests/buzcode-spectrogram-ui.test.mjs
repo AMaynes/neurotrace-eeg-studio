@@ -37,7 +37,7 @@ test("exposes MATLAB wavelet processing with linked navigation and frequency/col
   assert.match(panel, /colorLimitShift/);
   const tutorials = await readFile(projectFile("app/tutorials.ts"), "utf8");
   assert.match(panel, /onClick=\{onHelp\} aria-label="Open spectrogram tutorials"/);
-  assert.match(tutorials, /Select Z, just to the right of B/);
+  assert.match(tutorials, /Select Box zoom \(Z on narrow plots\)/);
   assert.match(tutorials, /Frequency range controls the visible Hz band/i);
   assert.match(tutorials, /increase Window in the waveform toolbar/i);
   assert.equal((panel.match(/SPECTROGRAM_DRAG_PAN_SCALE/g) ?? []).length, 2);

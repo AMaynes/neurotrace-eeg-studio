@@ -9658,6 +9658,8 @@ function SpectrogramPanel({
   const [tool, setTool] = useState<SpectrogramTool>("browse");
   const [zoomBox, setZoomBox] = useState<SpectrogramZoomBox | null>(null);
   const [colorLimitShift, setColorLimitShift] = useState(0);
+  // Apply the same symmetric limits to the color readout and the raster.
+  const colorLimit = spectrum ? Math.max(Number.EPSILON, spectrum.colorLimit * Math.exp(colorLimitShift)) : 0;
   const { maximum: maximumDisplayHz, minimumSpan: minimumDisplayHz,
     min: effectiveDisplayMinHz, max: effectiveDisplayMaxHz } = spectrogramDisplayRange(frequencyRange, sampleRate);
   const displayFrequencySpanHz = Math.max(Number.EPSILON, effectiveDisplayMaxHz - effectiveDisplayMinHz);
@@ -9725,9 +9727,6 @@ function SpectrogramPanel({
           return;
         }
         if (!spectrum) return;
-        // Default limits are the current result's symmetric 98th percentile;
-        // manual C controls widen/narrow both sides without changing the data.
-        const colorLimit = Math.max(Number.EPSILON, spectrum.colorLimit * Math.exp(colorLimitShift));
         const imageWidth = Math.max(1, Math.ceil(plotWidth * dpr));
         const imageHeight = Math.max(1, Math.ceil(plotHeight * dpr));
         const rasterKey = [imageWidth, imageHeight, viewStart, viewDuration,
@@ -9795,7 +9794,7 @@ function SpectrogramPanel({
       observer.disconnect();
       performanceDiagnostics.removeCanvasSurface("spectrogram");
     };
-  }, [colorLimitShift, cursor, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, inputError, progress, sampleRate, spectrum, viewDuration, viewStart]);
+  }, [colorLimit, cursor, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, inputError, progress, sampleRate, spectrum, viewDuration, viewStart]);
 
   const plotRatio = (clientX: number, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
@@ -9883,15 +9882,27 @@ function SpectrogramPanel({
 
   // Both toolbar copies share the plot's frequency, interaction, and color state.
   const controls = (
-      <div className="spectrogram-toolbar" data-tutorial="spectrogram-controls" aria-label="Spectrogram controls">
-        <button type="button" className={tool === "browse" ? "active" : ""} data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"} onClick={() => { setTool("browse"); setZoomBox(null); notifyTutorialAction("spectrogram-browse"); }} title={`Browse: click to center, hold and drag to pan · ${shortcutHint(controlBindings, "spectrogramBrowse")}`}>B</button>
-        <button type="button" className={tool === "box-zoom" ? "active" : ""} data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"} onClick={() => { setTool("box-zoom"); notifyTutorialAction("spectrogram-zoom-tool"); }} title={`Box zoom: drag a time-frequency area to fit it to the view · ${shortcutHint(controlBindings, "spectrogramZoom")}`}>Z</button>
-        <div className="spectrogram-frequency-control" role="group" aria-label="Displayed frequency range">
-          <span>Frequency range</span>
+    <div className="spectrogram-toolbar" data-tutorial="spectrogram-controls" role="group" aria-label="Spectrogram controls">
+      <div className="spectrogram-modes" role="group" aria-label="Spectrogram interaction mode">
+        <button
+          type="button" data-tutorial="spectrogram-browse" aria-label="Browse spectrogram" aria-pressed={tool === "browse"}
+          onClick={() => { setTool("browse"); setZoomBox(null); notifyTutorialAction("spectrogram-browse"); }}
+          title={`Browse: click to center, hold and drag to pan · ${shortcutHint(controlBindings, "spectrogramBrowse")}`}
+        ><span>Browse</span><abbr aria-hidden="true">B</abbr></button>
+        <button
+          type="button" data-tutorial="spectrogram-zoom" aria-label="Box zoom spectrogram" aria-pressed={tool === "box-zoom"}
+          onClick={() => { setTool("box-zoom"); notifyTutorialAction("spectrogram-zoom-tool"); }}
+          title={`Box zoom: drag a time-frequency area to fit it to the view · ${shortcutHint(controlBindings, "spectrogramZoom")}`}
+        ><span>Box zoom</span><abbr aria-hidden="true">Z</abbr></button>
+      </div>
+      <button type="button" className="spectrogram-help" onClick={onHelp} aria-label="Open spectrogram tutorials" title="Spectrogram tutorials">?</button>
+      <div className="spectrogram-setting" role="group" aria-label="Displayed frequency range">
+        <span className="spectrogram-setting-label">Frequency</span>
+        <div className="spectrogram-stepper">
           <button
             type="button"
             aria-label="Lower maximum displayed frequency"
-            disabled={effectiveDisplayMaxHz - effectiveDisplayMinHz <= minimumDisplayHz}
+            disabled={displayFrequencySpanHz <= minimumDisplayHz}
             onClick={() => { onFrequencyRangeChange({ min: effectiveDisplayMinHz, max: Math.max(effectiveDisplayMinHz + minimumDisplayHz, effectiveDisplayMaxHz - 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
             title="Show a narrower, lower-frequency range"
           >−</button>
@@ -9903,33 +9914,46 @@ function SpectrogramPanel({
             onClick={() => { onFrequencyRangeChange({ min: effectiveDisplayMinHz, max: Math.min(maximumDisplayHz, effectiveDisplayMaxHz + 10) }); notifyTutorialAction("spectrogram-adjusted"); }}
             title="Show a wider frequency range"
           >+</button>
-          <button
-            type="button"
-            aria-label="Reset displayed frequency range"
-            data-tutorial="spectrogram-reset"
-            onClick={() => {
-              onFrequencyRangeChange({ min: 0, max: maximumDisplayHz });
-              notifyTutorialAction("spectrogram-adjusted");
-            }}
-            title="Reset to the default frequency range"
-          >↺</button>
         </div>
-        <span style={{ fontSize: 9, whiteSpace: "nowrap" }} title="Standard deviations from the pre-click log-power baseline">Wavelet Z-score</span>
-        <button type="button" onClick={() => { setColorLimitShift((value) => clamp(value + 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }} title={`Raise color limits · ${shortcutHint(controlBindings, "spectrogramColorDown")}`}>C−</button>
-        <button type="button" onClick={() => { setColorLimitShift((value) => clamp(value - 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }} title={`Lower color limits · ${shortcutHint(controlBindings, "spectrogramColorUp")}`}>C+</button>
-        {!!spectrum?.warnings.length && <details style={{ position: "relative", fontSize: 9, color: "#e9c475" }}>
-          <summary style={{ cursor: "pointer", whiteSpace: "nowrap" }} aria-label="Spectrogram calculation warnings">Warnings ({spectrum.warnings.length})</summary>
-          <div role="status" style={{ position: "absolute", top: 22, right: 0, width: 300, maxHeight: 90, overflowY: "auto", background: "#071216", border: "1px solid #8b7040", padding: 8 }}>
-            {spectrum.warnings.map((warning) => <p key={warning} style={{ margin: "0 0 4px" }}>{warning}</p>)}
-          </div>
-        </details>}
-        <button type="button" onClick={onHelp} aria-label="Open spectrogram tutorials" title="Spectrogram tutorials">?</button>
-        <span className="spectrogram-source-names" title={label}>{label}</span>
+        <button
+          type="button"
+          aria-label="Reset displayed frequency range"
+          data-tutorial="spectrogram-reset"
+          onClick={() => {
+            onFrequencyRangeChange({ min: 0, max: maximumDisplayHz });
+            notifyTutorialAction("spectrogram-adjusted");
+          }}
+          title="Reset to the default frequency range"
+        >↺</button>
       </div>
+      <div className="spectrogram-setting spectrogram-color-setting" role="group" aria-label="Wavelet Z-score color limits">
+        <span className="spectrogram-setting-label" title="Standard deviations from the pre-click log-power baseline">Z-score limits</span>
+        <div className="spectrogram-stepper">
+          <button
+            type="button" aria-label="Lower spectrogram color limits"
+            onClick={() => { setColorLimitShift((value) => clamp(value - 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }}
+            title={`Lower color limits for more contrast · ${shortcutHint(controlBindings, "spectrogramColorUp")}`}
+          >−</button>
+          <output aria-live="polite">{spectrum ? `±${Number(colorLimit.toPrecision(3))}` : "–"}</output>
+          <button
+            type="button" aria-label="Raise spectrogram color limits"
+            onClick={() => { setColorLimitShift((value) => clamp(value + 0.1, -6, 6)); notifyTutorialAction("spectrogram-adjusted"); }}
+            title={`Raise color limits for less contrast · ${shortcutHint(controlBindings, "spectrogramColorDown")}`}
+          >+</button>
+        </div>
+      </div>
+      {!!spectrum?.warnings.length && <details className="spectrogram-warnings">
+        <summary aria-label="Spectrogram calculation warnings">Warnings ({spectrum.warnings.length})</summary>
+        <div role="status">
+          {spectrum.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+        </div>
+      </details>}
+      <span className="spectrogram-source-names" title={label}>{label}</span>
+    </div>
   );
 
   return <div ref={panelRef} className={`spectrogram-panel tool-${tool}`} style={{ height: spectrogramHeight }}>
-    {toolsHost && createPortal(<section className="view-spectrogram-controls" aria-label="Spectrogram viewing tools"><h3>Spectrogram tools</h3>{controls}</section>, toolsHost)}
+    {toolsHost && createPortal(<section className="view-spectrogram-controls" aria-label="Spectrogram viewing tools">{controls}</section>, toolsHost)}
     <button
       className="spectrogram-resize-handle"
       type="button"
