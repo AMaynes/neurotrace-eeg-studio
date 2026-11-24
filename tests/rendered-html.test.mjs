@@ -936,7 +936,7 @@ test("gives wrapped bottom-track labels vertical breathing room", async () => {
   assert.match(css, /\.track-label\s*\{[^}]*padding-top:\s*5px;[^}]*padding-bottom:\s*5px;[^}]*line-height:\s*1\.35;/);
 });
 
-test("toggles the complete bottom label-track surface from the centered panel control", async () => {
+test("stacks sidebar and lower label-pane controls within the original button height", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -944,8 +944,12 @@ test("toggles the complete bottom label-track surface from the centered panel co
   assert.match(page, /const \[bottomTracksOpen,\s*setBottomTracksOpen\]\s*=\s*useState\(true\)/);
   assert.match(page, /\{bottomTracksOpen && <div[\s\S]*?className=\{`timeline/);
   assert.match(page, /Hide" : "Show"\} bottom label tracks/);
-  assert.match(css, /\.panel-toggle-pair\s*\{[^}]*position:\s*relative;[^}]*padding-bottom:\s*10px;/);
-  assert.match(css, /\.panel-bottom-button\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*bottom:\s*0;/);
+  const controlsStart = page.indexOf('<div className="panel-toggle-pair"');
+  const controls = page.slice(controlsStart, page.indexOf('</div>', controlsStart));
+  assert.equal((controls.match(/<button/g) ?? []).length, 2);
+  assert.match(controls, /aria-controls="bottom-label-pane"[\s\S]*?setBottomTracksOpen\(value => !value\)/);
+  assert.match(css, /\.panel-toggle-pair\s*\{[^}]*height:\s*34px;[^}]*flex-direction:\s*column;/);
+  assert.match(css, /\.panel-bottom-button\s*\{[^}]*height:\s*13px;/);
 });
 
 test("box-selects labels and moves or deletes the selected group atomically", async () => {

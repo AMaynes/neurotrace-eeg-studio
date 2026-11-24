@@ -1573,14 +1573,15 @@ textarea:focus-visible {
 }
 
 .panel-toggle-pair {
-  flex: 0 0 auto;
-  position: relative;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 34px;
   display: flex;
-  align-items: flex-start;
-  padding-bottom: 10px;
+  flex-direction: column;
 }
-.panel-toggle-pair .panel-icon-button:first-child { border-radius: 6px 0 0 6px; }
-.panel-toggle-pair .panel-icon-button:nth-child(2) { margin-left: -1px; border-radius: 0 6px 6px 0; }
+.panel-toggle-pair .panel-icon-button { height: 21px; flex: 0 0 21px; border-radius: 6px 6px 0 0; }
+.panel-toggle-pair .panel-glyph { width: 18px; height: 12px; padding: 1px 0; }
+.panel-toggle-pair .panel-glyph i { width: 13px; height: 1px; }
 
 .panel-icon-button {
   width: 36px;
@@ -1594,25 +1595,22 @@ textarea:focus-visible {
 .panel-icon-button.active { border-color: #3f678f; background: #142941; color: var(--mint); }
 
 .panel-bottom-button {
-  position: absolute;
-  z-index: 2;
-  left: 50%;
-  bottom: 0;
-  width: 30px;
+  flex: 0 0 13px;
+  width: 36px;
   height: 13px;
   display: grid;
   place-items: center;
-  transform: translateX(-50%);
   padding: 0;
   border: 1px solid #294149;
-  border-radius: 0 0 5px 5px;
+  border-top: 0;
+  border-radius: 0 0 6px 6px;
   background: #102027;
   color: #71898e;
   cursor: pointer;
 }
 .panel-bottom-button:hover,
 .panel-bottom-button.active { border-color: #3f678f; background: #142941; color: var(--mint); }
-.bottom-panel-glyph { width: 17px; height: 7px; display: flex; flex-direction: column; justify-content: space-between; }
+.bottom-panel-glyph { width: 17px; height: 5px; display: flex; flex-direction: column; justify-content: space-between; }
 .bottom-panel-glyph i { display: block; width: 17px; height: 1px; border-radius: 1px; background: currentColor; }
 
 .panel-glyph {

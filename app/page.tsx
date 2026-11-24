@@ -8574,7 +8574,12 @@ export default function Home() {
             sourceHash={sourceHash}
           /> : <>
           <div className="viewer-toolbar" data-tutorial="signal-tools">
-            <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title="Toggle workspace sidebar" onClick={() => setLeftPanelOpen(value => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
+            <div className="panel-toggle-pair" role="group" aria-label="Pane visibility">
+              <button className={`panel-icon-button ${leftPanelOpen ? "active" : ""}`} aria-label={`${leftPanelOpen ? "Hide" : "Show"} left panel`} aria-pressed={leftPanelOpen} title="Toggle workspace sidebar" onClick={() => setLeftPanelOpen(value => !value)}><span className="panel-glyph left" aria-hidden="true"><i /><i /><i /></span></button>
+              <button className={`panel-bottom-button ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`}
+                aria-pressed={bottomTracksOpen} aria-controls="bottom-label-pane" title="Show or hide the lower label pane"
+                onClick={() => setBottomTracksOpen(value => !value)}><span className="bottom-panel-glyph" aria-hidden="true"><i /><i /><i /></span></button>
+            </div>
             <div className="transport-group" data-tutorial="transport">
               <button disabled={!hasRecording} aria-label="Previous page" onClick={() => { setViewStartSafe((value) => value - timebase); notifyTutorialAction("transport-used"); }}>‹</button>
               <button disabled={!hasRecording} className={`play-button ${playing ? "playing" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={() => { setPlaying((value) => !value); notifyTutorialAction("transport-used"); }}>{playing ? "Ⅱ" : "▶"}</button>
@@ -8877,6 +8882,7 @@ export default function Home() {
             />}
 
             {bottomTracksOpen && <div
+              id="bottom-label-pane"
               className={`timeline ${annotationSelectionBox ? "box-selecting" : ""}`}
               data-tutorial="label-tracks"
               ref={timelineRef}
