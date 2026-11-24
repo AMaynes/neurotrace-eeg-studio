@@ -80,7 +80,7 @@ test("production header occupies the shared grid above tabs and scrolls with its
   assert.match(css, /\.session-tabs \.directory-tab-header\s*\{[^}]*grid-row: 1;/s);
   assert.match(css, /\.session-tab-shell\s*\{[^}]*grid-row: 2;/s);
   assert.match(css, /height: calc\(100dvh - var\(--topbar-height\)\)/);
-  assert.match(css, /min-height: calc\(650px - var\(--topbar-height\)\)/);
+  assert.match(css, /\.workspace-grid\s*\{[^}]*min-height: 0;/s, "the workspace fits short windows instead of clipping below a 650px floor");
   assert.doesNotMatch(css, /top: 58px/, "responsive panels must move down with the two-row header");
 });
 

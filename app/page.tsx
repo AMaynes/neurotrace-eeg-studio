@@ -8260,17 +8260,17 @@ export default function Home() {
             <button className="sidebar-mobile-close" aria-label="Hide workspace sidebar" onClick={() => setLeftPanelOpen(false)}>‹</button>
           </div>
           <div className="workspace-sidebar-body" role="tabpanel" id={`workspace-panel-${sidebarTab}`} aria-labelledby={`workspace-tab-${sidebarTab}`}>
-            {sidebarTab === "files" && <div className="sidebar-pane-stack" data-pane-layout="folder-file">
+            {sidebarTab === "files" && <div className="sidebar-pane-stack compact-info-stack" data-pane-layout="folder-file">
               <section className="sidebar-pane" aria-label="Folder info">
                 <header className="sidebar-pane-heading"><h2>Folder info</h2></header>
                 <div className="sidebar-pane-content">
                   {directoryCatalog ? <>
                     <dl className="sidebar-info-grid">
-                      <div><dt>Folder</dt><dd>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</dd></div>
+                      <div><dt>Folder</dt><dd title={directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label}>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</dd></div>
                       <div><dt>Recordings</dt><dd>{directoryCatalog.plan.recordings.length}</dd></div>
                       <div><dt>Open files</dt><dd>{sessionTabs.filter(tab => tab.directoryId === directoryCatalog.id).length}</dd></div>
                       <div><dt>File type</dt><dd>{directoryCatalog.plan.format.toUpperCase()}</dd></div>
-                      <div><dt>Reviewer</dt><dd>{directoryCatalog.review?.reviewerId || reviewer || "—"}</dd></div>
+                      <div><dt>Reviewer</dt><dd title={directoryCatalog.review?.reviewerId || reviewer || "—"}>{directoryCatalog.review?.reviewerId || reviewer || "—"}</dd></div>
                     </dl>
                     <button className="button secondary folder-files-button" onClick={() => setShowDirectorySessions(true)}>Files &amp; folder filters</button>
                   </> : <p className="sidebar-empty-message">{hasRecording ? "Individual file loaded. No folder selected." : "No folder selected."}</p>}
@@ -8291,19 +8291,19 @@ export default function Home() {
                     <div><dt>Created labels</dt><dd>{annotations.filter(item => !item.recordingLabel).length}</dd></div>
                     <div><dt>Total labels</dt><dd>{annotations.length}</dd></div>
                     <div><dt>Signal values</dt><dd>{hasRecording ? meta.sampleRates.reduce((count, rate) => count + Math.round(rate * meta.durationSec), 0).toLocaleString() : "—"}</dd></div>
-                    <div><dt>Montage</dt><dd>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
-                    <div><dt>Current filters</dt><dd>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
-                    <div><dt>File path</dt><dd>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
-                    <div><dt>Access</dt><dd>{sourceReadProfile(meta.format, hasRecording).access}</dd></div>
+                    <div><dt>Montage</dt><dd title={montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
+                    <div><dt>Current filters</dt><dd title={filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
+                    <div><dt>File path</dt><dd title={primaryFile ? relativeFilePath(primaryFile) : undefined}>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
+                    <div><dt>Access</dt><dd title={sourceReadProfile(meta.format, hasRecording).access}>{sourceReadProfile(meta.format, hasRecording).access}</dd></div>
                   </dl>
                   <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
-                    <span>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
+                    <span title={effectivePatientLabel}>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
                   </button>
                   <UploadedFilesPanel bundle={companionBundle} compact />
                 </div>
               </section>
             </div>}
-            {sidebarTab === "window" && <div className="sidebar-pane-stack" data-pane-layout="window-performance" data-tutorial="window-info">
+            {sidebarTab === "window" && <div className="sidebar-pane-stack compact-info-stack" data-pane-layout="window-performance" data-tutorial="window-info">
               <section className="sidebar-pane" aria-label="Window info">
                 <header className="sidebar-pane-heading"><h2>Window info</h2></header>
                 <div className="sidebar-pane-content">
@@ -10080,10 +10080,18 @@ function uploadedFileRoleLabel(file: UploadedFileRecord) {
 }
 
 function UploadedFilesPanel({ bundle, compact = false }: { bundle: BidsCompanionBundle; compact?: boolean }) {
+  const inventoryDetails = useMemo(() => compact
+    ? bundle.files.map(file => `${file.path} · ${formatByteCount(file.size)} · ${file.status} · ${file.detail}`).join("\n")
+    : "", [bundle.files, compact]);
   const applied = bundle.files.filter((file) => file.status === "applied").length;
   const errors = bundle.files.filter((file) => file.status === "error").length;
   const visibleFiles = bundle.files.slice(0, compact ? 120 : 500);
   if (!bundle.files.length) return null;
+  if (compact) return <section className="uploaded-files-compact" aria-label="Uploaded files"
+    title={inventoryDetails}>
+    <div><strong>Loaded files: {bundle.files.length}</strong><span>{applied} applied · {errors} errors</span></div>
+    <small>{bundle.metadataSources.length} metadata sources · {bundle.tables.length} tables · {bundle.events.length} events</small>
+  </section>;
   return <section className={`${compact ? "general-info-section " : "file-analysis-card "}uploaded-files-card`}>
     <header>
       {compact
@@ -10253,9 +10261,9 @@ function GeneralInfoPanel({
           <div><dt>Start</dt><dd>{formatClock(rangeStart, true)}</dd></div>
           <div><dt>End</dt><dd>{isArea ? formatClock(rangeEnd, true) : "Same point"}</dd></div>
           <div><dt>Duration</dt><dd>{isArea ? `${duration.toFixed(duration < 1 ? 3 : 2)} s` : "Instant"}</dd></div>
-          <div><dt>Channel span</dt><dd>{selectedChannelLabels.length === 1 ? selectedChannelLabels[0] : `${selectedChannelLabels[0]}–${selectedChannelLabels[selectedChannelLabels.length - 1]} (${selectedChannelLabels.length})`}</dd></div>
-          <div><dt>{cursorReadout.kind === "range" ? "Overview amplitude range" : "Pointer amplitude"}</dt><dd>{formatCursorAmplitude(cursorReadout)}</dd></div>
-          <div><dt>{cursorReadout.kind === "range" ? "Bucket interval" : "Sample"}</dt><dd>{formatCursorSample(cursorReadout)}</dd></div>
+          <div><dt>Channel span</dt><dd title={selectedChannelLabels.join(", ")}>{selectedChannelLabels.length === 1 ? selectedChannelLabels[0] : `${selectedChannelLabels[0]}–${selectedChannelLabels[selectedChannelLabels.length - 1]} (${selectedChannelLabels.length})`}</dd></div>
+          <div><dt>{cursorReadout.kind === "range" ? "Overview amplitude range" : "Pointer amplitude"}</dt><dd title={formatCursorAmplitude(cursorReadout)}>{formatCursorAmplitude(cursorReadout)}</dd></div>
+          <div><dt>{cursorReadout.kind === "range" ? "Bucket interval" : "Sample"}</dt><dd title={formatCursorSample(cursorReadout)}>{formatCursorSample(cursorReadout)}</dd></div>
         </dl>
       </section>
 
@@ -10264,7 +10272,7 @@ function GeneralInfoPanel({
         {relatedAnnotations.length ? <div>{relatedAnnotations.map((annotation) => {
           const label = annotationLabel(annotation);
           const point = annotationGeometry(annotation) === "point";
-          return <article key={annotation.id} style={{ "--label-color": label?.color ?? "#6f8990" } as React.CSSProperties}><i /><span><strong>{label?.name ?? annotation.labelId}</strong><small>{point ? formatClock(annotation.start, true) : `${formatClock(annotation.start, true)}–${formatClock(annotation.end, true)}`}</small></span></article>;
+          return <article key={annotation.id} title={`${label?.name ?? annotation.labelId} · ${point ? formatClock(annotation.start, true) : `${formatClock(annotation.start, true)}–${formatClock(annotation.end, true)}`}`} style={{ "--label-color": label?.color ?? "#6f8990" } as React.CSSProperties}><i /><span><strong>{label?.name ?? annotation.labelId}</strong><small>{point ? formatClock(annotation.start, true) : `${formatClock(annotation.start, true)}–${formatClock(annotation.end, true)}`}</small></span></article>;
         })}</div> : <p>No labels overlap this {isArea ? "area" : "point"}.</p>}
       </section>
     </>}
@@ -10359,100 +10367,46 @@ function ResourceUsagePanel({
   const processingStatus = activeOperation?.phase
     ?? (verifyingSource ? "Opening recording" : loadingSignal ? "Preparing signal window" : "Ready");
 
-  return <section className="resource-panel" aria-label="Resource usage">
-    <header className="resource-panel-heading">
-      <div><span>LIVE DIAGNOSTICS</span><h2>Performance</h2><p>I/O, decoding, UI thread, rendering, and memory</p></div>
-      <strong><i />LIVE</strong>
-    </header>
+  // Keep primary measurements visible; hover exposes secondary counts and caveats.
+  const metrics = [
+    { label: "Main-thread pressure", value: `${mainThreadPercent.toFixed(1)}% · ${formatMetricDuration(performanceUsage.mainThread.eventLoopDelayMs)} delay`,
+      detail: "Rolling 10 s event-loop estimate. Process CPU utilization is not exposed by browsers." },
+    { label: "UI frame cadence", value: `${performanceUsage.rendering.rollingFrameSamples > 1 ? `${performanceUsage.rendering.rollingFps.toFixed(0)} fps` : "Sampling"} · ${performanceUsage.rendering.rollingDroppedFrames}/${performanceUsage.rendering.totalDroppedFrames} drops`,
+      detail: `Dropped frames: ${performanceUsage.rendering.rollingDroppedFrames} recent, ${performanceUsage.rendering.totalDroppedFrames} total.` },
+    { label: "Last canvas draw", value: `${formatMetricDuration(performanceUsage.rendering.lastDurationMs)} · avg ${formatMetricDuration(performanceUsage.rendering.averageDurationMs)}`,
+      detail: `${performanceUsage.rendering.renders} renders; ${formatMetricDuration(performanceUsage.rendering.longestDurationMs)} longest draw.` },
+    { label: "File reads", value: `${formatByteCount(performanceUsage.sourceReads.bytes)} · ${formatByteRate(performanceUsage.sourceReads.throughputBytesPerSecond)}`,
+      detail: `Total source bytes read: ${formatByteCount(performanceUsage.sourceReads.bytes)} in ${formatMetricDuration(performanceUsage.sourceReads.durationMs)}. Measured at the browser file boundary; physical disk and operating-system cache reads cannot be distinguished.` },
+    { label: "Read operations", value: `${performanceUsage.sourceReads.operationsCompleted} / ${performanceUsage.sourceReads.operationsCancelled} / ${performanceUsage.sourceReads.operationsFailed}`,
+      detail: "Completed / canceled / failed source reads." },
+    { label: "Decoding", value: `${formatMetricDuration(performanceUsage.decoding.durationMs)} · ${formatByteRate(performanceUsage.decoding.throughputBytesPerSecond)}`,
+      detail: `${performanceUsage.decoding.activeOperations} active decode/reduction operations; ${performanceUsage.sourceReads.activeOperations} active source reads.` },
+    { label: "Long tasks", value: `${performanceUsage.mainThread.longTaskCount} · max ${formatMetricDuration(performanceUsage.mainThread.longestLongTaskMs)}`,
+      detail: `${formatMetricDuration(performanceUsage.mainThread.longTaskDurationMs)} total long-task duration.` },
+    { label: "Canvas backing store", value: formatByteCount(performanceUsage.canvases.backingBytes),
+      detail: `GPU/compositor surfaces: approximately ${formatByteCount(performanceUsage.canvases.estimatedGpuBytes)}. Conservative surface estimate; exact GPU allocation is not exposed.` },
+    { label: "Temporary memory ≥", value: formatByteCount(transientObservationBytes),
+      detail: `Transient buffers processed: ${formatByteCount(performanceUsage.allocations.reportedTransientBytes)}. Observed heap growth: ${formatByteCount(performanceUsage.allocations.observedHeapGrowthBytes)}; release: ${formatByteCount(performanceUsage.allocations.observedHeapReleaseBytes)}. A lower bound, not complete native allocation accounting.` },
+    { label: "Browser JS heap", value: browserUsage.heapUsedBytes === null ? "Not exposed" : `${formatByteCount(browserUsage.heapUsedBytes)} / ${formatByteCount(browserUsage.heapLimitBytes)}`,
+      detail: `Used / limit. Allocated heap: ${formatByteCount(browserUsage.heapAllocatedBytes)}; browser-managed.` },
+    { label: "Garbage collection", value: performanceUsage.garbageCollection.supported ? `${performanceUsage.garbageCollection.count} · ${formatMetricDuration(performanceUsage.garbageCollection.durationMs)}` : "Timing not exposed",
+      detail: "Count and duration when exposed by the browser; complete garbage-collector accounting is unavailable." },
+    { label: "Signal cache / view", value: `${formatByteCount(signalCacheBytes)} / ${formatByteCount(activeDisplayBytes)}`,
+      detail: `Signal cache: ${cacheEntries} windows, ${usagePercent(signalCacheBytes, TOTAL_SIGNAL_CACHE_BUDGET_BYTES).toFixed(0)}% of ceiling. Raw: ${formatByteCount(cacheUsage.rawBytes)} (${cacheUsage.rawEntries}); processed: ${formatByteCount(cacheUsage.processedBytes)} (${cacheUsage.processedEntries}); envelopes: ${formatByteCount(cacheUsage.envelopeBytes)} (${cacheUsage.envelopeEntries}). Active retained view: ${formatByteCount(activeDisplayBytes)}, ${formatByteCount(activeDisplayVisibleBytes)} visible; backing may be shared with cache.${decodedSourceBytes > 0 ? ` Decoded MAT estimate: ${formatByteCount(decodedSourceBytes)}.` : ""}` },
+    { label: "Site storage", value: browserUsage.storageUsedBytes === null ? "Not exposed" : `${formatByteCount(browserUsage.storageUsedBytes)} / ${formatByteCount(browserUsage.storageQuotaBytes)}`,
+      detail: "Used / browser storage quota. Estimates may not be available in every browser." },
+    { label: "Recovery / loading", value: `${recoveryStatus === "saved" ? "Saved" : "Unavailable"} · ${processingStatus}`,
+      detail: `Local recovery: ${recoveryStatus === "saved" ? "Saved" : "Unavailable"}. Processing: ${processingStatus}.` },
+  ];
 
-    <section className={`resource-operation-card${activeOperation ? " active" : ""}`}>
-      <header><span>{activeOperation?.kind === "decode" ? "ACTIVE DECODE" : activeOperation ? "ACTIVE SOURCE READ" : "DATA PIPELINE"}</span><strong>{activeOperation ? `${Math.round((activeOperation.progress ?? 0) * 100)}%` : "IDLE"}</strong></header>
-      <h3>{activeOperation?.label ?? "No read or decode operation running"}</h3>
-      <p>{activeOperation?.phase ?? "Cached interactions remain available without touching the source file."}</p>
-      <div className="resource-meter"><i style={{ width: `${activeOperation?.progress === null || activeOperation?.progress === undefined ? 0 : activeOperation.progress * 100}%` }} /></div>
-      <footer><span>{activeOperation ? `${formatByteCount(activeOperation.completedBytes)} / ${formatByteCount(activeOperation.totalBytes)}` : `${formatByteCount(performanceUsage.sourceReads.bytes)} read this session`}</span><span>{activeOperation ? formatByteRate(activeOperation.throughputBytesPerSecond) : formatByteRate(performanceUsage.sourceReads.throughputBytesPerSecond)}</span></footer>
+  return <section className="resource-panel resource-panel-compact" aria-label="Resource usage">
+    <section className={`resource-operation-card${activeOperation ? " active" : ""}`}
+      title={`${activeOperation?.label ?? "No read or decode operation running"}\n${activeOperation?.phase ?? "Cached interactions do not touch the source file."}\n${activeOperation ? `${formatByteCount(activeOperation.completedBytes)} / ${formatByteCount(activeOperation.totalBytes)} · ${formatByteRate(activeOperation.throughputBytesPerSecond)}` : `${formatByteCount(performanceUsage.sourceReads.bytes)} read this session`}`}>
+      <header><span>{activeOperation?.label ?? "Data pipeline"}</span><strong>{activeOperation ? `${Math.round((activeOperation.progress ?? 0) * 100)}%` : "IDLE"}</strong></header>
+      <p>{activeOperation?.phase ?? "No read or decode operation running"}</p>
+      <div className="resource-meter"><i style={{ width: `${(activeOperation?.progress ?? 0) * 100}%` }} /></div>
     </section>
-
-    <div className="resource-summary-grid performance-grid">
-      <div><span>Main-thread pressure</span><strong>{mainThreadPercent.toFixed(1)}%</strong><small>Rolling 10 s browser event-loop estimate</small></div>
-      <div><span>UI frame cadence</span><strong>{performanceUsage.rendering.rollingFrameSamples > 1 ? `${performanceUsage.rendering.rollingFps.toFixed(0)} fps` : "Sampling"}</strong><small>{performanceUsage.rendering.rollingDroppedFrames} recent · {performanceUsage.rendering.totalDroppedFrames} total drops</small></div>
-      <div><span>Last canvas draw</span><strong>{formatMetricDuration(performanceUsage.rendering.lastDurationMs)}</strong><small>{formatMetricDuration(performanceUsage.rendering.averageDurationMs)} average</small></div>
-      <div><span>File read throughput</span><strong>{formatByteRate(performanceUsage.sourceReads.throughputBytesPerSecond)}</strong><small>{formatByteCount(performanceUsage.sourceReads.bytes)} requested</small></div>
-      <div><span>Canvas backing</span><strong>{formatByteCount(performanceUsage.canvases.backingBytes)}</strong><small>{formatByteCount(performanceUsage.canvases.estimatedGpuBytes)} GPU/compositor estimate</small></div>
-      <div><span>Temporary churn lower bound</span><strong>{formatByteCount(transientObservationBytes)}</strong><small>{formatByteCount(performanceUsage.allocations.reportedTransientBytes)} reported · {formatByteCount(performanceUsage.allocations.observedHeapGrowthBytes)} heap growth</small></div>
-    </div>
-
-    <section className="resource-heap-card">
-      <span>Browser JS heap</span>
-      <strong>{formatByteCount(browserUsage.heapUsedBytes)}</strong>
-      <small>{browserUsage.heapLimitBytes === null ? "Total heap is not exposed by this browser" : `of ${formatByteCount(browserUsage.heapLimitBytes)} limit`}</small>
-      <div className="resource-meter"><i style={{ width: `${usagePercent(browserUsage.heapUsedBytes, browserUsage.heapLimitBytes)}%` }} /></div>
-    </section>
-
-    <div className="resource-summary-grid">
-      <div><span>Signal cache</span><strong>{formatByteCount(signalCacheBytes)}</strong><small>{cacheEntries} cached window{cacheEntries === 1 ? "" : "s"}</small></div>
-      <div><span>Active retained view</span><strong>{formatByteCount(activeDisplayBytes)}</strong><small>{formatByteCount(activeDisplayVisibleBytes)} visible · backing may be shared with cache</small></div>
-      <div><span>Allocated heap</span><strong>{formatByteCount(browserUsage.heapAllocatedBytes)}</strong><small>Browser-managed</small></div>
-      <div><span>Site storage</span><strong>{formatByteCount(browserUsage.storageUsedBytes)}</strong><small>{browserUsage.storageQuotaBytes === null ? "Quota unavailable" : `${formatByteCount(browserUsage.storageQuotaBytes)} quota`}</small></div>
-    </div>
-
-    <section className="resource-detail-section performance-detail-section">
-      <header><h3>File I/O and decoding</h3><span>{performanceUsage.sourceReads.activeOperations + performanceUsage.decoding.activeOperations ? "ACTIVE" : "SESSION TOTALS"}</span></header>
-      <dl>
-        <div><dt>Total source bytes read</dt><dd>{formatByteCount(performanceUsage.sourceReads.bytes)}</dd></div>
-        <div><dt>Source read time</dt><dd>{formatMetricDuration(performanceUsage.sourceReads.durationMs)}</dd></div>
-        <div><dt>Read throughput</dt><dd>{formatByteRate(performanceUsage.sourceReads.throughputBytesPerSecond)}</dd></div>
-        <div><dt>Read operations</dt><dd>{performanceUsage.sourceReads.operationsCompleted} done · {performanceUsage.sourceReads.operationsCancelled} canceled · {performanceUsage.sourceReads.operationsFailed} failed</dd></div>
-        <div><dt>Decode/reduction time</dt><dd>{formatMetricDuration(performanceUsage.decoding.durationMs)}</dd></div>
-        <div><dt>Decode throughput</dt><dd>{formatByteRate(performanceUsage.decoding.throughputBytesPerSecond)}</dd></div>
-      </dl>
-      <p>Source bytes are measured at the browser file boundary. Browsers do not reveal whether each byte came from physical disk or the operating-system cache.</p>
-    </section>
-
-    <section className="resource-detail-section performance-detail-section">
-      <header><h3>Main thread and frames</h3><span>{mainThreadPercent.toFixed(1)}% PRESSURE</span></header>
-      <dl>
-        <div><dt>Process CPU utilization</dt><dd>Not exposed by browsers</dd></div>
-        <div><dt>Main-thread estimate</dt><dd>{mainThreadPercent.toFixed(1)}%</dd></div>
-        <div><dt>Event-loop delay</dt><dd>{formatMetricDuration(performanceUsage.mainThread.eventLoopDelayMs)}</dd></div>
-        <div><dt>Long tasks</dt><dd>{performanceUsage.mainThread.longTaskCount} · {formatMetricDuration(performanceUsage.mainThread.longTaskDurationMs)} total</dd></div>
-        <div><dt>Longest UI block</dt><dd>{formatMetricDuration(performanceUsage.mainThread.longestLongTaskMs)}</dd></div>
-        <div><dt>Canvas renders</dt><dd>{performanceUsage.rendering.renders} · {formatMetricDuration(performanceUsage.rendering.longestDurationMs)} max</dd></div>
-        <div><dt>Dropped frames</dt><dd>{performanceUsage.rendering.rollingDroppedFrames} recent · {performanceUsage.rendering.totalDroppedFrames} total</dd></div>
-      </dl>
-    </section>
-
-    <section className="resource-detail-section performance-detail-section">
-      <header><h3>Temporary and native memory</h3><span>ESTIMATES WHERE REQUIRED</span></header>
-      <dl>
-        <div><dt>Transient buffers processed</dt><dd>{formatByteCount(performanceUsage.allocations.reportedTransientBytes)}</dd></div>
-        <div><dt>Observed heap growth</dt><dd>{formatByteCount(performanceUsage.allocations.observedHeapGrowthBytes)}</dd></div>
-        <div><dt>Observed heap release</dt><dd>{formatByteCount(performanceUsage.allocations.observedHeapReleaseBytes)}</dd></div>
-        <div><dt>Garbage collection</dt><dd>{performanceUsage.garbageCollection.supported ? `${performanceUsage.garbageCollection.count} · ${formatMetricDuration(performanceUsage.garbageCollection.durationMs)}` : "Timing not exposed"}</dd></div>
-        <div><dt>Canvas backing store</dt><dd>{formatByteCount(performanceUsage.canvases.backingBytes)}</dd></div>
-        <div><dt>GPU/compositor surfaces</dt><dd>≈ {formatByteCount(performanceUsage.canvases.estimatedGpuBytes)}</dd></div>
-      </dl>
-      <p>CPU percentage, exact GPU allocation, and complete garbage-collector accounting are restricted by browser privacy APIs; the panel shows measured event-loop pressure and conservative surface estimates.</p>
-    </section>
-
-    <section className="resource-detail-section">
-      <header><h3>Signal memory</h3><span>{usagePercent(signalCacheBytes, TOTAL_SIGNAL_CACHE_BUDGET_BYTES).toFixed(0)}% of cache ceiling</span></header>
-      <div className="resource-meter compact"><i style={{ width: `${usagePercent(signalCacheBytes, TOTAL_SIGNAL_CACHE_BUDGET_BYTES)}%` }} /></div>
-      <dl>
-        <div><dt>Raw windows <small>{cacheUsage.rawEntries}</small></dt><dd>{formatByteCount(cacheUsage.rawBytes)}</dd></div>
-        <div><dt>Processed windows <small>{cacheUsage.processedEntries}</small></dt><dd>{formatByteCount(cacheUsage.processedBytes)}</dd></div>
-        <div><dt>Overview envelopes <small>{cacheUsage.envelopeEntries}</small></dt><dd>{formatByteCount(cacheUsage.envelopeBytes)}</dd></div>
-        {decodedSourceBytes > 0 && <div><dt>Decoded MAT estimate</dt><dd>{formatByteCount(decodedSourceBytes)}</dd></div>}
-      </dl>
-    </section>
-
-    <section className="resource-detail-section resource-session-section">
-      <header><h3>Loading &amp; recovery</h3></header>
-      <dl>
-        <div><dt>Local recovery</dt><dd className={recoveryStatus === "saved" ? "healthy" : "warning"}>{recoveryStatus === "saved" ? "Saved" : "Unavailable"}</dd></div>
-        <div><dt>Processing</dt><dd>{processingStatus}</dd></div>
-      </dl>
-    </section>
+    <dl className="resource-metrics">{metrics.map(({ label, value, detail }) => <div key={label} title={`${label}: ${value}\n${detail}`}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
   </section>;
 }
 

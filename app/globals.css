@@ -75,7 +75,7 @@ textarea:focus-visible {
   --topbar-height: 58px;
   width: 100vw;
   height: 100dvh;
-  min-height: 650px;
+  min-height: 0;
   overflow: hidden;
   background: var(--bg);
   isolation: isolate;
@@ -190,7 +190,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: 220px minmax(600px, 1fr) 294px;
   height: calc(100dvh - var(--topbar-height));
-  min-height: calc(650px - var(--topbar-height));
+  min-height: 0;
   transition: grid-template-columns .2s ease;
 }
 
