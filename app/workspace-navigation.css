@@ -144,7 +144,19 @@
 .view-settings .filter-drawer > div { min-width: 0; width: auto; }
 .view-settings .filter-drawer label { justify-content: space-between; }
 .view-tool-row .tool-pin { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); color: var(--muted); cursor: pointer; }
-.neuro-app .unified-workspace .viewer-toolbar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; overflow: visible; min-height: 54px; padding: 8px 10px; position: relative; z-index: 22; }
+.neuro-app .unified-workspace .viewer-toolbar { --toolbar-gap: 8px; flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--toolbar-gap); overflow: visible; min-height: 54px; padding: 8px 10px; position: relative; z-index: 22; }
+.viewer-toolbar > :is(.transport-group, .timestamp-jump, .time-window-control) { position: relative; }
+.viewer-toolbar > :is(.transport-group, .timestamp-jump, .time-window-control)::after {
+  content: "";
+  position: absolute;
+  inset-inline-end: calc((var(--toolbar-gap) + 1px) / -2);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
+  pointer-events: none;
+}
 .unified-workspace .viewer-toolbar .transport-group { margin-left: 0; }
 .unified-workspace .viewer-toolbar .toolbar-spacer { display: none; }
 .pinned-toolbar-tool { display: flex; align-items: center; }

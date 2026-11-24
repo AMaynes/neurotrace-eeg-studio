@@ -476,7 +476,7 @@ textarea:focus-visible {
 .window-control-label { color: #9cb1b9; font-size: 10px; white-space: nowrap; }
 .time-window-control input { width: 60px; height: 32px; padding: 0 7px; border: 0; border-radius: 4px; background: #0d1b20; color: #d7e3e2; text-align: right; font: 11px ui-monospace, monospace; }
 .time-window-control.pending input { color: var(--blue); }
-.time-window-control .window-unit-button { height: 32px; min-width: 30px; padding: 0 4px; border: 0; background: transparent; color: #a9c0c4; font: 11px ui-monospace, monospace; cursor: pointer; }
+.time-window-control .window-unit-button { height: 32px; min-width: 30px; padding: 0 4px; border: 0; background: transparent; color: #a9c0c4; font: 11px ui-monospace, monospace; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .time-window-control .window-unit-button:hover { color: var(--mint); }
 
 .timestamp-jump { flex-shrink: 0; margin: 0; padding: 0; border: 0; background: transparent; }
