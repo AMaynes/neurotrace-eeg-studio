@@ -1,16 +1,14 @@
-import type { NormalizedVerticalViewport } from "./waveform-viewport";
+import type { ChannelLayoutView } from "./channel-layout";
 
 export type SpectrogramFrequencyRange = { min: number; max: number };
 
 /** Display-only state: restoring a zoom must never restore or overwrite annotations. */
-export type ZoomView = {
+export type ZoomView = ChannelLayoutView & {
   viewStart: number;
   timebase: number;
   gain: number;
-  verticalViewport: NormalizedVerticalViewport | null;
-  expandedChannels: boolean;
   anatomicalGroups?: boolean;
-  channelScrollTop: number;
+  channelFitRestore?: ChannelLayoutView | null;
   frequencyRange: SpectrogramFrequencyRange;
 };
 
@@ -22,10 +20,16 @@ export type ZoomGestureState = { entry?: ZoomHistoryEntry; group?: string; lastA
 /** Exact equality avoids adding history for a control already at its limit. */
 export function sameZoomView(a: ZoomView, b: ZoomView): boolean {
   return a.viewStart === b.viewStart && a.timebase === b.timebase && a.gain === b.gain
-    && a.verticalViewport?.top === b.verticalViewport?.top && a.verticalViewport?.bottom === b.verticalViewport?.bottom
-    && a.expandedChannels === b.expandedChannels && a.channelScrollTop === b.channelScrollTop
+    && sameChannelLayout(a, b) && sameChannelLayout(a.channelFitRestore, b.channelFitRestore)
     && Boolean(a.anatomicalGroups) === Boolean(b.anatomicalGroups)
     && a.frequencyRange.min === b.frequencyRange.min && a.frequencyRange.max === b.frequencyRange.max;
+}
+
+function sameChannelLayout(a?: ChannelLayoutView | null, b?: ChannelLayoutView | null): boolean {
+  if (!a || !b) return !a && !b;
+  return a.expandedChannels === b.expandedChannels && a.channelScrollTop === b.channelScrollTop
+    && (a.channelGroupGap ?? null) === (b.channelGroupGap ?? null)
+    && a.verticalViewport?.top === b.verticalViewport?.top && a.verticalViewport?.bottom === b.verticalViewport?.bottom;
 }
 
 /** Find the latest box that has not already been backed out of. */

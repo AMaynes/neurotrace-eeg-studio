@@ -1,10 +1,18 @@
 /** Shared electrode row geometry for waveform drawing, channel labels, and hit testing. */
 
 import { anatomicalChannelGroup, orderElectrodeChannelIndices } from "./eeg-core.ts";
+import type { NormalizedVerticalViewport } from "./waveform-viewport";
 
 // Minimum gap; spare viewport space is shared equally by all gaps, including the edges.
 export const ELECTRODE_GROUP_GAP_ROWS = 1;
 export type ChannelGroupingMode = "matlab" | "name";
+
+export type ChannelLayoutView = {
+  expandedChannels: boolean;
+  verticalViewport: NormalizedVerticalViewport | null;
+  channelScrollTop: number;
+  channelGroupGap?: number | null;
+};
 
 /** Parse display names only; source labels and montage pairing remain unchanged. */
 function namedChannel(label: string): { group: string; contact: string } {
@@ -65,6 +73,7 @@ export function channelGroupOrder(labels: readonly string[], mode: ChannelGroupi
 export type ChannelRowLayout = {
   /** User-selected CSS pixels per group gap; absent uses automatic fit spacing. */
   groupGapPx?: number;
+  fit?: boolean;
   rowStartUnits: number[];
   /** Integer CSS grid lines; fractional spacing is represented by separate tracks. */
   rowGridLines: number[];
@@ -99,40 +108,45 @@ export function channelPlotGeometry(
   const unitSpan = expanded ? layout.totalUnits
     : Math.max(Number.EPSILON, ((viewport?.bottom ?? 1) - (viewport?.top ?? 0)) * layout.totalUnits);
   const grouped = layout.groups.length > 0;
+  const fit = layout.fit && !expanded && !viewport;
   // Keep contacts compact and distribute spare space between whole groups.
   // Explicit box zoom instead fills its selected range of canonical row units.
   const rowHeight = expanded ? (grouped ? 24 : 60)
-    : Math.min(availableHeight / unitSpan, grouped && !viewport ? 18 : Infinity);
+    : Math.min(availableHeight / unitSpan, grouped && !viewport ? 18 : fit ? 24 : Infinity);
   if (grouped && (expanded || !viewport)) {
     const rowCount = layout.rowStartUnits.length;
     const gapUnits = layout.totalUnits - rowCount;
-    const gapScale = (expanded ? layout.groupGapPx : undefined)
+    const gapScale = (fit ? Math.min(8, rowHeight) : expanded ? layout.groupGapPx : undefined)
       ?? Math.max(rowHeight, (availableHeight - rowCount * rowHeight) / gapUnits);
+    const contentHeight = rowCount * rowHeight + gapUnits * gapScale;
+    const offset = fit ? Math.max(0, (availableHeight - contentHeight) / 2) : 0;
     let rowTops: number[] | undefined;
     return {
       rowHeight,
-      contentHeight: rowCount * rowHeight + gapUnits * gapScale,
+      contentHeight,
       yForUnit(unit: number) {
         const rows = occupiedRows(unit, layout.rowStartUnits, 1);
-        return rows * rowHeight + (unit - rows) * gapScale;
+        return offset + rows * rowHeight + (unit - rows) * gapScale;
       },
       unitForY(y: number) {
         rowTops ??= layout.rowStartUnits.map((start, row) => row * rowHeight + (start - row) * gapScale);
-        const rows = occupiedRows(y, rowTops, rowHeight);
-        return rows + (y - rows * rowHeight) / gapScale;
+        const relativeY = y - offset;
+        const rows = occupiedRows(relativeY, rowTops, rowHeight);
+        return rows + (relativeY - rows * rowHeight) / gapScale;
       },
     };
   }
+  const offset = fit ? Math.max(0, (availableHeight - layout.totalUnits * rowHeight) / 2) : 0;
   return {
     rowHeight,
     contentHeight: Math.max(availableHeight, layout.totalUnits * rowHeight),
-    yForUnit: (unit: number) => (unit - unitStart) * rowHeight,
-    unitForY: (y: number) => unitStart + y / rowHeight,
+    yForUnit: (unit: number) => offset + (unit - unitStart) * rowHeight,
+    unitForY: (y: number) => unitStart + (y - offset) / rowHeight,
   };
 }
 
 /** Shared channel spacing with fixed gaps between groups, regardless of contact count. */
-export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean, mode: ChannelGroupingMode = "matlab", groupGapPx: number | null = null): ChannelRowLayout {
+export function buildChannelRowLayout(labels: readonly string[], electrodeSpacing: boolean, mode: ChannelGroupingMode = "matlab", groupGapPx: number | null = null, fit = false): ChannelRowLayout {
   const rowStartUnits: number[] = [];
   const rowGridLines: number[] = [];
   const tracks: string[] = [];
@@ -172,12 +186,28 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
     padding(block.endRow === labels.length - 1 ? edgePadding * 2 : edgePadding);
   }
   const selectedGap = normalizeChannelGroupGap(groupGapPx);
-  return { rowStartUnits, rowGridLines, gridTemplateRows: tracks.join(" ") || "1fr", totalUnits: Math.max(1, units), groupStarts, groups, contactLabels,
+  return { rowStartUnits, rowGridLines, gridTemplateRows: tracks.join(" ") || "1fr", totalUnits: Math.max(1, units), groupStarts, groups, contactLabels, fit,
     ...(selectedGap !== null ? { groupGapPx: selectedGap } : {}) };
 }
 
 export function normalizeChannelGroupGap(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(240, Math.max(8, value)) : null;
+}
+
+/** Older saves have no fitted layout to restore. */
+export function normalizeChannelFitRestore(value: unknown): ChannelLayoutView | null {
+  if (!value || typeof value !== "object" || !("expandedChannels" in value) || typeof value.expandedChannels !== "boolean") return null;
+  const { channelScrollTop, channelGroupGap, verticalViewport } = value as Partial<ChannelLayoutView>;
+  const top = verticalViewport?.top;
+  const bottom = verticalViewport?.bottom;
+  const vertical = typeof top === "number" && typeof bottom === "number" && top >= 0 && top < bottom && bottom <= 1
+    ? { top, bottom } : null;
+  return {
+    expandedChannels: value.expandedChannels,
+    verticalViewport: vertical,
+    channelScrollTop: typeof channelScrollTop === "number" && Number.isFinite(channelScrollTop) ? Math.max(0, channelScrollTop) : 0,
+    channelGroupGap: normalizeChannelGroupGap(channelGroupGap),
+  };
 }
 
 /** Gap hits deliberately resolve to no channel, so annotations cannot target a separator. */

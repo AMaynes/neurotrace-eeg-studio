@@ -1639,13 +1639,23 @@ textarea:focus-visible {
 .viewer-toolbar select:disabled,
 .viewer-toolbar input:disabled { cursor: not-allowed; opacity: .4; }
 
-.channel-rail { --channel-toggle-width: 12px; position: relative; padding-top: 28px; padding-left: var(--channel-toggle-width); }
-.channel-rail > .channel-fit-button {
-  position: absolute;
-  z-index: 8;
-  top: 4px;
-  left: calc(var(--channel-toggle-width) + 5px);
-  right: 5px;
+.waveform-wrap { --channel-toggle-width: 12px; }
+.waveform-wrap > .channel-rail { grid-area: 1 / 1; position: relative; padding-top: var(--channel-rail-header-height); padding-left: var(--channel-toggle-width); }
+.waveform-wrap > .canvas-column { grid-area: 1 / 2; }
+.channel-rail-header {
+  grid-area: 1 / 1;
+  align-self: start;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--channel-rail-header-height);
+  margin-left: var(--channel-toggle-width);
+  padding: 4px 5px 2px;
+  background: #0a171b;
+  border-right: 1px solid #20363d;
+}
+.channel-fit-button {
+  width: 100%;
   height: 22px;
   min-height: 0;
   display: grid;
@@ -1655,10 +1665,11 @@ textarea:focus-visible {
   border-radius: 4px;
   background: #10243a;
   color: var(--mint);
+  cursor: pointer;
   font-size: 9px;
   font-weight: 700;
 }
-.channel-rail > .channel-fit-button:hover { border-color: var(--mint); background: #18344d; }
+.channel-fit-button:hover, .channel-fit-button[aria-pressed="true"] { border-color: var(--mint); background: #18344d; }
 .channel-rail > .channel-visibility-bar {
   position: absolute;
   z-index: 9;

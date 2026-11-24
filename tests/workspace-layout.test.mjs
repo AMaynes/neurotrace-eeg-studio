@@ -33,7 +33,7 @@ test("a chosen group gap stays uniform and hit testing follows the same geometry
   }
 });
 
-test("fit restores automatic spacing and saved malformed spacing cannot corrupt geometry", () => {
+test("regular spacing remains automatic with no custom gap and saved malformed spacing cannot corrupt geometry", () => {
   for (const value of [null, undefined, "50", NaN, Infinity]) assert.equal(normalizeChannelGroupGap(value), null);
   assert.equal(normalizeChannelGroupGap(-20), 8);
   assert.equal(normalizeChannelGroupGap(1000), 240);
@@ -41,4 +41,24 @@ test("fit restores automatic spacing and saved malformed spacing cannot corrupt 
   for (const height of [200, 600]) assert.equal(channelPlotGeometry(layout, height, false).contentHeight, height);
   const expandedLayout = buildChannelRowLayout(["C3", "Fp1", "P3"], true, "name", 240);
   assert.equal(channelPlotGeometry(expandedLayout, 200, false).contentHeight, 200, "returning to compact mode fits every enabled row even after increasing gaps");
+});
+
+test("fitted channels use tight centered spacing and all row centers remain selectable", () => {
+  const labels = ["C3", "Cz", "C4", "Fp1", "Fp2", "P3"];
+  for (const grouped of [false, true]) {
+    const layout = buildChannelRowLayout(labels, grouped, "name", 240, true);
+    const geometry = channelPlotGeometry(layout, 500, false);
+    const top = geometry.yForUnit(layout.rowStartUnits[0]);
+    const bottom = geometry.yForUnit(layout.rowStartUnits.at(-1)) + geometry.rowHeight;
+    assert.ok(top > 0 && bottom < 500);
+    assert.equal(top, 500 - bottom);
+    for (const { startRow } of layout.groups.slice(1)) {
+      const previousEnd = geometry.yForUnit(layout.rowStartUnits[startRow - 1]) + geometry.rowHeight;
+      assert.equal(geometry.yForUnit(layout.rowStartUnits[startRow]) - previousEnd, 8);
+    }
+    layout.rowStartUnits.forEach((unit, row) => {
+      const center = geometry.yForUnit(unit) + geometry.rowHeight / 2;
+      assert.equal(channelRowFromFraction(layout, geometry.unitForY(center) / layout.totalUnits), row);
+    });
+  }
 });

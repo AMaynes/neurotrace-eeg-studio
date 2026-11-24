@@ -113,14 +113,39 @@ function workspace(overrides = {}) {
     notifyTutorialAction: () => {}, ...overrides,
   };
   for (const name of ["setPlaying", "setTimebase", "setWindowDraftValue", "setGain", "setWaveformVerticalViewport",
-    "setExpandedChannels", "setAnatomicalGroups", "setFocusedChannel", "setChannelSelectionActive", "setSpectrogramFrequencyRange", "setInspectionRange", "setInspectionDragging",
+    "setExpandedChannels", "setChannelGroupGap", "setChannelFitRestore", "setAnatomicalGroups", "setFocusedChannel", "setChannelSelectionActive", "setSpectrogramFrequencyRange", "setInspectionRange", "setInspectionDragging",
     "setAnnotations", "setCandidates", "setActiveCandidate", "setSelectedAnnotationId", "setSelectedAnnotationIds", "setToast"]) {
     scope[name] = (value) => changes.push([name, value]);
   }
-  const names = ["readZoomView", "cancelPendingViewFrames", "applyZoomView", "changeZoomView", "setTimeWindow", "zoomToTimeRange", "zoomTimeWindow", "commitMutation", "undo", "redo"];
+  const names = ["readZoomView", "cancelPendingViewFrames", "applyZoomView", "changeZoomView", "setTimeWindow", "zoomToTimeRange", "zoomTimeWindow", "commitMutation", "undo", "redo", "toggleFitChannels"];
   const api = compile(names.map(declaration).join("\n"), scope, `{${names.join(",")}}`);
   return { ...api, refs, scope, changes, canceled };
 }
+
+test("channel fit restores custom spacing, scroll, and vertical zoom without reverting time or gain", () => {
+  for (const layout of [
+    { expandedChannels: true, channelGroupGap: 87, channelScrollTop: 142, verticalViewport: null },
+    { expandedChannels: false, channelGroupGap: 42, channelScrollTop: 0, verticalViewport: { top: .25, bottom: .5 } },
+    { expandedChannels: false, channelGroupGap: null, channelScrollTop: 0, verticalViewport: null },
+  ]) {
+    const ui = workspace();
+    ui.refs.zoomViewRef.current = { ...initialView(), ...layout };
+    ui.refs.channelScrollOffsetRef.current = layout.channelScrollTop;
+    ui.toggleFitChannels();
+    assert.deepEqual(ui.readZoomView().channelFitRestore, layout);
+    assert.equal(ui.readZoomView().expandedChannels, false);
+    assert.equal(ui.readZoomView().verticalViewport, null);
+    assert.equal(ui.readZoomView().channelScrollTop, 0);
+    ui.changeZoomView({ viewStart: 70, timebase: 10, gain: 2 });
+    ui.toggleFitChannels();
+    assert.deepEqual(ui.readZoomView(), { ...initialView(), ...layout, channelFitRestore: null, viewStart: 70, timebase: 10, gain: 2 });
+    ui.undo();
+    assert.deepEqual(ui.readZoomView().channelFitRestore, layout);
+    ui.redo();
+    assert.equal(ui.readZoomView().channelScrollTop, layout.channelScrollTop);
+    assert.equal(ui.readZoomView().channelFitRestore, null);
+  }
+});
 
 test("real grouping memo and toggle preserve focus and restore exactly the original prepared display", () => {
   const labels = ["RA10", "LA3", "RA2", "LA1", "ECG1"];

@@ -980,7 +980,7 @@ test("highlights a focused channel and provides compact or vertically scrollable
   assert.match(page, /setChannelSelectionActive\(false\)/);
   assert.match(page, /waveform-wrap \$\{expandedChannels \? "channel-scroll-mode" : ""\}/);
   assert.match(page, /--channel-content-height/);
-  assert.match(page, /className="channel-fit-button"[^]*?onClick=\{fitEnabledChannels\}/);
+  assert.match(page, /className="channel-fit-button"[^]*?aria-pressed=\{channelFitRestore !== null\}[^]*?onClick=\{toggleFitChannels\}/);
   assert.doesNotMatch(page, /channel-layout-button|Use expanded scrollable channel layout/);
   assert.match(css, /\.waveform-wrap\.channel-scroll-mode[\s\S]*?height:\s*0[\s\S]*?overflow-y:\s*scroll/);
   assert.match(css, /\.waveform-wrap\.channel-scroll-mode \.canvas-column\s*\{\s*overflow:\s*visible/);
