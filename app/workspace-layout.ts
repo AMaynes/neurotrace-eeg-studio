@@ -17,7 +17,6 @@ export const WORKSPACE_TOOLS = [
   { id: "gain", label: "Gain" },
   { id: "clamp", label: "Clamping" },
   { id: "spectrogram", label: "Spectrogram" },
-  { id: "channels", label: "Channels" },
   { id: "tracks", label: "Label tracks" },
 ] as const;
 export type WorkspaceTab = typeof WORKSPACE_TABS[number]["id"];

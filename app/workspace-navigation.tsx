@@ -49,33 +49,3 @@ export function ToolbarCustomizer({ selected, onChange }: { selected: WorkspaceT
     </div>}
   </div>;
 }
-
-/** Names are toggles, so disabled channels remain available for a single-click restore. */
-export function ChannelVisibilityControls({ labels, groups, selected, search, onSearch, onChange, disabled }: {
-  labels: string[]; groups: [string, { name: string; index: number }[]][]; selected: Set<number>;
-  search: string; onSearch: (value: string) => void; onChange: (indices: number[], enabled: boolean) => void; disabled: boolean;
-}) {
-  const query = search.trim().toLowerCase();
-  return <section className="sidebar-channels" aria-label="Channel visibility">
-    <header><h2>Channels</h2><span>{selected.size}/{labels.length} enabled</span></header>
-    <p>Click a channel or group name to enable or disable it.</p>
-    <input type="search" aria-label="Find channels in View" placeholder="Find a channel…" value={search} onChange={event => onSearch(event.target.value)} />
-    <div className="sidebar-channel-actions">
-      <button disabled={disabled} onClick={() => onChange(labels.map((_, index) => index), true)}>Enable all</button>
-      <button disabled={disabled} onClick={() => onChange(labels.map((_, index) => index), false)}>Disable all</button>
-    </div>
-    {groups.map(([group, members]) => {
-      const visible = group.toLowerCase().includes(query) ? members : members.filter(member => member.name.toLowerCase().includes(query));
-      if (!visible.length) return null;
-      const count = members.filter(member => selected.has(member.index)).length;
-      return <div className="sidebar-channel-group" key={group}>
-        <button className="sidebar-channel-heading" disabled={disabled} aria-pressed={count === members.length}
-          aria-label={`Toggle ${group} channel group`} data-state={count === members.length ? "enabled" : count ? "partial" : "disabled"}
-          onClick={() => onChange(members.map(member => member.index), count !== members.length)}><strong>{group}</strong><span>{count}/{members.length}</span></button>
-        <div>{visible.map(member => <button key={member.index} disabled={disabled} aria-pressed={selected.has(member.index)}
-          title={member.name} onClick={() => onChange([member.index], !selected.has(member.index))}>{member.name}</button>)}</div>
-      </div>;
-    })}
-    {!groups.some(([group, members]) => group.toLowerCase().includes(query) || members.some(member => member.name.toLowerCase().includes(query))) && <p>No matching channels.</p>}
-  </section>;
-}

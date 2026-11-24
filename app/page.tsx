@@ -69,7 +69,7 @@ import { DirectoryImportFilters } from "./directory-import-filters";
 import { directoryReviewCache, indexReviewRows, isReviewCsv, loadDirectoryReviewCsvs, reviewRowMatches } from "./directory-review-resume";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { SessionTabTitle } from "./session-tab-title";
-import { WorkspaceTabs, ToolbarCustomizer, ChannelVisibilityControls } from "./workspace-navigation";
+import { WorkspaceTabs, ToolbarCustomizer } from "./workspace-navigation";
 import { WORKSPACE_TABS, LABEL_TABS, WORKSPACE_TOOLS, normalizeWorkspaceLayout, type WorkspaceTab, type LabelTab, type WorkspaceToolId } from "./workspace-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "./import-selection";
 import { scanDirectoryEvents, findNextDirectoryEvent, nextTimedEvent } from "./directory-event-client";
@@ -8133,7 +8133,6 @@ export default function Home() {
         }}
       ><span aria-hidden="true">≋</span><b>{traceDisplayMode === "clamped" ? "Clamped" : "Overlap"}</b></button>
     ),
-    channels: <button className="compact-toggle" data-tutorial="channels" disabled={!hasRecording} onClick={() => setShowChannels(true)}>Channel controls</button>,
     tracks: <button className={`compact-toggle ${bottomTracksOpen ? "active" : ""}`} aria-label={`${bottomTracksOpen ? "Hide" : "Show"} bottom label tracks`} aria-pressed={bottomTracksOpen} onClick={() => setBottomTracksOpen(value => !value)}>Label tracks</button>,
   };
 
@@ -8368,9 +8367,6 @@ export default function Home() {
                   </div>}
                   <div ref={setSpectrogramToolsHost} />
                   <button className="button secondary fit-channels-button" disabled={!hasRecording} onClick={fitEnabledChannels}>Fit all enabled channels</button>
-                  <ChannelVisibilityControls labels={hasRecording ? meta.channelLabels : []} groups={hasRecording ? channelOptions : []} selected={selectedChannels}
-                    search={channelSearch} onSearch={setChannelSearch} disabled={!hasRecording}
-                    onChange={setChannelVisibility} />
                 </div>
               </section>
               <section className="sidebar-pane pane-lower-visibility" aria-label="Lower pane visibility">

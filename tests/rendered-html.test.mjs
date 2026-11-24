@@ -143,7 +143,7 @@ test("ships a load-first state and accessible workspace dialogs", async () => {
   assert.match(leftSidebar, /aria-label="File info"[^]*?hasRecording \? meta\.name : "—"/, "File info does not expose a synthetic recording before loading");
 
   sourceHas(/aria-label="Fit all enabled channels"/, "the rail has a named fit action");
-  sourceHas(/data-tutorial="channels"[^]*?Channel controls<\/button>/, "channel management is available in View");
+  assert.doesNotMatch(page, /ChannelVisibilityControls|Find channels in View|data-tutorial="channels"/, "channel visibility controls are absent from View");
   sourceHas(/className="channel-visibility-bar"[^]*?aria-label="Show or hide channels"/, "channel controls open from the long left bar");
   sourceHas(/aria-label="(?:Open )?Help"/, "Help trigger has an accessible name");
   sourceHas(/aria-label="(?:Open )?Settings"/, "Settings trigger has an accessible name");

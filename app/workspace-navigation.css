@@ -81,20 +81,6 @@
 .view-settings .filter-drawer > div { min-width: 0; width: auto; }
 .view-settings .filter-drawer label { justify-content: space-between; }
 .view-tool-row .tool-pin { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); color: var(--muted); cursor: pointer; }
-.sidebar-channels { padding-top: 20px; }
-.sidebar-channels > header { display: flex; align-items: center; justify-content: space-between; }
-.sidebar-channels > header h2 { margin: 0; }
-.sidebar-channels > header span, .sidebar-channels p { font-size: 10px; color: var(--muted); }
-.sidebar-channels > input { width: 100%; height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg); color: var(--ink); font-size: 11px; }
-.sidebar-channel-actions { display: flex; gap: 6px; margin: 8px 0 12px; }
-.sidebar-channel-actions button { flex: 1; padding: 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); font-size: 10px; cursor: pointer; }
-.sidebar-channel-group { padding: 8px 0; border-bottom: 1px solid var(--border); }
-.sidebar-channel-heading { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; background: #10212a; padding: 7px 8px; color: #6f858f; border-radius: 4px; cursor: pointer; }
-.sidebar-channel-heading[data-state="enabled"], .sidebar-channel-heading[data-state="partial"] { color: var(--blue); }
-.sidebar-channel-heading span { font-size: 9px; }
-.sidebar-channel-group > div { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 0 2px; }
-.sidebar-channel-group > div button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid #24353d; border-radius: 4px; padding: 6px 8px; background: #0a151a; color: #71858d; font-size: 10px; cursor: pointer; }
-.sidebar-channel-group > div button[aria-pressed="true"] { border-color: #3d719a; background: #142e42; color: #d0e9ff; }
 .neuro-app .unified-workspace .viewer-toolbar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; overflow: visible; min-height: 54px; padding: 8px 10px; position: relative; z-index: 22; }
 .unified-workspace .viewer-toolbar .transport-group { margin-left: 0; }
 .unified-workspace .viewer-toolbar .toolbar-spacer { display: none; }

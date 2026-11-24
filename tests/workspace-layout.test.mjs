@@ -8,7 +8,7 @@ test("new workspaces start with event labels and only the essential toolbar", ()
 });
 
 test("saved sidebar and tool choices retain order and reject unknown or duplicate controls", () => {
-  assert.deepEqual(normalizeWorkspaceLayout({ sidebarTab: "view", labelsTab: "create", toolbarTools: ["gain", "unknown", "gain", "spectrogram", null] }),
+  assert.deepEqual(normalizeWorkspaceLayout({ sidebarTab: "view", labelsTab: "create", toolbarTools: ["gain", "channels", "unknown", "gain", "spectrogram", null] }),
     { sidebarTab: "view", labelsTab: "create", toolbarTools: ["gain", "spectrogram"] });
 });
 
