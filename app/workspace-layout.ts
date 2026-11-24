@@ -10,14 +10,19 @@ export const LABEL_TABS = [
   { id: "events", label: "Window / Instance" },
   { id: "create", label: "Create" },
 ] as const;
+export const VIEW_TOOL_SECTIONS = [
+  { id: "channels", label: "Channels" },
+  { id: "waveform", label: "Waveform" },
+  { id: "analysis", label: "Analysis" },
+] as const;
 export const WORKSPACE_TOOLS = [
-  { id: "montage", label: "Montage" },
-  { id: "groups", label: "Grouping" },
-  { id: "filters", label: "Filters" },
-  { id: "gain", label: "Gain" },
-  { id: "clamp", label: "Clamping" },
-  { id: "spectrogram", label: "Spectrogram" },
-  { id: "tracks", label: "Label tracks" },
+  { id: "montage", label: "Montage", section: "channels" },
+  { id: "groups", label: "Grouping", section: "channels" },
+  { id: "gain", label: "Gain", section: "waveform" },
+  { id: "clamp", label: "Clamping", section: "waveform" },
+  { id: "filters", label: "Filters", section: "waveform" },
+  { id: "spectrogram", label: "Spectrogram", section: "analysis" },
+  { id: "tracks", label: "Label tracks", section: "lower" },
 ] as const;
 export type WorkspaceTab = typeof WORKSPACE_TABS[number]["id"];
 export type LabelTab = typeof LABEL_TABS[number]["id"];

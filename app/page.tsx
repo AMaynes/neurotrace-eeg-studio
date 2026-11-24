@@ -70,7 +70,7 @@ import { directoryReviewCache, indexReviewRows, isReviewCsv, loadDirectoryReview
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { SessionTabTitle } from "./session-tab-title";
 import { WorkspaceTabs, ToolbarCustomizer } from "./workspace-navigation";
-import { WORKSPACE_TABS, LABEL_TABS, WORKSPACE_TOOLS, normalizeWorkspaceLayout, type WorkspaceTab, type LabelTab, type WorkspaceToolId } from "./workspace-layout";
+import { WORKSPACE_TABS, LABEL_TABS, VIEW_TOOL_SECTIONS, WORKSPACE_TOOLS, normalizeWorkspaceLayout, type WorkspaceTab, type LabelTab, type WorkspaceToolId } from "./workspace-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "./import-selection";
 import { scanDirectoryEvents, findNextDirectoryEvent, nextTimedEvent } from "./directory-event-client";
 import type { DirectoryTimedEvent } from "./directory-event-index";
@@ -8089,7 +8089,7 @@ export default function Home() {
       >{anatomicalGroups ? "Ungroup" : "Group"}</button>
     ),
     filters: (
-      <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" disabled={!hasRecording} onClick={() => { setShowFilters((value) => !value); setSidebarTab("view"); setLeftPanelOpen(true); }}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
+      <button className={`compact-toggle ${showFilters ? "active" : ""}`} data-tutorial="filters" aria-label="Filters" aria-expanded={showFilters} disabled={!hasRecording} onClick={() => { setShowFilters((value) => !value); setSidebarTab("view"); setLeftPanelOpen(true); }}><span className="filter-glyph">≋</span> Filters <i>{filters.enabled ? `Custom ${filters.highPassHz}–${filters.lowPassHz} · ${filters.notchHz}Hz` : "MATLAB"}</i></button>
     ),
     gain: (
       <div className="gain-control" data-tutorial="gain" role="group" aria-label="Gain">
@@ -8351,21 +8351,31 @@ export default function Home() {
               <section className="sidebar-pane" aria-label="All viewing tools" data-tutorial="view-tools">
                 <header className="sidebar-pane-heading"><h2>All viewing tools</h2></header>
                 <div className="sidebar-pane-content view-settings">
-                  {WORKSPACE_TOOLS.filter(tool => tool.id !== "tracks").map(tool => <div className="view-tool-row" key={tool.id}>
-                    {viewTools[tool.id]}
-                    <button className="tool-pin" aria-label={`${toolbarTools.includes(tool.id) ? "Remove" : "Add"} ${tool.label} ${toolbarTools.includes(tool.id) ? "from" : "to"} toolbar`}
-                      aria-pressed={toolbarTools.includes(tool.id)} title="Add or remove a toolbar copy; this control stays in View"
-                      onClick={() => setToolbarTools(current => current.includes(tool.id) ? current.filter(id => id !== tool.id) : [...current, tool.id])}>{toolbarTools.includes(tool.id) ? "−" : "+"}</button>
-                  </div>)}
-                  {hasRecording && showFilters && <div className="filter-drawer">
-                    <div><strong>Display processing</strong><span>Default: MATLAB FIR + automatic 1×/2× sampling. Custom mode uses a separate, non-MATLAB processing pipeline. Source samples remain unchanged.</span></div>
-                    <label>High-pass <input type="number" min="0" step="0.1" value={filters.highPassHz} onChange={(event) => setFilters((current) => ({ ...current, highPassHz: Number(event.target.value) }))} /> Hz</label>
-                    <label>Low-pass <input type="number" min="1" step="1" value={filters.lowPassHz} onChange={(event) => setFilters((current) => ({ ...current, lowPassHz: Number(event.target.value) }))} /> Hz</label>
-                    <label>Notch <select value={filters.notchHz} onChange={(event) => setFilters((current) => ({ ...current, notchHz: Number(event.target.value) as 0 | 50 | 60 }))}><option value="0">Off</option><option value="50">50 Hz</option><option value="60">60 Hz</option></select></label>
-                    <label className="switch-label"><input type="checkbox" checked={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.checked }))} /><span /> Custom mode</label>
-                    <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to MATLAB</button>
-                  </div>}
-                  <div ref={setSpectrogramToolsHost} />
+                  {VIEW_TOOL_SECTIONS.map(section => (
+                    <section className="view-tool-section" data-view-tools={section.id} aria-label={section.label} key={section.id}>
+                      <h3>{section.label}</h3>
+                      <div className="view-tool-rows">
+                        {WORKSPACE_TOOLS.filter(tool => tool.section === section.id).map(tool => {
+                          const pinned = toolbarTools.includes(tool.id);
+                          return <div className="view-tool-row" data-view-tool={tool.id} key={tool.id}>
+                            {viewTools[tool.id]}
+                            <button className="tool-pin" aria-label={`${pinned ? "Remove" : "Add"} ${tool.label} ${pinned ? "from" : "to"} toolbar`}
+                              aria-pressed={pinned} title={pinned ? "Remove from toolbar" : "Add to toolbar"}
+                              onClick={() => setToolbarTools(current => current.includes(tool.id) ? current.filter(id => id !== tool.id) : [...current, tool.id])}>{pinned ? "−" : "+"}</button>
+                          </div>;
+                        })}
+                      </div>
+                      {section.id === "waveform" && hasRecording && showFilters && <div className="filter-drawer">
+                        <div><strong>Display processing</strong><span>Default: MATLAB FIR + automatic 1×/2× sampling. Custom mode uses a separate, non-MATLAB processing pipeline. Source samples remain unchanged.</span></div>
+                        <label>High-pass <input type="number" min="0" step="0.1" value={filters.highPassHz} onChange={(event) => setFilters((current) => ({ ...current, highPassHz: Number(event.target.value) }))} /> Hz</label>
+                        <label>Low-pass <input type="number" min="1" step="1" value={filters.lowPassHz} onChange={(event) => setFilters((current) => ({ ...current, lowPassHz: Number(event.target.value) }))} /> Hz</label>
+                        <label>Notch <select value={filters.notchHz} onChange={(event) => setFilters((current) => ({ ...current, notchHz: Number(event.target.value) as 0 | 50 | 60 }))}><option value="0">Off</option><option value="50">50 Hz</option><option value="60">60 Hz</option></select></label>
+                        <label className="switch-label"><input type="checkbox" checked={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.checked }))} /><span /> Custom mode</label>
+                        <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to MATLAB</button>
+                      </div>}
+                      {section.id === "analysis" && <div ref={setSpectrogramToolsHost} />}
+                    </section>
+                  ))}
                 </div>
               </section>
               <section className="sidebar-pane pane-lower-visibility" aria-label="Lower pane visibility">
