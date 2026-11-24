@@ -8746,9 +8746,12 @@ export default function Home() {
                   const top = channelGeometry.yForUnit(channelRowLayout.rowStartUnits[startRow]);
                   const previous = channelGeometry.yForUnit(channelRowLayout.rowStartUnits[startRow - 1]) + channelGeometry.rowHeight;
                   const gap = top - previous;
+                  const visibleTop = expandedChannels ? previous : Math.max(0, previous);
+                  const visibleBottom = expandedChannels ? top : Math.min(Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT), top);
+                  if (visibleBottom <= visibleTop) return null;
                   return <button key={`gap-${name}-${startRow}`} className="channel-gap-handle" role="separator" aria-orientation="horizontal"
                     aria-label={`Adjust spacing before ${name} group`} title="Drag to change spacing uniformly between channel groups" tabIndex={0}
-                    style={{ top: CHANNEL_RAIL_HEADER_HEIGHT + previous + gap / 2 - 4 }}
+                    style={{ top: CHANNEL_RAIL_HEADER_HEIGHT + visibleTop, height: visibleBottom - visibleTop }}
                     onPointerDown={event => {
                       if (event.button !== 0) return;
                       event.preventDefault();

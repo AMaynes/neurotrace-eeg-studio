@@ -157,8 +157,10 @@
 .unified-workspace > .utility-actions { position: fixed; z-index: 35; bottom: 5px; right: 8px; height: auto; width: auto; display: flex; gap: 5px; margin: 0; padding: 3px; border: 1px solid var(--border); border-radius: 6px; background: #0b171c; }
 .unified-workspace > .utility-actions .utility-button { width: 27px; height: 27px; border-radius: 4px; }
 .unified-workspace .command-strip { padding-right: 155px; }
-.channel-gap-handle { position: absolute; z-index: 5; height: 8px; left: var(--channel-toggle-width); right: 0; border: 0; border-top: 1px solid #29434b; background: transparent; cursor: ns-resize; touch-action: none; }
-.channel-gap-handle:hover, .channel-gap-handle:focus-visible { border-top-color: var(--mint); background: #5aa9ff18; }
+.channel-rail > .channel-gap-handle { position: absolute; z-index: 5; left: var(--channel-toggle-width); right: 0; padding: 0; border: 0; background: transparent; cursor: ns-resize; touch-action: none; }
+.channel-rail > .channel-gap-handle::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: #29434b; pointer-events: none; }
+.channel-rail > .channel-gap-handle:hover, .channel-rail > .channel-gap-handle:focus-visible { background: #5aa9ff18; }
+.channel-rail > .channel-gap-handle:hover::after, .channel-rail > .channel-gap-handle:focus-visible::after { background: var(--mint); }
 @media (max-width: 760px) {
   .workspace-sidebar-nav .workspace-tabs > button { padding-inline: 3px; font-size: 10px; white-space: nowrap; }
   .neuro-app .unified-workspace, .neuro-app .unified-workspace.left-collapsed { grid-template-columns: minmax(0, 1fr); }
