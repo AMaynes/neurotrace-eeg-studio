@@ -86,7 +86,6 @@
 .unified-workspace .viewer-toolbar .toolbar-spacer { display: none; }
 .pinned-toolbar-tool { display: flex; align-items: center; }
 .unified-workspace .box-zoom-button > span { display: inline; }
-.fit-channels-button { margin-top: 12px; width: 100%; }
 .toolbar-customizer { position: relative; margin-left: auto; }
 .toolbar-add { width: 32px; height: 32px; border: 1px solid #315060; border-radius: 5px; background: #102029; color: var(--blue); font-size: 22px; cursor: pointer; }
 .toolbar-tool-picker { position: absolute; z-index: 60; top: calc(100% + 8px); right: 0; width: 210px; padding: 12px; border: 1px solid var(--border-strong); border-radius: 7px; background: #102029; box-shadow: var(--shadow); }

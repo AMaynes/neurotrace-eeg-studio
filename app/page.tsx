@@ -8366,7 +8366,6 @@ export default function Home() {
                     <button onClick={() => setFilters({ ...DEFAULT_FILTERS, enabled: false })}>Reset to MATLAB</button>
                   </div>}
                   <div ref={setSpectrogramToolsHost} />
-                  <button className="button secondary fit-channels-button" disabled={!hasRecording} onClick={fitEnabledChannels}>Fit all enabled channels</button>
                 </div>
               </section>
               <section className="sidebar-pane pane-lower-visibility" aria-label="Lower pane visibility">

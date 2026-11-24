@@ -167,6 +167,9 @@ test("keeps essential time tools in the toolbar and optional tools in View", asy
   assert.doesNotMatch(toolbar, /Show.*right panel|Montage|Gain multiplier/);
   assert.match(page, /WORKSPACE_TOOLS\.filter[^]*?viewTools\[tool\.id\]/);
   assert.match(page, /aria-label="Fit all enabled channels"/);
+  const sidebarStart = page.indexOf('<aside className="left-sidebar"');
+  const sidebar = page.slice(sidebarStart, page.indexOf("</aside>", sidebarStart));
+  assert.doesNotMatch(sidebar, /Fit all enabled channels|fit-channels-button|ChannelVisibilityControls/);
   const header = page.slice(page.indexOf('<header className="topbar">'), page.indexOf('</header>'));
   assert.match(header, /session-tab-strip/);
   assert.doesNotMatch(header, /Open Help|Open Settings|Save review/);
