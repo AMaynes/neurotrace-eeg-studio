@@ -2839,23 +2839,6 @@ export default function Home() {
     setToast(snapshot.hasRecording ? "Session restored" : "Blank session ready — load a recording");
   }, [activeSessionId, applySessionSnapshot, demoSource, detachDirectorySession, directoryCatalogs, importBusy, reviewViewArrival, sessionTabs, storeActiveSession]);
 
-  const toggleSessionContentView = useCallback((id: string) => {
-    if (importBusy) return;
-    const target = sessionTabs.find((tab) => tab.id === id);
-    const targetHasRecording = target && (id === activeSessionId ? hasRecording : target.hasRecording);
-    if (!target || !targetHasRecording) return;
-    const nextView = target.contentView === "structure" ? "recording" : "structure";
-    if (id !== activeSessionId) switchSession(id);
-    setSessionTabs((current) => current.map((tab) => tab.id === id ? { ...tab, contentView: nextView } : tab));
-    if (nextView === "structure") {
-      setPlaying(false);
-      setShowFilters(false);
-      setToast("File structure analysis opened");
-    } else {
-      setToast("Recording display restored");
-    }
-  }, [activeSessionId, hasRecording, importBusy, sessionTabs, switchSession]);
-
   const setViewStartSafe = useCallback((next: number | ((value: number) => number)) => {
     const value = typeof next === "function" ? next(viewStartRef.current) : next;
     commitViewStart(clamp(value, 0, Math.max(0, meta.durationSec - timebase)));
@@ -8256,14 +8239,6 @@ export default function Home() {
                   onClick={() => switchSession(tab.id)}
                   title={`${tab.title}${tabRecovery === "error" ? " · local recovery unavailable" : tabHasRecording ? " · locally recoverable" : " · blank"}`}
                 ><span className={`session-tab-dot ${tabRecovery === "error" ? "error" : tabHasRecording ? "loaded" : "blank"}`} /><SessionTabTitle title={tab.title} /></button>
-                <button
-                  className={`session-tab-structure ${tab.contentView === "structure" ? "active" : ""}`}
-                  disabled={importBusy || !tabHasRecording}
-                  aria-label={`${tab.contentView === "structure" ? "Show recording" : "Show file structure"} for ${tab.title}`}
-                  aria-pressed={tab.contentView === "structure"}
-                  title={tabHasRecording ? tab.contentView === "structure" ? "Show recording" : "Show file structure" : "Load a recording to inspect its file structure"}
-                  onClick={() => toggleSessionContentView(tab.id)}
-                ><span className="file-structure-glyph" aria-hidden="true"><i /><i /><i /></span></button>
                 <button className="session-tab-close" disabled={importBusy} aria-label={`Close ${tab.title}`} title={`Close ${tab.title}`} onClick={() => closeSession(tab.id)}>×</button>
               </div>;
             })}

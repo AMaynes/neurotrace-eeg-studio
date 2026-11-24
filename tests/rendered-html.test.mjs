@@ -403,7 +403,7 @@ test("accepts additive directory companions while retaining actionable damaged-r
   assert.match(styles, /\.upload-error\s*\{/);
 });
 
-test("toggles each loaded tab between the recording and file structure analysis", async () => {
+test("keeps session tabs limited to the filename and close button", async () => {
   const [page, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -413,18 +413,10 @@ test("toggles each loaded tab between the recording and file structure analysis"
   const tabShellStart = page.indexOf('<div className="session-tabs">');
   const tabShellEnd = page.indexOf("</nav>", tabShellStart);
   const tabs = page.slice(tabShellStart, tabShellEnd);
-  const structureButton = tabs.indexOf("session-tab-structure");
-  const closeButton = tabs.indexOf("session-tab-close");
-  assert.ok(structureButton >= 0 && structureButton < closeButton, "the structure toggle sits immediately left of the tab close button");
-  assert.match(tabs, /disabled=\{importBusy \|\| !tabHasRecording\}/);
-  assert.match(tabs, /aria-pressed=\{tab\.contentView === "structure"\}/);
-
-  const toggleStart = page.indexOf("const toggleSessionContentView");
-  const toggleEnd = page.indexOf("const updateControlBinding", toggleStart);
-  const toggle = page.slice(toggleStart, toggleEnd);
-  assert.match(toggle, /if \(id !== activeSessionId\) switchSession\(id\)/, "using the control on an inactive tab opens that tab");
-  assert.match(toggle, /contentView:\s*nextView/);
-  assert.match(toggle, /setPlaying\(false\)/);
+  assert.doesNotMatch(tabs, /session-tab-structure|file-structure-glyph|Show file structure/);
+  assert.match(tabs, /SessionTabTitle title=\{tab.title\}/);
+  assert.match(tabs, /className="session-tab-close"/);
+  assert.doesNotMatch(page, /const toggleSessionContentView/);
 
   assert.match(page, /activeSessionContentView === "structure" && hasRecording \? <FileStructurePanel/);
   assert.equal(
@@ -447,9 +439,8 @@ test("toggles each loaded tab between the recording and file structure analysis"
   assert.match(page, /meta\.format === "mat-v7\.3"/);
   assert.match(page, /meta\.format === "raw-int16-le"/);
 
-  const structureRule = styles.match(/\.session-tab-structure\s*\{([^}]+)\}/)?.[1] ?? "";
   const closeRule = styles.match(/\.session-tab-close\s*\{([^}]+)\}/)?.[1] ?? "";
-  assert.match(structureRule, /right:\s*31px/);
+  assert.match(styles, /\.session-tab\s*\{[^}]*padding:\s*0 32px 0 12px;/);
   assert.match(closeRule, /right:\s*7px/);
   assert.match(styles, /\.file-structure-panel\s*\{/);
   assert.match(styles, /\.file-channel-table\s*\{/);
