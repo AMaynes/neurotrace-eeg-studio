@@ -74,6 +74,7 @@ function memoHarness(data) {
     meta: data.source.meta,
     selectedChannels: new Set(data.window.channelIndices),
     verifyingSource: false,
+    overviewBuilding: false,
     sourceRef: noRenderAccess,
     recordingOverviewCacheRef: noRenderAccess,
     buildSessionOverview: (...args) => { builds += 1; return buildSessionOverview(...args); },
@@ -159,6 +160,9 @@ test("panning, cursor, gain, and filter changes reuse the index without rescanni
   memo.scope.verifyingSource = true;
   assert.equal(memo.render().status, "loading");
   memo.scope.verifyingSource = false;
+  memo.scope.overviewBuilding = true;
+  assert.equal(memo.render().status, "loading");
+  memo.scope.overviewBuilding = false;
   assert.equal(memo.render().status, "unavailable");
 });
 
@@ -230,12 +234,12 @@ test("incomplete and missing overview regions stay visibly unknown while measure
   const partial = renderOverview(buildSessionOverview(data.entry, { durationSec: 8, barCount: 4 }), 8);
   assert.deepEqual(partial.bins.map((node) => node.props.className), ["overview-bin ready", "overview-bin partial", "overview-bin unread", "overview-bin unread"]);
   assert.deepEqual(partial.bins.map((node) => node.props.style.height), ["100%", "100%", "100%", "100%"]);
-  assert.equal(partial.statuses[0].props.children, "Overview 37% · unindexed areas shaded");
+  assert.equal(partial.statuses[0].props.children, "Overview coverage · 37%");
   const gapData = fixture([[[0, 0], [0, 100]]]);
   gapData.window.gaps[0][1] = 1;
   const gapped = renderOverview(buildSessionOverview(gapData.entry, { durationSec: 2, barCount: 2 }), 2);
   assert.deepEqual(gapped.bins.map((node) => [node.props.className, node.props.style.height]), [["overview-bin ready", "0%"], ["overview-bin gap", "100%"]]);
-  assert.equal(gapped.statuses[0].props.children, "Missing overview data shaded");
+  assert.equal(gapped.statuses[0].props.children, "Gaps in overview shaded");
   assert.match(css, /\.overview-bin:is\(\.unread, \.gap, \.partial\)\s*\{[^}]*repeating-linear-gradient/);
   assert.match(css, /\.overview-bin\.ready\s*\{[^}]*min-height:\s*1px/);
 });
@@ -246,7 +250,7 @@ test("an unavailable or building index never fabricates activity and still permi
     const ui = renderOverview(result, 21_600);
     assert.equal(ui.bins.length, 110);
     assert.ok(ui.bins.every((node) => node.props.className === "overview-bin unread" && node.props.style.height === "100%"));
-    assert.equal(ui.statuses[0].props.children, loading ? "Building recording overview…" : "Recording overview unavailable");
+    assert.equal(ui.statuses[0].props.children, loading ? "Building overview…" : "Recording overview unavailable");
     ui.track.props.onPointerDown({ clientX: 60, currentTarget: { getBoundingClientRect: () => ({ left: 10, width: 100 }) } });
     assert.deepEqual(ui.jumps, [10_800]);
     assert.deepEqual(ui.actions, ["overview-jumped"]);

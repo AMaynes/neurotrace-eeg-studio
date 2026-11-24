@@ -29,7 +29,7 @@ export interface DirectoryEventRequest {
 
 export const COMMON_EVENT_KEYWORDS = [
   // Matches target_evs in seizure_annotation_tool_update.m.
-  { name: "Seizure", query: "sz, seizure, seiz, tonic, EEG onset" },
+  { name: "Seizure / Sz / Seiz", query: "sz, seizure, seiz, tonic, EEG onset" },
   { name: "Spikes / sharp waves", query: "spike, sharp" },
   { name: "Artifact", query: "artifact, artefact" },
   { name: "Stimulation", query: "stim" },

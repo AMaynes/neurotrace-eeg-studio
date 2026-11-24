@@ -70,7 +70,7 @@ import { directoryReviewCache, indexReviewRows, isReviewCsv, loadDirectoryReview
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { SessionTabTitle } from "./session-tab-title";
 import { WorkspaceTabs, ToolbarCustomizer } from "./workspace-navigation";
-import { WORKSPACE_TABS, LABEL_TABS, VIEW_TOOL_SECTIONS, WORKSPACE_TOOLS, normalizeWorkspaceLayout, type WorkspaceTab, type LabelTab, type WorkspaceToolId } from "./workspace-layout";
+import { WORKSPACE_TABS, LABEL_TABS, VIEW_TOOL_SECTIONS, WORKSPACE_TOOLS, isLabelToolbarTool, normalizeWorkspaceLayout, type WorkspaceTab, type LabelTab, type ToolbarToolId, type WorkspaceToolId } from "./workspace-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "./import-selection";
 import { scanDirectoryEvents, findNextDirectoryEvent, nextTimedEvent } from "./directory-event-client";
 import type { DirectoryTimedEvent } from "./directory-event-index";
@@ -2200,7 +2200,7 @@ export default function Home() {
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<WorkspaceTab>("labels");
   const [labelsTab, setLabelsTab] = useState<LabelTab>("events");
-  const [toolbarTools, setToolbarTools] = useState<WorkspaceToolId[]>([]);
+  const [toolbarTools, setToolbarTools] = useState<ToolbarToolId[]>([]);
   const [layoutPreferencesReady, setLayoutPreferencesReady] = useState(false);
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -2976,30 +2976,34 @@ export default function Home() {
 
   const windowPresentation = windowAmountPresentation(timebase, windowDraftUnit);
   const windowDisplayUnit = windowDraftValue === null ? windowPresentation.unit : windowDraftUnit;
-  const windowUnitSeconds = WINDOW_UNIT_SECONDS[windowDisplayUnit];
   const windowDraftDisplayValue = windowDraftValue ?? windowPresentation.amount;
-  const cycleWindowDraftUnit = () => {
-    setWindowDraftValue(current => current ?? windowDraftDisplayValue);
-    const currentIndex = WINDOW_TIME_UNITS.indexOf(windowDisplayUnit);
-    setWindowDraftUnit(WINDOW_TIME_UNITS[(currentIndex + 1) % WINDOW_TIME_UNITS.length]);
-    windowAmountInputRef.current?.focus();
-  };
-  const syncWindowDraft = () => {
+  const syncWindowDraft = (cycleUnit = false) => {
     if (!hasRecording) return;
     const numericValue = parseWindowAmount(windowDraftDisplayValue);
     if (numericValue === null) {
+      setWindowDraftValue(null);
       setToast("Enter a positive window amount up to 999.9");
       return;
     }
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
     const minimumWindow = Math.min(minimumRenderableWindow, maximumWindow);
-    const nextWindow = clamp(numericValue * windowUnitSeconds, minimumWindow, maximumWindow);
+    const secondsInUnit = (unit: WindowTimeUnit) => clamp(numericValue * WINDOW_UNIT_SECONDS[unit], minimumWindow, maximumWindow);
+    let unit = windowDisplayUnit;
+    if (cycleUnit) {
+      const index = WINDOW_TIME_UNITS.indexOf(windowDisplayUnit);
+      const nextUnits = [...WINDOW_TIME_UNITS.slice(index + 1), ...WINDOW_TIME_UNITS.slice(0, index)];
+      // A short recording cannot display hours or days at tenths precision.
+      unit = nextUnits.find(candidate => windowAmountPresentation(secondsInUnit(candidate), candidate).unit === candidate) ?? unit;
+    }
+    const nextWindow = secondsInUnit(unit);
     setTimeWindow(nextWindow);
+    setWindowDraftUnit(unit);
     setWindowDraftValue(null);
-    const applied = windowAmountPresentation(nextWindow, windowDisplayUnit);
+    const applied = windowAmountPresentation(nextWindow, unit);
     setToast(`Window set to ${applied.amount} ${WINDOW_UNIT_LABELS[applied.unit]}`);
     notifyTutorialAction("window-applied");
   };
+  const cycleWindowDraftUnit = () => syncWindowDraft(true);
 
   const commitMutation = useCallback((mutator: (current: Annotation[]) => Annotation[]) => {
     if (sourceVerificationRef.current) {
@@ -3581,6 +3585,8 @@ export default function Home() {
     montage,
   }) : "none";
   const overviewRefreshRevision = filters.enabled && overviewDisplayPolicy === "final" ? recordingOverviewRevision : 0;
+  const [overviewBuildingSession, setOverviewBuildingSession] = useState<{ id: string; key: string } | null>(null);
+  const overviewBuilding = overviewBuildingSession?.id === activeSessionId && overviewBuildingSession.key === sessionKey;
   const sessionOverview = useMemo(() => {
     // Index publication and session switching supply immutable state; no disk work here.
     const selected = [...selectedChannels].sort((a, b) => a - b);
@@ -3591,9 +3597,10 @@ export default function Home() {
       channelLabels: activeRecordingOverview.window.channelIndices.map((index) => meta.channelLabels[index]),
     } } : undefined;
     return buildSessionOverview(hasRecording ? entry : undefined, {
-      durationSec: meta.durationSec, channelIndex: channelIndex ?? -1, barCount: 110, loading: verifyingSource,
+      durationSec: meta.durationSec, channelIndex: channelIndex ?? -1, barCount: 110,
+      loading: verifyingSource || overviewBuilding,
     });
-  }, [activeRecordingOverview, hasRecording, meta, selectedChannels, verifyingSource]);
+  }, [activeRecordingOverview, hasRecording, meta, overviewBuilding, selectedChannels, verifyingSource]);
 
   // Optional work belongs to the active recording, not the import transaction.
   // Switching/closing tabs cancels it; review edits and export stay available.
@@ -3662,6 +3669,7 @@ export default function Home() {
     }
     const timer = window.setTimeout(() => {
       if (recordingOverviewCacheRef.current.get(source)?.complete) return;
+      setOverviewBuildingSession({ id: activeSessionId, key: sessionKey });
       void buildBackgroundRecordingOverview(source, overviewAbortController.signal, publishRecordingOverview, performanceDiagnostics)
         .catch((error: unknown) => {
           if (!isCurrent() || isAbortFailure(error)) return;
@@ -3669,9 +3677,10 @@ export default function Home() {
         }).finally(() => {
           if (!isCurrent()) return;
           overviewBuildSourceRef.current = null;
+          setOverviewBuildingSession(null);
           setRecordingOverviewRevision((revision) => revision + 1);
         });
-    }, 500);
+    }, 0);
     return () => {
       window.clearTimeout(timer);
       overviewAbortController.abort();
@@ -4755,6 +4764,19 @@ export default function Home() {
         return;
       }
 
+      const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
+      const plotHeight = Math.max(1, height - plotTop);
+      const { rowHeight, yForUnit } = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
+      // A changed montage can clamp scrollTop before its scroll event fires.
+      // Match the channel rail and hit testing using the live offset each paint.
+      const rowScrollOffset = expandedChannels
+        ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current
+        : 0;
+      const rowTopForChannel = (channel: number) => plotTop + yForUnit(channelRowLayout.rowStartUnits[channel])
+        - rowScrollOffset;
+      const lastRowBottom = display.labels.length ? rowTopForChannel(display.labels.length - 1) + rowHeight : height;
+      const plotBottom = Math.max(plotTop, Math.min(height, lastRowBottom));
+
       context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
       context.textAlign = "center";
       context.textBaseline = "top";
@@ -4775,7 +4797,7 @@ export default function Home() {
         if (second < 0 || second > meta.durationSec) continue;
         const x = ((second - displayStart) / timebase) * width;
         context.strokeStyle = gridIndex % 5 === 0 ? "rgba(133,171,181,.20)" : "rgba(133,171,181,.09)";
-        context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
+        context.beginPath(); context.moveTo(x, 0); context.lineTo(x, plotBottom); context.stroke();
         context.fillStyle = "rgba(167,190,197,.74)";
         context.fillText(
           activeCandidateTime !== null
@@ -4791,23 +4813,13 @@ export default function Home() {
         const x1 = ((Math.max(region.startSec, displayStart) - displayStart) / timebase) * width;
         const x2 = ((Math.min(region.endSec, displayEnd) - displayStart) / timebase) * width;
         context.fillStyle = "rgba(243, 187, 95, .08)";
-        context.fillRect(x1, CHANNEL_RAIL_HEADER_HEIGHT, Math.max(1, x2 - x1), Math.max(0, height - CHANNEL_RAIL_HEADER_HEIGHT));
+        context.fillRect(x1, plotTop, Math.max(1, x2 - x1), plotBottom - plotTop);
         context.fillStyle = "rgba(243, 187, 95, .74)";
         context.textAlign = "left";
         context.fillText("RAW SOURCE FLATLINE", x1 + 4, CHANNEL_RAIL_HEADER_HEIGHT + 3);
         context.textAlign = "center";
       }
 
-      const plotTop = CHANNEL_RAIL_HEADER_HEIGHT;
-      const plotHeight = Math.max(1, height - plotTop);
-      const { rowHeight, yForUnit } = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
-      // A changed montage can clamp scrollTop before its scroll event fires.
-      // Match the channel rail and hit testing using the live offset each paint.
-      const rowScrollOffset = expandedChannels
-        ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current
-        : 0;
-      const rowTopForChannel = (channel: number) => plotTop + yForUnit(channelRowLayout.rowStartUnits[channel])
-        - rowScrollOffset;
       // Selection stores source identities, while montage/group rows can be reordered.
       const selectedSources = new Set(spectrogramChannels);
       const isSelectedChannel = (channel: number) => selectedSources.size
@@ -5043,6 +5055,10 @@ export default function Home() {
         context.setLineDash([7, 4]);
         context.beginPath(); context.moveTo(onsetX, 0); context.lineTo(onsetX, height); context.stroke();
         context.setLineDash([]);
+      }
+      if (display.labels.length && lastRowBottom >= plotTop && lastRowBottom <= height) {
+        context.fillStyle = "#3b5660";
+        context.fillRect(0, Math.min(height - 1, lastRowBottom), width, 1);
       }
       presentFrame();
     };
@@ -7082,7 +7098,9 @@ export default function Home() {
     setImportPickerKind(kind);
     // Configure and open within this click, retaining the browser's user activation.
     // Do not clear an existing collection until replacement files are actually selected.
-    input.accept = kind === "directory" || !importChoice ? "" : importChoice === "mat-dat" ? ".mat,.dat" : `.${importChoice}`;
+    // Keep companions and recordings with generic file types selectable in OS pickers.
+    // A chosen format filters directory contents after the browser grants access.
+    input.accept = "";
     input.multiple = true;
     input.value = "";
     input.click();
@@ -7892,6 +7910,39 @@ export default function Home() {
   const rightContextLabels = ["clinical", "medication", "note"]
     .map((id) => LABEL_BY_ID.get(id))
     .filter((label): label is LabelDefinition => label !== undefined && label.name.toLowerCase().includes(paletteSearch.toLowerCase()));
+  const dictionaryPaletteLabels = useMemo(() => {
+    const definition = LABEL_BY_ID.get("dictionary-label")!;
+    const aliases = new Map(labelLibrary.aliases.map((entry) => [entry.key, entry]));
+    return labelLibrary.labels.map((item) => {
+      const alias = aliases.get(`dictionary:${item.id}`);
+      return {
+        ...definition,
+        name: alias?.alias || item.name,
+        short: item.code || item.name,
+        dictionaryLabel: item,
+        description: alias?.description || item.description,
+      };
+    });
+  }, [labelLibrary]);
+  const pinnedLabelTools = toolbarTools.flatMap(id => {
+    if (!isLabelToolbarTool(id)) return [];
+    const labelId = id.slice("label:".length);
+    const label = labelId.startsWith("dictionary:")
+      ? dictionaryPaletteLabels.find(item => `dictionary:${item.dictionaryLabel.id}` === labelId)
+      : LABEL_BY_ID.get(labelId);
+    return [{ id, definition: label, label: label ? label.name : labelId.replace(/^dictionary:/, "Dictionary label ") }];
+  });
+  const labelPin = (label: LabelDefinition) => {
+    const id: ToolbarToolId = label.dictionaryLabel ? `label:dictionary:${label.dictionaryLabel.id}` : `label:${label.id}`;
+    const pinned = toolbarTools.includes(id);
+    const name = PALETTE_BUTTON_NAMES[label.id] ?? label.name;
+    return <button type="button" className="tool-pin label-toolbar-pin" data-tutorial="label-toolbar-pin"
+      aria-label={pinned ? `Remove ${name} from toolbar` : `Add ${name} to toolbar`}
+      aria-pressed={pinned}
+      title={pinned ? "Remove label from toolbar" : "Add label to toolbar"}
+      onClick={() => setToolbarTools(current => current.includes(id) ? current.filter(tool => tool !== id) : [...current, id])}
+    >{pinned ? "−" : "+"}</button>;
+  };
   const sessionContextAnnotations = displayAnnotations.filter((item) => item.track === "context" && annotationGeometry(item) === "session");
   const channelOptions = useMemo(() => {
     const groups = new Map<string, { name: string; index: number }[]>();
@@ -8282,7 +8333,7 @@ export default function Home() {
                 <div className="sidebar-pane-content">
                   {directoryCatalog ? <>
                     <dl className="sidebar-info-grid">
-                      <div><dt>Folder</dt><dd title={directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label}>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</dd></div>
+                      <div className="info-wide"><dt>Folder</dt><dd title={directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label}>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</dd></div>
                       <div><dt>Recordings</dt><dd>{directoryCatalog.plan.recordings.length}</dd></div>
                       <div><dt>Open files</dt><dd>{sessionTabs.filter(tab => tab.directoryId === directoryCatalog.id).length}</dd></div>
                       <div><dt>File type</dt><dd>{directoryCatalog.plan.format.toUpperCase()}</dd></div>
@@ -8296,21 +8347,25 @@ export default function Home() {
                 <header className="sidebar-pane-heading"><h2>File info</h2></header>
                 <div className="sidebar-pane-content">
                   <dl className="sidebar-info-grid">
-                    <div><dt>File name</dt><dd title={meta.name}>{hasRecording ? meta.name : "—"}</dd></div>
-                    <div><dt>File type</dt><dd>{hasRecording ? meta.format.toUpperCase() : "—"}</dd></div>
-                    <div><dt>File size</dt><dd>{hasRecording ? formatByteCount(primaryFile?.size ?? meta.byteLength ?? 0) : "—"}</dd></div>
+                    <div className="info-wide"><dt>File name</dt><dd title={meta.name}>{hasRecording ? meta.name : "—"}</dd></div>
+                    <div className="info-wide"><dt>File path</dt><dd title={primaryFile ? relativeFilePath(primaryFile) : undefined}>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
+                    <div><dt>Format</dt><dd>{hasRecording ? meta.format.toUpperCase() : "—"}</dd></div>
+                    <div><dt>Size</dt><dd>{hasRecording ? formatByteCount(primaryFile?.size ?? meta.byteLength ?? 0) : "—"}</dd></div>
+                  </dl>
+                  <dl className="sidebar-info-grid" aria-label="Recording details">
                     <div><dt>Channels</dt><dd>{hasRecording ? meta.channelLabels.length : "—"}</dd></div>
-                    <div><dt>Recording type</dt><dd>{hasRecording ? recordingType : "—"}</dd></div>
-                    <div><dt>Sampling rate</dt><dd>{hasRecording ? `${primarySampleRate(meta)} Hz` : "—"}</dd></div>
-                    <div><dt>Recording duration</dt><dd>{hasRecording ? formatClock(meta.durationSec, true) : "—"}</dd></div>
-                    <div><dt>Existing labels</dt><dd>{annotations.filter(item => item.recordingLabel).length}</dd></div>
+                    <div><dt>Sample rate</dt><dd>{hasRecording ? `${primarySampleRate(meta)} Hz` : "—"}</dd></div>
+                    <div><dt>Type</dt><dd>{hasRecording ? recordingType : "—"}</dd></div>
+                    <div><dt>Duration</dt><dd>{hasRecording ? formatClock(meta.durationSec, true) : "—"}</dd></div>
+                    <div><dt>Detected labels</dt><dd>{annotations.filter(item => item.recordingLabel).length}</dd></div>
                     <div><dt>Created labels</dt><dd>{annotations.filter(item => !item.recordingLabel).length}</dd></div>
                     <div><dt>Total labels</dt><dd>{annotations.length}</dd></div>
                     <div><dt>Signal values</dt><dd>{hasRecording ? meta.sampleRates.reduce((count, rate) => count + Math.round(rate * meta.durationSec), 0).toLocaleString() : "—"}</dd></div>
-                    <div><dt>Montage</dt><dd title={montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
-                    <div><dt>Current filters</dt><dd title={filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
-                    <div><dt>File path</dt><dd title={primaryFile ? relativeFilePath(primaryFile) : undefined}>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
-                    <div><dt>Access</dt><dd title={sourceReadProfile(meta.format, hasRecording).access}>{sourceReadProfile(meta.format, hasRecording).access}</dd></div>
+                  </dl>
+                  <dl className="sidebar-info-grid" aria-label="Display and file access">
+                    <div className="info-wide"><dt>Montage</dt><dd title={montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
+                    <div className="info-wide"><dt>Filters</dt><dd title={filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
+                    <div className="info-wide"><dt>Access</dt><dd title={sourceReadProfile(meta.format, hasRecording).access}>{sourceReadProfile(meta.format, hasRecording).access}</dd></div>
                   </dl>
                   <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
                     <span title={effectivePatientLabel}>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
@@ -8324,11 +8379,11 @@ export default function Home() {
                 <header className="sidebar-pane-heading"><h2>Window info</h2></header>
                 <div className="sidebar-pane-content">
                   <dl className="sidebar-info-grid">
-                    <div><dt>Window start</dt><dd>{formatClock(viewStart, true)}</dd></div>
-                    <div><dt>Window end</dt><dd>{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
-                    <div><dt>Window duration</dt><dd>{timebase.toLocaleString()} s</dd></div>
-                    <div><dt>Window memory usage</dt><dd>{formatByteCount(activeDisplayVisibleBytes)}</dd></div>
-                    <div><dt>Window loaded / loading</dt><dd>{verifyingSource ? "Opening recording" : loadingSignal || display.processingThroughSec !== undefined ? "Loading…" : display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase ? "Partially loaded" : display.data.length ? "Loaded" : "No data loaded"}</dd></div>
+                    <div><dt>Start</dt><dd>{formatClock(viewStart, true)}</dd></div>
+                    <div><dt>End</dt><dd>{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
+                    <div><dt>Duration</dt><dd>{timebase.toLocaleString()} s</dd></div>
+                    <div><dt>Memory</dt><dd>{formatByteCount(activeDisplayVisibleBytes)}</dd></div>
+                    <div className="info-wide"><dt>Signal status</dt><dd>{verifyingSource ? "Opening recording" : loadingSignal || display.processingThroughSec !== undefined ? "Loading…" : display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase ? "Partially loaded" : display.data.length ? "Loaded" : "No data loaded"}</dd></div>
                   </dl>
                   <GeneralInfoPanel
                     meta={meta}
@@ -8498,33 +8553,32 @@ export default function Home() {
                 {labelsTab === "create" && <div className="sidebar-scroll" data-tutorial="label-panel">
                   <div className="ontology-search-row">
                     <input className="palette-search" aria-label="Search label ontology" placeholder="Search ontology…" value={paletteSearch} onChange={(event) => setPaletteSearch(event.target.value)} />
-                    <button type="button" className="button secondary" onClick={() => setShowLabelLibrary(true)}>Label library</button>
+                    <button type="button" className="button secondary" data-tutorial="label-library"
+                      title="Edit label aliases and descriptions or create dictionary labels"
+                      onClick={() => setShowLabelLibrary(true)}>Edit label library</button>
                   </div>
                   <section className="compact-context-palette" data-tutorial="context-palette">
                     <h2>Context Labels</h2>
                     <p className="palette-kind">Context palette · click = instance · selected span = window</p>
                     <div className="compact-context-only">
-                      {rightContextLabels.map((label) => <button key={label.id} className="compact-palette-button context" disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
+                      {rightContextLabels.map((label) => <div className="palette-label-and-pin" key={label.id}><button className="compact-palette-button context" disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
                           event.dataTransfer.setData("application/x-neurotrace-label", label.id);
                           event.dataTransfer.effectAllowed = "copy";
                           setDragGhost({ labelId: label.id, time: cursorTime });
                         }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name} · ${label.geometry === "session" ? "entire recording" : label.geometry === "point" ? "single clinical moment" : "timed context"}`}>
                           <i />{label.name}
-                        </button>)}
+                        </button>{labelPin(label)}</div>)}
                     </div>
                   </section>
                   {labelLibrary.labels.length > 0 && <section className="compact-context-palette">
                     <h2>Dictionary labels</h2>
-                    <div className="compact-context-only">{labelLibrary.labels.filter((item) =>
-                      `${item.name} ${item.code}`.toLowerCase().includes(paletteSearch.toLowerCase())).map((item) => {
-                      const label = LABEL_BY_ID.get("dictionary-label")!;
-                      const alias = labelLibrary.aliases.find((entry) => entry.key === `dictionary:${item.id}`);
-                      return <button type="button" key={item.id} className="compact-palette-button context" disabled={!reviewReady}
-                        style={{ "--label-color": label.color } as React.CSSProperties} title={alias?.description || item.description}
-                        onClick={() => placePaletteLabel({ ...label, name: alias?.alias || item.name, short: item.code || item.name, dictionaryLabel: item })}>
-                        <i />{alias?.alias || item.name}
-                      </button>;
-                    })}</div>
+                    <div className="compact-context-only">{dictionaryPaletteLabels.filter((label) =>
+                      `${label.name} ${label.dictionaryLabel.name} ${label.short}`.toLowerCase().includes(paletteSearch.toLowerCase())).map((label) =>
+                      <div className="palette-label-and-pin" key={label.dictionaryLabel.id}>
+                        <button type="button" className="compact-palette-button context" disabled={!reviewReady}
+                          style={{ "--label-color": label.color } as React.CSSProperties} title={label.description}
+                          onClick={() => placePaletteLabel(label)}><i />{label.name}</button>{labelPin(label)}
+                      </div>)}</div>
                   </section>}
                   <section className="compact-ephys-palette" data-tutorial="ephys-palette">
                     <div className="ephys-palette-heading">
@@ -8545,13 +8599,13 @@ export default function Home() {
                     </div>
                     <p><span className="palette-kind">Label palette</span> · click = instance · selected span = window</p>
                     {rightEphysLabelGroups.length ? <div className="ontology-groups">
-                      {rightEphysLabelGroups.map(({ label: groupLabel, labels }) => <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{labels.map((label) => <button className="compact-palette-button" key={label.id} disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
+                      {rightEphysLabelGroups.map(({ label: groupLabel, labels }) => <div className="ontology-group" data-category={groupLabel} key={groupLabel}><span>{groupLabel}:</span><div>{labels.map((label) => <div className="palette-label-and-pin" key={label.id}><button className="compact-palette-button" disabled={!reviewReady} draggable={reviewReady} onDragStart={(event) => {
                           event.dataTransfer.setData("application/x-neurotrace-label", label.id);
                           event.dataTransfer.effectAllowed = "copy";
                           setDragGhost({ labelId: label.id, time: cursorTime });
                         }} onDragEnd={() => setDragGhost(null)} onClick={() => placePaletteLabel(label)} style={{ "--label-color": label.color } as React.CSSProperties} title={`${label.name}${`label:${label.id}` in controlBindings ? ` · ${shortcutHint(controlBindings, `label:${label.id}` as ShortcutAction)}` : ""}`}>
                           <i />{PALETTE_BUTTON_NAMES[label.id] ?? label.short}
-                        </button>)}</div></div>)}
+                        </button>{labelPin(label)}</div>)}</div></div>)}
                     </div> : <div className="empty-ephys-palette">{enabledEphysLabelIds.size ? "No enabled labels match the search." : "No ePhys label types enabled."}</div>}
                   </section>
                 </div>}
@@ -8624,12 +8678,13 @@ export default function Home() {
                 ref={windowAmountInputRef}
                 disabled={!hasRecording}
                 aria-label={`Window amount in ${WINDOW_UNIT_LABELS[windowDisplayUnit]}`}
-                title="Enter an amount up to 999.9 and press Enter to apply. Rounded to one decimal place."
+                title="Enter up to 999.9. Press Enter or leave the field to apply."
                 type="text"
                 inputMode="decimal"
                 autoComplete="off"
                 spellCheck={false}
                 value={windowDraftDisplayValue}
+                onFocus={event => event.currentTarget.select()}
                 onChange={event => {
                   const value = editWindowAmount(event.target.value);
                   if (value !== null) {
@@ -8638,13 +8693,20 @@ export default function Home() {
                   }
                 }}
                 onBlur={() => {
-                  if (windowDraftValue === null) return;
-                  const amount = parseWindowAmount(windowDraftValue);
-                  if (amount !== null) setWindowDraftValue(formatWindowAmount(amount));
+                  if (windowDraftValue !== null) syncWindowDraft();
                 }}
-                onKeyDown={(event) => { if (matchesShortcut(event, controlBindings, "windowApply")) { event.preventDefault(); syncWindowDraft(); } }}
+                onKeyDown={(event) => {
+                  if (matchesShortcut(event, controlBindings, "windowApply")) {
+                    event.preventDefault();
+                    if (windowDraftValue !== null) syncWindowDraft();
+                  }
+                }}
               /></label>
-              <button className="window-unit-button" disabled={!hasRecording} aria-label="Cycle window time unit" title="Click to cycle ms, sec, min, hrs, days; press Enter to apply" onClick={cycleWindowDraftUnit}>{WINDOW_UNIT_LABELS[windowDisplayUnit]}</button>
+              <button className="window-unit-button" disabled={!hasRecording} aria-label="Cycle window time unit" title="Change the unit and apply the window immediately"
+                onPointerDown={event => {
+                  // Clicking the unit applies the amount once, in the new unit.
+                  if (event.button === 0 && document.activeElement === windowAmountInputRef.current) event.preventDefault();
+                }} onClick={cycleWindowDraftUnit}>{WINDOW_UNIT_LABELS[windowDisplayUnit]}</button>
             </div>
             <button
               className={`tool-button box-zoom-button ${boxZoomActive ? "active" : ""}`}
@@ -8664,8 +8726,19 @@ export default function Home() {
                 setToast(nextActive ? "Box zoom active — drag a rectangle on the waveform" : "Box zoom off — waveform drag creates labeling windows");
               }}
             ><span aria-hidden="true">⌗</span></button>
-            {toolbarTools.map(id => <div className="pinned-toolbar-tool" key={id}>{viewTools[id]}</div>)}
-            <ToolbarCustomizer selected={toolbarTools} onChange={setToolbarTools} />
+            {toolbarTools.map(id => {
+              if (!isLabelToolbarTool(id)) return <div className="pinned-toolbar-tool" key={id}>{viewTools[id]}</div>;
+              const label = pinnedLabelTools.find(tool => tool.id === id)?.definition;
+              if (!label) return null;
+              const name = PALETTE_BUTTON_NAMES[label.id] ?? label.name;
+              return <div className="pinned-toolbar-tool" key={id}>
+                <button type="button" className="compact-palette-button pinned-label-button" disabled={!reviewReady}
+                  aria-label={`Place ${name} label`} title={label.name}
+                  style={{ "--label-color": label.color } as React.CSSProperties}
+                  onClick={() => placePaletteLabel(label)}><i />{name}</button>
+              </div>;
+            })}
+            <ToolbarCustomizer selected={toolbarTools} pinnedLabels={pinnedLabelTools} onChange={setToolbarTools} />
           </div>
 
 
@@ -8704,7 +8777,7 @@ export default function Home() {
               notifyTutorialAction("overview-jumped");
             }}>
               <div className="overview-wave" aria-hidden="true">{sessionOverview.bars.map((bar, index) => <i key={index} className={`overview-bin ${bar.state}`} style={{ left: `${100 * bar.startSec / meta.durationSec}%`, width: `${100 * (bar.endSec - bar.startSec) / meta.durationSec}%`, height: bar.heightFraction === null ? "100%" : `${bar.heightFraction * 100}%` }} />)}</div>
-              {sessionOverview.status !== "ready" && <span className="overview-status">{sessionOverview.status === "partial" ? sessionOverview.complete ? "Missing overview data shaded" : `Overview ${Math.floor(sessionOverview.coverageFraction * 100)}% · unindexed areas shaded` : sessionOverview.status === "loading" ? "Building recording overview…" : "Recording overview unavailable"}</span>}
+              {sessionOverview.status !== "ready" && <span className="overview-status">{sessionOverview.status === "partial" ? sessionOverview.complete ? "Gaps in overview shaded" : `Overview coverage · ${Math.floor(sessionOverview.coverageFraction * 100)}%` : sessionOverview.status === "loading" ? "Building overview…" : "Recording overview unavailable"}</span>}
               {labelsVisible && displayAnnotations.filter((item) => item.labelId === "ictal").map((item) => <span key={item.id} className="overview-event" style={{ left: `${(item.start / meta.durationSec) * 100}%`, width: `${Math.max(0.2, ((item.end - item.start) / meta.durationSec) * 100)}%` }} />)}
               <div className="overview-viewport" style={{ left: `${overviewLeft}%`, width: `${Math.max(overviewWidth, 0.55)}%` }}><i /><i /></div>
             </div>
@@ -8736,6 +8809,9 @@ export default function Home() {
                   onClick={toggleFitChannels}>≡</button>
               </div>
               <div className={`channel-rail ${channelRowLayout.groups.length ? "anatomical-groups" : ""} ${waveformVerticalViewport ? "viewport-zoomed" : ""}`} data-tutorial="channel-rail" style={{ gridTemplateRows: channelRowLayout.gridTemplateRows }}>
+                {display.labels.length > 0 && <span className="channel-rail-end" aria-hidden="true" style={{
+                  top: CHANNEL_RAIL_HEADER_HEIGHT + channelGeometry.yForUnit(channelRowLayout.rowStartUnits[display.labels.length - 1]) + channelGeometry.rowHeight,
+                }} />}
                 <button className="channel-visibility-bar" data-tutorial="channel-visibility" aria-label="Show or hide channels"
                   aria-haspopup="dialog" aria-expanded={showChannels} aria-controls="channel-controls-dialog"
                   title="Show or hide individual channels and groups" onClick={() => setShowChannels(true)}><span aria-hidden="true">Channels</span></button>

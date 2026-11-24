@@ -192,7 +192,7 @@ test("the import dialog has separate hidden file and recursive-directory pickers
   assert.equal(ui.env.guidedDirectoryInputRef.current, null);
 });
 
-for (const [format, label, accept] of [["edf", "EDF / EDF+", ".edf"], ["mat", "MAT", ".mat"], ["mat-dat", "MAT + DAT", ".mat,.dat"]]) {
+for (const [format, label] of [["edf", "EDF / EDF+"], ["mat", "MAT"], ["mat-dat", "MAT + DAT"]]) {
   test(`${label} card sets an optional filter without opening Explorer`, () => {
     const ui = harness();
     const unexpectedPicker = { click: () => assert.fail("choosing a format must not skip the file/folder choice") };
@@ -213,7 +213,7 @@ for (const [format, label, accept] of [["edf", "EDF / EDF+", ".edf"], ["mat", "M
       let calls = 0;
       const input = { accept: "old-filter", multiple: false, value: "old-selection", click: () => {
         assert.equal(ui.env.importPickerKind, mode, "drop mode is updated by the explicit picker action before Explorer opens");
-        assert.equal(input.accept, mode === "files" ? accept : "", "file filter or unrestricted directory filter is applied before activation");
+        assert.equal(input.accept, "", "native pickers stay unrestricted so recordings and companions are visible");
         assert.equal(input.multiple, true);
         assert.equal(input.value, "", "reset the input so the same selection can be chosen again");
         calls += 1;

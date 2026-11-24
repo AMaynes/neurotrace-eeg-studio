@@ -27,6 +27,11 @@ export const WORKSPACE_TOOLS = [
 export type WorkspaceTab = typeof WORKSPACE_TABS[number]["id"];
 export type LabelTab = typeof LABEL_TABS[number]["id"];
 export type WorkspaceToolId = typeof WORKSPACE_TOOLS[number]["id"];
+export type ToolbarToolId = WorkspaceToolId | `label:${string}`;
+
+export function isLabelToolbarTool(id: unknown): id is `label:${string}` {
+  return typeof id === "string" && /^label:(?:dictionary:)?[A-Za-z0-9_-]{1,120}$/.test(id);
+}
 
 export function normalizeWorkspaceLayout(settings: Record<string, unknown>) {
   const sidebarTab: WorkspaceTab = WORKSPACE_TABS.some(tab => tab.id === settings.sidebarTab)
@@ -35,6 +40,6 @@ export function normalizeWorkspaceLayout(settings: Record<string, unknown>) {
   const labelsTab: LabelTab = LABEL_TABS.some(tab => tab.id === settings.labelsTab)
     ? settings.labelsTab as LabelTab : "events";
   const toolbarTools = Array.isArray(settings.toolbarTools)
-    ? [...new Set(settings.toolbarTools.filter((id): id is WorkspaceToolId => WORKSPACE_TOOLS.some(tool => tool.id === id)))] : [];
+    ? [...new Set(settings.toolbarTools.filter((id): id is ToolbarToolId => WORKSPACE_TOOLS.some(tool => tool.id === id) || isLabelToolbarTool(id)))] : [];
   return { sidebarTab, labelsTab, toolbarTools };
 }

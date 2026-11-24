@@ -72,7 +72,7 @@ export function buildSessionOverview(
     coverageEndSec: 0,
     coverageFraction: 0,
     complete: false,
-    description: loading ? "Overview loading — unread intervals are blank." : "Overview unavailable — timeline navigation remains available.",
+    description: loading ? "Building the full-recording overview in the background. Click anywhere to jump." : "Overview unavailable — timeline navigation remains available.",
   };
   if (!entry || !duration) return result;
   const window = entry.window;
@@ -135,7 +135,8 @@ export function buildSessionOverview(
   result.status = result.complete ? known.length ? missing ? "partial" : "ready" : "unavailable" : "partial";
   const scale = result.scaleMax === null ? "no complete signal bins yet"
     : `scaled to ${Number(result.scaleMax.toPrecision(4))} ${result.channelUnit} maximum`;
-  const progress = result.complete ? "" : ` ${Math.floor(result.coverageFraction * 100)}% indexed.`;
+  const progress = result.complete ? ""
+    : ` ${Math.floor(result.coverageFraction * 100)}% indexed.${loading ? " The overview is building in the background." : ""} Click anywhere to jump.`;
   result.description = `Raw peak-to-peak · ${result.channelLabel} · ${scale}.${progress}${missing ? " Unread or gapped intervals are blank." : ""}`;
   return result;
 }

@@ -527,9 +527,9 @@ test("a recording opened directly through a drop can advance past file selection
 test("load-recording guidance explains auto-detection and the single confirm action", () => {
   const lesson = catalog.tutorialLessons.find((candidate) => candidate.id === "load-recording");
   assert.equal(lesson.steps[1].target, "import-files");
-  assert.match(lesson.steps[1].instruction, /Click Files to select one or multiple files/);
+  assert.match(lesson.steps[1].instruction, /Click Files to browse all files/);
   assert.match(lesson.steps[1].instruction, /both the MAT and DAT/);
-  assert.match(lesson.steps[1].instruction, /detects the type/);
+  assert.match(lesson.steps[1].instruction, /detects recording formats/);
   assert.match(lesson.steps[1].tip, /Drop a folder inside the loader/);
   assert.match(lesson.steps[2].instruction, /Open selected files or Load N sessions/);
   assert.deepEqual(lesson.steps[2].completeOn, ["recording-opened"]);
@@ -570,14 +570,14 @@ test("Do it for me is explicit, uses the specific safe command, and does not ski
 
 test("assistance that opens a chooser waits for the user's actual choices", () => {
   const ui = harness({ topic: "labels" });
-  ui.click("Organize label types and visibilityChoose your palette, distinguish label types, and hide overlays.4 steps · About 1 min");
+  ui.click("Organize label types and visibilityChoose your palette, distinguish label types, and hide overlays.6 steps · About 1 min");
   ui.click("Start walkthrough →"); ui.click("Do it for me");
   assert.deepEqual(ui.actions, ["assist:open-label-picker"]);
-  assert.match(ui.markup(), /STEP 1 OF 4/);
+  assert.match(ui.markup(), /STEP 1 OF 6/);
   ui.emit("label-picker-opened");
-  assert.match(ui.markup(), /STEP 1 OF 4/);
+  assert.match(ui.markup(), /STEP 1 OF 6/);
   ui.emit("label-picker-closed");
-  assert.match(ui.markup(), /STEP 2 OF 4/);
+  assert.match(ui.markup(), /STEP 2 OF 6/);
   ui.dispose();
 });
 

@@ -10,7 +10,11 @@ export async function buildBackgroundRecordingOverview(source: SignalSource, sig
   const plan = recordingOverviewPlan(source.meta);
   if (!plan || !source.getEnvelopeWindow) return;
   if (signal.aborted) throw signal.reason ?? new DOMException("Overview canceled", "AbortError");
-  const options = { signal, fallbackToMainThread: false, onOverview: publish };
+  // The final worker result already publishes the completed index.
+  const onOverview = (window: EnvelopeWindowData) => {
+    if (window.durationSec + 1e-9 < plan.durationSec) publish(window);
+  };
+  const options = { signal, fallbackToMainThread: false, onOverview };
   const request = { startSec: 0, durationSec: source.meta.durationSec, bucketCount: plan.bucketCount,
     channelIndices: plan.channelIndices, overviewIntervalMs: 500 };
   const read = performanceDiagnostics.beginSourceRead({ label: "Full-session overview", totalBytes: source.meta.byteLength ?? null, phase: "Reading overview samples" });
@@ -33,7 +37,7 @@ export async function buildBackgroundRecordingOverview(source: SignalSource, sig
       decode.finish({ completedBytes: result.metrics.bytesRead, totalBytes: result.metrics.totalBytes, durationMs: result.metrics.decodeMs });
     } else {
       const window = await source.getEnvelopeWindow(0, source.meta.durationSec, plan.bucketCount, plan.channelIndices,
-        { signal, overviewIntervalMs: 500, onOverview: publish });
+        { signal, overviewIntervalMs: 500, onOverview });
       if (signal.aborted) throw signal.reason ?? new DOMException("Overview canceled", "AbortError");
       publish(window, true);
       read.finish();

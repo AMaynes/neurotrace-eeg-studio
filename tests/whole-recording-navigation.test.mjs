@@ -89,7 +89,8 @@ test("existing zoom controls retain raw session-map indexing while default wavef
   assert.match(page, /if \(overviewAbortController\.signal\.aborted\) return;\s*if \(recordingOverviewCacheRef\.current\.put/);
   const overview = await readFile(new URL("../app/background-recording-overview.ts", import.meta.url), "utf8");
   assert.match(overview, /channelIndices: plan.channelIndices/);
-  assert.match(overview, /onOverview: publish/);
+  assert.match(overview, /const onOverview[\s\S]*?if \(window.durationSec \+ 1e-9 < plan.durationSec\) publish\(window\)/,
+    "only incomplete snapshots are published before the final worker result");
   assert.match(overview, /publish\(result.window, true\)/);
   assert.doesNotMatch(overview, /sha256: true|verifySourceOffThread/);
   assert.match(page, /Not indexed yet/);

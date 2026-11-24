@@ -7,6 +7,12 @@ test("new workspaces start with event labels and only the essential toolbar", ()
   assert.deepEqual(normalizeWorkspaceLayout({}), { sidebarTab: "labels", labelsTab: "events", toolbarTools: [] });
 });
 
+test("restores pinned labels from workspace settings alongside viewing tools", () => {
+  assert.deepEqual(normalizeWorkspaceLayout({
+    toolbarTools: ["spectrogram", "label:ictal", "label:dictionary:f232-131d", "label:", "label:dict:other", "label:ictal"],
+  }).toolbarTools, ["spectrogram", "label:ictal", "label:dictionary:f232-131d"]);
+});
+
 test("saved sidebar and tool choices retain order and reject unknown or duplicate controls", () => {
   assert.deepEqual(normalizeWorkspaceLayout({ sidebarTab: "view", labelsTab: "create", toolbarTools: ["gain", "channels", "unknown", "gain", "spectrogram", null] }),
     { sidebarTab: "view", labelsTab: "create", toolbarTools: ["gain", "spectrogram"] });

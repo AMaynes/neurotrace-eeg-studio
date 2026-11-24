@@ -29,13 +29,15 @@ test("keyword matching is case-insensitive literal substring OR, with multiword 
   assert.equal(eventLabelMatches(["spike"], ".*"), false);
   assert.equal(eventLabelMatches([], " ,  , "), true);
   assert.deepEqual(eventKeywords(" EEG onset, sz, EEG ONSET, , SZ , spike "), ["EEG onset", "sz", "spike"]);
-  assert.ok(COMMON_EVENT_KEYWORDS.some((preset) => preset.name === "Seizure" && eventLabelMatches(["SZ onset"], preset.query)));
+  assert.ok(COMMON_EVENT_KEYWORDS.some((preset) => preset.name === "Seizure / Sz / Seiz" && eventLabelMatches(["SZ onset"], preset.query)));
 });
 
 test("Seizure preset uses MATLAB's five target_evs and case-insensitive contains OR semantics", () => {
   // Source: seizure_annotation_tool_update.m, startup event-label search.
   const target_evs = ["sz", "seizure", "seiz", "tonic", "eeg onset"];
-  const preset = COMMON_EVENT_KEYWORDS.find(preset => preset.name === "Seizure");
+  const presets = COMMON_EVENT_KEYWORDS.filter(preset => eventKeywords(preset.query).some(term => target_evs.includes(term.toLowerCase())));
+  assert.deepEqual(presets.map(preset => preset.name), ["Seizure / Sz / Seiz"]);
+  const [preset] = presets;
   assert.deepEqual(eventKeywords(preset.query).map(term => term.toLowerCase()), target_evs);
   const matches = createEventLabelMatcher(preset.query);
   for (const labels of [["Sz"], ["SZ"], ["ESz end"], ["SEIZURE onset"], ["Seiz"], ["tonic-clonic"],

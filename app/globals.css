@@ -561,7 +561,8 @@ textarea:focus-visible {
 .overview-wave .overview-bin { position: absolute; top: 50%; transform: translateY(-50%); border-right: 2px solid transparent; background-clip: padding-box; }
 .overview-wave .overview-bin.ready { min-height: 1px; }
 .overview-wave .overview-bin:is(.unread, .gap, .partial) { background: repeating-linear-gradient(135deg, #23383e 0 2px, transparent 2px 5px); }
-.overview-status { position: absolute; z-index: 2; left: 7px; top: 0; max-width: calc(100% - 14px); padding: 0 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: #071217d9; color: #8da4aa; font-size: 8px; line-height: 10px; pointer-events: none; }
+.overview-status { position: absolute; z-index: 2; left: 7px; top: 0; max-width: calc(100% - 14px); padding: 0 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: #071217d9; color: #8da4aa; font-size: 8px; line-height: 10px; pointer-events: none; opacity: 0; }
+.overview-track:hover .overview-status { opacity: 1; }
 .overview-event { position: absolute; top: 1px; bottom: 1px; min-width: 2px; background: var(--coral); opacity: .75; }
 .overview-viewport { position: absolute; top: 0; bottom: 0; min-width: 6px; border: 1px solid var(--mint); background: rgba(90, 169, 255, .1); box-shadow: 0 0 12px rgba(90, 169, 255, .12); }
 .overview-viewport i { position: absolute; top: 1px; bottom: 1px; width: 2px; background: var(--mint); }

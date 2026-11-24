@@ -196,7 +196,7 @@ test("all local handlers honor customized bindings without requiring the origina
   localHandler("spectrogramResize", { controlBindings: { ...DEFAULT_CONTROLS, spectrogramGrow: ["k"] }, clamp: (v) => v, setSpectrogramHeight: (fn) => { size = fn(size); }, MIN_SPECTROGRAM_HEIGHT: 100, panelRef: {}, availableSpectrogramHeight: () => 500 })(key("k"));
   assert.equal(size, 180);
   let applied = 0;
-  localHandler("windowApply", { controlBindings: { ...DEFAULT_CONTROLS, windowApply: ["Alt+Enter"] }, syncWindowDraft: () => applied++ })(key("Enter", { altKey: true }));
+  localHandler("windowApply", { controlBindings: { ...DEFAULT_CONTROLS, windowApply: ["Alt+Enter"] }, windowDraftValue: "6", syncWindowDraft: () => applied++ })(key("Enter", { altKey: true }));
   assert.equal(applied, 1);
   let session;
   const tabs = localHandler("sessionTabs", { controlBindings: { ...DEFAULT_CONTROLS, sessionNext: ["j"] }, sessionTabs: [{ id: "a" }, { id: "b" }], activeSessionId: "a", importBusy: false, switchSession: (id) => { session = id; }, window: { requestAnimationFrame() {} } });

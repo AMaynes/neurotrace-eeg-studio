@@ -16,6 +16,7 @@ export function LabelLibraryEditor({ library, types, onChange, onClose }: {
     <div className="modal label-library-modal" role="dialog" aria-modal="true" aria-label="Label library" tabIndex={-1}>
       <button type="button" className="modal-close" onClick={onClose} aria-label="Close label library">×</button>
       <h2>Label library</h2>
+      <p>Give detected labels clearer names and descriptions, or create reusable labels for the palette.</p>
       <section>
         <h3>Aliases and descriptions</h3>
         <label className="form-field"><span>Original label</span><select value={key} onChange={(event) => setKey(event.target.value)}>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { WORKSPACE_TOOLS, type WorkspaceToolId } from "./workspace-layout";
+import { WORKSPACE_TOOLS, type ToolbarToolId } from "./workspace-layout";
 import "./workspace-navigation.css";
 
 /** Small, keyboard-accessible tabs shared by the sidebar and its label sections. */
@@ -25,7 +25,11 @@ export function WorkspaceTabs<T extends string>({ id, label, tabs, value, onChan
 }
 
 /** Add/remove only optional tools; the transport and time controls are always available. */
-export function ToolbarCustomizer({ selected, onChange }: { selected: WorkspaceToolId[]; onChange: (tools: WorkspaceToolId[]) => void }) {
+export function ToolbarCustomizer({ selected, pinnedLabels, onChange }: {
+  selected: ToolbarToolId[];
+  pinnedLabels: readonly { id: ToolbarToolId; label: string }[];
+  onChange: (tools: ToolbarToolId[]) => void;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -41,10 +45,10 @@ export function ToolbarCustomizer({ selected, onChange }: { selected: WorkspaceT
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape, true); };
   }, [open]);
   return <div className="toolbar-customizer" ref={ref}>
-    <button className="toolbar-add" aria-label="Customize toolbar" aria-expanded={open} aria-controls="toolbar-tool-picker" onClick={() => setOpen(value => !value)}>+</button>
+    <button className="toolbar-add" data-tutorial="customize-toolbar" aria-label="Customize toolbar" aria-expanded={open} aria-controls="toolbar-tool-picker" onClick={() => setOpen(value => !value)}>+</button>
     {open && <div className="toolbar-tool-picker" id="toolbar-tool-picker" role="group" aria-label="Optional toolbar tools">
       <strong>Add tools to toolbar</strong>
-      {WORKSPACE_TOOLS.map(tool => <label key={tool.id}><input type="checkbox" checked={selected.includes(tool.id)}
+      {[...WORKSPACE_TOOLS, ...pinnedLabels].map(tool => <label key={tool.id}><input type="checkbox" checked={selected.includes(tool.id)}
         onChange={event => onChange(event.target.checked ? [...selected, tool.id] : selected.filter(id => id !== tool.id))} />{tool.label}</label>)}
     </div>}
   </div>;
