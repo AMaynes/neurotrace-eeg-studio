@@ -8150,7 +8150,7 @@ export default function Home() {
                 </div>
               </section>
             </div>}
-            {sidebarTab === "view" && <div className="sidebar-pane-stack view-pane-stack" data-pane-layout="view-visibility">
+            {sidebarTab === "view" && <div className="sidebar-pane-stack view-pane-stack" data-pane-layout="view-tools">
               <section className="sidebar-pane" aria-label="All viewing tools" data-tutorial="view-tools">
                 <header className="sidebar-pane-heading"><h2>All viewing tools</h2></header>
                 <div className="sidebar-pane-content view-settings">
@@ -8179,16 +8179,6 @@ export default function Home() {
                       {section.id === "analysis" && <div ref={setSpectrogramToolsHost} />}
                     </section>
                   ))}
-                </div>
-              </section>
-              <section className="sidebar-pane pane-lower-visibility" aria-label="Lower pane visibility">
-                <header className="sidebar-pane-heading"><h2>Lower pane visibility</h2></header>
-                <div className="sidebar-pane-content">
-                  <label className="pane-visibility-choice"><input type="checkbox" checked={bottomTracksOpen} onChange={event => setBottomTracksOpen(event.target.checked)} /><span>Label tracks</span></label>
-                  <label className="pane-visibility-choice"><input type="checkbox" checked={spectrogramOpen} disabled={!hasRecording} onChange={event => setSpectrogramOpen(event.target.checked)} /><span>Spectrogram</span></label>
-                  <button className="tool-pin lower-pane-pin" aria-label={`${toolbarTools.includes("tracks") ? "Remove" : "Add"} Label tracks ${toolbarTools.includes("tracks") ? "from" : "to"} toolbar`}
-                    aria-pressed={toolbarTools.includes("tracks")}
-                    onClick={() => setToolbarTools(current => current.includes("tracks") ? current.filter(id => id !== "tracks") : [...current, "tracks"])}>{toolbarTools.includes("tracks") ? "−" : "+"}</button>
                 </div>
               </section>
             </div>}

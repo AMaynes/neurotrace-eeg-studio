@@ -96,10 +96,7 @@
   .compact-info-stack .general-info-section > header { line-height: 10px; }
   .compact-info-stack .resource-panel { gap: 3px; }
 }
-.view-pane-stack { grid-template-rows: minmax(0, 1fr) auto; }
-.pane-lower-visibility .sidebar-pane-content { flex: 0 0 auto; padding: 9px 12px; position: relative; }
-.pane-visibility-choice { display: flex; align-items: center; gap: 8px; min-height: 30px; color: #c7dce2; font-size: 11px; cursor: pointer; }
-.lower-pane-pin { position: absolute; right: 12px; top: 12px; }
+.view-pane-stack { grid-template-rows: minmax(0, 1fr); }
 .workspace-tab-number { margin-right: 4px; color: var(--faint); font: 9px ui-monospace, monospace; }
 .workspace-tabs > button[aria-selected="true"] .workspace-tab-number { color: var(--blue); }
 .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
