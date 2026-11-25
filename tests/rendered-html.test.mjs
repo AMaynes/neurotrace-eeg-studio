@@ -663,7 +663,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   assert.match(page, /Clicked point \/ selection/);
   assert.doesNotMatch(page, /applyDisplayRowRange|inspectionRowRange/, "box zoom does not remove unboxed channels");
   assert.match(page, /const rowStyle = channelRailRowStyle\(index\)/);
-  assert.match(page, /const unit = geometry\.unitForY\(scrollTop \+ localY - CHANNEL_RAIL_HEADER_HEIGHT\)/);
+  assert.match(page, /const unit = geometry\.unitForY\(plotY\)/);
   assert.match(page, /const selected = isSelectedChannel\(channel\)/);
   const panelSwitchStart = page.indexOf('const selectSidebarTool = (view: "labels" | "inspect")');
   const panelSwitchEnd = page.indexOf("const activeDisplayViews", panelSwitchStart);
@@ -1027,10 +1027,11 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   const hitStart = page.indexOf("const channelRowFromClientY");
   const hitEnd = page.indexOf("const timeFromPointer", hitStart);
   const hit = page.slice(hitStart, hitEnd);
-  assert.match(hit, /geometry\.unitForY\(scrollTop\s*\+\s*localY\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT\)/);
+  assert.match(hit, /const plotY = scrollTop \+ Math\.min\(rect\.height, Math\.max\(CHANNEL_RAIL_HEADER_HEIGHT, localY\)\) - CHANNEL_RAIL_HEADER_HEIGHT/);
+  assert.match(hit, /geometry\.unitForY\(plotY\)/);
   assert.match(hit, /channelPlotGeometry\(channelRowLayout/);
   assert.match(hit, /rect\.height\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/);
-  assert.match(page, /const row\s*=\s*channelRowFromClientY\(event\.clientY,\s*rect\)/);
+  assert.match(page, /const row\s*=\s*channelRowFromClientY\(pointerY,\s*rect,\s*inspectionMode\)/);
 });
 
 test("renders all signal units with a gain-aware clipping halo around out-of-range peaks", async () => {

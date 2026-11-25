@@ -2987,20 +2987,23 @@ export default function Home() {
     }
     const maximumWindow = Math.max(Number.EPSILON, meta.durationSec);
     const minimumWindow = Math.min(minimumRenderableWindow, maximumWindow);
-    const secondsInUnit = (unit: WindowTimeUnit) => clamp(numericValue * WINDOW_UNIT_SECONDS[unit], minimumWindow, maximumWindow);
+    // A unit change only rounds the readout; retain the exact current duration.
+    // Pending edits still describe an amount in the old unit and must be applied there.
+    const nextWindow = cycleUnit && windowDraftValue === null
+      ? timebase
+      : clamp(numericValue * WINDOW_UNIT_SECONDS[windowDisplayUnit], minimumWindow, maximumWindow);
     let unit = windowDisplayUnit;
     if (cycleUnit) {
       const index = WINDOW_TIME_UNITS.indexOf(windowDisplayUnit);
       const nextUnits = [...WINDOW_TIME_UNITS.slice(index + 1), ...WINDOW_TIME_UNITS.slice(0, index)];
-      // A short recording cannot display hours or days at tenths precision.
-      unit = nextUnits.find(candidate => windowAmountPresentation(secondsInUnit(candidate), candidate).unit === candidate) ?? unit;
+      // Skip units that would round this duration to zero or overflow the field.
+      unit = nextUnits.find(candidate => windowAmountPresentation(nextWindow, candidate).unit === candidate) ?? unit;
     }
-    const nextWindow = secondsInUnit(unit);
-    setTimeWindow(nextWindow);
+    if (!cycleUnit || windowDraftValue !== null) setTimeWindow(nextWindow);
     setWindowDraftUnit(unit);
     setWindowDraftValue(null);
     const applied = windowAmountPresentation(nextWindow, unit);
-    setToast(`Window set to ${applied.amount} ${WINDOW_UNIT_LABELS[applied.unit]}`);
+    setToast(`Window ${cycleUnit ? "shown as" : "set to"} ${applied.amount} ${WINDOW_UNIT_LABELS[applied.unit]}`);
     notifyTutorialAction("window-applied");
   };
   const cycleWindowDraftUnit = () => syncWindowDraft(true);
@@ -5124,13 +5127,27 @@ export default function Home() {
     return () => observer.disconnect();
   }, [activeSessionContentView, expandedChannels, hasRecording]);
 
-  const channelRowFromClientY = useCallback((clientY: number, rect: DOMRect) => {
+  const channelRowFromClientY = useCallback((clientY: number, rect: DOMRect, allowGaps = false) => {
     const localY = clientY - rect.top;
-    if (localY < CHANNEL_RAIL_HEADER_HEIGHT || localY > rect.height) return null;
+    if (!allowGaps && (localY < CHANNEL_RAIL_HEADER_HEIGHT || localY > rect.height)) return null;
     const geometry = channelPlotGeometry(channelRowLayout, rect.height - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
     const scrollTop = expandedChannels ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current : 0;
-    const unit = geometry.unitForY(scrollTop + localY - CHANNEL_RAIL_HEADER_HEIGHT);
-    return channelRowFromFraction(channelRowLayout, unit / channelRowLayout.totalUnits);
+    const plotY = scrollTop + Math.min(rect.height, Math.max(CHANNEL_RAIL_HEADER_HEIGHT, localY)) - CHANNEL_RAIL_HEADER_HEIGHT;
+    const unit = geometry.unitForY(plotY);
+    const hitRow = channelRowFromFraction(channelRowLayout, unit / channelRowLayout.totalUnits);
+    if (hitRow !== null || !allowGaps) return hitRow;
+    // Box geometry follows the pointer through blank space. The nearest row only
+    // supplies channel context; labels and ordinary channel clicks still need a hit.
+    let nearestRow: number | null = null;
+    let nearestDistance = Infinity;
+    channelRowLayout.rowStartUnits.forEach((start, row) => {
+      const distance = Math.abs(geometry.yForUnit(start + .5) - plotY);
+      if (distance < nearestDistance) {
+        nearestRow = row;
+        nearestDistance = distance;
+      }
+    });
+    return nearestRow;
   }, [channelRowLayout, expandedChannels, waveformVerticalViewport]);
 
   const channelRailRowStyle = useCallback((channel: number): React.CSSProperties | null => {
@@ -5230,14 +5247,17 @@ export default function Home() {
     clearChannelSelection();
     if (!displayReadoutReady || !display.data.length) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const row = channelRowFromClientY(event.clientY, rect);
+    const pointerY = inspectionMode
+      ? clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom)
+      : event.clientY;
+    const row = channelRowFromClientY(pointerY, rect, inspectionMode);
     if (row === null) return;
     if (playing) setPlaying(false);
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     pointerRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
-      startY: event.clientY,
+      startY: pointerY,
       startTime: time,
       startRow: row,
       moved: false,
@@ -5251,7 +5271,7 @@ export default function Home() {
     if (inspectionMode) {
       setSelection(null);
       setInspectionDragging(true);
-      setInspectionRange(inspectionBoxFromPointer(pointerRef.current, row, time, event.clientY, rect));
+      setInspectionRange(inspectionBoxFromPointer(pointerRef.current, row, time, pointerY, rect));
     } else {
       setInspectionRange(null);
     }
@@ -5263,7 +5283,7 @@ export default function Home() {
     const pointerY = inspectionMode
       ? clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom)
       : event.clientY;
-    const row = channelRowFromClientY(pointerY, rect);
+    const row = channelRowFromClientY(pointerY, rect, inspectionMode);
     if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     if (Math.abs(event.clientX - pointerRef.current.startX) > 3
@@ -5307,7 +5327,7 @@ export default function Home() {
     const pointerY = inspectionMode
       ? clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom)
       : event.clientY;
-    const hitRow = channelRowFromClientY(pointerY, rect);
+    const hitRow = channelRowFromClientY(pointerY, rect, inspectionMode);
     if (hitRow === null && !pointer.moved) {
       setToast("Click directly on a waveform row");
       return;
@@ -8702,9 +8722,9 @@ export default function Home() {
                   }
                 }}
               /></label>
-              <button className="window-unit-button" disabled={!hasRecording} aria-label="Cycle window time unit" title="Change the unit and apply the window immediately"
+              <button className="window-unit-button" disabled={!hasRecording} aria-label="Cycle window time unit" title="Convert to the next unit without changing the duration"
                 onPointerDown={event => {
-                  // Clicking the unit applies the amount once, in the new unit.
+                  // Keep focus so a pending edit is applied once, before conversion.
                   if (event.button === 0 && document.activeElement === windowAmountInputRef.current) event.preventDefault();
                 }} onClick={cycleWindowDraftUnit}>{WINDOW_UNIT_LABELS[windowDisplayUnit]}</button>
             </div>
