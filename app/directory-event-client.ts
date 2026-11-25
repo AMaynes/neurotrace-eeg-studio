@@ -120,7 +120,9 @@ export async function scanDirectoryEvents(
   const pending = pendingScans.get(cache);
   if (pending) {
     await pending;
-    if (!signal.aborted) onUpdate(null);
+    // Another check may have been canceled or covered only a filtered subset.
+    // Reuse its completed entries, then finish whatever this caller still needs.
+    if (!signal.aborted) await scanDirectoryEvents(plan, signal, onUpdate, retry, filterImport);
     return;
   }
   const task = performDirectoryScan(plan, signal, onUpdate, retry, filterImport);

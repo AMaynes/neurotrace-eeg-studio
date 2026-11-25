@@ -8359,7 +8359,7 @@ export default function Home() {
                       <div><dt>File type</dt><dd>{directoryCatalog.plan.format.toUpperCase()}</dd></div>
                       <div><dt>Reviewer</dt><dd title={directoryCatalog.review?.reviewerId || reviewer || "—"}>{directoryCatalog.review?.reviewerId || reviewer || "—"}</dd></div>
                     </dl>
-                    <button className="button secondary folder-files-button" onClick={() => setShowDirectorySessions(true)}>Files &amp; folder filters</button>
+                    <button className="button secondary folder-files-button" onClick={() => setShowDirectorySessions(true)}>Open Loaded Folder</button>
                   </> : <p className="sidebar-empty-message">{hasRecording ? "Individual file loaded. No folder selected." : "No folder selected."}</p>}
                 </div>
               </section>

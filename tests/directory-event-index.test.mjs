@@ -471,6 +471,29 @@ test("canceling a scan terminates it immediately, ignores late results, and resu
   } finally { if (previous === undefined) delete globalThis.Worker; else globalThis.Worker = previous; }
 });
 
+test("a replacement folder check finishes after the previous check is canceled", async () => {
+  const plan = planDirectoryImport([fileAt("replacement.mat")], "mat");
+  const previous = globalThis.Worker;
+  let sent = 0;
+  globalThis.Worker = class {
+    postMessage({ id }) {
+      if (++sent > 1) queueMicrotask(() => this.onmessage({ data: { id, result: { state: "ready", labels: ["seizure"], warnings: [] } } }));
+    }
+    terminate() {}
+  };
+  try {
+    const controller = new AbortController();
+    const first = scanDirectoryEvents(plan, controller.signal, () => {}, true, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(sent, 1);
+    controller.abort();
+    const replacement = scanDirectoryEvents(plan, new AbortController().signal, () => {}, true, true);
+    await Promise.all([first, replacement]);
+    assert.equal(sent, 2);
+    assert.deepEqual(directoryEventCache(plan).entries[plan.recordings[0].id].labels, ["seizure"]);
+  } finally { if (previous === undefined) delete globalThis.Worker; else globalThis.Worker = previous; }
+});
+
 test("unavailable workers report unchecked sessions instead of decoding on the UI thread or claiming no matches", async () => {
   const plan = planDirectoryImport([fileAt("a.mat"), fileAt("b.mat")], "mat");
   const previous = globalThis.Worker;

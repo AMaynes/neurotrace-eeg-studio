@@ -44,6 +44,7 @@ new Function("require", "exports", filterCode)((name) => {
   if (name === "react") return { useState: (initial) => [initial, () => {}], useRef: (current) => ({ current }), useEffect() {} };
   if (name === "./directory-event-client") return {};
   if (name === "./event-keywords") return { eventKeywords: (value) => value ? [value] : [] };
+  if (name.endsWith(".css")) return {};
   return require(name);
 }, filterExports);
 
