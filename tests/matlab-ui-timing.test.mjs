@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
-import { edfRecordingLabels, recordingLabelAnnotations, validRecordingLabel } from "../app/recording-labels.ts";
+import { validRecordingLabel } from "../app/recording-labels.ts";
 import { normalizeDisplayGain } from "../app/display-gain.ts";
 import { matlabAnnotationRows, serializeMatlabAnnotations, parseMatlabAnnotations } from "../app/matlab-annotations-csv.ts";
 
@@ -37,7 +37,7 @@ const variable = (name, env = {}) => evaluate(`const result = ${variables.get(na
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 const LABELS = variable("LABELS");
 const LABEL_BY_ID = new Map(LABELS.map((label) => [label.id, label]));
-const pureNames = ["snapTime", "sampleSnapOrigin", "sourceRateForDisplayRow", "annotationTimingSampleRate", "primarySampleRate", "annotationLabel", "annotationGeometry", "normalizeAnnotationGeometry", "annotationOverlapsWindow", "csvCell", "tsvCell", "sourceMeta", "blankSessionSnapshot", "migrateAnnotationList"];
+const pureNames = ["snapTime", "sampleSnapOrigin", "sourceRateForDisplayRow", "annotationTimingSampleRate", "primarySampleRate", "annotationLabel", "annotationGeometry", "normalizeAnnotationGeometry", "annotationOverlapsWindow", "sourceMeta", "blankSessionSnapshot", "migrateAnnotationList"];
 const pure = evaluate(pureNames.map((name) => functions.get(name).getText(ast)).join("\n"),
   `({ ${pureNames.join(",")} })`, { clamp, LABEL_BY_ID, validRecordingLabel, DEFAULT_FILTERS: { enabled: false }, emptyBidsCompanionBundle: () => ({}) });
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-10, `${actual} != ${expected}`);
@@ -103,24 +103,7 @@ function annotationHarness(overrides = {}) {
   const add = variable("addAnnotation", env);
   return { add, env, notices, annotations: () => annotations };
 }
-function jsonl(annotations, overrides = {}) {
-  return variable("annotationsJsonl", { annotations, LABEL_BY_ID, annotationLabel: pure.annotationLabel, meta: defaultMeta,
-    uniformSampleRate: true, sampleRate: 1000, rawSourceHash: "source", sourceHash: "interpretation", ...overrides })
-    .split("\n").filter(Boolean).map((row) => JSON.parse(row));
-}
-
-test("recording-label exports preserve source seconds and names without a MATLAB display offset", () => {
-  const detected = recordingLabelAnnotations(edfRecordingLabels([{ label: "Custom marker", timeSec: .123, durationSec: .05 }]), 120, []);
-  const [result] = jsonl(detected.annotations);
-  assert.equal(result.label, "Custom marker");
-  assert.equal(result.status, "suggestion");
-  assert.equal(result.start_sample, 123);
-  assert.equal(result.end_sample, 173);
-  assert.equal(result.source_time_offset_sec, 0);
-  assert.deepEqual(result.recordingLabel, detected.annotations[0].recordingLabel);
-});
-
-test("actual click-to-point annotation keeps plotted seconds but exports the physical source sample", () => {
+test("actual click-to-point annotation keeps plotted seconds and the physical source offset", () => {
   const h = annotationHarness({ snapMode: "sample" });
   h.add(LABEL_BY_ID.get("spikes"), .010237);
   const annotation = h.annotations()[0];
@@ -128,12 +111,6 @@ test("actual click-to-point annotation keeps plotted seconds but exports the phy
   near(annotation.end, .0103);
   near(annotation.sourceTimeOffsetSec, .0013);
   assert.deepEqual(annotation.channelScope.sourceIndices, [0]);
-  const result = jsonl([annotation])[0];
-  assert.equal(result.start_sample, 9);
-  assert.equal(result.end_sample, 9);
-  near(result.start, .0103);
-  near(result.source_time_offset_sec, .0013);
-  assert.equal(result.sample_rate_basis_hz, 1000);
 });
 
 test("unsnapped intervals retain x-click precision; sample offsets do not alter MATLAB CSV axis seconds", () => {
@@ -143,9 +120,6 @@ test("unsnapped intervals retain x-click precision; sample offsets do not alter 
   near(annotation.start, .010237);
   near(annotation.end, .032731);
   near(annotation.sourceTimeOffsetSec, .0013);
-  const [sampleExport] = jsonl([annotation]);
-  assert.equal(sampleExport.start_sample, 9);
-  assert.equal(sampleExport.end_sample, 31);
   const candidate = { id: "candidate", status: "reviewed", time: .009, label: "seizure", reviewerInitials: "AR", legacyConfidence: "3", reviewedAt: new Date().toISOString() };
   const csv = serializeMatlabAnnotations(matlabAnnotationRows({ annotations: [annotation], candidates: [candidate],
     sourceInterpretation: null, meta: defaultMeta }));
@@ -157,7 +131,7 @@ test("unsnapped intervals retain x-click precision; sample offsets do not alter 
   assert.equal(exported.accepted, "1");
 });
 
-test("source-aware spike exports use the selected channel rate in a mixed-rate recording", () => {
+test("source-aware spikes use the selected channel rate in a mixed-rate recording", () => {
   const meta = { ...defaultMeta, sampleRates: [1000, 256], channelLabels: ["LA1", "LA2"] };
   const h = annotationHarness({ meta, focusedChannel: 1, snapMode: "sample",
     display: display({ sampleRates: [500, 128], sourceSampleRates: [1000, 256],
@@ -166,13 +140,6 @@ test("source-aware spike exports use the selected channel rate in a mixed-rate r
   const annotation = h.annotations()[0];
   near(annotation.start, .0151125);
   near(annotation.sourceTimeOffsetSec, .0073);
-  const exported = jsonl([annotation], { meta, uniformSampleRate: false })[0];
-  assert.equal(exported.start_sample, 2);
-  assert.equal(exported.sample_rate_basis_hz, 256);
-  h.add(LABEL_BY_ID.get("ictal"), .0149, .031);
-  const interval = jsonl([h.annotations()[1]], { meta, uniformSampleRate: false })[0];
-  assert.equal(interval.start_sample, null, "a global mixed-rate annotation has no universal sample index");
-  assert.equal(interval.end_sample, null);
 });
 
 test("session labels and source-time legacy annotations never receive a plotted-sample offset", () => {
@@ -182,14 +149,9 @@ test("session labels and source-time legacy annotations never receive a plotted-
   assert.equal(session.start, 0);
   assert.equal(session.end, 120);
   assert.equal(session.sourceTimeOffsetSec, 0);
-  assert.equal(jsonl([session])[0].end_sample, 120000);
   const old = annotationHarness({ display: display({ timingConvention: undefined }) });
   old.add(LABEL_BY_ID.get("spikes"), .010237);
   assert.equal(old.annotations()[0].sourceTimeOffsetSec, 0);
-  assert.equal(jsonl(old.annotations())[0].start_sample, 10);
-  const imported = { ...old.annotations()[0] };
-  delete imported.sourceTimeOffsetSec;
-  assert.equal(jsonl([imported])[0].start_sample, 10);
 });
 
 test("valid plotted-to-source offsets survive project annotation migration", () => {
@@ -198,10 +160,9 @@ test("valid plotted-to-source offsets survive project annotation migration", () 
   const recovered = pure.migrateAnnotationList(JSON.parse(JSON.stringify(h.annotations())), 120, 1);
   assert.equal(recovered.length, 1);
   near(recovered[0].sourceTimeOffsetSec, .0013);
-  assert.equal(jsonl(recovered)[0].start_sample, 9);
 });
 
-test("malformed imported source offsets cannot corrupt sample exports or legacy field absence", () => {
+test("malformed imported source offsets are discarded while legacy field absence is preserved", () => {
   const h = annotationHarness();
   h.add(LABEL_BY_ID.get("spikes"), .010237);
   const annotation = h.annotations()[0];
@@ -209,9 +170,6 @@ test("malformed imported source offsets cannot corrupt sample exports or legacy 
     const recovered = pure.migrateAnnotationList([{ ...annotation, sourceTimeOffsetSec }], 120, 1);
     assert.equal(recovered.length, 1);
     assert.equal(recovered[0].sourceTimeOffsetSec, undefined);
-    const exported = jsonl(recovered)[0];
-    assert.equal(exported.start_sample, 10);
-    assert.equal(exported.source_time_offset_sec, 0);
   }
   const legacy = { ...annotation };
   delete legacy.sourceTimeOffsetSec;
@@ -344,8 +302,6 @@ test("mixed-rate interval drag, resize, and keyboard moves retain the creation g
     near(moved.end, mode === "start" ? original.end : original.end + .002);
     near(moved.sourceTimeOffsetSec, original.sourceTimeOffsetSec);
     assert.equal(moved.timingSampleRateHz, 1000);
-    assert.equal(jsonl([moved], { meta, uniformSampleRate: false })[0].start_sample, null,
-      "remembering a snap grid must not invent a universal sample index for a global mixed-rate label");
   }
   const nudge = variable("moveSelectedAnnotations", { ...pure, clamp, meta, display: mixedDisplay,
     focusedChannel: 1, snapMode: "sample", useCallback: (fn) => fn,

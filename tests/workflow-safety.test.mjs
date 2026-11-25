@@ -151,12 +151,11 @@ test("recovery validates saved structures, preserves unreadable data, and falls 
   assert.match(page, /neurotrace:review-backup:/);
   assert.match(page, /matlabExportIdentity:\s*matlabExportIdentityFromInterpretation\(sourceInterpretation\)/);
   assert.match(load, /applyMatlabExportIdentity\(interpretation,\s*restoredMatlabExportIdentity\s*\?\?\s*csvIdentity\)/);
-  assert.match(page, /Editable without changing the recording recovery key/);
 });
 
 test("raw DAT requires valid dimensions while preserving an explicit raw-count mode", async () => {
   const page = await pageSource();
-  const confirm = section(page, "const confirmDatImport", "const exportBundle");
+  const confirm = section(page, "const confirmDatImport", "const csvDirectoryId");
   const mapped = section(page, "const openMappedDat", "const importFiles");
   assert.match(confirm, /Number\.isFinite\(datMapping\.sampleRate\)/);
   assert.match(confirm, /datMapping\.sampleRate\s*>\s*0/);

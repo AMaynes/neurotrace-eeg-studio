@@ -142,7 +142,6 @@ import {
 } from "./waveform-viewport";
 import {
   analyzeBidsCompanions,
-  detectRecordingChannelModality,
   detectRecordingType,
   emptyBidsCompanionBundle,
   mergeSelectedFiles,
@@ -157,7 +156,7 @@ import {
   type ImportedNeurotraceProject,
   type NeurotraceCustomToolAsset,
 } from "./neurotrace-project";
-import { matlabAnnotationRows, serializeMatlabAnnotations, MatlabReviewCsvCache, type MatlabAnnotationRow } from "./matlab-annotations-csv";
+import { matlabAnnotationRows, MatlabReviewCsvCache, type MatlabAnnotationRow } from "./matlab-annotations-csv";
 import { parseRecordingLabelsCsv, recordingSourcePath, serializeRecordingLabels, type CsvRecording } from "./recording-labels-csv";
 import { LabelLibraryEditor } from "./label-library";
 import { canOpenReviewRecording, emptyLabelLibrary, isReviewWorkspaceFile, listReviewWorkspaces,
@@ -897,15 +896,6 @@ function assignAnnotationLanes(items: Annotation[]) {
   return { lanes, laneCount: Math.max(1, laneEnds.length) };
 }
 
-function tsvCell(value: unknown) {
-  return String(value ?? "").replace(/[\t\r\n]+/g, " ");
-}
-
-function csvCell(value: unknown) {
-  const text = String(value ?? "");
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
-}
-
 function migrateAnnotationList(value: unknown, durationSec: number, channelCount = Number.POSITIVE_INFINITY): Annotation[] {
   if (!Array.isArray(value)) return [];
   const seenIds = new Set<string>();
@@ -1632,72 +1622,6 @@ function downloadBlob(name: string, blob: Blob) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function crc32(bytes: Uint8Array) {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function createStoredZip(files: Array<{ name: string; content: string }>) {
-  const encoder = new TextEncoder();
-  const localChunks: Uint8Array[] = [];
-  const centralChunks: Uint8Array[] = [];
-  let offset = 0;
-  for (const file of files) {
-    const name = encoder.encode(file.name);
-    const data = encoder.encode(file.content);
-    const crc = crc32(data);
-    const local = new Uint8Array(30 + name.length + data.length);
-    const lv = new DataView(local.buffer);
-    lv.setUint32(0, 0x04034b50, true);
-    lv.setUint16(4, 20, true);
-    lv.setUint16(6, 0x0800, true);
-    lv.setUint16(8, 0, true);
-    lv.setUint32(14, crc, true);
-    lv.setUint32(18, data.length, true);
-    lv.setUint32(22, data.length, true);
-    lv.setUint16(26, name.length, true);
-    local.set(name, 30);
-    local.set(data, 30 + name.length);
-    localChunks.push(local);
-
-    const central = new Uint8Array(46 + name.length);
-    const cv = new DataView(central.buffer);
-    cv.setUint32(0, 0x02014b50, true);
-    cv.setUint16(4, 20, true);
-    cv.setUint16(6, 20, true);
-    cv.setUint16(8, 0x0800, true);
-    cv.setUint32(16, crc, true);
-    cv.setUint32(20, data.length, true);
-    cv.setUint32(24, data.length, true);
-    cv.setUint16(28, name.length, true);
-    cv.setUint32(42, offset, true);
-    central.set(name, 46);
-    centralChunks.push(central);
-    offset += local.length;
-  }
-  const centralSize = centralChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const end = new Uint8Array(22);
-  const ev = new DataView(end.buffer);
-  ev.setUint32(0, 0x06054b50, true);
-  ev.setUint16(8, files.length, true);
-  ev.setUint16(10, files.length, true);
-  ev.setUint32(12, centralSize, true);
-  ev.setUint32(16, offset, true);
-  const chunks = [...localChunks, ...centralChunks, end];
-  const buffer = new ArrayBuffer(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
-  const output = new Uint8Array(buffer);
-  let cursor = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, cursor);
-    cursor += chunk.byteLength;
-  }
-  return new Blob([buffer], { type: "application/zip" });
-}
-
 function sourceMeta(source: SignalSource) {
   return source.meta;
 }
@@ -2137,7 +2061,6 @@ export default function Home() {
   const [showLabelLibrary, setShowLabelLibrary] = useState(false);
   const [showSessionMap, setShowSessionMap] = useState(false);
   const [showSessionContextPicker, setShowSessionContextPicker] = useState(false);
-  const [showPatientInfo, setShowPatientInfo] = useState(false);
   const [showAnnotationEditor, setShowAnnotationEditor] = useState(false);
   const [pendingLabel, setPendingLabel] = useState<{ name: string; add: (confidence: number) => void } | null>(null);
   const [queueDetailTarget, setQueueDetailTarget] = useState<{ kind: "annotation" | "candidate"; id: string } | null>(null);
@@ -2275,8 +2198,6 @@ export default function Home() {
   const candidateDecisionLocked = activeCandidateItem
     ? ["reviewed", "skipped", "conflict"].includes(activeCandidateItem.status)
     : false;
-  const activeMatlabExportIdentity = matlabExportIdentityFromInterpretation(sourceInterpretation);
-  const effectivePatientLabel = activeMatlabExportIdentity?.patientId.trim() || patientLabel(meta);
   const pendingLegacyCandidateEvents = useMemo(() => (pendingLegacyMeta?.events ?? [])
     .map((event, sourceIndex) => ({ event, sourceIndex }))
     .filter(({ event }) => isLegacySeizureCandidate(event.label)), [pendingLegacyMeta]);
@@ -2366,11 +2287,6 @@ export default function Home() {
     ? candidates.find((item) => item.id === queueDetailTarget.id) ?? null
     : null;
   const queueDetailLabel = queueDetailAnnotation ? annotationLabel(queueDetailAnnotation, labelLibrary) : null;
-  const sourceHashDisplay = verifyingSource
-    ? "Opening…"
-    : sourceHash.startsWith("demo:")
-    ? sourceHash
-    : `${sourceHash.slice(0, 8)}…${sourceHash.slice(-4)}`;
   const reviewReady = hasRecording && !verifyingSource;
 
   const changeHiddenLabelTypes = (hidden: Set<string>) => {
@@ -5836,14 +5752,6 @@ export default function Home() {
     setCandidates((items) => items.map((item) => item.id === activeCandidateItem.id ? { ...item, ...patch } : item));
   }, [activeCandidateItem]);
 
-  const updateMatlabExportIdentity = useCallback((patch: Partial<MatlabExportIdentity>) => {
-    setSourceInterpretation((current) => {
-      const identity = matlabExportIdentityFromInterpretation(current);
-      if (!identity) return current;
-      return applyMatlabExportIdentity(current ?? undefined, { ...identity, ...patch }) ?? current;
-    });
-  }, []);
-
   const beginActiveCandidateMarking = useCallback(() => {
     if (!activeCandidateItem) return;
     if (!reviewer.trim()) {
@@ -7340,186 +7248,6 @@ export default function Home() {
     }
   };
 
-  const exportBundle = () => {
-    if (sourceVerificationRef.current) {
-      setToast("The recording must finish opening before export");
-      return;
-    }
-    if (meta.details?.discontinuous === true) {
-      setToast("Export blocked: EDF+D gaps need a discontinuous time-axis conversion before model-ready export");
-      return;
-    }
-    const sampleRate = primarySampleRate(meta);
-    const uniformSampleRate = meta.sampleRates.length > 0 && meta.sampleRates.every((rate) => Math.abs(rate - sampleRate) < 1e-9);
-    const hintedPatientId = typeof sourceInterpretation?.patient_id_hint === "string"
-      ? sourceInterpretation.patient_id_hint.trim()
-      : "";
-    const patientId = hintedPatientId || patientLabel(meta);
-    const recordingId = recordingLabel(meta);
-    const base = recordingId.replace(/[^a-zA-Z0-9_-]+/g, "_");
-    const committed = annotations.filter((item) => item.status === "committed");
-    const eventsTsv = [["annotation_id", "onset", "duration", "trial_type", "geometry", "track", "confidence", "origin", "reviewer", "candidate_id", "source_event_label", "source_event_time", "relative_onset", "relative_offset", "primary_channel", "source_channel_indices", "reference_contributors", "montage", "notes"].join("\t"), ...committed.map((item) => {
-      const label = annotationLabel(item);
-      const candidate = candidates.find((entry) => entry.id === item.candidateId);
-      return [
-        item.id,
-        item.start.toFixed(6),
-        Math.max(0, item.end - item.start).toFixed(6),
-        label?.name ?? item.labelId,
-        annotationGeometry(item),
-        item.track,
-        item.confidence,
-        item.origin,
-        item.reviewer,
-        item.candidateId ?? "",
-        candidate?.label ?? item.recordingLabel?.label ?? "",
-        candidate?.time.toFixed(6) ?? item.recordingLabel?.timeSec.toFixed(6) ?? "",
-        candidate ? (item.start - candidate.time).toFixed(6) : "",
-        candidate ? (item.end - candidate.time).toFixed(6) : "",
-        item.channelScope ? meta.channelLabels[item.channelScope.primarySourceIndex] ?? item.channelScope.displayLabel : item.channels.map((index) => meta.channelLabels[index]).join(","),
-        item.channelScope?.sourceIndices.join(",") ?? item.channels.join(","),
-        item.channelScope?.sourceIndices.filter((index) => index !== item.channelScope?.primarySourceIndex).map((index) => meta.channelLabels[index] ?? `Ch ${index + 1}`).join(",") ?? "",
-        item.channelScope?.montage ?? "",
-        item.notes,
-      ].map(tsvCell).join("\t");
-    })].join("\n");
-    const exportedChannelType = (name: string, index: number) => {
-      const declaredType = companionBundle.channels[index]?.type.trim().toUpperCase();
-      if (declaredType && declaredType !== "N/A") return declaredType;
-      const modality = detectRecordingChannelModality(name);
-      return modality === "intracranial" ? "SEEG" : modality === "scalp" ? "EEG" : "MISC";
-    };
-    const channelsTsv = ["name\ttype\tunits\tsampling_frequency", ...meta.channelLabels.map((name, index) => [name, exportedChannelType(name, index), meta.channelUnits[index] ?? "uV", meta.sampleRates[index] ?? sampleRate].map(tsvCell).join("\t"))].join("\n");
-    const windowRows = ["patient_id,session_id,start_sec,end_sec,start_sample,end_sample,sample_basis,entire_session_context,timed_context,windowed_labels,instance_labels,next_seizure_sec,windowed_confidence,instance_confidence,windowed_origins,instance_origins,split"];
-    const seizureStarts = committed.filter((item) => item.labelId === "ictal").map((item) => item.start).sort((a, b) => a - b);
-    const entireSessionContext = committed
-      .filter((item) => item.track === "context" && annotationGeometry(item) === "session")
-      .map((item) => item.labelId);
-    for (let start = 0; start < meta.durationSec; start += 30) {
-      const end = Math.min(meta.durationSec, start + 30);
-      const relevant = committed.filter((item) => annotationOverlapsWindow(item, start, end));
-      const timedContext = relevant.filter((item) => item.track === "context" && annotationGeometry(item) !== "session");
-      const windowedLabels = relevant.filter((item) => item.track === "windowed");
-      const instanceLabels = relevant.filter((item) => item.track === "instance");
-      const nextSeizure = seizureStarts.find((time) => time >= end);
-      const windowedConfidence = windowedLabels.length ? Math.round(windowedLabels.reduce((sum, item) => sum + item.confidence, 0) / windowedLabels.length) : "";
-      const instanceConfidence = instanceLabels.length ? Math.round(instanceLabels.reduce((sum, item) => sum + item.confidence, 0) / instanceLabels.length) : "";
-      windowRows.push([
-        patientId,
-        recordingId,
-        start.toFixed(3),
-        end.toFixed(3),
-        uniformSampleRate ? Math.round(start * sampleRate) : "",
-        uniformSampleRate ? Math.round(end * sampleRate) : "",
-        uniformSampleRate ? `${sampleRate} Hz universal` : "mixed channel rates; seconds authoritative",
-        [...new Set(entireSessionContext)].join("|"),
-        [...new Set(timedContext.map((item) => item.labelId))].join("|"),
-        [...new Set(windowedLabels.map((item) => item.labelId))].join("|"),
-        [...new Set(instanceLabels.map((item) => item.labelId))].join("|"),
-        nextSeizure === undefined ? "" : (nextSeizure - end).toFixed(3),
-        windowedConfidence,
-        instanceConfidence,
-        [...new Set(windowedLabels.map((item) => item.origin))].join("|"),
-        [...new Set(instanceLabels.map((item) => item.origin))].join("|"),
-        "unassigned",
-      ].map(csvCell).join(","));
-    }
-    const candidateEventsTsv = [["candidate_id", "source_event_time", "source_event_label", "status", "source", "confidence", "matlab_confidence_score", "ictal_channels", "bad_channels", "reviewer_initials", "reviewed_at", "linked_annotation_ids", "linked_annotation_statuses", "relative_onsets", "relative_offsets"].join("\t"), ...candidates.map((candidate) => {
-      const linked = annotations.filter((item) => item.candidateId === candidate.id);
-      return [
-        candidate.id,
-        candidate.time.toFixed(6),
-        candidate.label,
-        candidate.status,
-        candidate.source,
-        candidate.confidence,
-        candidate.legacyConfidence ?? "",
-        candidate.ictalChannels ?? "",
-        candidate.badChannels ?? "",
-        candidate.reviewerInitials ?? "",
-        candidate.reviewedAt ?? "",
-        linked.map((item) => item.id).join("|"),
-        linked.map((item) => item.status).join("|"),
-        linked.map((item) => (item.start - candidate.time).toFixed(6)).join("|"),
-        linked.map((item) => (item.end - candidate.time).toFixed(6)).join("|"),
-      ].map(tsvCell).join("\t");
-    })].join("\n");
-    let matlabCompatibilityRows: string | null = null;
-    try {
-      const matlabRows = matlabAnnotationRows({
-        meta, sourceInterpretation, candidates, annotations,
-        sourcePath: primaryFile ? relativeFilePath(primaryFile) : undefined,
-      });
-      // The MATLAB schema has only one source rate. A mixed-rate recording
-      // still has valid per-channel timing in the rest of the bundle.
-      if (!matlabRows.length || matlabRows.every((row) => row.sampling_rate !== "")) {
-        matlabCompatibilityRows = serializeMatlabAnnotations(matlabRows);
-      }
-    } catch (error) {
-      setToast(error instanceof Error ? error.message : "MATLAB CSV could not be exported");
-      return;
-    }
-    const recordingJson = JSON.stringify({
-      patient_id: patientId,
-      session_id: recordingId,
-      recording_type: recordingType,
-      format: meta.format,
-      duration_seconds: meta.durationSec,
-      sampling_frequency: uniformSampleRate ? sampleRate : null,
-      channel_sampling_frequencies: meta.sampleRates,
-      start_time: meta.startedAt ? meta.startedAt.toISOString().replace(/Z$/, "") : undefined,
-      start_time_timezone: meta.format === "edf" || meta.format === "edf+" ? "unspecified in EDF source" : "source-defined or unspecified",
-      source_content_sha256: rawSourceHash || null,
-      session_interpretation_sha256: rawSourceHash ? sourceHash : null,
-      local_recording_id: sourceHash,
-      source_hash: sourceHash,
-      source_hash_method: "local file metadata and interpretation; no full-file checksum",
-      source_interpretation: sourceInterpretation,
-      display_snapshot: { montage, filters, gain, snapMode, traceDisplayMode },
-      local_processing: true,
-      generated_at: new Date().toISOString(),
-    }, null, 2);
-    const ontology = JSON.stringify({ version: "neurotrace-1.0.0", labels: LABELS }, null, 2);
-    const annotationsJsonl = annotations.map((item) => {
-      const annotationRate = item.channelScope
-        ? meta.sampleRates[item.channelScope.primarySourceIndex]
-        : uniformSampleRate
-          ? sampleRate
-          : undefined;
-      return JSON.stringify({
-        ...item,
-        label: annotationLabel(item)?.name,
-        start_sample: annotationRate ? Math.max(0, Math.round((item.start - (item.sourceTimeOffsetSec ?? 0)) * annotationRate)) : null,
-        end_sample: annotationRate ? Math.max(0, Math.round((item.end - (item.sourceTimeOffsetSec ?? 0)) * annotationRate)) : null,
-        source_time_offset_sec: item.sourceTimeOffsetSec ?? 0,
-        sample_rate_basis_hz: annotationRate ?? null,
-        source_content_sha256: rawSourceHash || null,
-        session_interpretation_sha256: rawSourceHash ? sourceHash : null,
-        local_recording_id: sourceHash,
-        source_hash: sourceHash,
-      });
-    }).join("\n");
-    const matlabCsvNote = matlabCompatibilityRows === null
-      ? "matlab_compatibility.csv is omitted because the source has multiple sampling rates; accepted reviews remain in events.tsv, candidate_events.tsv and annotations.jsonl."
-      : "matlab_compatibility.csv uses the exact 14-column MATLAB savedT schema for accepted source-event reviews only, including bad_channels (not ictal channels).";
-    const manifest = JSON.stringify({ schema: "neurotrace-forecasting-manifest/1.1", patient: patientId, recording_type: recordingType, session: recordingId, files: ["events.tsv", "candidate_events.tsv", ...(matlabCompatibilityRows === null ? [] : ["matlab_compatibility.csv"]), "channels.tsv", "recording.json", "annotations.jsonl", "windows.csv", "ontology.json"], leakage_guard: "Assign train/validation/test split by patient; current split is unassigned." }, null, 2);
-    const readme = `NeuroTrace model-ready annotation bundle\n\nRaw EEG is not included. Seconds are authoritative. Sample positions are only emitted when a universal or annotation-specific channel rate exists. Only committed labels appear in events.tsv; drafts and suggestions remain in annotations.jsonl for audit. candidate_events.tsv preserves source-event lineage and relative timing. ${matlabCsvNote} Review recording.json before training. Group dataset splits by patient to prevent leakage.\n`;
-    const zip = createStoredZip([
-      { name: `${base}/events.tsv`, content: eventsTsv },
-      { name: `${base}/candidate_events.tsv`, content: candidateEventsTsv },
-      ...(matlabCompatibilityRows === null ? [] : [{ name: `${base}/matlab_compatibility.csv`, content: matlabCompatibilityRows }]),
-      { name: `${base}/channels.tsv`, content: channelsTsv },
-      { name: `${base}/recording.json`, content: recordingJson },
-      { name: `${base}/annotations.jsonl`, content: annotationsJsonl },
-      { name: `${base}/windows.csv`, content: windowRows.join("\n") },
-      { name: `${base}/ontology.json`, content: ontology },
-      { name: `${base}/manifest.json`, content: manifest },
-      { name: `${base}/README.txt`, content: readme },
-    ]);
-    downloadBlob(`${base}_model_ready.zip`, zip);
-    setToast(`Exported ${committed.length} committed labels + ${Math.ceil(meta.durationSec / 30)} training windows${matlabCompatibilityRows === null ? " · MATLAB CSV omitted for mixed sampling rates" : ""}`);
-  };
-
   const csvDirectoryId = sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId;
   const completeExportLabels = async (source: EDFSource, readLabels: () => Annotation[]) => {
     try { await source.loadAnnotations(); }
@@ -7712,7 +7440,7 @@ export default function Home() {
 
 
   useEffect(() => {
-    const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelLibrary || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+    const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelLibrary || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
     if (!modalOpen) return;
     const modal = document.querySelector<HTMLElement>(".modal-backdrop [role='dialog'], .modal-backdrop .session-map-modal, .modal-backdrop .confirm-modal");
     if (!modal) return;
@@ -7752,7 +7480,7 @@ export default function Home() {
       background.forEach((element) => element.removeAttribute("inert"));
       previousFocus?.focus();
     };
-  }, [confirmCommit.length, olderReviews, pendingLabel, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings]);
+  }, [confirmCommit.length, olderReviews, pendingLabel, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showProjectSave, showSessionMap, showSettings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -7768,7 +7496,7 @@ export default function Home() {
       const interactiveTarget = target?.closest("input, textarea, select, button, a, [role='button'], [contenteditable='true']");
       const editingTarget = target?.closest("input, textarea, select, [contenteditable='true']");
       if (target?.closest(".spectrogram-panel") && !clearShortcut && !historyShortcut) return;
-      const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelLibrary || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showPatientInfo || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
+      const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelLibrary || showEphysLabelPicker || showDirectorySessions || showHelp || showSettings || showChannels || showImport || showProjectSave || showSessionMap || showAnnotationEditor || queueDetailEntry || confirmCommit.length > 0;
       if (modalOpen && zoomShortcut && !editingTarget && !target?.closest("[data-shortcut-scope]")) {
         event.preventDefault();
         event.stopPropagation();
@@ -7790,7 +7518,6 @@ export default function Home() {
         else if (showSettings) setShowSettings(false);
         else if (showChannels) setShowChannels(false);
         else if (showSessionMap) setShowSessionMap(false);
-        else if (showPatientInfo) setShowPatientInfo(false);
         else if (showAnnotationEditor) setShowAnnotationEditor(false);
         else if (queueDetailEntry) setQueueDetailTarget(null);
         else if (showProjectSave && !projectSaveBusy) setShowProjectSave(false);
@@ -7902,7 +7629,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, clearChannelSelection, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, pendingLabel, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showPatientInfo, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
+  }, [acceptActiveCandidate, activeCandidate, activeCandidateAnnotation, activeCandidateItem, activeCandidateVisible, activeFilteredQueueIndex, addAnnotation, candidates, commitSelected, confirmCommit.length, controlBindings, clearChannelSelection, cursorLocked, cursorTime, deleteSelectedAnnotations, filteredQueueEntries, hasRecording, importBusy, markOnset, moveSelectedAnnotations, olderReviews, pendingLabel, placePaletteLabel, projectSaveBusy, queueDetailEntry, redo, selectInstanceQueueEntry, selectedAnnotation, selectedAnnotationIds, setShowImport, setViewStartSafe, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showProjectSave, showSessionMap, showSettings, timebase, undo, zoomTimeWindow]);
 
   const overviewLeft = (Math.max(0, viewStart) / Math.max(1, meta.durationSec)) * 100;
   const overviewWidth = Math.min(100, ((Math.min(meta.durationSec, viewStart + timebase) - Math.max(0, viewStart)) / Math.max(1, meta.durationSec)) * 100);
@@ -8053,7 +7780,7 @@ export default function Home() {
   /** Explicit, synchronous view actions only. Never choose files, labels, or save contents. */
   const assistTutorial = (action: TutorialAssistAction): boolean => {
     const modalOpen = pendingLabel !== null || olderReviews !== null || showLabelLibrary || showEphysLabelPicker || showDirectorySessions || showSettings || showChannels || showImport || showProjectSave
-      || showSessionMap || showPatientInfo || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
+      || showSessionMap || showAnnotationEditor || Boolean(queueDetailEntry) || confirmCommit.length > 0;
     if (modalOpen) return (action === "open-import" && showImport) || (action === "open-save" && showProjectSave)
       || (action === "open-settings" && showSettings)
       || (action === "open-channels" && showChannels) || (action === "open-label-picker" && showEphysLabelPicker)
@@ -8387,9 +8114,6 @@ export default function Home() {
                     <div className="info-wide"><dt>Filters</dt><dd title={filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
                     <div className="info-wide"><dt>Access</dt><dd title={sourceReadProfile(meta.format, hasRecording).access}>{sourceReadProfile(meta.format, hasRecording).access}</dd></div>
                   </dl>
-                  <button className="patient-info-disclosure" disabled={!hasRecording} onClick={() => setShowPatientInfo(true)}>
-                    <span title={effectivePatientLabel}>Open Patient Info {hasRecording && `(${effectivePatientLabel})`}</span><b aria-hidden="true">↗</b>
-                  </button>
                   <UploadedFilesPanel bundle={companionBundle} compact />
                 </div>
               </section>
@@ -9412,40 +9136,6 @@ export default function Home() {
               {[["Click", "Pin instance time"], ["Click + drag", "Select label window (or box zoom with Zoom tool)"], ["Double-click waveform", "Restore the previous box zoom"], ["Wheel / trackpad", "Pan in time; scroll expanded channels vertically"], ["Shift + wheel", "Pan time instead of scrolling channels"], ["Pinch / Ctrl/⌘ + wheel", "EEG-only time zoom"], ["Alt + pointer", "Bypass label snapping"], ["Window +/−", "Step 0.1; Shift: 1; Ctrl/⌘ + Shift: 10"], ["Drag divider", "Resize panels; double-click spectrogram divider to maximize/restore"]].map(([key, action]) => <div key={key}><kbd>{key}</kbd><span>{action}</span></div>)}
             </div>
           </section>
-        </div>
-      </div>}
-
-      {showPatientInfo && hasRecording && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowPatientInfo(false); }}>
-        <div className="modal patient-info-modal" role="dialog" aria-modal="true" aria-label="Patient information" tabIndex={-1}>
-          <button className="modal-close" onClick={() => setShowPatientInfo(false)} aria-label="Close patient information">×</button>
-          <span className="modal-eyebrow">PATIENT &amp; SOURCE</span>
-          <h2>Patient Information</h2>
-          <p>Recording identifiers and source details remain inside this local review workspace.</p>
-          <div className="patient-info-grid">
-            <div><span>Patient</span><strong>{effectivePatientLabel}</strong></div>
-            <div><span>Session</span><strong>{recordingLabel(meta)}</strong></div>
-            <div><span>Recording start</span><strong>{formatSessionStart(meta.startedAt)}</strong></div>
-            <div><span>Local recording ID</span><strong className="hash-text" title={verifyingSource ? "Opening recording" : sourceHash}>{sourceHashDisplay}</strong></div>
-            <div><span>Source channels</span><strong>{meta.channelLabels.length}</strong></div>
-            <label><span>Reviewer initials</span><input value={reviewer} disabled={Boolean(activeReviewIdentity)} maxLength={12} onChange={(event) => setReviewer(event.target.value.toUpperCase())} /></label>
-            {activeMatlabExportIdentity && <>
-              <div className="matlab-identity-note"><span>MATLAB export identity</span><strong>Editable without changing the recording recovery key</strong></div>
-              <label className="matlab-identity-field"><span>MATLAB patient ID</span><input value={activeMatlabExportIdentity.patientId} onChange={(event) => updateMatlabExportIdentity({ patientId: event.target.value })} /></label>
-              <label className="matlab-identity-field"><span>MAT path</span><input value={activeMatlabExportIdentity.matPath} onChange={(event) => updateMatlabExportIdentity({ matPath: event.target.value })} /></label>
-              <label className="matlab-identity-field"><span>Data directory</span><input value={activeMatlabExportIdentity.dataDirectory} onChange={(event) => updateMatlabExportIdentity({ dataDirectory: event.target.value })} /></label>
-              <label className="matlab-identity-field"><span>DAT file</span><input value={activeMatlabExportIdentity.datFile} onChange={(event) => updateMatlabExportIdentity({ datFile: event.target.value })} /></label>
-            </>}
-          </div>
-          <div className="patient-modal-actions">
-            <button className="button secondary" onClick={() => {
-              setShowPatientInfo(false);
-              setShowImport(true);
-            }}>Replace recording</button>
-            <button className="button primary" onClick={() => {
-              setShowPatientInfo(false);
-              exportBundle();
-            }}>Export model-ready bundle</button>
-          </div>
         </div>
       </div>}
 

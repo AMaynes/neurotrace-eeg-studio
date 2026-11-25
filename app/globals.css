@@ -2030,8 +2030,7 @@ textarea:focus-visible {
   font-size: 9px;
   font-weight: 600;
 }
-.session-map-row,
-.patient-info-disclosure {
+.session-map-row {
   width: 100%;
   min-height: 42px;
   flex: 0 0 auto;
@@ -2048,10 +2047,8 @@ textarea:focus-visible {
   font-weight: 700;
 }
 .session-map-row b { color: var(--mint); font-size: 13px; }
-.session-map-row:hover:not(:disabled),
-.patient-info-disclosure:hover:not(:disabled) { background: #12241f; color: #e2eeeb; }
-.session-map-row:disabled,
-.patient-info-disclosure:disabled { cursor: not-allowed; opacity: .46; }
+.session-map-row:hover:not(:disabled) { background: #12241f; color: #e2eeeb; }
+.session-map-row:disabled { cursor: not-allowed; opacity: .46; }
 
 .left-sidebar .session-labels-section {
   flex: 0 0 auto;
@@ -2152,56 +2149,6 @@ textarea:focus-visible {
   text-align: left;
 }
 .session-context-picker > button i { width: 5px; height: 18px; border-radius: 2px; background: var(--label-color); }
-
-.patient-info-disclosure {
-  min-height: 38px;
-  justify-content: space-between;
-  padding: 0 12px;
-  font-size: 9px;
-  font-weight: 600;
-}
-.patient-info-disclosure b { color: #657b81; transition: transform .15s; }
-.patient-info-panel {
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  background: #09161b;
-}
-.patient-info-panel > div,
-.patient-info-panel > label { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.patient-info-panel span { color: #5f777d; font-size: 7px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-.patient-info-panel strong { overflow: hidden; color: #bccbcc; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.patient-info-panel input {
-  width: 100%;
-  height: 27px;
-  border: 1px solid #294149;
-  border-radius: 4px;
-  background: #0d1b20;
-  color: #dce8e7;
-  padding: 0 6px;
-  font: 700 9px ui-monospace, monospace;
-  text-transform: uppercase;
-}
-.patient-info-actions {
-  grid-column: 1 / -1;
-  display: grid !important;
-  grid-template-columns: 1fr 1fr;
-  gap: 5px !important;
-}
-.patient-info-actions button {
-  width: 100%;
-  height: 28px;
-  border: 1px solid #294149;
-  border-radius: 4px;
-  background: #102027;
-  color: #9db1b4;
-  cursor: pointer;
-  font-size: 9px;
-}
-.patient-info-actions .popover { right: auto; left: 0; width: 270px; }
 
 .left-sidebar .queue-section {
   flex: 1 1 auto;
@@ -2679,61 +2626,6 @@ textarea:focus-visible {
 .queue-detail-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 16px; }
 
 .session-map-tab-panel { min-height: 0; }
-
-.patient-info-modal { width: min(620px, calc(100vw - 32px)); }
-.patient-info-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 16px;
-}
-.patient-info-grid > div,
-.patient-info-grid > label {
-  min-width: 0;
-  min-height: 66px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid #243d44;
-  border-radius: 7px;
-  background: #09171c;
-}
-.patient-info-grid > label { grid-column: 1 / -1; }
-.patient-info-grid .matlab-identity-note { grid-column: 1 / -1; border-color: #36555b; background: #0d2025; }
-.patient-info-grid span {
-  color: #687f85;
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-.patient-info-grid strong {
-  overflow: hidden;
-  color: #d4e1e0;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.patient-info-grid input {
-  width: 100%;
-  height: 31px;
-  border: 1px solid #315875;
-  border-radius: 5px;
-  background: #0d1d20;
-  color: #dce8e7;
-  padding: 0 8px;
-  font: 700 10px ui-monospace, monospace;
-  text-transform: uppercase;
-}
-.patient-info-grid .matlab-identity-field input { text-transform: none; }
-.patient-modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 7px;
-  margin-top: 15px;
-}
 
 .queue-status.committed { border-color: var(--mint); background: var(--mint); }
 .queue-status.draft { border-color: var(--gold); background: var(--gold); }

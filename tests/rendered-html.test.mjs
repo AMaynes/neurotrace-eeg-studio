@@ -60,7 +60,6 @@ test("ships product source without starter preview artifacts", async () => {
   ]);
   assert.match(page, /EDFSource/);
   assert.match(page, /resolveMatDatImport/);
-  assert.match(page, /createStoredZip/);
   assert.match(page, /aria-label="Delete annotation"/);
   assert.match(page, /aria-label="Close Settings"/);
   assert.match(page, /data-track-id=/);
@@ -74,10 +73,6 @@ test("ships product source without starter preview artifacts", async () => {
   assert.match(page, /Clinical Observation/);
   assert.match(page, /Medication/);
   assert.match(page, /name:\s*"Other"/);
-  assert.match(page, /candidate_events\.tsv/);
-  assert.match(page, /source_content_sha256/);
-  assert.match(page, /entire_session_context/);
-  assert.match(page, /timed_context/);
   assert.match(page, /localRecordingIdentity/);
   assert.match(page, /status === "committed"/);
   assert.doesNotMatch(page, /fileFingerprint/);
@@ -770,29 +765,6 @@ test("keeps Session Map focused on whole-recording navigation", async () => {
   const invocation = page.slice(invocationStart, invocationEnd);
   assert.match(invocation, /annotations=\{displayAnnotations\}/, "the map respects label-type filters while retaining the full recording timeline");
   assert.doesNotMatch(invocation, /issues=|badChannels=|recoveryStatus=/);
-});
-
-test("opens patient information as a modal instead of expanding the left panel", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const leftStart = page.indexOf('<aside className="left-sidebar"');
-  const leftEnd = page.indexOf("</aside>", leftStart);
-  const left = page.slice(leftStart, leftEnd);
-  assert.match(left, /setShowPatientInfo\(true\)/);
-  assert.doesNotMatch(left, /patient-info-panel|patientInfoOpen/);
-  assert.ok(
-    left.indexOf('className="patient-info-disclosure"') < left.indexOf('className="session-map-row"'),
-    "Patient Info appears above Session Map",
-  );
-
-  const modalStart = page.indexOf("{showPatientInfo && hasRecording");
-  const modalEnd = page.indexOf("{showAnnotationEditor", modalStart);
-  assert.ok(modalStart >= 0 && modalEnd > modalStart, "patient information popup is present");
-  const modal = page.slice(modalStart, modalEnd);
-  assert.match(modal, /role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Patient information"/);
-  assert.match(modal, /Close patient information/);
-  assert.match(modal, /Patient Information/);
-  assert.match(modal, /Replace recording/);
-  assert.match(modal, /Export model-ready bundle/);
 });
 
 test("gives Session and Window Instance their own full-height label sections", async () => {

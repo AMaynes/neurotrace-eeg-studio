@@ -440,7 +440,7 @@ test("Ctrl/Cmd+Z and Shift+Z reach shared history from waveform, spectrogram, bu
         ...ui.scope, undo: ui.undo, redo: ui.redo,
         controlBindings: DEFAULT_CONTROLS, shortcutAction, canvasRef: { current: null }, markOnset: null,
         olderReviews: null, pendingLabel: null, showDirectorySessions: false, setShowDirectorySessions() {}, showEphysLabelPicker: false, showLabelLibrary: false, showLabelVisibilityFilter: false, showHelp: false, showSettings: false, showChannels: false, showImport: false,
-        showProjectSave: false, showSessionMap: false, showPatientInfo: false, showAnnotationEditor: false,
+        showProjectSave: false, showSessionMap: false, showAnnotationEditor: false,
         queueDetailEntry: null, confirmCommit: [],
       }, "onKey");
       const native = ["input", "textarea", "select", "editable"].includes(area);
