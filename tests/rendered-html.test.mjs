@@ -40,7 +40,7 @@ test("renders the NeuroTrace clinical EEG workspace", async () => {
   assert.match(html, /NEUROTRACE/);
   assert.match(html, /Clinical EEG Studio/);
   assert.match(html, /Workspace sections/);
-  assert.match(html, /Folder \/ File/);
+  assert.match(html, /Folder\/File Info/);
   assert.match(html, /Label sections/);
   assert.match(html, /Window \/ Instance/);
   assert.match(html, /Instance Queue/);

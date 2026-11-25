@@ -1,8 +1,8 @@
 /** Sidebar and optional toolbar preferences, including migration of older JSON saves. */
 export const WORKSPACE_TABS = [
-  { id: "files", label: "Folder / File" },
-  { id: "window", label: "Window" },
-  { id: "view", label: "View" },
+  { id: "files", label: "Folder/File Info" },
+  { id: "window", label: "Window Info" },
+  { id: "view", label: "Viewing Tools" },
   { id: "labels", label: "Labels" },
 ] as const;
 export const LABEL_TABS = [
