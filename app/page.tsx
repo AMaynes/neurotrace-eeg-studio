@@ -8114,7 +8114,7 @@ export default function Home() {
                     <div><dt>Start</dt><dd>{formatClock(viewStart, true)}</dd></div>
                     <div><dt>End</dt><dd>{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
                     <div><dt>Duration</dt><dd>{timebase.toLocaleString()} s</dd></div>
-                    <div><dt>Memory</dt><dd>{formatByteCount(activeDisplayVisibleBytes)}</dd></div>
+                    <div><dt>Curr. RAM Usage</dt><dd>{formatByteCount(activeDisplayVisibleBytes)}</dd></div>
                     <div className="info-wide"><dt>Signal status</dt><dd>{verifyingSource ? "Opening recording" : loadingSignal || display.processingThroughSec !== undefined ? "Loading…" : display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase ? "Partially loaded" : display.data.length ? "Loaded" : "No data loaded"}</dd></div>
                   </dl>
                   <GeneralInfoPanel
