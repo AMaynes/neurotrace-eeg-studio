@@ -1,3 +1,9 @@
+/*
+Purpose: Defines zoom history for the NeuroTrace workspace.
+File Dependencies: app/channel-layout.ts.
+*/
+
+
 import type { ChannelLayoutView } from "./channel-layout";
 
 export type SpectrogramFrequencyRange = { min: number; max: number };
@@ -25,6 +31,7 @@ export function sameZoomView(a: ZoomView, b: ZoomView): boolean {
     && a.frequencyRange.min === b.frequencyRange.min && a.frequencyRange.max === b.frequencyRange.max;
 }
 
+/** Checks whether the channel identities and layout match. */
 function sameChannelLayout(a?: ChannelLayoutView | null, b?: ChannelLayoutView | null): boolean {
   if (!a || !b) return !a && !b;
   return a.expandedChannels === b.expandedChannels && a.channelScrollTop === b.channelScrollTop

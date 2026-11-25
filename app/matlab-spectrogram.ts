@@ -1,19 +1,12 @@
-/**
- * Independent numerical implementation of the supplied MATLAB reviewer's Gabor
- * spectrogram. Reference: awt_freqlist.m (Clerc/Benar, 2007/2008), byte-identical
- * in the two supplied local toolbox trees; SHA-256:
- * 76d751080f09fd3929185f055bfebda5afec8085c359e203db474141dcc0cb1a.
- * Public provenance: buzsakilab/buzcode, commit
- * dffc8d0e30851c564361c3e2bddfec8be953ea79, externalPackages/awt_freqlist.m.
- * The toolbox repository carries GPL-3.0; no toolbox source is bundled here.
- *
- * Preserve the exact N-point circular transform (including positive even-N
- * Nyquist and the unmasked negative-frequency Gaussian tail). Bluestein's
- * convolution padding is internal: it does not zero-pad the signal's DFT.
- * Unlike the original viewer, omit analysis centers above the recording's
- * Nyquist limit. Retained centers and their power/Z-score calculations are
- * unchanged; the original frequency grid is never respaced.
- */
+/*
+Purpose: Computes raw-channel Gabor power and baseline-normalized spectrograms with the supplied MATLAB equations.
+File Dependencies: None.
+*/
+
+
+/*
+Independent numerical implementation of the supplied MATLAB reviewer's Gaborspectrogram. Reference: awt_freqlist.m (Clerc/Benar, 2007/2008), byte-identicalin the two supplied local toolbox trees; SHA-256:76d751080f09fd3929185f055bfebda5afec8085c359e203db474141dcc0cb1a.Public provenance: buzsakilab/buzcode, commitdffc8d0e30851c564361c3e2bddfec8be953ea79, externalPackages/awt_freqlist.m.The toolbox repository carries GPL-3.0; no toolbox source is bundled here.Preserve the exact N-point circular transform (including positive even-NNyquist and the unmasked negative-frequency Gaussian tail). Bluestein'sconvolution padding is internal: it does not zero-pad the signal's DFT.Unlike the original viewer, omit analysis centers above the recording'sNyquist limit. Retained centers and their power/Z-score calculations areunchanged; the original frequency grid is never respaced.
+*/
 
 export const MATLAB_SPECTROGRAM_BINS = 60;
 export const MATLAB_SPECTROGRAM_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -76,6 +69,7 @@ export function validateMatlabSpectrogramRequest(request: MatlabSpectrogramReque
   return { samples, inputBytes, outputBytes, frequencies };
 }
 
+/** Builds the frequency coordinates used by the spectral transform. */
 function frequencyGrid(sampleRate: number) {
   const maximumLog = Math.log10(150);
   const maximumFrequency = Math.min(150, sampleRate / 2);
@@ -88,6 +82,7 @@ class Radix2Plan {
   readonly size: number;
   private readonly cosine: Float64Array;
   private readonly sine: Float64Array;
+  /** Initializes the instance from the supplied arguments. */
   constructor(size: number) {
     this.size = size;
     this.cosine = new Float64Array(size / 2);
@@ -97,6 +92,7 @@ class Radix2Plan {
       this.sine[index] = Math.sin(2 * Math.PI * index / size);
     }
   }
+  /** Transforms complex samples in place, using the inverse convention when requested. */
   transform(real: Float64Array, imaginary: Float64Array, inverse = false) {
     const n = this.size;
     for (let index = 1, reversed = 0; index < n; index += 1) {
@@ -144,6 +140,7 @@ class ExactDftPlan {
   private readonly kernelImaginary: Float64Array;
   private readonly scratchReal: Float64Array;
   private readonly scratchImaginary: Float64Array;
+  /** Initializes the instance from the supplied arguments. */
   constructor(size: number) {
     this.size = size;
     this.direct = (size & (size - 1)) === 0;
@@ -169,6 +166,7 @@ class ExactDftPlan {
       this.radix.transform(this.kernelReal, this.kernelImaginary);
     }
   }
+  /** Transforms complex samples in place, using the inverse convention when requested. */
   transform(real: Float64Array, imaginary: Float64Array, inverse = false) {
     if (this.direct) { this.radix.transform(real, imaginary, inverse); return; }
     const { scratchReal: re, scratchImaginary: im, cosine, sine } = this;
@@ -192,12 +190,14 @@ class ExactDftPlan {
   }
 }
 
+/** Checks whether a Gabor scale is finite and inside the supported domain. */
 function validGaborScale(samples: number, rate: number, frequency: number) {
   const scale = 5 / frequency;
   // Compare scales, as awt_freqlist does, including both endpoints.
   return scale >= 5 / (rate * 5 / 5.5) && scale <= 5 / (5 * rate / samples);
 }
 
+/** Computes the wavelet response at one requested analysis frequency. */
 function gaborBin(plan: ExactDftPlan, fftReal: Float64Array, fftImaginary: Float64Array,
   rate: number, frequency: number, real: Float64Array, imaginary: Float64Array) {
   const scale = 5 / frequency;
@@ -302,6 +302,7 @@ export function computeMatlabSpectrogramPower(request: MatlabSpectrogramRequest,
     metrics: { computeMs: Math.max(0, performance.now() - started), inputBytes, outputBytes: power.byteLength + frequencies.byteLength } };
 }
 
+/** Computes the matlab spectrogram. */
 export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): MatlabSpectrogramResult {
   const started = performance.now();
   const { power, frequencies, width: samples, warnings, metrics: { inputBytes } } = computeMatlabSpectrogramPower(request);
@@ -353,6 +354,7 @@ export function computeMatlabSpectrogram(request: MatlabSpectrogramRequest): Mat
     metrics: { computeMs: Math.max(0, performance.now() - started), inputBytes, outputBytes } };
 }
 
+/** Collects the wavelet result buffers that can be transferred to the caller. */
 export function matlabSpectrogramTransferList(result: MatlabSpectrogramResult): ArrayBuffer[] {
   return [result.power, result.zScores, result.frequencies, result.times, result.baselineMean, result.baselineStd]
     .map((array) => array.buffer as ArrayBuffer);

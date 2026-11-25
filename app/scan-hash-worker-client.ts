@@ -1,8 +1,8 @@
-/**
- * Overlaps ordered SHA-256 with overview decoding without rereading the source.
- * One copied chunk can be in flight; the producer retains its decoding buffer.
- * The owning scan worker must dispose this child on completion or failure.
- */
+/*
+Purpose: Overlaps ordered SHA-256 with overview decoding without rereading the source. One copied chunk can be in flight; the producer retains its decoding buffer. The owning scan worker must dispose this child on completion or failure.
+File Dependencies: app/scan-hash-worker.ts.
+*/
+
 
 export interface ScanHashPipeline {
   readonly workMs: number;
@@ -15,6 +15,7 @@ export interface ScanHashPipeline {
 type HashResponse = { id: number; workMs: number; hash?: string; error?: string };
 type PendingHash = { id: number; resolve: (response: HashResponse) => void; reject: (error: Error) => void };
 
+/** Checks whether file size and available cores justify a parallel hash worker. */
 export function parallelScanHashEnabled(byteLength: number, cores = globalThis.navigator?.hardwareConcurrency ?? 4) {
   return byteLength >= 32 * 1024 * 1024 && Number.isFinite(cores) && cores >= 4;
 }
@@ -27,6 +28,7 @@ class WorkerHashPipeline implements ScanHashPipeline {
   private failure: Error | undefined;
   private readonly worker: Worker;
 
+  /** Initializes the instance from the supplied arguments. */
   constructor(worker: Worker) {
     this.worker = worker;
     worker.onmessage = (event: MessageEvent<HashResponse>) => {
@@ -47,8 +49,10 @@ class WorkerHashPipeline implements ScanHashPipeline {
     worker.onmessageerror = () => this.fail(new Error("Parallel source hashing returned an unreadable result."));
   }
 
+  /** Waits until the hash worker accepts requests. */
   async ready() { await this.send("ready"); }
 
+  /** Queues a copied byte buffer after the previous hash update completes. */
   async write(bytes: Uint8Array) {
     await this.previous;
     if (this.failure) throw this.failure;
@@ -57,6 +61,7 @@ class WorkerHashPipeline implements ScanHashPipeline {
     this.previous = this.send("update", buffer);
   }
 
+  /** Returns the completed hash as hexadecimal text. */
   async hexDigest() {
     await this.previous;
     if (this.failure) throw this.failure;
@@ -65,17 +70,20 @@ class WorkerHashPipeline implements ScanHashPipeline {
     return result.hash;
   }
 
+  /** Releases resources owned by this instance. */
   dispose() {
     this.worker.terminate();
     this.fail(new Error("Parallel source hashing stopped."));
   }
 
+  /** Stores the worker failure and rejects its pending request. */
   private fail(error: Error) {
     this.failure = error;
     this.pending?.reject(error);
     this.pending = undefined;
   }
 
+  /** Sends an ordered hash request and retains any asynchronous failure. */
   private send(type: "ready" | "update" | "digest", buffer?: ArrayBuffer) {
     if (this.failure) return Promise.reject(this.failure);
     const id = this.nextId++;

@@ -1,322 +1,241 @@
-# Project Structure
-
-## Structure at a Glance
-
-```text
-neurotrace-eeg-studio/
-├── .github/
-│   └── workflows/
-│       └── deploy-pages.yml — Verifies `main`, builds the static artifact, and deploys GitHub Pages.
-├── .openai/
-│   └── hosting.json — Retains the legacy Sites project identifier and optional logical storage bindings.
-├── app/
-│   ├── bids-companions.ts — Catalogs selected files and resolves matching BIDS JSON/TSV metadata, tables, channels, and events.
-│   ├── directory-import.ts — Filters folders by the chosen recording type without reading signal bytes; validates pairs and scopes companions.
-│   ├── import-selection.ts — Automatically routes files versus collections and enumerates dropped folders without reading waveform bytes.
-│   ├── directory-sessions.tsx / directory-sessions.css — Paginated directory catalog, event-label search, keyword presets, and lazy open/resume/retry actions.
-│   ├── directory-event-client.ts / directory-event-worker.ts / directory-event-index.ts — Cancellable, sequential local metadata checks, per-catalog cache, and literal label matching; never opens waveforms or hashes sources.
-│   ├── mat-event-reader.ts — Bounded Level-5 traversal for the directory index; skips waveform payloads and streams compression, passing only known event subtrees to the production MAT decoder.
-│   ├── chatgpt-auth.ts — Provides optional ChatGPT-host authentication helpers; unused by the public GitHub build.
-│   ├── eeg-core.ts — Owns recording parsing, windowed signal access, filters, montages, and signal-domain utilities.
-│   ├── globals.css — Defines the shared NeuroTrace visual system and responsive workspace layout.
-│   ├── layout.tsx — Supplies application metadata, social previews, viewport configuration, and the root HTML shell.
-│   ├── neurotrace-project.ts — Builds and reopens versioned `.neurotrace` ZIP containers and safely classifies inert custom definitions.
-│   ├── pages-client.tsx — Mounts the shared workstation for the browser-only GitHub Pages release.
-│   ├── page.tsx — Coordinates the browser workstation, annotation state, session workflow, rendering, and exports.
-│   ├── recording-labels.ts — Decodes recording events into unreviewed annotations with stable identities and original source evidence.
-│   ├── source-integrity.ts — Computes incremental SHA-256 fingerprints without buffering complete recordings.
-│   ├── tutorial-center.tsx / tutorial-center.css — Own the tutorial hub and live, non-blocking walkthrough coach.
-│   ├── tutorial-events.ts / tutorial-progress.ts — Payload-free action notifications and committed UI milestones for walkthrough advancement.
-│   └── tutorials.ts — Defines task-based lessons, prerequisites, and guide placement policy.
-├── build/
-│   └── sites-vite-plugin.ts — Copies Sites metadata and migrations into deployment output.
-├── db/
-│   ├── index.ts — Creates the optional Drizzle client when a D1 binding exists.
-│   └── schema.ts — Defines the intentionally empty production database schema.
-├── drizzle/
-│   └── meta/
-│       └── _journal.json — Tracks generated Drizzle migration history.
-├── examples/
-│   └── d1/
-│       ├── app/
-│       │   └── api/
-│       │       └── notes/
-│       │           └── route.ts — Demonstrates optional D1 CRUD route handling.
-│       └── db/
-│           └── schema.ts — Demonstrates an optional notes table.
-├── public/
-│   └── og.png — Provides the NeuroTrace social-preview image.
-├── tests/
-│   ├── bids-companions.test.mjs — Verifies BIDS inheritance, TSV decoding, event/channel discovery, and additive file selection.
-│   ├── directory-*.test.mjs — Verify directory planning, metadata-only label scans, worker cancellation/cache, search/presets/pagination, session isolation, and actual import/tab handlers using synthetic recordings.
-│   ├── eeg-integrity.test.mjs — Verifies EDF+ annotation decoding and montage safety.
-│   ├── neurotrace-project.test.mjs — Verifies project archives, manifests, binary preservation, and custom-definition safety.
-│   ├── pages-release.test.mjs — Verifies the static Pages artifact and relative runtime assets.
-│   ├── recording-labels.test.mjs — Verifies automatic MAT/EDF label import, bounds, provenance, and recovery without patient data.
-│   ├── rendered-html.test.mjs — Verifies server rendering and key product interaction contracts.
-│   └── source-integrity.test.mjs — Verifies incremental SHA-256 correctness across chunk boundaries.
-├── worker/
-│   └── index.ts — Adapts the vinext application and image endpoint to a Cloudflare Worker.
-├── .gitignore — Excludes dependencies, builds, local state, secrets, and generated work products.
-├── Launch NeuroTrace.command — Starts a loopback-only local viewer from a macOS Finder double-click.
-├── README.md — Introduces NeuroTrace, its architecture, privacy model, limits, and validation workflow.
-├── STRUCTURE.md — Maps the repository and defines subsystem ownership.
-├── TODO.md — Tracks pressing and eventual engineering outcomes.
-├── cloudflare-env.d.ts — Declares the minimal Cloudflare bindings used by development infrastructure.
-├── drizzle.config.ts — Configures optional SQLite/D1 migration generation.
-├── eslint.config.mjs — Configures Next.js TypeScript and core-web-vitals linting.
-├── index.html — Defines metadata and the mount point for the static Pages release.
-├── next.config.ts — Holds the intentionally minimal Next-compatible configuration.
-├── package-lock.json — Locks the npm dependency graph.
-├── package.json — Declares runtime requirements, dependencies, and development commands.
-├── postcss.config.mjs — Enables Tailwind’s PostCSS integration for the build.
-├── tsconfig.json — Configures strict TypeScript checking and framework path resolution.
-├── vite.config.ts — Assembles vinext, Sites packaging, and Cloudflare build adapters.
-└── vite.pages.config.ts — Builds the browser-only static artifact in `pages-dist/`.
-
-Generated or local-only directories such as `node_modules/`, `dist/`, `pages-dist/`, `.next/`, `.vinext/`, `.wrangler/`, `outputs/`, and `work/` are not source architecture and must not contain canonical implementation.
-```
-
----
-
-# Detailed Reference
-
-## `.github/`
-
-Contains GitHub automation only. Product behavior and provider-independent build logic must remain in the application and build configuration.
-
-### `.github/workflows/deploy-pages.yml`
-
-Runs the complete verification suite for every push to `main`, uploads `pages-dist/`, and deploys that exact artifact to GitHub Pages. `backup` does not trigger deployment.
-
-## `.openai/`
-
-Contains hosting control metadata for the original Sites deployment path. It must not contain credentials, environment values, or application data.
-
-### `.openai/hosting.json`
-
-Stores the opaque Sites project identifier plus optional logical D1/R2 binding names. The current public application is GitHub Pages; this file remains only for compatibility with the original build path and should be removed if that path is formally retired.
-
-## `app/`
-
-Owns the product-facing React application and browser-only signal domain. Recording data and annotation behavior belong here; provider-specific deployment mechanics do not.
-
-### `app/chatgpt-auth.ts`
-
-Provides validated sign-in/sign-out paths and optional identity extraction from trusted ChatGPT hosting headers. No current NeuroTrace route imports it, and the public GitHub build does not use it.
-
-### `app/bids-companions.ts`
-
-Catalogs every file selected through individual upload, directory selection, or later drag-and-drop. It parses bounded JSON/TSV companions, applies BIDS entity compatibility and inheritance specificity, extracts matching participant/session/scan rows, channels, and events, and retains unassociated files in the visible provenance inventory.
-
-### `app/eeg-core.ts`
-
-Defines recording metadata and source contracts, EDF/EDF+ parsing, legacy MAT/DAT mapping, MATLAB v5 decoding, MATLAB v7.3 worker-backed HDF5 access, windowed file reads, display filters, montage construction, formatting, and deterministic demo signals. It is browser-compatible and intentionally avoids Node.js dependencies.
-
-### `app/globals.css`
-
-Defines shared product colors, typography, panel layout, waveform/timeline controls, dialogs, responsive sizing, and accessibility states. Tutorial-specific presentation lives in `tutorial-center.css`; these stylesheets contain no behavior.
-
-### `app/tutorial-center.tsx` and `app/tutorials.ts`
-
-The tutorial center owns topic selection, previews, walkthrough progress, and measured target highlighting, including remeasurement after dialog animations. Guides move inside an open workspace dialog to preserve its focus trap. The lesson catalog owns copy, prerequisites, stable targets, completion signals, and opt-in assistance descriptions. `tutorial-events.ts` carries payload-free semantic notifications; `tutorial-progress.ts` observes committed UI milestones and ignores initial mounting/session restoration. One matching action advances only one step. The page supplies an allowlisted, view-only assistance handler: it never chooses files, creates labels, changes a montage automatically, or saves projects. Reading and user-choice steps retain manual navigation.
-
-### `app/layout.tsx`
-
-Builds host-aware metadata and the root document shell. It references `public/og.png` and declares the canonical GitHub Pages URL.
-
-### `app/neurotrace-project.ts`
-
-Creates and reads the portable, versioned `.neurotrace` ZIP container without duplicating included recording `Blob` data in memory. It owns archive-path sanitization, stored-ZIP directory validation, the manifest schema, and bounded classification of imported dictionaries, equations, filtering methods, label definitions, and channel groupings as inert text assets.
-
-### `app/pages-client.tsx`
-
-Mounts the shared `Home` component and global stylesheet into the static HTML shell. It contains no server or provider adapter and is used only by `vite.pages.config.ts`.
-
-### `app/page.tsx`
-
-Owns the current workstation orchestration: recording import, session state, local recovery, waveform rendering, timeline labeling, queue navigation, dialogs, and export assembly. Its breadth is an acknowledged refactoring target, but behavioral extraction should follow browser interaction coverage.
-
-### `app/source-integrity.ts`
-
-Implements bounded-memory incremental SHA-256 and chunked `Blob` hashing. It is part of source provenance and must remain deterministic across chunk sizes.
-
-### `app/recording-labels.ts`
-
-Owns the known MAT event-time schema, EDF annotation identities, timing/channel validation, neutral unreviewed annotation conversion, and recovery merging. `eeg-core.ts` supplies parsed MAT descriptors and source metadata; `page.tsx` installs the labels only after source verification and persists completed-import state. Source evidence remains separate from editable review annotations; this module performs no signal detection or clinical classification.
-
-## `build/`
-
-Contains build-time adapters. Product logic and runtime recording behavior must not be added here.
-
-### `build/sites-vite-plugin.ts`
-
-Copies `.openai/hosting.json` and generated Drizzle migrations into the vinext deployment artifact after Vite compilation.
-
-## `db/`
-
-Contains optional D1/Drizzle infrastructure. The current local-first product does not persist recordings or annotations to a database.
-
-### `db/index.ts`
-
-Creates a typed Drizzle client from the injected `DB` binding and fails with an actionable message when the binding is absent.
-
-### `db/schema.ts`
-
-Exports an intentionally empty schema so database capability remains opt-in.
-
-## `drizzle/`
-
-Contains generated migration artifacts when optional D1 storage is activated. Handwritten application code does not belong here.
-
-### `drizzle/meta/`
-
-Contains Drizzle’s generated migration bookkeeping.
-
-### `drizzle/meta/_journal.json`
-
-Records the migration sequence. It should change only through migration tooling.
-
-## `examples/`
-
-Contains isolated examples that are not part of the NeuroTrace runtime. Example code must not be imported by production paths.
-
-### `examples/d1/`
-
-Demonstrates how an optional D1-backed feature could be structured.
-
-### `examples/d1/app/`
-
-Mirrors the application route shape for the example only.
-
-### `examples/d1/app/api/`
-
-Groups example API handlers.
-
-### `examples/d1/app/api/notes/`
-
-Owns the example notes endpoint.
-
-### `examples/d1/app/api/notes/route.ts`
-
-Demonstrates bounded list and validated create operations with actionable database errors.
-
-### `examples/d1/db/`
-
-Owns the example’s schema rather than the production schema.
-
-### `examples/d1/db/schema.ts`
-
-Defines a simple notes table for D1 demonstrations.
-
-## `public/`
-
-Contains immutable assets served directly by the application.
-
-### `public/og.png`
-
-Provides the branded social card referenced by application metadata.
-
-## `tests/`
-
-Contains deterministic Node tests. Tests may import TypeScript source directly under the supported Node runtime and may inspect rendered/source contracts where browser automation is not yet available.
-
-### `tests/eeg-integrity.test.mjs`
-
-Exercises EDF+ text-annotation extraction and rejects unsafe mixed-rate bipolar derivations.
-
-### `tests/neurotrace-project.test.mjs`
-
-Checks selected archive sections, binary recording/supporting-file preservation, manifest consistency, path traversal normalization, and custom-definition classification limits.
-
-### `tests/bids-companions.test.mjs`
-
-Exercises directory-style BIDS discovery, metadata specificity, participant matching, channel and event parsing, quoted TSV fields, malformed companions, and additive file replacement.
-
-### `tests/pages-release.test.mjs`
-
-Checks the built `pages-dist/` snapshot for document-relative hashed assets, the social image, and the absence of server/RSC runtime references.
-
-### `tests/rendered-html.test.mjs`
-
-Builds the server worker, verifies the rendered NeuroTrace shell, and protects key interface and interaction wiring from regression.
-
-### `tests/recording-labels.test.mjs`
-
-Generates anonymous compressed/uncompressed, little-/big-endian MAT fixtures to test repeated markers, intervals, notes/channels, malformed events, and dense groups. Covers MAT+DAT routing without changing samples, embedded standalone MAT events, EDF labels, recovery/deletion behavior, portable projects, and UI import wiring.
-
-### `tests/source-integrity.test.mjs`
-
-Compares the incremental browser-compatible SHA-256 implementation with Node’s trusted implementation across boundary conditions.
-
-## `worker/`
-
-Contains Cloudflare-specific request adaptation. Browser signal processing must remain independent of this layer.
-
-### `worker/index.ts`
-
-Routes image-optimization requests through Cloudflare Images and delegates all other requests to the vinext application handler.
-
-## `.gitignore`
-
-Excludes dependencies, framework output, local Cloudflare state, secrets, TypeScript build info, generated deployment output, and temporary work products.
-
-## `Launch NeuroTrace.command`
-
-Provides the macOS one-click local entry point. It asks for and validates an unprivileged port, rejects occupied ports, prepares the static Pages build, binds Vite preview to `127.0.0.1`, and opens the default browser only after the local viewer responds.
-
-## `README.md`
-
-Serves as the developer entry point and concise operational description. It documents the local-first privacy boundary and distinguishes theoretical scaling from measured performance.
-
-## `STRUCTURE.md`
-
-Is the authoritative repository map. Update it whenever a tracked human-maintained file, folder, or ownership boundary changes.
-
-## `TODO.md`
-
-Uses only `Pressing` and `Eventual` sections. Remove completed items rather than retaining a completed-work archive.
-
-## `cloudflare-env.d.ts`
-
-Declares the subset of Worker and D1 interfaces needed for strict TypeScript checking without importing provider runtime types into the browser domain.
-
-## `drizzle.config.ts`
-
-Points migration generation at `db/schema.ts` and emits SQLite-compatible artifacts under `drizzle/`.
-
-## `eslint.config.mjs`
-
-Combines Next.js core-web-vitals and TypeScript rules while excluding generated build and static-release output.
-
-## `index.html`
-
-Provides canonical metadata and the application mount for the static GitHub Pages build. Runtime assets are injected and rewritten by Vite.
-
-## `next.config.ts`
-
-Provides the minimal Next-compatible configuration surface required by vinext.
-
-## `package-lock.json`
-
-Pins exact transitive npm dependencies. Update it only through the package manager.
-
-## `package.json`
-
-Defines Node compatibility, project commands, and dependencies. Database and Cloudflare packages are retained for optional infrastructure rather than current product persistence.
-
-## `postcss.config.mjs`
-
-Registers the Tailwind PostCSS plugin used by the existing build pipeline.
-
-## `tsconfig.json`
-
-Enables strict, no-emit TypeScript checking, DOM libraries, isolated modules, framework plugins, and the `@/` project alias.
-
-## `vite.config.ts`
-
-Builds the application through vinext, packages Sites metadata, configures optional local D1/R2 bindings, and adapts file watching for sandboxed macOS previews.
-
-## `vite.pages.config.ts`
-
-Builds a browser-only static release with React and document-relative asset URLs. It emits the deployable `pages-dist/` snapshot without vinext, Worker, Cloudflare, D1, or R2 runtime dependencies.
+# Repository map
+
+Generated by `npm run docs:generate`. Commands and standards live in [README](README.md); contracts live in the [technical reference](docs/PROJECT_DOC.md). `app/` is the framework entry directory.
+
+| File | Responsibility |
+| --- | --- |
+| [.github/workflows/deploy-pages.yml](.github/workflows/deploy-pages.yml) | Checks the main branch and deploys the verified static build to GitHub Pages. |
+| [Launch NeuroTrace.command](Launch%20NeuroTrace.command) | Builds and serves the static viewer on a user-selected local port on macOS. |
+| [app/background-recording-overview.ts](app/background-recording-overview.ts) | Defines background recording overview for the NeuroTrace workspace. |
+| [app/bids-companions.ts](app/bids-companions.ts) | Browser-side discovery and best-effort parsing for BIDS JSON/TSV companions. The parser deliberately catalogs every selected file while applying only metadata whose BIDS entities are compatible with the active recording. |
+| [app/bipolar-montage.ts](app/bipolar-montage.ts) | Explicit scalp pairs; electrode names are never paired by a numeric suffix. |
+| [app/channel-layout.ts](app/channel-layout.ts) | Shared electrode row geometry for waveform drawing, channel labels, and hit testing. |
+| [app/cursor-readout.ts](app/cursor-readout.ts) | A cursor inspects the current display data, never a previously saved amplitude. |
+| [app/directory-event-client.ts](app/directory-event-client.ts) | Shared per-folder label cache and bounded worker scheduler. Completed metadata is reused in memory and IndexedDB; only explicit cancellation stops its reader. File references remain local and no source samples or hashes enter this cache. |
+| [app/directory-event-index.ts](app/directory-event-index.ts) | Read-only, local label indexing. Runs in a worker; never opens a signal source or hashes recordings. |
+| [app/directory-event-storage.ts](app/directory-event-storage.ts) | Caches directory event metadata in IndexedDB without storing waveform samples. |
+| [app/directory-event-worker.ts](app/directory-event-worker.ts) | One read-only event-metadata request at a time; the client owns cancellation by termination. |
+| [app/directory-import-filters.css](app/directory-import-filters.css) | Styles the directory keyword editor and its scan feedback. |
+| [app/directory-import-filters.tsx](app/directory-import-filters.tsx) | Edits committed folder keyword filters and reports metadata scan progress. |
+| [app/directory-import.ts](app/directory-import.ts) | Filename-only discovery for a directory of recordings or saved projects. This module never reads waveform/archive bytes or treats an extension as verified contents; each entry must pass its normal loader when opened. |
+| [app/directory-review-controls.tsx](app/directory-review-controls.tsx) | Defines directory review controls for the NeuroTrace workspace. |
+| [app/directory-review-resume.ts](app/directory-review-resume.ts) | CSV-backed folder progress. Catalogs retain small rows, never decoded waveforms. |
+| [app/directory-review-worker.ts](app/directory-review-worker.ts) | Explicit resume reads event metadata only; DAT samples are never sent to this worker. |
+| [app/directory-sessions.css](app/directory-sessions.css) | Styles the loaded-folder session list, navigation, and filtering controls. |
+| [app/directory-sessions.tsx](app/directory-sessions.tsx) | Defines directory sessions for the NeuroTrace workspace. |
+| [app/directory-tab-layout.ts](app/directory-tab-layout.ts) | Defines directory tab layout for the NeuroTrace workspace. |
+| [app/display-gain.ts](app/display-gain.ts) | Display-only gain limits, shared by controls, tutorials, and restored views. |
+| [app/display-overlap.ts](app/display-overlap.ts) | Retains published display bins while replacement waveform blocks are prepared. |
+| [app/display-processing-worker-client.ts](app/display-processing-worker-client.ts) | Browser client for cancellable clinical display processing in a worker. |
+| [app/display-processing-worker.ts](app/display-processing-worker.ts) | Runs clinical display filtering and conditional decimation away from the UI thread. |
+| [app/edf-envelope-integrity.ts](app/edf-envelope-integrity.ts) | Optional integrity work that can share the EDF envelope builder's sequential source pass. This avoids rereading a large recording for hashing, EDF+ TAL extraction, and a full-session overview. |
+| [app/edf-envelope-worker-client.ts](app/edf-envelope-worker-client.ts) | Browser client for cancellable, off-main-thread EDF envelope construction. |
+| [app/edf-envelope-worker.ts](app/edf-envelope-worker.ts) | Runs record-aligned EDF envelope and optional integrity work off the UI thread. |
+| [app/edf-envelope.ts](app/edf-envelope.ts) | Pure, bounded-memory EDF envelope construction shared by the worker and its direct fallback. File reads remain record-aligned while the retained output is limited to one min/max/mean/gap tuple per requested display bucket. |
+| [app/eeg-core.ts](app/eeg-core.ts) | Owns browser-side recording ingestion, signal-window access, display filtering, montage construction, and signal-domain formatting. |
+| [app/envelope-cache.ts](app/envelope-cache.ts) | Plans incremental overview reads on a fixed, whole-source-frame bucket grid. Only complete adjacent buckets are reused: no interpolation, rebinning, or fabricated samples. Callers own channel selection, cancellation, and caching. |
+| [app/event-keywords.ts](app/event-keywords.ts) | Splits committed event-label searches into literal keyword alternatives. |
+| [app/file-read-utils.ts](app/file-read-utils.ts) | Supplies common clock and integer-validation operations for bounded file decoders. |
+| [app/file-window-worker-client.ts](app/file-window-worker-client.ts) | Browser client for cancellable exact EDF and Raw DAT sample-window reads. |
+| [app/file-window-worker.ts](app/file-window-worker.ts) | Runs exact EDF and Raw DAT sample-window decoding away from the UI thread. |
+| [app/file-window.ts](app/file-window.ts) | Exact, bounded-chunk decoding for file-backed signal windows. The same pure implementation is used by the module worker and its compatibility fallback. Only the requested output samples are retained; source chunks are released as the next chunk is read. |
+| [app/full-window-spectrogram-client.ts](app/full-window-spectrogram-client.ts) | Defines full window spectrogram client for the NeuroTrace workspace. |
+| [app/full-window-spectrogram-worker.ts](app/full-window-spectrogram-worker.ts) | Runs cancellable full-window wavelet analysis behind the worker message boundary. |
+| [app/full-window-spectrogram.ts](app/full-window-spectrogram.ts) | Bounded full-window Gabor analysis. Runs entirely in a terminable worker. |
+| [app/globals.css](app/globals.css) | Defines the NeuroTrace visual system, responsive workstation layout, and accessible interaction states. |
+| [app/import-selection.ts](app/import-selection.ts) | Classifies selected or dropped recordings and handles directory traversal and MAT/DAT pairing. |
+| [app/label-library.tsx](app/label-library.tsx) | Edits reusable dictionary labels and source-label aliases. |
+| [app/label-visibility-filter.css](app/label-visibility-filter.css) | Styles the label visibility dialog and its searchable options. |
+| [app/label-visibility-filter.tsx](app/label-visibility-filter.tsx) | Defines label visibility filter for the NeuroTrace workspace. |
+| [app/label-visibility.ts](app/label-visibility.ts) | Display-only label identities; file wording is independent of the shared import label ID. |
+| [app/layout.tsx](app/layout.tsx) | Defines NeuroTrace document metadata, viewport policy, and root HTML shell. |
+| [app/legacy-browser-recovery.ts](app/legacy-browser-recovery.ts) | Defines legacy browser recovery for the NeuroTrace workspace. |
+| [app/local-recording-identity.ts](app/local-recording-identity.ts) | Defines local recording identity for the NeuroTrace workspace. |
+| [app/mat-event-reader.ts](app/mat-event-reader.ts) | Selective Level-5 MAT traversal for directory event indexing. Numeric signal payloads are skipped, not decoded (bounded read-ahead may touch their edges). Compressed elements are streamed through zlib; only character matrices under sessionInfo.sFile.events.label reach the existing MAT decoder by default. |
+| [app/mat-import.ts](app/mat-import.ts) | Resolves local MAT/DAT imports for the recording dialog. Legacy sessionInfo metadata configures a separate binary source; standalone MAT signals keep their existing decoder. Acquisition paths inside metadata are never used. |
+| [app/mat73-worker-client.ts](app/mat73-worker-client.ts) | Persistent browser worker client for file-backed MATLAB v7.3 signal reads. |
+| [app/mat73-worker.ts](app/mat73-worker.ts) | File-backed HDF5 reader for MATLAB v7.3 recordings. HDF5 calls are synchronous and confined to this worker. Envelope jobs yield between bounded chunks so ordinary reads and cancellation can run; close invalidates every active job before releasing the file, preventing stale jobs from accessing its datasets. |
+| [app/mat73.ts](app/mat73.ts) | Shared contracts and deterministic dataset selection for MATLAB v7.3 workers. |
+| [app/matlab-annotations-csv.ts](app/matlab-annotations-csv.ts) | Reads and writes the reference MATLAB annotation table without additional columns. |
+| [app/matlab-cached-display.ts](app/matlab-cached-display.ts) | Defines matlab cached display for the NeuroTrace workspace. |
+| [app/matlab-display-processing.ts](app/matlab-display-processing.ts) | Applies the reference MATLAB FIR and decimation rules using double-precision samples. |
+| [app/matlab-display-tiles.ts](app/matlab-display-tiles.ts) | Post-FIR, post-montage summaries. Never derive a montage from raw extrema. |
+| [app/matlab-display-window.ts](app/matlab-display-window.ts) | Bounded, full-view MATLAB processing; reduction happens after filter/montage. |
+| [app/matlab-display-worker-client.ts](app/matlab-display-worker-client.ts) | Defines matlab display worker client for the NeuroTrace workspace. |
+| [app/matlab-display-worker-pool.ts](app/matlab-display-worker-pool.ts) | Defines matlab display worker pool for the NeuroTrace workspace. |
+| [app/matlab-display-worker.ts](app/matlab-display-worker.ts) | Processes MATLAB-compatible waveform chunks and transfers their output to the requesting client. |
+| [app/matlab-file-reader.ts](app/matlab-file-reader.ts) | One file-decoding worker per MATLAB display view, reused across bounded reads. |
+| [app/matlab-raw-flatlines.ts](app/matlab-raw-flatlines.ts) | Finds synchronized constant-source intervals across raw channel blocks. |
+| [app/matlab-spectrogram-input.ts](app/matlab-spectrogram-input.ts) | Raw-group selection and MATLAB sample timing, covering the full visible window. |
+| [app/matlab-spectrogram-worker-client.ts](app/matlab-spectrogram-worker-client.ts) | Defines matlab spectrogram worker client for the NeuroTrace workspace. |
+| [app/matlab-spectrogram-worker.ts](app/matlab-spectrogram-worker.ts) | Computes MATLAB-compatible Gabor wavelets in a terminable module worker. |
+| [app/matlab-spectrogram.ts](app/matlab-spectrogram.ts) | Computes raw-channel Gabor power and baseline-normalized spectrograms with the supplied MATLAB equations. |
+| [app/matlab-timing.ts](app/matlab-timing.ts) | Maps MATLAB one-based sample times to recording windows and decimated displays. |
+| [app/neurotrace-project.ts](app/neurotrace-project.ts) | Defines the portable NeuroTrace project container and safe custom-tool assets. |
+| [app/overview-display-policy.ts](app/overview-display-policy.ts) | Separates an immediately useful wide-window preview from an overview whose time resolution already satisfies the requested display. The caller owns cache coverage, refinement, and cancellation; this policy never reads data. |
+| [app/page.tsx](app/page.tsx) | Owns the interactive NeuroTrace workstation and coordinates recording review, annotation, local recovery, session navigation, and export. |
+| [app/pages-client.tsx](app/pages-client.tsx) | Browser-only entry point for the static GitHub Pages release. |
+| [app/performance-diagnostics.ts](app/performance-diagnostics.ts) | Lightweight, browser-safe performance diagnostics for the EEG workspace. |
+| [app/playback.ts](app/playback.ts) | Bounds playback to available samples and computes the centered time window. |
+| [app/progressive-envelope.ts](app/progressive-envelope.ts) | Publishes independent, exact prefixes while a sequential overview is built. The source arrays remain owned by the builder; snapshots can be transferred to the UI without detaching or exposing the live accumulation buffers. |
+| [app/queue-label-dictionary.tsx](app/queue-label-dictionary.tsx) | Lists and searches detected label types for queue keyword selection. |
+| [app/raw-dat-envelope-worker-client.ts](app/raw-dat-envelope-worker-client.ts) | Browser client for cancellable, off-main-thread Raw DAT envelope building. |
+| [app/raw-dat-envelope-worker.ts](app/raw-dat-envelope-worker.ts) | Runs exact Raw DAT envelope construction away from the browser UI thread. |
+| [app/raw-dat-envelope.ts](app/raw-dat-envelope.ts) | Pure, bounded-memory envelope construction for sample-major, channel- interleaved signed int16 little-endian DAT recordings. The worker and its direct compatibility fallback share this implementation. |
+| [app/raw-dat-mapping.ts](app/raw-dat-mapping.ts) | Parses channel names for explicit raw DAT mappings. |
+| [app/recording-display-window.ts](app/recording-display-window.ts) | Recording-aligned waveform blocks. Panning never changes a retained sample's grid or processing context. |
+| [app/recording-info.ts](app/recording-info.ts) | Formats recording metadata and performance measurements without changing their values. |
+| [app/recording-labels-csv.ts](app/recording-labels-csv.ts) | Serializes and reads recording labels in the MATLAB-compatible CSV layout. |
+| [app/recording-labels.ts](app/recording-labels.ts) | Recording-supplied labels remain evidence, not automatically accepted review decisions. This module owns timing validation, stable import identities, and lossless source provenance for the MAT/EDF import and annotation recovery paths. |
+| [app/recording-overview.ts](app/recording-overview.ts) | Compact, all-channel recording overviews have a separate lifetime from the detailed-window LRU. Zooming into a trace must never evict its whole-file index. The caller owns background construction and must never mutate a published snapshot; incomplete entries contain only the fully scanned prefix. |
+| [app/recording-timestamp.ts](app/recording-timestamp.ts) | Parses and bounds recording-relative timestamp input. |
+| [app/resource-usage-panel.tsx](app/resource-usage-panel.tsx) | Displays sampled browser resources and pipeline measurements without owning recording state. |
+| [app/review-workspace.ts](app/review-workspace.ts) | Persists reviewer workspaces, reconnects local file selections, and validates restored labels and views. |
+| [app/scan-hash-worker-client.ts](app/scan-hash-worker-client.ts) | Overlaps ordered SHA-256 with overview decoding without rereading the source. One copied chunk can be in flight; the producer retains its decoding buffer. The owning scan worker must dispose this child on completion or failure. |
+| [app/scan-hash-worker.ts](app/scan-hash-worker.ts) | One ordered SHA-256 stream owned by a recording scan; chunk hashes are never combined. |
+| [app/session-overview.ts](app/session-overview.ts) | A truthful, bounded navigator summary of an already-cached raw overview. Uses one named source channel so voltage and raw-count channels are never combined. No source reads, filtering, decoding, or waveform mutation occurs. |
+| [app/session-tab-title.tsx](app/session-tab-title.tsx) | Defines session tab title for the NeuroTrace workspace. |
+| [app/shortcut-settings.css](app/shortcut-settings.css) | Styles shortcut recording, conflict feedback, and settings controls. |
+| [app/shortcut-settings.tsx](app/shortcut-settings.tsx) | Edits keyboard and mouse bindings while isolating key recording from workspace commands. |
+| [app/shortcuts.ts](app/shortcuts.ts) | Shared shortcut catalogue: Controls, dispatch, and key hints use the same saved bindings. |
+| [app/source-hash-worker.ts](app/source-hash-worker.ts) | Full-file verification worker. For EDF+, one record-aligned pass computes the exact SHA-256 and extracts TAL annotations without rereading the file. |
+| [app/source-integrity-worker-client.ts](app/source-integrity-worker-client.ts) | Browser client for off-main-thread source hashing. Node/test environments retain the bounded-memory direct implementation as a compatible fallback. |
+| [app/source-integrity.ts](app/source-integrity.ts) | Computes deterministic SHA-256 source fingerprints with bounded memory. |
+| [app/spectrogram-compute.ts](app/spectrogram-compute.ts) | Buzcode-style multitaper math with recording-aligned, pan-invariant frames. |
+| [app/spectrogram-worker-client.ts](app/spectrogram-worker-client.ts) | Cancellable browser client for off-main-thread spectrogram computation. |
+| [app/spectrogram-worker.ts](app/spectrogram-worker.ts) | Short-lived module worker for the viewer's spectrogram signal math. |
+| [app/time-grid.ts](app/time-grid.ts) | Duration-based time-grid spacing shared by absolute and event-relative views. |
+| [app/timeline-density.ts](app/timeline-density.ts) | Pure fixed-bin density clustering for wide annotation timelines. |
+| [app/trace-centering.ts](app/trace-centering.ts) | Calculates waveform baselines while preserving each recording reference. |
+| [app/tutorial-center.css](app/tutorial-center.css) | Styles tutorial selection, draggable guidance, and target highlights. |
+| [app/tutorial-center.tsx](app/tutorial-center.tsx) | Renders tutorial selection, guided steps, and highlights measured from the live workspace. |
+| [app/tutorial-events.ts](app/tutorial-events.ts) | Semantic, payload-free tutorial notifications from completed workspace actions. These never execute commands or contain recording/annotation data. The coach listens only during a live step and consumes at most one match per subscription. |
+| [app/tutorial-progress.ts](app/tutorial-progress.ts) | Defines tutorial progress for the NeuroTrace workspace. |
+| [app/tutorials.ts](app/tutorials.ts) | Defines tutorials for the NeuroTrace workspace. |
+| [app/waveform-geometry.ts](app/waveform-geometry.ts) | Provides deterministic, browser-independent measurements of the screen-space geometry emitted by waveform canvas paths. These measurements make activity- dependent rendering regressions testable without relying on wall-clock canvas benchmarks, which vary substantially across browsers and GPU drivers. |
+| [app/waveform-peak-path.ts](app/waveform-peak-path.ts) | Emits waveform endpoints and extrema in time order for each screen column. |
+| [app/waveform-viewport.ts](app/waveform-viewport.ts) | Normalized vertical slice of the complete waveform channel surface. |
+| [app/window-amount.ts](app/window-amount.ts) | Compact window entry: one decimal place and at most three integer digits. |
+| [app/workspace-layout.ts](app/workspace-layout.ts) | Sidebar and optional toolbar preferences, including migration of older JSON saves. |
+| [app/workspace-navigation.css](app/workspace-navigation.css) | Styles the unified sidebar, nested tabs, viewing tools, and toolbar customization. |
+| [app/workspace-navigation.tsx](app/workspace-navigation.tsx) | Renders keyboard-accessible sidebar tabs and optional toolbar selection. |
+| [app/zoom-history.ts](app/zoom-history.ts) | Defines zoom history for the NeuroTrace workspace. |
+| [build/benchmark-matlab-display.mjs](build/benchmark-matlab-display.mjs) | Measures synthetic full-window processing, cached panning, and zooming with real worker threads. |
+| [build/check-doc-links.mjs](build/check-doc-links.mjs) | Checks local documentation links and image references without contacting external services. |
+| [build/document-source.mjs](build/document-source.mjs) | Generates the repository map and declared type models from authored source files. |
+| [build/sites-vite-plugin.ts](build/sites-vite-plugin.ts) | Packages Sites hosting metadata and optional Drizzle migrations after builds. |
+| [build/source-standards.mjs](build/source-standards.mjs) | Checks source headers and named-function documentation across authored repository files. |
+| [cloudflare-env.d.ts](cloudflare-env.d.ts) | Declares the minimal Cloudflare runtime contracts used during type checking. |
+| [db/index.ts](db/index.ts) | Creates the optional typed Drizzle client for a configured D1 binding. |
+| [db/schema.ts](db/schema.ts) | Defines the production Drizzle schema, which is intentionally empty. |
+| [drizzle.config.ts](drizzle.config.ts) | Configures optional SQLite-compatible Drizzle migration generation. |
+| [eslint.config.mjs](eslint.config.mjs) | Configures static analysis for the NeuroTrace TypeScript and React source. |
+| [examples/d1/app/api/notes/route.ts](examples/d1/app/api/notes/route.ts) | Demonstrates validated list/create behavior for an optional D1-backed route. |
+| [examples/d1/db/schema.ts](examples/d1/db/schema.ts) | Defines the example notes table for optional D1 demonstrations. |
+| [index.html](index.html) | Defines index for the NeuroTrace workspace. |
+| [next.config.ts](next.config.ts) | Provides the minimal Next-compatible configuration surface required by vinext. |
+| [postcss.config.mjs](postcss.config.mjs) | Enables Tailwind processing for the application stylesheet. |
+| [tests/bids-companions.test.mjs](tests/bids-companions.test.mjs) | Verifies directory discovery, BIDS inheritance, TSV parsing, and additive file selection. |
+| [tests/buzcode-spectrogram-ui.test.mjs](tests/buzcode-spectrogram-ui.test.mjs) | Checks buzcode spectrogram ui behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/channel-selection.test.mjs](tests/channel-selection.test.mjs) | Exercise the actual page selection handlers together, without signal or file work. |
+| [tests/clipping-ribbon.test.mjs](tests/clipping-ribbon.test.mjs) | Exercises the real canvas ribbon helper without opening a browser. |
+| [tests/clipping-warning.test.mjs](tests/clipping-warning.test.mjs) | The actual canvas helper must warn whenever its visible row clamp changes a sample. |
+| [tests/core-release-fixes.test.mjs](tests/core-release-fixes.test.mjs) | Guards source parsing, clinical display decimation, raw dropout detection, and identifier invariants required by the clinical viewer release. |
+| [tests/cursor-readout.test.mjs](tests/cursor-readout.test.mjs) | Checks cursor readout behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/directory-event-index.test.mjs](tests/directory-event-index.test.mjs) | Anonymous metadata fixtures and deterministic worker boundaries; never opens a browser. |
+| [tests/directory-import-filters.test.mjs](tests/directory-import-filters.test.mjs) | Checks directory import filters behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/directory-import.test.mjs](tests/directory-import.test.mjs) | Patient-free collection discovery: structure only, never waveform decoding. |
+| [tests/directory-review-resume.test.mjs](tests/directory-review-resume.test.mjs) | Checks directory review resume behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/directory-sessions.test.mjs](tests/directory-sessions.test.mjs) | Checks directory sessions behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/directory-tab-layout.test.mjs](tests/directory-tab-layout.test.mjs) | Checks directory tab layout behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/directory-workflow.test.mjs](tests/directory-workflow.test.mjs) | Checks directory workflow behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/display-gain.test.mjs](tests/display-gain.test.mjs) | Checks display gain behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/display-overlap.test.mjs](tests/display-overlap.test.mjs) | Checks display overlap behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/display-processing-worker-client.test.mjs](tests/display-processing-worker-client.test.mjs) | Fast-path behavior for clinical display processing worker dispatch. |
+| [tests/display-readout-integration.test.mjs](tests/display-readout-integration.test.mjs) | Execute the real cursor/readout JSX against exact samples and overview buckets. |
+| [tests/display-warnings.test.mjs](tests/display-warnings.test.mjs) | Checks display warnings behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/edf-envelope-worker.test.mjs](tests/edf-envelope-worker.test.mjs) | Verifies the pure EDF envelope core used by the browser worker. Fixtures are deterministic in-memory EDF files; no filesystem or browser worker is used. |
+| [tests/eeg-integrity.test.mjs](tests/eeg-integrity.test.mjs) | Verifies EDF+ event decoding and montage safety rules. |
+| [tests/electrode-layout.test.mjs](tests/electrode-layout.test.mjs) | Checks electrode layout behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/envelope-cache.test.mjs](tests/envelope-cache.test.mjs) | Fixed-grid cache reuse must preserve source extrema and bounded read costs. |
+| [tests/file-window-worker.test.mjs](tests/file-window-worker.test.mjs) | Exact parity and worker-wiring checks for file-backed sample windows. |
+| [tests/fixtures/browser-worker.mjs](tests/fixtures/browser-worker.mjs) | Execute browser module-worker entry points in real Node worker threads. |
+| [tests/fixtures/legacy-mat.mjs](tests/fixtures/legacy-mat.mjs) | Checks legacy mat behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/full-window-spectrogram.test.mjs](tests/full-window-spectrogram.test.mjs) | Checks full window spectrogram behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/import-directory-entry.test.mjs](tests/import-directory-entry.test.mjs) | Execute the real welcome/import JSX: choose a format, then a file or directory picker. |
+| [tests/import-selection.test.mjs](tests/import-selection.test.mjs) | Checks import selection behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/label-visibility.test.mjs](tests/label-visibility.test.mjs) | Checks label visibility behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/legacy-browser-recovery.test.mjs](tests/legacy-browser-recovery.test.mjs) | Checks legacy browser recovery behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/local-recording-identity.test.mjs](tests/local-recording-identity.test.mjs) | Checks local recording identity behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/mat-envelope.test.mjs](tests/mat-envelope.test.mjs) | Standalone Level-5 overview navigation uses exact samples without copying wide windows. |
+| [tests/mat-import-routing.test.mjs](tests/mat-import-routing.test.mjs) | Checks mat import routing behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/mat-parser-compatibility.test.mjs](tests/mat-parser-compatibility.test.mjs) | Checks mat parser compatibility behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/mat73-scheduling.test.mjs](tests/mat73-scheduling.test.mjs) | Runs the real worker logic against a synthetic HDF5 adapter and task queue. |
+| [tests/mat73.test.mjs](tests/mat73.test.mjs) | Verifies deterministic MATLAB v7.3 dataset selection and worker wiring. |
+| [tests/matlab-annotations-csv.test.mjs](tests/matlab-annotations-csv.test.mjs) | Checks matlab annotations csv behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-display-processing.test.mjs](tests/matlab-display-processing.test.mjs) | Checks matlab display processing behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-display-tiles.test.mjs](tests/matlab-display-tiles.test.mjs) | Checks matlab display tiles behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-display-window.test.mjs](tests/matlab-display-window.test.mjs) | Checks matlab display window behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-display-worker-client.test.mjs](tests/matlab-display-worker-client.test.mjs) | Checks matlab display worker client behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-display-worker-pool.test.mjs](tests/matlab-display-worker-pool.test.mjs) | Checks matlab display worker pool behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-file-reader.test.mjs](tests/matlab-file-reader.test.mjs) | Checks matlab file reader behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-spectrogram-input.test.mjs](tests/matlab-spectrogram-input.test.mjs) | Checks matlab spectrogram input behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-spectrogram-panel.test.mjs](tests/matlab-spectrogram-panel.test.mjs) | Executes production panel request and raster helpers, without a browser/GPU. |
+| [tests/matlab-spectrogram.test.mjs](tests/matlab-spectrogram.test.mjs) | Checks matlab spectrogram behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-timing.test.mjs](tests/matlab-timing.test.mjs) | Checks matlab timing behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/matlab-ui-timing.test.mjs](tests/matlab-ui-timing.test.mjs) | Checks matlab ui timing behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/montage-input-safety.test.mjs](tests/montage-input-safety.test.mjs) | Checks montage input safety behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/montage-render-stability.test.mjs](tests/montage-render-stability.test.mjs) | Checks montage render stability behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/neurotrace-project.test.mjs](tests/neurotrace-project.test.mjs) | Checks neurotrace project behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/overview-display-policy.test.mjs](tests/overview-display-policy.test.mjs) | Checks overview display policy behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/pages-release.test.mjs](tests/pages-release.test.mjs) | Protects the static GitHub Pages artifact contract. |
+| [tests/performance-diagnostics.test.mjs](tests/performance-diagnostics.test.mjs) | Focused coverage for the browser performance diagnostics collector. Browser-only observers are injected so the suite stays deterministic in Node. |
+| [tests/playback.test.mjs](tests/playback.test.mjs) | Checks playback behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/progressive-envelope.test.mjs](tests/progressive-envelope.test.mjs) | Exact, immutable prefix publication and browser-worker delivery contracts. |
+| [tests/raw-dat-envelope.test.mjs](tests/raw-dat-envelope.test.mjs) | Verifies bounded, cancellable Raw DAT overview construction. |
+| [tests/raw-dat-mapping.test.mjs](tests/raw-dat-mapping.test.mjs) | Checks raw dat mapping behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/recording-display-window.test.mjs](tests/recording-display-window.test.mjs) | Checks recording display window behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/recording-info.test.mjs](tests/recording-info.test.mjs) | Protects recording-info display contracts across unavailable values, unit boundaries, and source formats. |
+| [tests/recording-labels-csv.test.mjs](tests/recording-labels-csv.test.mjs) | Checks recording labels csv behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/recording-labels.test.mjs](tests/recording-labels.test.mjs) | Checks recording labels behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/recording-overview.test.mjs](tests/recording-overview.test.mjs) | Whole-file indexes stay bounded, source-specific, and independent of detail views. |
+| [tests/recording-timestamp.test.mjs](tests/recording-timestamp.test.mjs) | Checks recording timestamp behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/recovery-roundtrip.test.mjs](tests/recovery-roundtrip.test.mjs) | Real autosave payloads must pass the real recovery parser after a reload. |
+| [tests/rendered-html.test.mjs](tests/rendered-html.test.mjs) | Protects the rendered NeuroTrace shell and key interaction wiring. |
+| [tests/review-save-flow.test.mjs](tests/review-save-flow.test.mjs) | Exercise the real save action through its download boundary. |
+| [tests/review-workspace.test.mjs](tests/review-workspace.test.mjs) | Checks review workspace behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/scalp-bipolar.test.mjs](tests/scalp-bipolar.test.mjs) | Checks scalp bipolar behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/scan-hash-pipeline.test.mjs](tests/scan-hash-pipeline.test.mjs) | Checks scan hash pipeline behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/session-overview-integration.test.mjs](tests/session-overview-integration.test.mjs) | Checks session overview integration behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/session-overview.test.mjs](tests/session-overview.test.mjs) | Checks session overview behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/shortcuts.test.mjs](tests/shortcuts.test.mjs) | Checks shortcuts behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/source-integrity.test.mjs](tests/source-integrity.test.mjs) | Verifies browser-compatible incremental SHA-256 against Node's implementation. |
+| [tests/spectrogram-worker.test.mjs](tests/spectrogram-worker.test.mjs) | Checks spectrogram worker behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/time-grid.test.mjs](tests/time-grid.test.mjs) | Checks time grid behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/timeline-density.test.mjs](tests/timeline-density.test.mjs) | Checks timeline density behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/trace-centering.test.mjs](tests/trace-centering.test.mjs) | Checks trace centering behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/tutorial-assistance.test.mjs](tests/tutorial-assistance.test.mjs) | Checks tutorial assistance behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/tutorial-progress.test.mjs](tests/tutorial-progress.test.mjs) | Checks tutorial progress behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/tutorial-workflow-events.test.mjs](tests/tutorial-workflow-events.test.mjs) | Real resume controls emit payload-free tutorial outcomes only after successful work. |
+| [tests/tutorials.test.mjs](tests/tutorials.test.mjs) | Exercise the real tutorial component's controls with inert workspace/DOM boundaries. |
+| [tests/waveform-geometry.test.mjs](tests/waveform-geometry.test.mjs) | Makes waveform rendering complexity deterministic. In particular, it proves that equal-length traces can have radically different canvas raster work when one signal oscillates rapidly, without relying on machine-specific timings. |
+| [tests/waveform-layout-policy.test.mjs](tests/waveform-layout-policy.test.mjs) | Guards waveform rendering against vertical layout-dependent mode changes. |
+| [tests/waveform-viewport.test.mjs](tests/waveform-viewport.test.mjs) | Checks waveform viewport behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/waveform-zoom-stability.test.mjs](tests/waveform-zoom-stability.test.mjs) | Checks waveform zoom stability behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/whole-recording-navigation.test.mjs](tests/whole-recording-navigation.test.mjs) | End-to-end data-path checks without browser automation or private recordings. |
+| [tests/window-amount.test.mjs](tests/window-amount.test.mjs) | Checks window amount behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/window-refresh-integration.test.mjs](tests/window-refresh-integration.test.mjs) | Real page effect, with controlled async builder; numerical pipeline tested separately. |
+| [tests/workflow-safety.test.mjs](tests/workflow-safety.test.mjs) | Checks workflow safety behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/workspace-layout.test.mjs](tests/workspace-layout.test.mjs) | Checks workspace layout behavior with deterministic fixtures and controlled runtime boundaries. |
+| [tests/zoom-history.test.mjs](tests/zoom-history.test.mjs) | Checks zoom history behavior with deterministic fixtures and controlled runtime boundaries. |
+| [vite.config.ts](vite.config.ts) | Assembles the vinext, Sites packaging, and Cloudflare build environments. |
+| [vite.pages.config.ts](vite.pages.config.ts) | Reproducible, browser-only GitHub Pages build. |
+| [worker/index.ts](worker/index.ts) | Adapts the vinext application and image endpoint to a Cloudflare Worker. |
+
+## Non-source files
+
+- `package.json` and lockfile: commands and exact dependency graph.
+- `tsconfig.json`, hosting/build metadata, and workflow: environment contracts.
+- `public/`: static assets.
+- `docs/`: contracts, models, screenshots, and cleanup evidence.
+- `work/`, `outputs/`, `node_modules/`, `dist/`, `pages-dist/`, and provider caches: ignored local/generated content.

@@ -1,3 +1,9 @@
+/*
+Purpose: Styles the loaded-folder session list, navigation, and filtering controls.
+File Dependencies: None.
+*/
+
+
 .recording-import-drop-hint {
   margin-top: 12px;
   padding: 16px;

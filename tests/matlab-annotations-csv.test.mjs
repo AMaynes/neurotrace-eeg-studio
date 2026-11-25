@@ -1,3 +1,9 @@
+/*
+Purpose: Checks matlab annotations csv behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/matlab-annotations-csv.ts, app/page.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";

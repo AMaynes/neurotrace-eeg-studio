@@ -1,4 +1,9 @@
-/** Post-FIR, post-montage summaries. Never derive a montage from raw extrema. */
+/*
+Purpose: Post-FIR, post-montage summaries. Never derive a montage from raw extrema.
+File Dependencies: None.
+*/
+
+
 export const MATLAB_TILE_BASE = 128;
 export const MATLAB_TILE_CACHE_BYTES = 192 * 1024 * 1024;
 
@@ -14,6 +19,7 @@ export interface MatlabDisplayTile {
   byteLength: number;
 }
 
+/** Allocates an empty summary for MATLAB-processed display buckets. */
 export function emptyMatlabSummary(rows: number, count: number): MatlabSummary {
   return {
     minima: Array.from({ length: rows }, () => new Float64Array(count).fill(Infinity)),
@@ -23,6 +29,7 @@ export function emptyMatlabSummary(rows: number, count: number): MatlabSummary {
   };
 }
 
+/** Adds processed samples to the retained display summary. */
 export function accumulateMatlabSummary(target: MatlabSummary, row: number, bucket: number,
   minimum: number, maximum: number, last: number, gap: number) {
   if (Number.isFinite(minimum)) target.minima[row][bucket] = Math.min(target.minima[row][bucket], minimum);
@@ -31,10 +38,12 @@ export function accumulateMatlabSummary(target: MatlabSummary, row: number, buck
   target.gaps[row][bucket] |= gap;
 }
 
+/** Summarizes a processed tile without recomputing montage arithmetic. */
 export function summarizeMatlabTile(rows: readonly Float64Array[], flatlines: MatlabDisplayTile["flatlines"]): MatlabDisplayTile {
   const count = rows[0]?.length ?? 0;
   if (count < MATLAB_TILE_BASE || count % MATLAB_TILE_BASE || !Number.isInteger(Math.log2(count / MATLAB_TILE_BASE))
     || rows.some((row) => row.length !== count)) throw new Error("Invalid MATLAB summary tile geometry.");
+  /** Allocates extrema, endpoints, and gap flags for one summary level. */
   const allocateLevel = (binCount: number) => ({ binCount,
     minima: new Float64Array(rows.length * binCount), maxima: new Float64Array(rows.length * binCount),
     last: new Float64Array(rows.length * binCount), gaps: new Uint8Array(rows.length * binCount) });
@@ -81,6 +90,7 @@ export function createMatlabDisplayTileCache(budget = MATLAB_TILE_CACHE_BYTES) {
   const entries = new Map<string, MatlabDisplayTile>();
   let nextId = 0, bytes = 0;
   return {
+    /** Assigns a bounded cache identity to a source and processing configuration. */
     scope(source: object, configuration: unknown) {
       let configurations = scopes.get(source);
       if (!configurations) { configurations = new Map(); scopes.set(source, configurations); }
@@ -93,11 +103,13 @@ export function createMatlabDisplayTileCache(budget = MATLAB_TILE_CACHE_BYTES) {
       while (configurations.size > 32) configurations.delete(configurations.keys().next().value!);
       return id;
     },
+    /** Returns the requested entry. */
     get(key: string) {
       const value = entries.get(key);
       if (value) { entries.delete(key); entries.set(key, value); }
       return value;
     },
+    /** Stores the supplied entry. */
     set(key: string, value: MatlabDisplayTile) {
       const old = entries.get(key);
       if (old) { bytes -= old.byteLength; entries.delete(key); }
@@ -108,8 +120,11 @@ export function createMatlabDisplayTileCache(budget = MATLAB_TILE_CACHE_BYTES) {
         entries.delete(first[0]); bytes -= first[1].byteLength;
       }
     },
+    /** Clears the owned collection. */
     clear() { entries.clear(); bytes = 0; },
+    /** Returns the retained byte count. */
     get byteLength() { return bytes; },
+    /** Returns the current collection size. */
     get size() { return entries.size; },
   };
 }

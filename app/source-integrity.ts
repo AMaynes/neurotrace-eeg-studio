@@ -1,18 +1,7 @@
-/**
- * Overview & Purpose
- * Computes deterministic SHA-256 source fingerprints with bounded memory.
- *
- * Architectural Relationships
- * Called by: app/page.tsx during import and source-integrity tests.
- * Calls: Browser Blob slicing and ArrayBuffer APIs.
- *
- * External Resources
- * User-selected recording blobs; no network or persistent storage.
- *
- * Notes
- * Hash state is mutable but confined to one IncrementalSha256 instance. Blob
- * hashing is sequential, cancellable between chunks, and independent of chunk size.
- */
+/*
+Purpose: Computes deterministic SHA-256 source fingerprints with bounded memory.
+File Dependencies: None.
+*/
 
 
 const SHA256_BLOCK_BYTES = 64;
@@ -37,10 +26,12 @@ const ROUND_CONSTANTS = new Uint32Array([
   0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]);
 
+/** Rotates a 32-bit word by the requested number of bits. */
 function rotateRight(value: number, bits: number) {
   return (value >>> bits) | (value << (32 - bits));
 }
 
+/** Converts to the uint8 array. */
 function toUint8Array(data: ArrayBuffer | ArrayBufferView) {
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
@@ -72,6 +63,7 @@ export class IncrementalSha256 {
   private byteLengthHigh = 0;
   private result: Uint8Array | undefined;
 
+  /** Feeds source bytes into the incremental SHA-256 state before finalization. */
   update(data: ArrayBuffer | ArrayBufferView) {
     if (this.result) throw new Error("Cannot update SHA-256 after digest()");
 
@@ -110,6 +102,7 @@ export class IncrementalSha256 {
     return this;
   }
 
+  /** Finalizes SHA-256 padding and returns an independent digest copy. */
   digest() {
     if (this.result) return this.result.slice();
 
@@ -143,10 +136,12 @@ export class IncrementalSha256 {
     return digest.slice();
   }
 
+  /** Returns the completed hash as hexadecimal text. */
   hexDigest() {
     return Array.from(this.digest(), (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
 
+  /** Updates SHA-256 state with one 64-byte block. */
   private compress(input: Uint8Array, offset: number) {
     const words = this.schedule;
     for (let index = 0; index < 16; index += 1) {
@@ -211,6 +206,7 @@ export type Sha256BlobOptions = {
   onProgress?: (bytesHashed: number, totalBytes: number) => void;
 };
 
+/** Throws the operation-specific abort reason when cancellation is requested. */
 function throwIfAborted(signal: AbortSignal | undefined) {
   if (!signal?.aborted) return;
   if (signal.reason !== undefined) throw signal.reason;

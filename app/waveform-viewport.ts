@@ -1,9 +1,15 @@
-/** Normalized vertical slice of the complete waveform channel surface. */
+/*
+Purpose: Normalized vertical slice of the complete waveform channel surface.
+File Dependencies: None.
+*/
+
+
 export interface NormalizedVerticalViewport {
   top: number;
   bottom: number;
 }
 
+/** Checks the viewport. */
 function assertViewport(viewport: NormalizedVerticalViewport, label: string) {
   if (!Number.isFinite(viewport.top)
     || !Number.isFinite(viewport.bottom)

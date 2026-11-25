@@ -1,4 +1,9 @@
-/** Executes production panel request and raster helpers, without a browser/GPU. */
+/*
+Purpose: Executes production panel request and raster helpers, without a browser/GPU.
+File Dependencies: app/matlab-spectrogram.ts, app/page.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

@@ -1,4 +1,9 @@
-/** One ordered SHA-256 stream owned by a recording scan; chunk hashes are never combined. */
+/*
+Purpose: One ordered SHA-256 stream owned by a recording scan; chunk hashes are never combined.
+File Dependencies: app/source-integrity.ts.
+*/
+
+
 import { IncrementalSha256 } from "./source-integrity.ts";
 
 type HashRequest = { id: number; type: "ready" | "update" | "digest"; buffer?: ArrayBuffer };

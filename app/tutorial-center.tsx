@@ -1,3 +1,9 @@
+/*
+Purpose: Renders tutorial selection, guided steps, and highlights measured from the live workspace.
+File Dependencies: app/shortcuts.ts, app/tutorial-center.css, app/tutorial-events.ts, app/tutorials.ts.
+*/
+
+
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
@@ -59,6 +65,7 @@ function visibleTargetRect(element: HTMLElement): TutorialRect | null {
   return right - left > 2 && bottom - top > 2 ? { left, top, width: right - left, height: bottom - top } : null;
 }
 
+/** Checks whether the canvas surface dimensions match. */
 function sameSurface(a: TourSurface | null, b: TourSurface): boolean {
   return a?.host === b.host && a.offscreen === b.offscreen && a.fallback === b.fallback && a.ready === b.ready && a.dialogName === b.dialogName
     && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height
@@ -73,12 +80,14 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
     let frame = 0;
     let observed: HTMLElement | null = null;
     const resize = new ResizeObserver(() => schedule());
+    /** Locates the current tutorial target and fits the coach inside the active modal scope. */
     const update = () => {
       frame = 0;
       // Embed the coach in any open dialog so it stays inside the existing modal focus trap.
       const dialogs = [...document.querySelectorAll<HTMLElement>(".modal-backdrop [role='dialog']")];
       const dialog = dialogs.at(-1) ?? null;
       const scope = dialog ?? document;
+      /** Finds the requested entry. */
       const find = (anchor?: string) => anchor
         ? scope.querySelector<HTMLElement>(`[data-tutorial="${anchor}"]`) ?? (dialog?.dataset.tutorial === anchor ? dialog : null)
         : null;
@@ -106,6 +115,7 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
       };
       setSurface((current) => sameSurface(current, next) ? current : next);
     };
+    /** Coalesces tutorial placement updates into one animation frame. */
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
     const mutations = new MutationObserver(schedule);
     mutations.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "hidden", "open", "data-tutorial"] });
@@ -131,6 +141,7 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
   return active ? surface : null;
 }
 
+/** Renders the tutorial center controls and their current state. */
 export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic, hasRecording, canAnnotate, sessionId, onAssist, onTopicChange, onClose, onOpen, onReveal }: TutorialCenterProps) {
   const [selectedId, setSelectedId] = useState(tutorialLessons[0].id);
   const [preview, setPreview] = useState<{ lessonId: string; index: number } | null>(null);
@@ -170,6 +181,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
   useLayoutEffect(() => {
     const coach = coachRef.current;
     if (!coach || !surface || open) return;
+    /** Records the coach dimensions only when they change. */
     const measure = () => {
       const { width, height } = coach.getBoundingClientRect();
       setCoachSize((current) => current.width === width && current.height === height ? current : { width, height });
@@ -181,6 +193,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
     return () => resize.disconnect();
   }, [open, surface, activeStep, tourBlock, assistFailure, coachPosition]);
 
+  /** Ends the active walkthrough and releases its temporary guidance state. */
   const endTour = () => {
     advancedTourRef.current = tour;
     setTour(null);
@@ -188,6 +201,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
     if (!embedded) document.querySelector<HTMLElement>("[data-tutorial='help']")?.focus();
     else surface?.host.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
   };
+  /** Opens the library. */
   const openLibrary = () => {
     advancedTourRef.current = tour;
     if (activeLesson) {
@@ -197,6 +211,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
     setTour(null);
     onOpen();
   };
+  /** Advances the current lesson once and records its completion. */
   const advance = () => {
     if (!tour || !activeLesson || advancedTourRef.current === tour) return;
     advancedTourRef.current = tour;
@@ -205,20 +220,24 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
     if (nextIndex === activeLesson.steps.length) setCompleted((current) => new Set([...current, activeLesson.id]));
   };
 
+  /** Moves the coach. */
   const moveCoach = (left: number, top: number, width: number) => {
     const height = coachRef.current?.getBoundingClientRect().height ?? coachSize.height;
     setCoachPosition(clampTutorialCoachPosition({ left, top, width }, { width: window.innerWidth, height: window.innerHeight }, height));
   };
+  /** Moves the tutorial panel using the current pointer gesture. */
   const dragCoach = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = coachDragRef.current;
     if (!drag || event.pointerId !== drag.pointerId) return;
     moveCoach(event.clientX - drag.grabX, event.clientY - drag.grabY, drag.width);
   };
+  /** Stops the dragging coach. */
   const stopDraggingCoach = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (coachDragRef.current?.pointerId !== event.pointerId) return;
     coachDragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
+  /** Resets the coach position. */
   const resetCoachPosition = () => {
     coachDragRef.current = null;
     setCoachPosition(null);

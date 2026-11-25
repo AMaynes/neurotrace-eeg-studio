@@ -1,4 +1,9 @@
-/** A cursor inspects the current display data, never a previously saved amplitude. */
+/*
+Purpose: A cursor inspects the current display data, never a previously saved amplitude.
+File Dependencies: None.
+*/
+
+
 export interface CursorDisplayData {
   data: readonly ArrayLike<number>[];
   envelopes: readonly ({
@@ -67,6 +72,7 @@ function positionOnGrid(timeSec: number, startSec: number, rate: number) {
  */
 export function readCursorReadout(display: CursorDisplayData, row: number, timeSec: number): CursorReadout {
   const unit = display.units[row] || "a.u.";
+  /** Returns an unavailable readout with its explanatory reason. */
   const unavailable = (reason: Extract<CursorReadout, { kind: "unavailable" }>["reason"]): CursorReadout => ({
     kind: "unavailable", unit, reason,
   });

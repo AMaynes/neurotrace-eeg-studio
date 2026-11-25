@@ -1,4 +1,10 @@
-/** CSV-backed folder progress. Catalogs retain small rows, never decoded waveforms. */
+/*
+Purpose: CSV-backed folder progress. Catalogs retain small rows, never decoded waveforms.
+File Dependencies: app/directory-import.ts, app/directory-review-worker.ts, app/matlab-annotations-csv.ts,
+  app/review-workspace.ts.
+*/
+
+
 import type { DirectoryImportPlan, DirectoryRecording } from "./directory-import.ts";
 import { mergeMatlabAnnotationRows, parseMatlabAnnotations, type MatlabAnnotationRow } from "./matlab-annotations-csv.ts";
 import { isReviewerCsv } from "./review-workspace.ts";
@@ -10,14 +16,19 @@ const caches = new WeakMap<DirectoryImportPlan, ResumeCache>();
 const pathIndexes = new WeakMap<DirectoryImportPlan, {
   paths: Map<string, DirectoryRecording[]>; names: Map<string, DirectoryRecording[]>; included: Set<string>;
 }>();
+/** Returns the saved-review cache associated with a loaded directory. */
 export function directoryReviewCache(plan: DirectoryImportPlan): ResumeCache {
   let cache = caches.get(plan);
   if (!cache) { cache = { rows: [], byRecording: new Map(), files: new Set(), warnings: [] }; caches.set(plan, cache); }
   return cache;
 }
+/** Reports whether the value is review csv. */
 export const isReviewCsv = (file: File) => /_annotations\.csv$/i.test(file.name) && !isReviewerCsv(file);
+/** Reports whether the value is review event. */
 export const isReviewEvent = (label: string) => /sz|seizure|seiz|tonic|eeg onset/i.test(label);
+/** Normalizes the path used for comparison. */
 const path = (value: string | number) => String(value).trim().replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+/** Appends the supplied entries. */
 function append<K, V>(map: Map<K, V[]>, key: K, value: V) {
   const values = map.get(key);
   if (values) values.push(value); else map.set(key, [value]);
@@ -125,12 +136,16 @@ export async function findNextDirectoryReview(plan: DirectoryImportPlan, signal:
   } finally { reader?.dispose(); }
 }
 
+/** Creates the review metadata reader. */
 function createReviewMetadataReader(signal: AbortSignal) {
   const worker = new Worker(new URL("./directory-review-worker.ts", import.meta.url), { type: "module" });
   let failPending: ((error: unknown) => void) | undefined;
+  /** Releases resources owned by this instance. */
   const dispose = () => { signal.removeEventListener("abort", abort); worker.terminate(); };
+  /** Cancels the pending operation. */
   const abort = () => { dispose(); failPending?.(signal.reason ?? new DOMException("Resume canceled", "AbortError")); };
   signal.addEventListener("abort", abort, { once: true });
+  /** Requests saved-review metadata from the resume worker with cancellation. */
   const read = (plan: DirectoryImportPlan, recording: DirectoryRecording): Promise<ReviewMetadata> => {
     signal.throwIfAborted();
     return new Promise((resolve, reject) => {

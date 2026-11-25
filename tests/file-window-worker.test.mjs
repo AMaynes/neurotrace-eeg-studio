@@ -1,4 +1,9 @@
-/** Exact parity and worker-wiring checks for file-backed sample windows. */
+/*
+Purpose: Exact parity and worker-wiring checks for file-backed sample windows.
+File Dependencies: app/eeg-core.ts, app/file-window-worker-client.ts, app/file-window-worker.ts,
+  app/file-window.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

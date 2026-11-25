@@ -1,3 +1,9 @@
+/*
+Purpose: Checks spectrogram worker behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/spectrogram-compute.ts, app/spectrogram-worker-client.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

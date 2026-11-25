@@ -1,10 +1,10 @@
-/**
- * Exact, bounded-chunk decoding for file-backed signal windows. The same pure
- * implementation is used by the module worker and its compatibility fallback.
- * Only the requested output samples are retained; source chunks are released
- * as the next chunk is read.
- */
+/*
+Purpose: Exact, bounded-chunk decoding for file-backed signal windows. The same pure implementation is used by the module worker and its compatibility fallback. Only the requested output samples are retained; source chunks are released as the next chunk is read.
+File Dependencies: app/eeg-core.ts, app/file-read-utils.ts.
+*/
 
+
+import { nowMs, validatePositiveSafeInteger } from "./file-read-utils.ts";
 import type { EDFHeader, EDFSignalHeader, WindowData } from "./eeg-core";
 
 export const DEFAULT_FILE_WINDOW_CHUNK_BYTES = 8 * 1024 * 1024;
@@ -92,10 +92,7 @@ interface OutputChannel {
 export const FILE_WINDOW_HOST_IS_LITTLE_ENDIAN =
   new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
-function nowMs() {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortReason(signal: AbortSignal) {
   if (signal.reason !== undefined) return signal.reason;
   const error = new Error("Signal window decoding was aborted");
@@ -103,10 +100,12 @@ function abortReason(signal: AbortSignal) {
   return error;
 }
 
+/** Throws the operation-specific abort reason when cancellation is requested. */
 function throwIfAborted(signal: AbortSignal | undefined) {
   if (signal?.aborted) throw abortReason(signal);
 }
 
+/** Creates a SignalFileError with the INVALID_WINDOW code. */
 function invalidWindow(message: string): Error & { code: "INVALID_WINDOW" } {
   const error = new Error(message) as Error & { code: "INVALID_WINDOW" };
   error.name = "SignalFileError";
@@ -114,12 +113,7 @@ function invalidWindow(message: string): Error & { code: "INVALID_WINDOW" } {
   return error;
 }
 
-function validatePositiveSafeInteger(value: number, field: string) {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${field} must be a positive safe integer.`);
-  }
-}
-
+/** Validates requested times and channel indices, then bounds the interval to the recording. */
 function normalizeWindow(
   recordingDurationSec: number,
   channelCount: number,
@@ -157,6 +151,7 @@ function normalizeWindow(
   };
 }
 
+/** Normalizes the EDF physical-unit spelling used by calibration. */
 function normalizedPhysicalDimension(dimension: string) {
   const preserved = dimension.trim() || "a.u.";
   const canonical = preserved
@@ -178,6 +173,7 @@ function normalizedPhysicalDimension(dimension: string) {
     : { unit: "µV", scale };
 }
 
+/** Calculates progress from completed and total work measurements. */
 function progressFromMetrics(
   phase: FileWindowProgressPhase,
   metrics: FileWindowMetrics,
@@ -196,6 +192,7 @@ function progressFromMetrics(
   };
 }
 
+/** Updates elapsed decoding time and calls the optional progress observer. */
 function emitProgress(
   phase: FileWindowProgressPhase,
   metrics: FileWindowMetrics,
@@ -206,6 +203,7 @@ function emitProgress(
   onProgress?.(progressFromMetrics(phase, metrics));
 }
 
+/** Packages decoded channel buffers with sample origins, units, and read measurements. */
 function makeResult(
   request: NormalizedWindow,
   channels: readonly OutputChannel[],
@@ -226,6 +224,7 @@ function makeResult(
   };
 }
 
+/** Initializes counters for the selected decoder, backend, and expected work. */
 function makeMetrics(
   format: FileWindowFormat,
   totalBytes: number,
@@ -248,6 +247,7 @@ function makeMetrics(
   };
 }
 
+/** Allocates the requested EDF sample interval and derives its physical calibration. */
 function edfOutputChannel(signal: EDFSignalHeader, sourceIndex: number, window: NormalizedWindow) {
   const firstSample = Math.floor(window.startSec * signal.sampleRate);
   const endSample = Math.min(
@@ -396,6 +396,7 @@ export async function buildEDFFileWindow(
   return makeResult(window, channels, metrics);
 }
 
+/** Rejects invalid DAT rates, channel metadata lengths, and calibration values. */
 function validateRawDatRequest(request: RawDatFileWindowRequest) {
   validatePositiveSafeInteger(request.channelCount, "Raw DAT channel count");
   if (!(request.sampleRate > 0) || !Number.isFinite(request.sampleRate)) {

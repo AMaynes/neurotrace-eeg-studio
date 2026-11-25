@@ -1,3 +1,10 @@
+/*
+Purpose: Checks full window spectrogram behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/full-window-spectrogram-client.ts, app/full-window-spectrogram.ts,
+  app/matlab-spectrogram-input.ts, app/matlab-spectrogram.ts, app/page.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";

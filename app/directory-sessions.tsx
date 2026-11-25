@@ -1,3 +1,9 @@
+/*
+Purpose: Defines directory sessions for the NeuroTrace workspace.
+File Dependencies: app/directory-import-filters.tsx, app/directory-import.ts, app/directory-sessions.css.
+*/
+
+
 "use client";
 
 import { useMemo, useState } from "react";

@@ -1,3 +1,9 @@
+/*
+Purpose: Defines session tab title for the NeuroTrace workspace.
+File Dependencies: None.
+*/
+
+
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
@@ -23,7 +29,9 @@ export function SessionTabTitle({ title }: { title: string }) {
 
   useEffect(() => {
     if (!visible) return;
+    /** Hides the floating session title. */
     const dismiss = () => setPointer(null);
+    /** Handles the key down. */
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") dismiss(); };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("scroll", dismiss, true);
@@ -37,6 +45,7 @@ export function SessionTabTitle({ title }: { title: string }) {
     };
   }, [visible]);
 
+  /** Positions the floating title for mouse and pen input. */
   const followPointer = (event: PointerEvent<HTMLSpanElement>) => {
     if (event.pointerType !== "touch") setPointer({ x: event.clientX, y: event.clientY });
   };

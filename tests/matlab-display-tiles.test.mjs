@@ -1,3 +1,10 @@
+/*
+Purpose: Checks matlab display tiles behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/eeg-core.ts, app/matlab-display-processing.ts, app/matlab-display-tiles.ts,
+  app/matlab-display-window.ts, app/matlab-raw-flatlines.ts.
+*/
+
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildMatlabDisplayWindow } from '../app/matlab-display-window.ts';

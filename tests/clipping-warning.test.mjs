@@ -1,4 +1,9 @@
-/** The actual canvas helper must warn whenever its visible row clamp changes a sample. */
+/*
+Purpose: The actual canvas helper must warn whenever its visible row clamp changes a sample.
+File Dependencies: app/page.tsx, app/waveform-peak-path.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

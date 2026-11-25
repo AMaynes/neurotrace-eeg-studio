@@ -1,4 +1,9 @@
-/** Shared shortcut catalogue: Controls, dispatch, and key hints use the same saved bindings. */
+/*
+Purpose: Shared shortcut catalogue: Controls, dispatch, and key hints use the same saved bindings.
+File Dependencies: None.
+*/
+
+
 export const SHORTCUTS = [
   { id: "undo", scope: "workspace", label: "Undo label edit or zoom", keys: ["Mod+z", "u"] },
   { id: "redo", scope: "workspace", label: "Redo label edit or zoom", keys: ["Mod+Shift+z", "Shift+u"] },
@@ -86,6 +91,7 @@ export function shortcutFromEvent(event: KeyEvent): string | null {
   return [event.ctrlKey || event.metaKey ? "Mod" : "", event.altKey ? "Alt" : "", event.shiftKey && !shiftedSymbol ? "Shift" : "", key].filter(Boolean).join("+");
 }
 
+/** Normalizes the shortcut. */
 function normalizeShortcut(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const parts = value.split("+");
@@ -94,10 +100,12 @@ function normalizeShortcut(value: unknown): string | null {
   return shortcutFromEvent({ key, ctrlKey: parts.includes("Mod"), altKey: parts.includes("Alt"), shiftKey: parts.includes("Shift") });
 }
 
+/** Formats the readable label for a shortcut binding. */
 export function shortcutLabel(chord: string): string {
   return chord.split("+").map((part) => ({ Mod: "Ctrl/⌘", Plus: "+", Minus: "−", ArrowLeft: "←", ArrowRight: "→", ArrowUp: "↑", ArrowDown: "↓" })[part] ?? (part.length === 1 ? part.toUpperCase() : part)).join(" + ");
 }
 
+/** Formats a compact shortcut hint for the current control. */
 export function shortcutHint(bindings: ControlBindings, action: ShortcutAction): string {
   return bindings[action].map(shortcutLabel).join(" or ") || "Not assigned";
 }
@@ -107,16 +115,19 @@ export function shortcutText(text: string, bindings: ControlBindings): string {
   return text.replace(/\{shortcut:([^}]+)\}/g, (_, action: string) => Object.hasOwn(bindings, action) ? shortcutHint(bindings, action as ShortcutAction) : "Not assigned");
 }
 
+/** Checks an input event against the configured shortcut binding. */
 export function matchesShortcut(event: KeyEvent, bindings: ControlBindings, action: ShortcutAction): boolean {
   const chord = shortcutFromEvent(event);
   return chord !== null && bindings[action].includes(chord);
 }
 
+/** Returns the action identified by the configured shortcut. */
 export function shortcutAction(event: KeyEvent, bindings: ControlBindings, scopes: ShortcutScope[]): ShortcutAction | null {
   const chord = shortcutFromEvent(event);
   return chord ? SHORTCUTS.find((item) => scopes.includes(item.scope) && bindings[item.id].includes(chord))?.id ?? null : null;
 }
 
+/** Determines whether two shortcut scopes can handle the same event. */
 function scopesOverlap(a: ShortcutScope, b: ShortcutScope): boolean {
   return a === b || a === "workspace" || b === "workspace" || ([a, b].includes("viewer") && [a, b].includes("waveform"));
 }

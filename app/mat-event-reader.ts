@@ -1,16 +1,20 @@
-/**
- * Selective Level-5 MAT traversal for directory event indexing. Numeric signal
- * payloads are skipped, not decoded (bounded read-ahead may touch their edges).
- * Compressed elements are streamed through zlib; only character matrices under
- * sessionInfo.sFile.events.label reach the existing MAT decoder by default.
- * Explicit resume scans also request event timing and acquisition scalars.
- * Called in a cancellable worker, never during waveform rendering.
- */
+/*
+Purpose: Selective Level-5 MAT traversal for directory event indexing. Numeric signal payloads are skipped, not decoded (bounded read-ahead may touch their edges). Compressed elements are streamed through zlib; only character matrices under sessionInfo.sFile.events.label reach the existing MAT decoder by default.
+File Dependencies: None.
+*/
+
+
+/*
+Selective Level-5 MAT traversal for directory event indexing. Numeric signalpayloads are skipped, not decoded (bounded read-ahead may touch their edges).Compressed elements are streamed through zlib; only character matrices undersessionInfo.sFile.events.label reach the existing MAT decoder by default.Explicit resume scans also request event timing and acquisition scalars.Called in a cancellable worker, never during waveform rendering.
+*/
 
 const MAX_METADATA_BYTES = 64 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 1024 * 1024 * 1024;
+/** Rounds a MAT element offset to its next eight-byte boundary. */
 const align8 = (size: number) => Math.ceil(size / 8) * 8;
+/** Recognizes supported MATLAB element type codes. */
 const knownType = (type: number) => (type >= 1 && type <= 7) || (type >= 9 && type <= 18);
+/** Decodes trimmed metadata text up to its first null character. */
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes).replace(/\0[\s\S]*$/, "").trim();
 
 interface Reader {
@@ -26,13 +30,16 @@ class BlobReader implements Reader {
   private blob: Blob;
   private buffer = new Uint8Array();
   private bufferStart = 0;
+  /** Initializes the instance from the supplied arguments. */
   constructor(blob: Blob) { this.blob = blob; }
+  /** Consumes the requested metadata bytes and rejects unexpected truncation. */
   async read(size: number, short = false) {
     if (!short && this.position + size > this.blob.size) throw new Error("Truncated MAT metadata.");
     const bytes = await this.peek(size);
     this.position += bytes.length;
     return bytes;
   }
+  /** Returns a cached entry without updating its position. */
   async peek(size: number) {
     const length = Math.min(size, this.blob.size - this.position);
     if (!length) return new Uint8Array();
@@ -44,10 +51,12 @@ class BlobReader implements Reader {
     }
     return this.buffer.subarray(this.position - this.bufferStart, this.position - this.bufferStart + length);
   }
+  /** Advances over metadata bytes while enforcing the container boundary. */
   async skip(size: number) {
     if (size < 0 || this.position + size > this.blob.size) throw new Error("Truncated MAT metadata.");
     this.position += size;
   }
+  /** Exposes the requested container bytes as a bounded readable stream. */
   stream(size: number) {
     if (this.position + size > this.blob.size) throw new Error("Truncated compressed MAT element.");
     const stream = this.blob.slice(this.position, this.position + size).stream();
@@ -62,7 +71,9 @@ class StreamReader implements Reader {
   private done = false;
   private expanded = 0;
   private reader: ReadableStreamDefaultReader<Uint8Array>;
+  /** Initializes the instance from the supplied arguments. */
   constructor(stream: ReadableStream<Uint8Array>) { this.reader = stream.getReader(); }
+  /** Refills the decompressed input buffer within the background-search size limit. */
   private async fill() {
     if (this.pending.length || this.done) return;
     const next = await this.reader.read();
@@ -71,6 +82,7 @@ class StreamReader implements Reader {
     this.expanded += this.pending.length;
     if (this.expanded > MAX_EXPANDED_BYTES) throw new Error("Compressed MAT data exceeds the 1 GiB background-search safety limit.");
   }
+  /** Consumes the requested metadata bytes and rejects unexpected truncation. */
   async read(size: number, short = false) {
     const bytes = new Uint8Array(size);
     let written = 0;
@@ -86,12 +98,14 @@ class StreamReader implements Reader {
     if (!short && written !== size) throw new Error("Truncated compressed MAT metadata.");
     return bytes.subarray(0, written);
   }
+  /** Returns a cached entry without updating its position. */
   async peek(size: number) {
     const bytes = await this.read(size, true);
     this.pending = join([bytes, this.pending]);
     this.position -= bytes.length;
     return bytes;
   }
+  /** Advances over metadata bytes while enforcing the container boundary. */
   async skip(size: number) {
     if (size < 0) throw new Error("Invalid MAT container boundary.");
     while (size) {
@@ -103,8 +117,11 @@ class StreamReader implements Reader {
       size -= take;
     }
   }
+  /** Exposes the requested container bytes as a bounded readable stream. */
   stream(size: number) {
-    return new ReadableStream<Uint8Array<ArrayBuffer>>({ pull: async (controller) => {
+    return new ReadableStream<Uint8Array<ArrayBuffer>>({
+    /** Enqueues the next bounded portion of the compressed element. */
+    pull: async (controller) => {
       try {
         if (!size) { controller.close(); return; }
         const take = Math.min(size, 64 * 1024);
@@ -113,9 +130,11 @@ class StreamReader implements Reader {
       } catch (error) { controller.error(error); }
     } });
   }
+  /** Closes the owned resource. */
   async close() { await this.reader.cancel(); }
 }
 
+/** Concatenates byte chunks in their original order. */
 function join(chunks: Uint8Array[]) {
   const result = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
   let offset = 0;
@@ -154,6 +173,7 @@ async function tag(reader: Reader, end: number, little: boolean) {
   return { raw, type, size, small: Boolean(small) };
 }
 
+/** Reads one bounded MATLAB field including its alignment padding. */
 async function field(reader: Reader, end: number, little: boolean) {
   const item = await tag(reader, end, little);
   if (!item || item.size > 1024 * 1024) throw new Error("Invalid MAT structure metadata.");
@@ -162,6 +182,7 @@ async function field(reader: Reader, end: number, little: boolean) {
   return { type: item.type, payload, raw: join([item.raw, ...(item.small ? [] : [payload, padding])]) };
 }
 
+/** Decodes supported integer metadata with the declared byte order. */
 function integers(item: { type: number; payload: Uint8Array }, little: boolean) {
   const width = [1, 2].includes(item.type) ? 1 : [3, 4].includes(item.type) ? 2 : [5, 6].includes(item.type) ? 4 : 0;
   if (!width || item.payload.length % width) throw new Error("Invalid MAT integer metadata.");
@@ -191,6 +212,7 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
   const little = endian === "IM";
   let metadataBytes = 0;
 
+  /** Traverses supported MATLAB matrix metadata within the nesting limit. */
   async function matrix(input: Reader, end: number, prefix: string, depth: number) {
     if (depth > 24) throw new Error("MAT metadata nesting exceeds the search safety limit.");
     if (input.position === end && prefix) return; // MATLAB's unset-field representation.
@@ -243,6 +265,7 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
     await input.skip(end - input.position);
   }
 
+  /** Walks MAT elements and recursively inflates compressed containers. */
   async function elements(input: Reader, end: number, depth: number): Promise<void> {
     if (depth > 24) throw new Error("Compressed MAT nesting exceeds the search safety limit.");
     while (input.position < end) {

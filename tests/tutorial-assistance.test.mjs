@@ -1,3 +1,9 @@
+/*
+Purpose: Checks tutorial assistance behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/display-gain.ts, app/page.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

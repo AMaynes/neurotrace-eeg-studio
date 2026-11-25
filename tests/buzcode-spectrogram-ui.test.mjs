@@ -1,3 +1,9 @@
+/*
+Purpose: Checks buzcode spectrogram ui behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: None.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

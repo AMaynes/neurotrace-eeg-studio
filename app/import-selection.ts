@@ -1,3 +1,9 @@
+/*
+Purpose: Classifies selected or dropped recordings and handles directory traversal and MAT/DAT pairing.
+File Dependencies: app/directory-import.ts.
+*/
+
+
 import { DirectoryImportError, planDirectoryImport, type DirectoryImportFormat, type DirectoryImportPlan } from "./directory-import.ts";
 
 export type RecordingSelection =
@@ -6,6 +12,7 @@ export type RecordingSelection =
 
 const OTHER_RECORDING_EXTENSIONS = new Set(["bdf", "set", "nwb", "vhdr", "vmrk", "eeg", "fdt", "mefd"]);
 
+/** Returns the lowercase filename extension. */
 function extensionOf(file: File): string {
   return file.name.includes(".") ? file.name.split(".").at(-1)!.toLowerCase() : "";
 }
@@ -71,14 +78,17 @@ const KNOWN_FILE_EXTENSIONS = new Set([
   "json", "tsv", "csv", "txt", "md", "xml", "yaml", "yml", "ini", "cfg", "log", "toml",
 ]);
 
+/** Explains why the dropped selection was rejected without importing files. */
 function dropFailure(detail: string): Error {
   return new Error(`${detail} Nothing was imported. Open Load recording and choose Files or Folder.`);
 }
 
+/** Explains that directory drops require the recording loader. */
 function directoryDropFailure(): Error {
   return new Error("Nothing was imported. Folder drops are only available inside Load recording.");
 }
 
+/** Checks the fallback file. */
 function assertFallbackFile(file: File): void {
   if (!file.size && !file.type && !KNOWN_FILE_EXTENSIONS.has(extensionOf(file))) {
     throw dropFailure("The browser could not identify a dropped item as a readable file.");
@@ -125,6 +135,7 @@ export async function collectDroppedRecordingFiles(
   const files: File[] = [];
   let directory = roots.some(({ entry }) => Boolean(entry?.isDirectory));
   let entryCount = 0;
+  /** Traverses dropped entries while enforcing safe relative paths and nesting limits. */
   const visit = async (entry: DroppedEntry, ancestors: string[]): Promise<void> => {
     entryCount += 1;
     if (entryCount > MAX_DROPPED_ENTRIES) throw dropFailure("The dropped selection contains too many entries (maximum 100,000).");

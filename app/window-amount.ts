@@ -1,12 +1,19 @@
-/** Compact window entry: one decimal place and at most three integer digits. */
+/*
+Purpose: Compact window entry: one decimal place and at most three integer digits.
+File Dependencies: None.
+*/
+
+
 export const MAX_WINDOW_AMOUNT = 999.9;
 export const WINDOW_TIME_UNITS = ["ms", "s", "m", "hrs", "days"] as const;
 export type WindowTimeUnit = typeof WINDOW_TIME_UNITS[number];
 export const WINDOW_UNIT_SECONDS: Record<WindowTimeUnit, number> = { ms: .001, s: 1, m: 60, hrs: 3_600, days: 86_400 };
 export const WINDOW_UNIT_LABELS: Record<WindowTimeUnit, string> = { ms: "ms", s: "sec", m: "min", hrs: "hrs", days: "days" };
 
+/** Rounds a displayed number to one decimal place. */
 const roundTenth = (value: number) => Math.round((value + Number.EPSILON) * 10) / 10;
 
+/** Formats the window amount. */
 export function formatWindowAmount(value: number): string {
   return Number.isFinite(value) ? roundTenth(value).toFixed(1) : "";
 }
@@ -20,6 +27,7 @@ export function editWindowAmount(raw: string): string | null {
   return (value.split(".")[1]?.length ?? 0) > 1 ? formatWindowAmount(Number(value)) : value;
 }
 
+/** Parses the window amount. */
 export function parseWindowAmount(raw: string): number | null {
   if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw.trim())) return null;
   const value = Number(raw);

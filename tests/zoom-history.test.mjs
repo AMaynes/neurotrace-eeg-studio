@@ -1,3 +1,10 @@
+/*
+Purpose: Checks zoom history behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/bipolar-montage.ts, app/channel-layout.ts, app/display-gain.ts, app/page.tsx,
+  app/shortcuts.ts, app/waveform-viewport.ts, app/zoom-history.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

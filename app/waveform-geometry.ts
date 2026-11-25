@@ -1,17 +1,8 @@
-/**
- * Overview & Purpose
- * Provides deterministic, browser-independent measurements of the screen-space
- * geometry emitted by waveform canvas paths. These measurements make activity-
- * dependent rendering regressions testable without relying on wall-clock canvas
- * benchmarks, which vary substantially across browsers and GPU drivers.
- *
- * Architectural Relationships
- * Called by: waveform rendering policy and focused geometry regression tests.
- * Calls: no browser APIs; all inputs are caller-owned signal arrays.
- *
- * External Resources
- * None.
- */
+/*
+Purpose: Provides deterministic, browser-independent measurements of the screen-space geometry emitted by waveform canvas paths. These measurements make activity- dependent rendering regressions testable without relying on wall-clock canvas benchmarks, which vary substantially across browsers and GPU drivers.
+File Dependencies: None.
+*/
+
 
 export interface TraceGeometryProjection {
   widthPx: number;
@@ -123,6 +114,7 @@ export type GroupedExtremaVisitor = (
   representativeMean: number,
 ) => void;
 
+/** Validates the projection. */
 function validateProjection(projection: TraceGeometryProjection) {
   if (!(projection.widthPx > 0) || !Number.isFinite(projection.widthPx)) {
     throw new Error("Waveform geometry width must be positive and finite.");
@@ -159,12 +151,14 @@ export function layoutIndependentTraceProjection(
   };
 }
 
+/** Bounds the vertical coordinate to the drawable row. */
 function confinedY(value: number, projection: TraceGeometryProjection) {
   const center = projection.rowHeightPx / 2;
   const projected = center - (value - projection.baseline) * projection.pixelsPerUnit;
   return Math.min(projection.rowHeightPx, Math.max(0, projected));
 }
 
+/** Initializes waveform geometry counters to zero. */
 function emptySummary(): WaveformGeometrySummary {
   return {
     pointCount: 0,

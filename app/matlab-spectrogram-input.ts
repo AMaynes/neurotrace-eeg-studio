@@ -1,4 +1,9 @@
-/** Raw-group selection and MATLAB sample timing, covering the full visible window. */
+/*
+Purpose: Raw-group selection and MATLAB sample timing, covering the full visible window.
+File Dependencies: app/eeg-core.ts.
+*/
+
+
 import { anatomicalChannelGroup, type RecordingMeta } from "./eeg-core.ts";
 
 // anatomicalChannelGroup also accepts labels produced by display montages
@@ -7,6 +12,7 @@ function sourceContactGroup(label: string) {
   return /^[A-Za-z]+\d+$/.test(label.trim()) ? anatomicalChannelGroup(label) : null;
 }
 
+/** Selects raw source channels and time bounds for wavelet analysis. */
 export function matlabSpectrogramInputPlan(
   meta: Pick<RecordingMeta, "channelLabels" | "sampleRates" | "durationSec">,
   primarySourceIndex: number,

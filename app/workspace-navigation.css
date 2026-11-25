@@ -1,4 +1,9 @@
-/* One sidebar owns secondary controls; the recording keeps the remaining width. */
+/*
+Purpose: Styles the unified sidebar, nested tabs, viewing tools, and toolbar customization.
+File Dependencies: None.
+*/
+
+
 .neuro-app .unified-workspace { grid-template-columns: 300px minmax(0, 1fr); }
 .neuro-app .unified-workspace.left-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
 .unified-workspace .left-sidebar { grid-column: 1; position: relative; top: auto; bottom: auto; left: auto; width: auto; }

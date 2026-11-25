@@ -1,8 +1,9 @@
-/**
- * A truthful, bounded navigator summary of an already-cached raw overview.
- * Uses one named source channel so voltage and raw-count channels are never
- * combined. No source reads, filtering, decoding, or waveform mutation occurs.
- */
+/*
+Purpose: A truthful, bounded navigator summary of an already-cached raw overview. Uses one named source channel so voltage and raw-count channels are never combined. No source reads, filtering, decoding, or waveform mutation occurs.
+File Dependencies: app/recording-overview.ts.
+*/
+
+
 import type { RecordingOverviewEntry } from "./recording-overview.ts";
 import { RECORDING_OVERVIEW_TARGET_BUCKETS } from "./recording-overview.ts";
 

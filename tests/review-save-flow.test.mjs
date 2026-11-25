@@ -1,4 +1,9 @@
-/** Exercise the real save action through its download boundary. */
+/*
+Purpose: Exercise the real save action through its download boundary.
+File Dependencies: app/page.tsx, app/recording-labels-csv.ts, app/review-workspace.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

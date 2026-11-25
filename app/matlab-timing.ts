@@ -1,4 +1,13 @@
-/** MATLAB ts_EEG = (1:N)/Fs + requested window start; decimation retains 1, 1+D, … . */
+/*
+Purpose: Maps MATLAB one-based sample times to recording windows and decimated displays.
+File Dependencies: None.
+*/
+
+
+/*
+MATLAB ts_EEG = (1:N)/Fs + requested window start; decimation retains 1, 1+D, … .
+*/
+
 function validateMatlabTimeGrid(requestedStartSec: number, sourceRate: number, decimationFactor: number) {
   if (!Number.isFinite(requestedStartSec)) throw new RangeError("MATLAB window start must be finite.");
   if (!(sourceRate > 0) || !Number.isFinite(sourceRate)) throw new RangeError("MATLAB source rate must be positive and finite.");

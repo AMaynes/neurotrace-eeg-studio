@@ -1,4 +1,9 @@
-/** Exercise the actual page selection handlers together, without signal or file work. */
+/*
+Purpose: Exercise the actual page selection handlers together, without signal or file work.
+File Dependencies: app/channel-layout.ts, app/page.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 import test from "node:test";

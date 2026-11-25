@@ -1,17 +1,7 @@
-/**
- * Overview & Purpose
- * Declares the minimal Cloudflare runtime contracts used during type checking.
- *
- * Architectural Relationships
- * Called by: worker/index.ts and db/index.ts through global/provider types.
- * Calls: None.
- *
- * External Resources
- * Cloudflare Worker ASSETS, IMAGES, and optional D1 bindings.
- *
- * Notes
- * These declarations contain no runtime behavior.
- */
+/*
+Purpose: Declares the minimal Cloudflare runtime contracts used during type checking.
+File Dependencies: None.
+*/
 
 
 interface Fetcher {

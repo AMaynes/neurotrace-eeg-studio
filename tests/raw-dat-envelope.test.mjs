@@ -1,4 +1,9 @@
-/** Verifies bounded, cancellable Raw DAT overview construction. */
+/*
+Purpose: Verifies bounded, cancellable Raw DAT overview construction.
+File Dependencies: app/eeg-core.ts, app/progressive-envelope.ts, app/raw-dat-envelope-worker-client.ts,
+  app/raw-dat-envelope-worker.ts, app/raw-dat-envelope.ts, app/source-integrity.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

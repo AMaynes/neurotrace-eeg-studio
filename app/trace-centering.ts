@@ -1,4 +1,13 @@
-/** Preserve fixed recording references; legacy callers can still request a visible-window center. */
+/*
+Purpose: Calculates waveform baselines while preserving each recording reference.
+File Dependencies: app/waveform-geometry.ts.
+*/
+
+
+/*
+Preserve fixed recording references; legacy callers can still request a visible-window center.
+*/
+
 import { robustTraceBaseline } from "./waveform-geometry.ts";
 
 type TraceCenterWindow = {

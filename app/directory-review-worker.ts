@@ -1,8 +1,14 @@
-/** Explicit resume reads event metadata only; DAT samples are never sent to this worker. */
+/*
+Purpose: Explicit resume reads event metadata only; DAT samples are never sent to this worker.
+File Dependencies: app/directory-import.ts, app/directory-review-resume.ts, app/eeg-core.ts.
+*/
+
+
 import { EDFSource, indexMatReviewEvents } from "./eeg-core.ts";
 import type { DirectoryImportFormat } from "./directory-import.ts";
 import type { ReviewMetadata } from "./directory-review-resume.ts";
 
+/** Reads the directory review metadata. */
 export async function readDirectoryReviewMetadata(format: DirectoryImportFormat, file: File, datBytes?: number): Promise<ReviewMetadata> {
   if (format === "edf") {
     const source = await EDFSource.create(file);

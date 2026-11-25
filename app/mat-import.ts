@@ -1,8 +1,8 @@
-/**
- * Resolves local MAT/DAT imports for the recording dialog. Legacy sessionInfo
- * metadata configures a separate binary source; standalone MAT signals keep
- * their existing decoder. Acquisition paths inside metadata are never used.
- */
+/*
+Purpose: Resolves local MAT/DAT imports for the recording dialog. Legacy sessionInfo metadata configures a separate binary source; standalone MAT signals keep their existing decoder. Acquisition paths inside metadata are never used.
+File Dependencies: app/bids-companions.ts, app/eeg-core.ts.
+*/
+
 
 import { inspectMatRecording, type LegacyMatMetadata, type SignalSource } from "./eeg-core.ts";
 import { relativeFilePath } from "./bids-companions.ts";
@@ -24,6 +24,7 @@ export type MatDatImport = (
 export class MatDatImportError extends Error {
   readonly title: string;
 
+  /** Initializes the instance from the supplied arguments. */
   constructor(title: string, message: string) {
     super(message);
     this.name = "MatDatImportError";
@@ -33,7 +34,9 @@ export class MatDatImportError extends Error {
 
 /** Reuse staged companions only for the same recording, never an unrelated new selection. */
 export function pendingFilesForSelection(pending: readonly File[], incoming: readonly File[]): File[] {
+  /** Returns the case-insensitive basename used to pair MAT and DAT files. */
   const recordingKey = (file: File) => file.name.replace(/\.(mat|dat)$/i, "").toLowerCase();
+  /** Returns the normalized parent path used to prevent cross-folder pairing. */
   const directory = (file: File) => relativeFilePath(file).replace(/[^/]*$/, "").toLowerCase();
   const continuesPending = incoming.some((file) => /\.(mat|dat)$/i.test(file.name) && pending.some((staged) =>
     /\.(mat|dat)$/i.test(staged.name) && recordingKey(file) === recordingKey(staged) &&

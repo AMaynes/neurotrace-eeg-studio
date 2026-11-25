@@ -1,3 +1,9 @@
+/*
+Purpose: Checks session overview integration behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/globals.css, app/page.tsx, app/recording-overview.ts, app/session-overview.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

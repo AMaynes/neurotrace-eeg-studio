@@ -1,3 +1,9 @@
+/*
+Purpose: Defines directory tab layout for the NeuroTrace workspace.
+File Dependencies: app/directory-import.ts.
+*/
+
+
 import type { DirectoryImportPlan } from "./directory-import";
 
 type OwnedTab = { id: string; directoryId?: string; directoryRecordingId?: string };

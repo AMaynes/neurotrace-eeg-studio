@@ -1,20 +1,8 @@
-/**
- * Overview & Purpose
- * Defines the portable NeuroTrace project container and safe custom-tool assets.
- *
- * Architectural Relationships
- * Called by: The workstation save and mixed-file import flows in app/page.tsx.
- * Calls: Browser Blob/File streaming and slice APIs to build and read ZIP32
- * projects without materializing included recordings as an extra full copy.
- *
- * External Resources
- * The `.neurotrace` format is a stored ZIP containing a versioned JSON manifest.
- *
- * Notes
- * Custom equations and filtering methods are preserved as inert text. This
- * module never evaluates imported content. ZIP paths are normalized to prevent
- * path traversal, and ZIP32 limits are rejected explicitly.
- */
+/*
+Purpose: Defines the portable NeuroTrace project container and safe custom-tool assets.
+File Dependencies: None.
+*/
+
 
 export const NEUROTRACE_PROJECT_SCHEMA = "neurotrace-project";
 export const NEUROTRACE_PROJECT_VERSION = 1;
@@ -111,6 +99,7 @@ export type CustomToolImportResult = {
   errors: Array<{ fileName: string; message: string }>;
 };
 
+/** Classifies a custom definition from its identifying token. */
 function toolKindFromToken(value: unknown): NeurotraceCustomToolKind | null {
   if (typeof value !== "string") return null;
   const token = value.toLowerCase().replace(/[\s_]+/g, "-");
@@ -157,6 +146,7 @@ export function classifyCustomTool(name: string, parsedJson?: unknown): Neurotra
   return null;
 }
 
+/** Builds the stable identity used for an imported custom definition. */
 function customToolId(file: File, content: string) {
   const seed = `${file.name}\0${file.size}\0${file.lastModified}\0${content.slice(0, 256)}`;
   let hash = 2166136261;
@@ -254,6 +244,7 @@ export function safeArchivePath(path: string) {
   return segments.join("/") || "unnamed";
 }
 
+/** Chooses an archive path that does not collide with existing entries. */
 function uniqueArchivePath(path: string, usedPaths: Set<string>) {
   const safePath = safeArchivePath(path);
   if (!usedPaths.has(safePath.toLowerCase())) {
@@ -275,16 +266,19 @@ function uniqueArchivePath(path: string, usedPaths: Set<string>) {
   throw new RangeError("The archive contains too many duplicate filenames.");
 }
 
+/** Returns the retained byte count. */
 function byteLength(content: ZipContent) {
   if (typeof content === "string") return encoder.encode(content).byteLength;
   return content instanceof Blob ? content.size : content.byteLength;
 }
 
+/** Encodes text ZIP entries as UTF-8 while retaining binary entries. */
 function contentPart(content: ZipContent): BlobPart {
   if (typeof content === "string") return encoder.encode(content) as BlobPart;
   return content as BlobPart;
 }
 
+/** Updates the crc32. */
 function updateCrc32(crc: number, bytes: Uint8Array) {
   let next = crc;
   for (const byte of bytes) {
@@ -294,6 +288,7 @@ function updateCrc32(crc: number, bytes: Uint8Array) {
   return next;
 }
 
+/** Computes the CRC-32 checksum used by stored ZIP entries. */
 async function crc32(content: ZipContent) {
   let crc = 0xffffffff;
   if (typeof content === "string") {
@@ -364,10 +359,12 @@ export async function createStoredZip(entries: readonly ZipArchiveEntry[]) {
   return new Blob([...localParts, ...centralParts, end as BlobPart], { type: NEUROTRACE_PROJECT_MIME });
 }
 
+/** Serializes readable JSON with a final newline. */
 function jsonContent(value: unknown) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+/** Returns the selected relative path or falls back to the filename. */
 function uploadPath(file: File) {
   const relativePath = "webkitRelativePath" in file && typeof file.webkitRelativePath === "string"
     ? file.webkitRelativePath
@@ -386,6 +383,7 @@ export async function createNeurotraceProjectArchive(request: NeurotraceProjectA
     customTools: null,
     supportingFiles: null,
   };
+  /** Adds the supplied entry to the current collection. */
   const add = (path: string, content: ZipContent, role: string) => {
     const uniquePath = uniqueArchivePath(path, usedPaths);
     entries.push({ path: uniquePath, content, role });
@@ -486,6 +484,7 @@ const ZIP_END_MIN_BYTES = 22;
 const ZIP_END_SEARCH_BYTES = 65_557;
 const MAX_PROJECT_METADATA_BYTES = 16 * 1024 * 1024;
 
+/** Reads and validates the central directory of a stored ZIP archive. */
 async function storedZipDirectory(file: File) {
   if (file.size < ZIP_END_MIN_BYTES) throw new Error("The NeuroTrace project is incomplete.");
   const tailOffset = Math.max(0, file.size - ZIP_END_SEARCH_BYTES);
@@ -536,6 +535,7 @@ async function storedZipDirectory(file: File) {
   return entries;
 }
 
+/** Returns a validated stored archive entry as a Blob slice. */
 async function storedZipEntryBlob(file: File, entry: StoredZipEntry) {
   if (entry.compressionMethod !== 0) throw new Error("Compressed NeuroTrace project entries are not supported.");
   const headerBytes = new Uint8Array(await file.slice(entry.localHeaderOffset, entry.localHeaderOffset + 30).arrayBuffer());
@@ -549,6 +549,7 @@ async function storedZipEntryBlob(file: File, entry: StoredZipEntry) {
   return file.slice(dataOffset, dataEnd);
 }
 
+/** Reads the project json. */
 async function readProjectJson(file: File, entries: Map<string, StoredZipEntry>, path: string | null) {
   if (!path) return null;
   const entry = entries.get(path);
@@ -579,6 +580,7 @@ export async function readNeurotraceProjectArchive(file: File, options: { labelD
     throw new Error("The NeuroTrace project manifest is invalid.");
   }
 
+  /** Creates the file. */
   const makeFile = async (path: string, name: string, mimeType = "application/octet-stream", lastModified?: number) => {
     const entry = entries.get(path);
     if (!entry) throw new Error(`The NeuroTrace project is missing ${path}.`);

@@ -1,7 +1,8 @@
-/**
- * Browser client for off-main-thread source hashing. Node/test environments
- * retain the bounded-memory direct implementation as a compatible fallback.
- */
+/*
+Purpose: Browser client for off-main-thread source hashing. Node/test environments retain the bounded-memory direct implementation as a compatible fallback.
+File Dependencies: app/eeg-core.ts, app/source-hash-worker.ts, app/source-integrity.ts.
+*/
+
 
 import {
   parseEDFAnnotations,
@@ -25,6 +26,7 @@ export type SourceVerificationOptions = Sha256BlobOptions & {
   fallbackToMainThread?: boolean;
 };
 
+/** Verifies the source directly. */
 async function verifySourceDirectly(
   blob: Blob,
   options: SourceVerificationOptions,
@@ -36,6 +38,7 @@ async function verifySourceDirectly(
   return { hash, edfAnnotations };
 }
 
+/** Verifies the source off thread. */
 export async function verifySourceOffThread(
   blob: Blob,
   options: SourceVerificationOptions = {},
@@ -56,6 +59,7 @@ export async function verifySourceOffThread(
 
   return new Promise<SourceVerificationResult>((resolve, reject) => {
     let settled = false;
+    /** Settles the operation once and releases its associated resources. */
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
@@ -63,6 +67,7 @@ export async function verifySourceOffThread(
       worker.terminate();
       callback();
     };
+    /** Cancels the active operation and propagates its cancellation reason. */
     const onAbort = () => finish(() => {
       if (options.signal?.reason !== undefined) reject(options.signal.reason);
       else {
@@ -71,6 +76,7 @@ export async function verifySourceOffThread(
         reject(error);
       }
     });
+    /** Releases the worker and retries through the permitted direct implementation. */
     const fallbackToDirect = (workerError?: unknown) => finish(() => {
       if (!allowFallback) {
         reject(workerError instanceof Error ? workerError : new Error("Source verification worker failed."));
@@ -124,6 +130,7 @@ export async function verifySourceOffThread(
   });
 }
 
+/** Returns the source digest using the worker-backed verification path. */
 export async function sha256BlobOffThread(blob: Blob, options: Sha256BlobOptions = {}) {
   return (await verifySourceOffThread(blob, options)).hash;
 }

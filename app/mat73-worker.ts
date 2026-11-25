@@ -1,9 +1,8 @@
-/**
- * File-backed HDF5 reader for MATLAB v7.3 recordings. HDF5 calls are synchronous
- * and confined to this worker. Envelope jobs yield between bounded chunks so
- * ordinary reads and cancellation can run; close invalidates every active job
- * before releasing the file, preventing stale jobs from accessing its datasets.
- */
+/*
+Purpose: File-backed HDF5 reader for MATLAB v7.3 recordings. HDF5 calls are synchronous and confined to this worker. Envelope jobs yield between bounded chunks so ordinary reads and cancellation can run; close invalidates every active job before releasing the file, preventing stale jobs from accessing its datasets.
+File Dependencies: app/mat73.ts, app/progressive-envelope.ts.
+*/
+
 
 import h5wasm, { Dataset, Group, Reference } from "h5wasm";
 import {
@@ -36,6 +35,7 @@ const workerScope = self as unknown as {
   postMessage(message: Mat73WorkerResponse, transfer?: Transferable[]): void;
 };
 
+/** Creates a coded SignalFileError for invalid HDF5 data. */
 function signalError(code: string, message: string) {
   const error = new Error(message) as Error & { code?: string };
   error.name = "SignalFileError";
@@ -43,10 +43,12 @@ function signalError(code: string, message: string) {
   return error;
 }
 
+/** Multiplies dataset dimensions to obtain the element count. */
 function elementCount(shape: readonly number[]) {
   return shape.reduce((product, dimension) => product * dimension, 1);
 }
 
+/** Describes numeric datasets with a known shape. */
 function datasetDescriptor(dataset: Dataset): Mat73DatasetDescriptor | null {
   const shape = dataset.shape;
   const dtype = typeof dataset.dtype === "string" ? dataset.dtype : "";
@@ -54,6 +56,7 @@ function datasetDescriptor(dataset: Dataset): Mat73DatasetDescriptor | null {
   return { path: dataset.path, shape: [...shape], dtype, elementCount: elementCount(shape) };
 }
 
+/** Collects HDF5 datasets to depth 16 while skipping internal reference groups. */
 function collectDatasets(group: Group, output: Dataset[], depth = 0) {
   if (depth > 16) return;
   for (const key of group.keys()) {
@@ -65,6 +68,7 @@ function collectDatasets(group: Group, output: Dataset[], depth = 0) {
   }
 }
 
+/** Ranks dataset names by how specifically they identify a sampling rate. */
 function sampleRateScore(path: string) {
   const leaf = path.split("/").at(-1)?.replace(/[^a-z0-9]/gi, "").toLowerCase() ?? "";
   if (["fs", "srate", "samplerate", "samplingrate", "samplingfrequency"].includes(leaf)) return 100;
@@ -74,6 +78,7 @@ function sampleRateScore(path: string) {
   return 0;
 }
 
+/** Returns the first finite numeric dataset value. */
 function scalarNumber(dataset: Dataset): number | undefined {
   const value = dataset.value;
   const first = ArrayBuffer.isView(value)
@@ -85,6 +90,7 @@ function scalarNumber(dataset: Dataset): number | undefined {
   return typeof number === "number" && Number.isFinite(number) ? number : undefined;
 }
 
+/** Selects a valid scalar sampling-rate dataset or assumes 256 Hz. */
 function chooseSampleRate(datasets: readonly Dataset[]) {
   const candidates = datasets
     .map((dataset) => ({ dataset, descriptor: datasetDescriptor(dataset), score: sampleRateScore(dataset.path) }))
@@ -99,6 +105,7 @@ function chooseSampleRate(datasets: readonly Dataset[]) {
   return { value: 256, source: "assumed" };
 }
 
+/** Converts valid Unicode code points to trimmed text and drops invalid values. */
 function decodeCharacterCodes(value: unknown): string {
   const values = ArrayBuffer.isView(value)
     ? Array.from(value as unknown as ArrayLike<number | bigint>)
@@ -111,12 +118,14 @@ function decodeCharacterCodes(value: unknown): string {
   }).join("").replace(/[\0\s]+$/g, "").trim();
 }
 
+/** Retains only string entries from a dataset value. */
 function stringValues(value: unknown): string[] {
   if (typeof value === "string") return [value];
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
+/** Dereferences MATLAB cell entries and decodes their channel labels. */
 function labelsFromReferenceDataset(file: InstanceType<typeof h5wasm.File>, dataset: Dataset) {
   const values = dataset.value;
   const references = Array.isArray(values) ? values.filter((value): value is Reference => value instanceof Reference) : [];
@@ -130,6 +139,7 @@ function labelsFromReferenceDataset(file: InstanceType<typeof h5wasm.File>, data
   });
 }
 
+/** Searches recognized label datasets for the selected channel count. */
 function chooseChannelLabels(
   file: InstanceType<typeof h5wasm.File>,
   datasets: readonly Dataset[],
@@ -150,6 +160,7 @@ function chooseChannelLabels(
   return Array.from({ length: channelCount }, (_, index) => `CH${String(index + 1).padStart(3, "0")}`);
 }
 
+/** Mounts one local MAT file read-only and selects its HDF5 signal dataset. */
 async function openMatFile(file: File): Promise<Mat73OpenResult> {
   if (openedFile) throw signalError("INVALID_HEADER", "A MATLAB v7.3 file is already open in this worker.");
   const generation = ++fileGeneration;
@@ -210,6 +221,7 @@ async function openMatFile(file: File): Promise<Mat73OpenResult> {
   return metadata;
 }
 
+/** Returns the active signal dataset or rejects access before a source is open. */
 function requireOpen() {
   if (!openedFile || !signalDataset || !metadata) {
     throw signalError("INVALID_HEADER", "The MATLAB v7.3 source is not open.");
@@ -217,12 +229,14 @@ function requireOpen() {
   return { file: openedFile, dataset: signalDataset, metadata };
 }
 
+/** Accepts array-backed numeric slices or rejects invalid signal data. */
 function numericValues(value: unknown): ArrayLike<number | bigint> {
   if (ArrayBuffer.isView(value)) return value as unknown as ArrayLike<number | bigint>;
   if (Array.isArray(value)) return value as ArrayLike<number | bigint>;
   throw signalError("INVALID_HEADER", "The MATLAB v7.3 signal slice did not decode to numeric values.");
 }
 
+/** Rejects out-of-range sample intervals and invalid or duplicate channel indices. */
 function validateRead(firstSample: number, endSample: number, channelIndices: readonly number[]) {
   const { metadata: openMetadata } = requireOpen();
   if (!Number.isInteger(firstSample) || !Number.isInteger(endSample)
@@ -238,6 +252,7 @@ function validateRead(firstSample: number, endSample: number, channelIndices: re
   }
 }
 
+/** Slices the HDF5 signal matrix into Float32 channel buffers at the requested sample origin. */
 function readWindow(firstSample: number, endSample: number, channelIndices: number[]): Mat73WindowResult {
   validateRead(firstSample, endSample, channelIndices);
   const { dataset, metadata: openMetadata } = requireOpen();
@@ -277,6 +292,7 @@ function yieldToWorkerRequests() {
   });
 }
 
+/** Reduces requested HDF5 samples into bounded display buckets with cancellation checks. */
 async function readEnvelope(
   request: Extract<Mat73WorkerRequest, { type: "envelope" }>,
   signal: AbortSignal,
@@ -287,6 +303,7 @@ async function readEnvelope(
     throw signalError("INVALID_WINDOW", "MATLAB v7.3 envelope bucket count is invalid.");
   }
   const { dataset, metadata: openMetadata } = requireOpen();
+  /** Rejects canceled work or a read whose source generation has changed. */
   const checkActive = () => {
     signal.throwIfAborted();
     if (generation !== fileGeneration) throw new DOMException("MATLAB v7.3 source changed", "AbortError");
@@ -390,6 +407,7 @@ async function readEnvelope(
   };
 }
 
+/** Cancels envelope jobs, closes the HDF5 file, and unmounts its local filesystem. */
 function closeFile() {
   fileGeneration += 1;
   for (const controller of envelopeJobs.values()) controller.abort();
@@ -441,6 +459,7 @@ workerScope.onmessage = (event) => {
   }
 };
 
+/** Sends the request identifier and available error details to the worker client. */
 function postError(requestId: number, error: unknown) {
   workerScope.postMessage({
     type: "error",

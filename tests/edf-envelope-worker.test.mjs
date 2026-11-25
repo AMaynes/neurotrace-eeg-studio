@@ -1,7 +1,9 @@
-/**
- * Verifies the pure EDF envelope core used by the browser worker. Fixtures are
- * deterministic in-memory EDF files; no filesystem or browser worker is used.
- */
+/*
+Purpose: Verifies the pure EDF envelope core used by the browser worker. Fixtures are deterministic in-memory EDF files; no filesystem or browser worker is used.
+File Dependencies: app/edf-envelope-integrity.ts, app/edf-envelope.ts, app/eeg-core.ts,
+  app/progressive-envelope.ts, app/source-integrity.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

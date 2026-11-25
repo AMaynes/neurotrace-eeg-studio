@@ -1,4 +1,9 @@
-/** Browser client for cancellable, off-main-thread EDF envelope construction. */
+/*
+Purpose: Browser client for cancellable, off-main-thread EDF envelope construction.
+File Dependencies: app/edf-envelope-integrity.ts, app/edf-envelope-worker.ts, app/edf-envelope.ts,
+  app/eeg-core.ts.
+*/
+
 
 import type {
   EDFEnvelopeBuildRequest,
@@ -22,6 +27,7 @@ export interface EDFEnvelopeWorkerOptions {
 
 let nextRequestId = 1;
 
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortReason(signal: AbortSignal | undefined) {
   if (signal?.reason !== undefined) return signal.reason;
   const error = new Error("EDF envelope construction was aborted");
@@ -29,12 +35,14 @@ function abortReason(signal: AbortSignal | undefined) {
   return error;
 }
 
+/** Creates an Error with the supplied name and message. */
 function namedError(name: string, message: string) {
   const error = new Error(message);
   error.name = name;
   return error;
 }
 
+/** Lazily loads the EDF envelope fallback to avoid a runtime import cycle. */
 async function buildDirectly(
   request: EDFEnvelopeBuildRequest,
   options: EDFEnvelopeWorkerOptions,
@@ -47,6 +55,7 @@ async function buildDirectly(
     backend: "direct",
     signal: options.signal,
     onOverview: options.onOverview,
+    /** Forwards progress without letting a diagnostics callback invalidate the signal read. */
     onProgress: (progress) => {
       try {
         options.onProgress?.(progress);
@@ -89,16 +98,19 @@ export function buildEDFEnvelopeWindowOffThread(
   nextRequestId = nextRequestId >= Number.MAX_SAFE_INTEGER ? 1 : nextRequestId + 1;
   return new Promise<EDFEnvelopeBuildResult>((resolve, reject) => {
     let settled = false;
+    /** Releases listeners and worker resources owned by the current operation. */
     const cleanup = () => {
       options.signal?.removeEventListener("abort", onAbort);
       worker.terminate();
     };
+    /** Settles the operation once and releases its associated resources. */
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
       cleanup();
       callback();
     };
+    /** Releases the worker and retries through the permitted direct implementation. */
     const fallbackToDirect = (workerError: unknown) => {
       if (settled) return;
       settled = true;
@@ -109,6 +121,7 @@ export function buildEDFEnvelopeWindowOffThread(
       }
       void buildDirectly(request, options).then(resolve, reject);
     };
+    /** Cancels the active operation and propagates its cancellation reason. */
     const onAbort = () => finish(() => reject(abortReason(options.signal)));
 
     worker.onmessage = (event: MessageEvent<EDFEnvelopeWorkerResponse>) => {

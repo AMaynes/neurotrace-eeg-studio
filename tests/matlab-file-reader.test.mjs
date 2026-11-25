@@ -1,3 +1,9 @@
+/*
+Purpose: Checks matlab file reader behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/eeg-core.ts, app/matlab-file-reader.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createMatlabFileReader } from "../app/matlab-file-reader.ts";

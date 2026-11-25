@@ -1,8 +1,8 @@
-/**
- * Filename-only discovery for a directory of recordings or saved projects.
- * This module never reads waveform/archive bytes or treats an extension as
- * verified contents; each entry must pass its normal loader when opened.
- */
+/*
+Purpose: Filename-only discovery for a directory of recordings or saved projects. This module never reads waveform/archive bytes or treats an extension as verified contents; each entry must pass its normal loader when opened.
+File Dependencies: None.
+*/
+
 
 export type DirectoryImportFormat = "edf" | "mat" | "mat-dat" | "neurotrace";
 
@@ -38,6 +38,7 @@ export class DirectoryImportError extends Error {
   readonly code: DirectoryImportErrorCode;
   readonly paths: string[];
 
+  /** Initializes the instance from the supplied arguments. */
   constructor(code: DirectoryImportErrorCode, message: string, paths: string[] = []) {
     super(message);
     this.name = "DirectoryImportError";
@@ -68,16 +69,19 @@ const RECORDING_EXTENSIONS = new Set([
 ]);
 const NATURAL_PATH_ORDER = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
+/** Compares the paths. */
 function comparePaths(a: DirectoryFile, b: DirectoryFile): number {
   return NATURAL_PATH_ORDER.compare(a.path, b.path)
     || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
 
+/** Describes the paths. */
 function describePaths(paths: string[]): string {
   const preview = paths.slice(0, 4).map((path) => `“${path}”`).join(", ");
   return paths.length > 4 ? `${preview}, and ${paths.length - 4} more` : preview;
 }
 
+/** Describes the file. */
 function describeFile(file: File): DirectoryFile {
   const path = (file.webkitRelativePath || file.name).replaceAll("\\", "/");
   const segments = path.split("/");
@@ -91,6 +95,7 @@ function describeFile(file: File): DirectoryFile {
   return { file, path, key, extension, stemKey: dot < 0 ? key : key.slice(0, -(extension.length + 1)) };
 }
 
+/** Builds a directory entry from the selected primary and companion files. */
 function recordingEntry(primary: DirectoryFile, files: File[]): DirectoryRecording {
   return {
     id: `directory:${primary.key}`,
@@ -178,14 +183,17 @@ const SHARED_DIRECTORY_METADATA = new Set([
 const NAMED_SIDECAR_SUFFIXES = new Set(["events", "channels", "electrodes", "coordsystem", "eeg", "ieeg", "scans", "sessions"]);
 const SINGLE_RECORDING_TABLES = new Set(["events.tsv", "channels.tsv", "electrodes.tsv"]);
 
+/** Normalizes separators and case for directory comparisons. */
 function normalizedDirectoryPath(path: string): string {
   return path.replaceAll("\\", "/").toLowerCase();
 }
 
+/** Returns the directory portion of a file path. */
 function directoryOf(path: string): string {
   return normalizedDirectoryPath(path).replace(/[^/]*$/, "");
 }
 
+/** Splits a recording filename into the components used for companion matching. */
 function nameParts(path: string): { name: string; stem: string; extension: string; suffix: string; prefix: string; entities: Map<string, string> } {
   const name = normalizedDirectoryPath(path).split("/").at(-1) ?? "";
   const dot = name.lastIndexOf(".");

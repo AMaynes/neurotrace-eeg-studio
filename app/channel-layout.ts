@@ -1,4 +1,8 @@
-/** Shared electrode row geometry for waveform drawing, channel labels, and hit testing. */
+/*
+Purpose: Shared electrode row geometry for waveform drawing, channel labels, and hit testing.
+File Dependencies: app/eeg-core.ts, app/waveform-viewport.ts.
+*/
+
 
 import { anatomicalChannelGroup, orderElectrodeChannelIndices } from "./eeg-core.ts";
 import type { NormalizedVerticalViewport } from "./waveform-viewport";
@@ -32,6 +36,7 @@ function namedChannel(label: string): { group: string; contact: string } {
   return { group: core.toUpperCase() || "Other", contact: plain || label || "Unnamed" };
 }
 
+/** Derives the anatomical grouping key from a channel label. */
 export function channelNameGroup(label: string): string {
   return namedChannel(label).group;
 }
@@ -53,6 +58,7 @@ export function matlabDisplayOrder(labels: readonly string[]): number[] {
   });
   // MATLAB's unclassified fallback displays all channels without anatomical spacing.
   if (!groups.size) return labels.map((_, index) => index);
+  /** Derives the channel-side ordering key from its label. */
   const side = (group: string) => group[0].toUpperCase() === "L" ? 0 : group[0].toUpperCase() === "R" ? 1 : 2;
   return [...groups].sort(([a], [b]) => side(a) - side(b)).flatMap(([, rows]) => rows);
 }
@@ -124,10 +130,12 @@ export function channelPlotGeometry(
     return {
       rowHeight,
       contentHeight,
+      /** Converts a row-layout coordinate into a vertical canvas position. */
       yForUnit(unit: number) {
         const rows = occupiedRows(unit, layout.rowStartUnits, 1);
         return offset + rows * rowHeight + (unit - rows) * gapScale;
       },
+      /** Converts a vertical canvas position back into a row-layout coordinate. */
       unitForY(y: number) {
         rowTops ??= layout.rowStartUnits.map((start, row) => row * rowHeight + (start - row) * gapScale);
         const relativeY = y - offset;
@@ -140,7 +148,9 @@ export function channelPlotGeometry(
   return {
     rowHeight,
     contentHeight: Math.max(availableHeight, layout.totalUnits * rowHeight),
+    /** Converts a row-layout coordinate into a vertical canvas position. */
     yForUnit: (unit: number) => offset + (unit - unitStart) * rowHeight,
+    /** Converts a vertical canvas position back into a row-layout coordinate. */
     unitForY: (y: number) => unitStart + (y - offset) / rowHeight,
   };
 }
@@ -162,6 +172,7 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
   });
   const grouped = blocks.some((block) => block.name !== null);
   let units = 0;
+  /** Calculates the available padding around the channel rows. */
   const padding = (size: number) => {
     if (size <= 0) return;
     tracks.push(`${size}fr`);
@@ -190,6 +201,7 @@ export function buildChannelRowLayout(labels: readonly string[], electrodeSpacin
     ...(selectedGap !== null ? { groupGapPx: selectedGap } : {}) };
 }
 
+/** Normalizes the channel group gap. */
 export function normalizeChannelGroupGap(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(240, Math.max(8, value)) : null;
 }
@@ -243,11 +255,14 @@ export function orderMatlabDisplayRows<T extends ElectrodeDisplayRows>(display: 
   return reorderDisplayRows(display, matlabDisplayOrder(display.labels));
 }
 
+/** Orders the grouped display rows. */
 export function orderGroupedDisplayRows<T extends ElectrodeDisplayRows>(display: T, mode: ChannelGroupingMode): T {
   return reorderDisplayRows(display, channelGroupOrder(display.labels, mode));
 }
 
+/** Reorders the display rows. */
 function reorderDisplayRows<T extends ElectrodeDisplayRows>(display: T, order: number[]): T {
+  /** Applies the selected index order to the corresponding channel values. */
   const reorder = <V>(values: V[]): V[] => {
     if (values.length !== display.labels.length) throw new Error("Display channel metadata does not match the waveform row count.");
     return order.map((index) => values[index]);

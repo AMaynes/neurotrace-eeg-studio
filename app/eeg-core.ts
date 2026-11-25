@@ -1,21 +1,9 @@
-/**
- * Overview & Purpose
- * Owns browser-side recording ingestion, signal-window access, display
- * filtering, montage construction, and signal-domain formatting.
- *
- * Architectural Relationships
- * Called by: app/page.tsx and signal-integrity tests.
- * Calls: Browser File/Blob, TextDecoder, DataView, and DecompressionStream APIs.
- *
- * External Resources
- * User-selected EDF/EDF+, MATLAB v5/v7.3, and raw signed-int16 DAT files.
- *
- * Notes
- * This module has no Node.js dependencies. EDF and DAT remain file-backed and
- * are read with File.slice(); MAT v5 is decoded in memory because compressed
- * MATLAB elements are not independently seekable. MAT v7.3 stays file-backed
- * through an HDF5 worker. All state is caller-owned.
- */
+/*
+Purpose: Owns browser-side recording ingestion, signal-window access, display filtering, montage construction, and signal-domain formatting.
+File Dependencies: app/bipolar-montage.ts, app/envelope-cache.ts, app/mat-event-reader.ts,
+  app/mat73-worker-client.ts, app/progressive-envelope.ts, app/recording-labels.ts.
+*/
+
 
 import { Mat73WorkerClient } from "./mat73-worker-client.ts";
 import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
@@ -164,6 +152,7 @@ export type SignalErrorCode =
 export class SignalFileError extends Error {
   readonly code: SignalErrorCode;
 
+  /** Initializes the instance from the supplied arguments. */
   constructor(code: SignalErrorCode, message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "SignalFileError";
@@ -178,6 +167,7 @@ interface NormalizedWindow {
   channelIndices: number[];
 }
 
+/** Bounds a requested read to the recording and validates the selected channels. */
 function normalizeWindowRequest(
   meta: RecordingMeta,
   startSec: number,
@@ -222,6 +212,7 @@ function normalizeWindowRequest(
   };
 }
 
+/** Packages decoded samples with their channel labels, units, and actual time origins. */
 function makeWindowResult(
   meta: RecordingMeta,
   request: NormalizedWindow,
@@ -272,6 +263,7 @@ const DEFAULT_DEMO_LABELS = [
   "RPH4",
 ] as const;
 
+/** Generates deterministic integer-seeded noise for synthetic recordings. */
 function integerNoise(sampleIndex: number, channelIndex: number, salt = 0): number {
   let value = (sampleIndex | 0) ^ Math.imul(channelIndex + 1, 0x9e3779b1) ^ salt;
   value = Math.imul(value ^ (value >>> 16), 0x21f0aaad);
@@ -280,6 +272,7 @@ function integerNoise(sampleIndex: number, channelIndex: number, salt = 0): numb
   return (value >>> 0) / 0xffffffff * 2 - 1;
 }
 
+/** Evaluates a smooth synthetic pulse at the requested time. */
 function smoothPulse(time: number, start: number, end: number, ramp = 2): number {
   if (time <= start || time >= end) return 0;
   const rise = Math.min(1, (time - start) / ramp);
@@ -291,6 +284,7 @@ export class DemoSource implements SignalSource {
   readonly meta: RecordingMeta;
   private readonly lineFrequency: 50 | 60;
 
+  /** Initializes the instance from the supplied arguments. */
   constructor(options: DemoSourceOptions = {}) {
     const durationSec = options.durationSec ?? 2 * 60 * 60;
     const sampleRate = options.sampleRate ?? 256;
@@ -323,6 +317,7 @@ export class DemoSource implements SignalSource {
     };
   }
 
+  /** Returns the window. */
   async getWindow(
     startSec: number,
     durationSec: number,
@@ -461,15 +456,18 @@ export function normalizeEDFPhysicalDimension(dimension: string): EDFUnitNormali
     : { unit: "µV", scale, isVoltage: true };
 }
 
+/** Reports whether the value has usable edf calibration. */
 function hasUsableEDFCalibration(signal: EDFSignalHeader): boolean {
   return signal.digitalMaximum !== signal.digitalMinimum
     && signal.physicalMaximum !== signal.physicalMinimum;
 }
 
+/** Decodes a fixed-width Latin-1 header field, removing nulls and outer whitespace. */
 function decodeFixed(bytes: Uint8Array, start: number, length: number): string {
   return latin1Decoder.decode(bytes.subarray(start, start + length)).replace(/\0/g, "").trim();
 }
 
+/** Parses the finite number. */
 function parseFiniteNumber(text: string, field: string): number {
   const value = Number(text.trim());
   if (!Number.isFinite(value)) {
@@ -478,6 +476,7 @@ function parseFiniteNumber(text: string, field: string): number {
   return value;
 }
 
+/** Parses the integer. */
 function parseInteger(text: string, field: string): number {
   const value = parseFiniteNumber(text, field);
   if (!Number.isInteger(value)) {
@@ -486,6 +485,7 @@ function parseInteger(text: string, field: string): number {
   return value;
 }
 
+/** Parses the edf date. */
 function parseEDFDate(dateText: string, timeText: string): Date | undefined {
   const dateMatch = /^(\d{2})\.(\d{2})\.(\d{2})$/.exec(dateText.trim());
   const timeMatch = /^(\d{2})\.(\d{2})\.(\d{2})$/.exec(timeText.trim());
@@ -503,6 +503,7 @@ function parseEDFDate(dateText: string, timeText: string): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
+/** Reads the edf signal field. */
 function readEDFSignalField(
   bytes: Uint8Array,
   offset: number,
@@ -514,6 +515,7 @@ function readEDFSignalField(
   );
 }
 
+/** Reads EDF recording and signal headers and validates the declared record layout. */
 export async function parseEDFHeader(file: File): Promise<EDFHeader> {
   if (file.size < 256) {
     throw new SignalFileError("TRUNCATED_FILE", "This EDF file is shorter than its 256-byte fixed header.");
@@ -662,6 +664,7 @@ export async function parseEDFHeader(file: File): Promise<EDFHeader> {
 /** Alias for callers that prefer conventional mixed-case naming. */
 export const parseEdfHeader = parseEDFHeader;
 
+/** Decodes an EDF+ time-annotated list into individual source events. */
 export function parseEdfTalText(text: string): SourceEvent[] {
   const events: SourceEvent[] = [];
   for (const tal of text.split("\0")) {
@@ -686,6 +689,7 @@ export function parseEdfTalText(text: string): SourceEvent[] {
   return events;
 }
 
+/** Reads EDF+ annotation channels and returns timed events with parsing warnings. */
 export async function parseEDFAnnotations(
   file: File,
   header: EDFHeader,
@@ -698,6 +702,7 @@ export async function parseEDFAnnotations(
   let batchBytes = 0;
   throwIfSignalReadAborted(options.signal);
 
+  /** Reads pending EDF annotation ranges without reading intervening waveform samples. */
   const flush = async () => {
     if (!slices.length) return;
     // Batch only annotation ranges. Reading whole EDF records here makes
@@ -750,6 +755,7 @@ export function isObviousAuxiliaryChannel(channelLabel: string): boolean {
     || /^(?:(?:AUX|ECG|EKG|EMG|EOG|RESP|RESPIRATION|TRIG|TRIGGER|DC|MARK|REF|GND|SYNC|STI)\d*|E|ABD|SPO2|ETCO2|PULSE|CO2WAVE)$/i.test(label);
 }
 
+/** Reports whether the value is likely eegedf signal. */
 function isLikelyEEGEDFSignal(signal: EDFSignalHeader): boolean {
   if (/^EEG(?:\s|$)/i.test(signal.label.trim())) return true;
   const label = signal.label
@@ -760,6 +766,7 @@ function isLikelyEEGEDFSignal(signal: EDFSignalHeader): boolean {
     || /^[A-Z]{1,6}\d{1,3}$/i.test(label);
 }
 
+/** Chooses the initial EEG channel selection from EDF labels and units. */
 function recommendEDFDisplayChannels(
   displaySignals: readonly EDFSignalHeader[],
   unitScaleBySignalIndex: readonly number[],
@@ -821,6 +828,7 @@ export class EDFSource implements SignalSource {
   private annotationsLoaded: boolean;
   private annotationLoadPromise: Promise<readonly SourceEvent[]> | null = null;
 
+  /** Initializes the instance from the supplied arguments. */
   private constructor(
     file: File,
     header: EDFHeader,
@@ -878,6 +886,7 @@ export class EDFSource implements SignalSource {
     };
   }
 
+  /** Constructs the source using the supplied metadata. */
   static async create(file: File, options: EDFSourceOptions = {}): Promise<EDFSource> {
     const header = await parseEDFHeader(file);
     const shouldParseAnnotations = options.parseAnnotations !== false;
@@ -896,6 +905,7 @@ export class EDFSource implements SignalSource {
     return this.file;
   }
 
+  /** Loads the annotations. */
   async loadAnnotations(options: SignalReadOptions = {}): Promise<readonly SourceEvent[]> {
     if (this.annotationsLoaded) return this.events;
     if (this.annotationLoadPromise) return this.annotationLoadPromise;
@@ -915,6 +925,7 @@ export class EDFSource implements SignalSource {
     return this.annotationLoadPromise;
   }
 
+  /** Applies the verified annotations. */
   applyVerifiedAnnotations(events: readonly SourceEvent[], warnings: readonly string[] = []) {
     this.events.splice(0, this.events.length, ...events);
     for (const warning of warnings) {
@@ -924,6 +935,7 @@ export class EDFSource implements SignalSource {
     this.annotationLoadPromise = Promise.resolve(this.events);
   }
 
+  /** Returns the window. */
   async getWindow(
     startSec: number,
     durationSec: number,
@@ -1009,6 +1021,7 @@ export class EDFSource implements SignalSource {
     );
   }
 
+  /** Returns the envelope window. */
   async getEnvelopeWindow(
     startSec: number,
     durationSec: number,
@@ -1094,6 +1107,7 @@ export interface RawDatSourceOptions {
   recordingLabels?: readonly RecordingLabel[];
 }
 
+/** Expands a finite scalar or fallback into channel values, or validates a supplied array. */
 function expandPerChannel(
   value: number | readonly number[] | undefined,
   count: number,
@@ -1119,6 +1133,7 @@ export class RawDatSource implements SignalSource {
   private readonly physicalOffset: number[];
   private readonly totalSamples: number;
 
+  /** Initializes the instance from the supplied arguments. */
   private constructor(file: File, options: RawDatSourceOptions) {
     if (!(options.sampleRate > 0) || !Number.isFinite(options.sampleRate)) {
       throw new Error("Raw DAT sample rate must be a positive finite number.");
@@ -1193,6 +1208,7 @@ export class RawDatSource implements SignalSource {
     };
   }
 
+  /** Constructs the source using the supplied metadata. */
   static async create(file: File, options: RawDatSourceOptions): Promise<RawDatSource> {
     return new RawDatSource(file, options);
   }
@@ -1210,6 +1226,7 @@ export class RawDatSource implements SignalSource {
     };
   }
 
+  /** Returns the window. */
   async getWindow(
     startSec: number,
     durationSec: number,
@@ -1246,6 +1263,7 @@ export class RawDatSource implements SignalSource {
     return makeWindowResult(this.meta, request, outputs, undefined, channelStartSecs);
   }
 
+  /** Returns the envelope window. */
   async getEnvelopeWindow(
     startSec: number,
     durationSec: number,
@@ -1381,14 +1399,17 @@ export interface MatSourceOptions {
   channelUnits?: string | readonly string[];
 }
 
+/** Rounds a MAT element offset to its next eight-byte boundary. */
 function align8(value: number): number {
   return Math.ceil(value / 8) * 8;
 }
 
+/** Reports whether the value is known mi type. */
 function isKnownMiType(type: number): boolean {
   return (type >= 1 && type <= 7) || (type >= 9 && type <= 18);
 }
 
+/** Reads the mat tag. */
 function readMatTag(bytes: Uint8Array, offset: number, littleEndian: boolean): MatTag | null {
   if (offset >= bytes.byteLength) return null;
   if (bytes.byteLength - offset < 8) {
@@ -1443,6 +1464,7 @@ function readMatTag(bytes: Uint8Array, offset: number, littleEndian: boolean): M
   };
 }
 
+/** Reads the integer array. */
 function readIntegerArray(tag: MatTag, littleEndian: boolean): number[] {
   const view = new DataView(tag.data.buffer, tag.data.byteOffset, tag.data.byteLength);
   const result: number[] = [];
@@ -1464,6 +1486,7 @@ function readIntegerArray(tag: MatTag, littleEndian: boolean): number[] {
   return result;
 }
 
+/** Decodes the mat text. */
 function decodeMatText(tag: MatTag, littleEndian: boolean): string {
   if (tag.type === MI_INT8 || tag.type === MI_UINT8 || tag.type === MI_UTF8) {
     return new TextDecoder("utf-8").decode(tag.data).replace(/\0+$/g, "");
@@ -1484,6 +1507,7 @@ function decodeMatText(tag: MatTag, littleEndian: boolean): string {
   return String.fromCodePoint(...codePoints.filter((point) => point !== 0));
 }
 
+/** Decodes the mat char rows. */
 function decodeMatCharRows(
   tag: MatTag,
   dimensions: readonly number[],
@@ -1525,6 +1549,7 @@ function decodeMatCharRows(
   });
 }
 
+/** Returns the byte width of a supported MATLAB element type. */
 function miTypeWidth(type: number): number {
   if (type === MI_INT8 || type === MI_UINT8) return 1;
   if (type === MI_INT16 || type === MI_UINT16) return 2;
@@ -1533,6 +1558,7 @@ function miTypeWidth(type: number): number {
   return 0;
 }
 
+/** Reads one MAT numeric element using its declared storage type and byte order. */
 function readNumericAt(descriptor: MatNumericDescriptor, index: number): number {
   const width = miTypeWidth(descriptor.dataType);
   const offset = index * width;
@@ -1559,6 +1585,7 @@ function readNumericAt(descriptor: MatNumericDescriptor, index: number): number 
   }
 }
 
+/** Inflates a compressed MAT element before parsing its nested tags. */
 async function decompressMatElement(compressed: Uint8Array): Promise<Uint8Array> {
   if (typeof DecompressionStream === "undefined") {
     throw new SignalFileError(
@@ -1604,6 +1631,7 @@ async function decompressMatElement(compressed: Uint8Array): Promise<Uint8Array>
   }
 }
 
+/** Enumerates the nested tags belonging to a MATLAB container. */
 function childTags(bytes: Uint8Array, littleEndian: boolean): MatTag[] {
   const tags: MatTag[] = [];
   let offset = 0;
@@ -1619,6 +1647,7 @@ function childTags(bytes: Uint8Array, littleEndian: boolean): MatTag[] {
   return tags;
 }
 
+/** Parses the mat matrix. */
 async function parseMatMatrix(
   matrixBytes: Uint8Array,
   context: MatParseContext,
@@ -1730,6 +1759,7 @@ async function parseMatMatrix(
   }
 }
 
+/** Parses the mat elements. */
 async function parseMatElements(bytes: Uint8Array, context: MatParseContext, depth = 0): Promise<void> {
   if (depth > 24) throw new SignalFileError("INVALID_HEADER", "MAT v5 compressed nesting exceeds the supported depth.");
   let offset = 0;
@@ -1747,6 +1777,7 @@ async function parseMatElements(bytes: Uint8Array, context: MatParseContext, dep
   }
 }
 
+/** Reports whether the value is mat73 file. */
 export async function isMat73File(file: File) {
   const firstBytes = new Uint8Array(await file.slice(0, Math.min(file.size, 128)).arrayBuffer());
   const signature = String.fromCharCode(...firstBytes.subarray(0, 8));
@@ -1754,6 +1785,7 @@ export async function isMat73File(file: File) {
   return signature === "\u0089HDF\r\n\u001a\n" || /MATLAB\s+7\.3\s+MAT-file/i.test(headerText);
 }
 
+/** Loads the mat v5 context. */
 async function loadMatV5Context(file: File): Promise<MatParseContext> {
   const firstBytes = new Uint8Array(await file.slice(0, Math.min(file.size, 128)).arrayBuffer());
   const signature = String.fromCharCode(...firstBytes.subarray(0, 8));
@@ -1781,6 +1813,7 @@ async function loadMatV5Context(file: File): Promise<MatParseContext> {
   return context;
 }
 
+/** Normalizes a MATLAB field path for metadata matching. */
 function canonicalMatPath(path: string): string {
   return path
     .replace(/\[\d+\]/g, "")
@@ -1790,6 +1823,7 @@ function canonicalMatPath(path: string): string {
     .join(".");
 }
 
+/** Finds the event index represented by a legacy MATLAB field path. */
 function legacyEventIndex(path: string, field: "label" | "times"): number | undefined {
   const match = new RegExp(`(?:^|\\.)sessionInfo(?:\\[\\d+\\])?\\.sFile(?:\\[\\d+\\])?\\.events(?:\\[(\\d+)\\])?\\.${field}(?:\\[\\d+\\])?$`, "i").exec(path);
   return match ? Number(match[1] ?? 0) : undefined;
@@ -1836,9 +1870,13 @@ function matRecordingLabels(context: MatParseContext) {
     }
     const decoded = decodeMatRecordingLabels({
       groupIndex, label: labelByGroup.get(groupIndex) ?? "", dimensions: descriptor.dimensions,
-      count: descriptor.elementCount, valueAt: (index) => readNumericAt(descriptor, index),
+      count: descriptor.elementCount,
+      /** Returns the numeric event value at the requested occurrence. */
+      valueAt: (index) => readNumericAt(descriptor, index),
       epochAt: epoch?.elementCount ? (index) => index < epoch.elementCount && !epoch.complex ? readNumericAt(epoch, index) : NaN : undefined,
+      /** Returns the channel metadata attached to an event occurrence. */
       channelsAt: (index) => channels.get(index) ?? [],
+      /** Returns the notes attached to an event occurrence. */
       notesAt: (index) => notes.get(index)?.join(" · ") ?? "",
     });
     // Avoid the engine's function-argument limit for dense trigger/event groups.
@@ -1910,10 +1948,12 @@ export async function inspectLegacyMatMetadata(file: File): Promise<LegacyMatMet
   return isLegacyMatContext(context) ? legacyMetadataFromContext(context) : null;
 }
 
+/** Reports whether the value is legacy mat context. */
 function isLegacyMatContext(context: MatParseContext): boolean {
   return legacyMatContainerPaths(context).length > 0 && standaloneMatSignalCandidates(context).length === 0;
 }
 
+/** Lists candidate legacy session containers in a MATLAB file. */
 function legacyMatContainerPaths(context: MatParseContext): string[] {
   return context.structures.filter(({ name, fieldNames }) =>
     /(?:^|\.)sessioninfo$/.test(canonicalMatPath(name)) &&
@@ -1934,6 +1974,7 @@ function standaloneMatSignalCandidates(context: MatParseContext): MatNumericDesc
 /** Extracts only the documented legacy metadata paths; gains/offsets are not channel counts. */
 function legacyMetadataFromContext(context: MatParseContext): LegacyMatMetadata {
   const warnings = [...context.warnings];
+  /** Finds numeric MATLAB metadata by its field-name suffix. */
   const numericBySuffix = (suffix: string) => context.numeric.find((descriptor) =>
     canonicalMatPath(descriptor.name).endsWith(suffix),
   );
@@ -2028,6 +2069,7 @@ function legacyMetadataFromContext(context: MatParseContext): LegacyMatMetadata 
   };
 }
 
+/** Ranks MAT variable names by how specifically they identify a sampling rate. */
 function sampleRateNameScore(name: string): number {
   const leaf = name.split(".").at(-1)?.replace(/[^a-z0-9]/gi, "").toLowerCase() ?? "";
   if (["fs", "srate", "samplerate", "samplingrate", "samplingfrequency"].includes(leaf)) return 100;
@@ -2037,6 +2079,7 @@ function sampleRateNameScore(name: string): number {
   return 0;
 }
 
+/** Chooses the mat sample rate. */
 function chooseMatSampleRate(descriptors: readonly MatNumericDescriptor[]): { value?: number; name?: string } {
   const candidates = descriptors
     .filter((descriptor) => descriptor.elementCount === 1)
@@ -2050,6 +2093,7 @@ function chooseMatSampleRate(descriptors: readonly MatNumericDescriptor[]): { va
   return candidates.length ? { value: candidates[0].value, name: candidates[0].descriptor.name } : {};
 }
 
+/** Decodes the mat signal matrix. */
 function decodeMatSignalMatrix(descriptor: MatNumericDescriptor): {
   data: Float32Array[];
   sampleCount: number;
@@ -2098,10 +2142,12 @@ export class Mat73Source implements SignalSource {
   private readonly client: Mat73WorkerClient;
   private readonly sampleCount: number;
 
+  /** Releases resources owned by this instance. */
   dispose(): void {
     this.client.close();
   }
 
+  /** Initializes the instance from the supplied arguments. */
   private constructor(
     file: File,
     client: Mat73WorkerClient,
@@ -2157,6 +2203,7 @@ export class Mat73Source implements SignalSource {
     };
   }
 
+  /** Constructs the source using the supplied metadata. */
   static async create(file: File, options: MatSourceOptions = {}) {
     let opened: Awaited<ReturnType<typeof Mat73WorkerClient.create>>;
     try {
@@ -2175,6 +2222,7 @@ export class Mat73Source implements SignalSource {
     return new Mat73Source(file, opened.client, opened.metadata, options);
   }
 
+  /** Returns the window. */
   async getWindow(
     startSec: number,
     durationSec: number,
@@ -2200,6 +2248,7 @@ export class Mat73Source implements SignalSource {
     );
   }
 
+  /** Returns the envelope window. */
   async getEnvelopeWindow(
     startSec: number,
     durationSec: number,
@@ -2212,6 +2261,7 @@ export class Mat73Source implements SignalSource {
     const sampleRate = this.meta.sampleRate;
     const firstSample = Math.floor(request.startSec * sampleRate);
     const endSample = Math.min(this.sampleCount, Math.ceil(request.endSec * sampleRate));
+    /** Converts to the window. */
     const toWindow = (result: Awaited<ReturnType<Mat73WorkerClient["readEnvelope"]>>, complete: boolean): EnvelopeWindowData => ({
       ...makeWindowResult(
         this.meta,
@@ -2249,6 +2299,7 @@ export class MatSource implements SignalSource {
   readonly matrixName: string;
   private readonly data: Float32Array[];
 
+  /** Initializes the instance from the supplied arguments. */
   private constructor(
     file: File,
     descriptor: MatNumericDescriptor,
@@ -2300,6 +2351,7 @@ export class MatSource implements SignalSource {
     };
   }
 
+  /** Constructs the source using the supplied metadata. */
   static async create(file: File, options: MatSourceOptions = {}): Promise<MatSource | Mat73Source> {
     if (await isMat73File(file)) return Mat73Source.create(file, options);
     return MatSource.fromParsedContext(file, await loadMatV5Context(file), options);
@@ -2314,6 +2366,7 @@ export class MatSource implements SignalSource {
       : { kind: "standalone", source: MatSource.fromParsedContext(file, context, options) };
   }
 
+  /** Constructs from the parsed context. */
   private static fromParsedContext(file: File, context: MatParseContext, options: MatSourceOptions): MatSource {
     const signalCandidates = standaloneMatSignalCandidates(context)
       .sort((a, b) => b.elementCount - a.elementCount || a.name.localeCompare(b.name));
@@ -2357,6 +2410,7 @@ export class MatSource implements SignalSource {
     );
   }
 
+  /** Returns the window. */
   async getWindow(
     startSec: number,
     durationSec: number,
@@ -2500,6 +2554,7 @@ const CLINICAL_FIR_KAISER_BETA = 5.65;
 const CLINICAL_PASSBAND_EDGE_HZ = 200;
 const clinicalFirCache = new Map<number, Float64Array>();
 
+/** Evaluates the modified Bessel function used by the resampling window. */
 function modifiedBesselI0(value: number): number {
   const squaredQuarter = value * value / 4;
   let sum = 1;
@@ -2649,6 +2704,7 @@ export function decimateClinicalDisplayTrace(
   };
 }
 
+/** Throws the original cancellation reason before continuing a signal read. */
 function throwIfSignalReadAborted(signal: AbortSignal | undefined) {
   if (!signal?.aborted) return;
   if (signal.reason !== undefined) throw signal.reason;
@@ -2657,6 +2713,7 @@ function throwIfSignalReadAborted(signal: AbortSignal | undefined) {
   throw error;
 }
 
+/** Validates the envelope bucket count. */
 function validateEnvelopeBucketCount(bucketCount: number) {
   if (!Number.isSafeInteger(bucketCount) || bucketCount <= 0) {
     throw new SignalFileError("INVALID_WINDOW", "Envelope bucket count must be a positive whole number.");
@@ -2674,6 +2731,7 @@ type EnvelopeAccumulator = {
   previousValue: number;
 };
 
+/** Creates the envelope accumulator. */
 function makeEnvelopeAccumulator(bucketCount: number): EnvelopeAccumulator {
   const minima = new Float32Array(bucketCount);
   const maxima = new Float32Array(bucketCount);
@@ -2693,6 +2751,7 @@ function makeEnvelopeAccumulator(bucketCount: number): EnvelopeAccumulator {
   };
 }
 
+/** Adds the envelope sample. */
 function addEnvelopeSample(accumulator: EnvelopeAccumulator, bucket: number, value: number) {
   if (bucket < 0 || bucket >= accumulator.data.length) return;
   if (!Number.isFinite(value)) {
@@ -2715,6 +2774,7 @@ function addEnvelopeSample(accumulator: EnvelopeAccumulator, bucket: number, val
   accumulator.maxima[bucket] = Math.max(accumulator.maxima[bucket], value);
 }
 
+/** Finishes the envelope accumulator. */
 function finishEnvelopeAccumulator(accumulator: EnvelopeAccumulator) {
   for (let bucket = 0; bucket < accumulator.data.length; bucket += 1) {
     const minimum = accumulator.minima[bucket];
@@ -2730,6 +2790,7 @@ function finishEnvelopeAccumulator(accumulator: EnvelopeAccumulator) {
   }
 }
 
+/** Creates the envelope window result. */
 function makeEnvelopeWindowResult(
   meta: RecordingMeta,
   request: NormalizedWindow,
@@ -2764,6 +2825,7 @@ function envelopeWindowFromAccumulators(
   };
 }
 
+/** Resamples retained envelope representatives on the requested display grid. */
 function resampleEnvelopeRepresentatives(
   input: Float32Array,
   sourceGaps: Uint8Array,
@@ -2836,10 +2898,12 @@ function resampleEnvelopeRepresentatives(
   return output;
 }
 
+/** Clamps the index. */
 function clampIndex(index: number, length: number) {
   return Math.max(0, Math.min(length - 1, index));
 }
 
+/** Finds a finite sample near the requested index without fabricating a value. */
 function nearestFiniteSample(values: Float32Array, center: number, maximumDistance: number) {
   for (let distance = 0; distance <= maximumDistance; distance += 1) {
     const left = values[center - distance];
@@ -3391,6 +3455,7 @@ export function detectEnvelopeSynchronizedFlatlines(
   let previousValues = new Float32Array(minima.length);
   let currentFlat = new Uint8Array(minima.length);
   let currentValues = new Float32Array(minima.length);
+  /** Finishes the run. */
   const finishRun = (endBucketExclusive: number) => {
     if (runStartBucket < 0) return;
     const durationSec = (endBucketExclusive - runStartBucket) * bucketDurationSec;
@@ -3619,6 +3684,7 @@ interface BiquadCoefficients {
   a2: number;
 }
 
+/** Calculates coefficients for the requested custom biquad filter. */
 function designBiquad(
   kind: "highpass" | "lowpass" | "notch",
   frequency: number,
@@ -3655,6 +3721,7 @@ function designBiquad(
   };
 }
 
+/** Applies one recursive biquad pass to the supplied sample array. */
 function biquadPass(input: Float32Array, coefficients: BiquadCoefficients): Float32Array {
   const output = new Float32Array(input.length);
   const denominator = 1 + coefficients.a1 + coefficients.a2;
@@ -3687,12 +3754,14 @@ function biquadPass(input: Float32Array, coefficients: BiquadCoefficients): Floa
   return output;
 }
 
+/** Returns a reversed Float32 copy of the supplied samples. */
 function reverseFloat32(input: Float32Array): Float32Array {
   const output = new Float32Array(input.length);
   for (let index = 0; index < input.length; index += 1) output[index] = input[input.length - 1 - index];
   return output;
 }
 
+/** Applies the biquad. */
 function applyBiquad(
   input: Float32Array,
   coefficients: BiquadCoefficients,
@@ -3703,6 +3772,7 @@ function applyBiquad(
   return reverseFloat32(biquadPass(reverseFloat32(forward), coefficients));
 }
 
+/** Applies the display filters. */
 export function applyDisplayFilters(
   data: readonly Float32Array[],
   sampleRates: readonly number[],
@@ -3756,6 +3826,7 @@ export interface MontageResult<T extends SignalSamples = Float32Array> {
 
 type ExcludedChannelSet = ReadonlySet<number | string>;
 
+/** Checks whether a channel is excluded from the requested montage arithmetic. */
 function channelIsExcluded(index: number, label: string, excludedChannels: ExcludedChannelSet): boolean {
   if (excludedChannels.has(index) || excludedChannels.has(label)) return true;
   const normalized = label.trim().toLowerCase();
@@ -3806,6 +3877,7 @@ interface MatlabAnatomicalChannel {
   contactText: string;
 }
 
+/** Parses the matlab anatomical channel. */
 function parseMatlabAnatomicalChannel(label: string, sourceIndex: number): MatlabAnatomicalChannel | null {
   const actualLabel = label.trim();
   const match = /^([A-Za-z]+)(\d+)$/.exec(actualLabel);
@@ -3837,6 +3909,7 @@ export function displayElectrodeGroup(label: string): string | null {
  */
 export function orderElectrodeChannelIndices(labels: readonly string[]): number[] {
   const compare = new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare;
+  /** Derives the channel-side ordering key from its label. */
   const side = (group: string) => group.startsWith("L") ? 0 : group.startsWith("R") ? 1 : 2;
   return labels.map((label, index) => ({ label, index, group: displayElectrodeGroup(label) }))
     .sort((left, right) => {
@@ -3872,6 +3945,7 @@ export function orderAnatomicalChannelIndices(
   return [...left, ...right, ...other].map((channel) => channel.sourceIndex);
 }
 
+/** Derives display channels from compatible source channels while preserving montage provenance. */
 export function buildMontage<T extends SignalSamples>(
   data: readonly T[],
   labels: readonly string[],
@@ -4145,6 +4219,7 @@ export function buildMontage<T extends SignalSamples>(
 // Export helpers
 // ---------------------------------------------------------------------------
 
+/** Formats signed recording seconds as a clock, with optional millisecond precision. */
 export function formatClock(seconds: number, withMs = false): string {
   if (!Number.isFinite(seconds)) return withMs ? "--:--:--.---" : "--:--:--";
   const negative = seconds < 0;
@@ -4167,6 +4242,7 @@ export function formatDisplayChannelLabel(label: string): string {
 /** Backwards-compatible name used by earlier viewer prototypes. */
 export const formatTime = formatClock;
 
+/** Escapes a value for a quoted CSV field. */
 export function csvEscape(value: unknown): string {
   let text: string;
   if (value == null) text = "";

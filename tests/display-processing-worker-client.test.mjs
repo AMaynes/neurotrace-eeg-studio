@@ -1,4 +1,8 @@
-/** Fast-path behavior for clinical display processing worker dispatch. */
+/*
+Purpose: Fast-path behavior for clinical display processing worker dispatch.
+File Dependencies: app/display-processing-worker-client.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

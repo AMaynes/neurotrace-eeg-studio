@@ -1,6 +1,8 @@
-/**
- * Protects the static GitHub Pages artifact contract.
- */
+/*
+Purpose: Protects the static GitHub Pages artifact contract.
+File Dependencies: Launch NeuroTrace.command, package.json, pages-dist/.
+*/
+
 
 import assert from "node:assert/strict";
 import { access, readFile, readdir, stat } from "node:fs/promises";

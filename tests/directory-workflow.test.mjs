@@ -1,3 +1,11 @@
+/*
+Purpose: Checks directory workflow behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/bids-companions.ts, app/directory-import.ts, app/directory-review-resume.ts,
+  app/directory-tab-layout.ts, app/eeg-core.ts, app/import-selection.ts, app/mat-import.ts,
+  app/matlab-annotations-csv.ts, app/page.tsx, tests/fixtures/legacy-mat.mjs.
+*/
+
+
 import { directoryReviewCache, isReviewCsv, loadDirectoryReviewCsvs } from "../app/directory-review-resume.ts";
 import { serializeMatlabAnnotations } from "../app/matlab-annotations-csv.ts";
 /** Execute the page's real handlers/effect with patient-free files and state spies. */

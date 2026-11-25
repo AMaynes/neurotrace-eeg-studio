@@ -1,4 +1,8 @@
-/** Duration-based time-grid spacing shared by absolute and event-relative views. */
+/*
+Purpose: Duration-based time-grid spacing shared by absolute and event-relative views.
+File Dependencies: None.
+*/
+
 
 const NICE_INTERVAL_MULTIPLES = [1, 2, 2.5, 5, 10] as const;
 const DEFAULT_TARGET_GRID_LINES = 24;

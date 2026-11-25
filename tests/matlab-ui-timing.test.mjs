@@ -1,3 +1,10 @@
+/*
+Purpose: Checks matlab ui timing behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/channel-layout.ts, app/display-gain.ts, app/matlab-annotations-csv.ts, app/page.tsx,
+  app/recording-labels.ts.
+*/
+
+
 import { normalizeChannelGroupGap } from "../app/channel-layout.ts";
 /** Execute the real pointer/annotation/export paths, not a duplicate timing formula. */
 import assert from "node:assert/strict";

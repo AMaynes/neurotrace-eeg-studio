@@ -1,4 +1,8 @@
-/** Fixed-grid cache reuse must preserve source extrema and bounded read costs. */
+/*
+Purpose: Fixed-grid cache reuse must preserve source extrema and bounded read costs.
+File Dependencies: app/envelope-cache.ts, app/raw-dat-envelope.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

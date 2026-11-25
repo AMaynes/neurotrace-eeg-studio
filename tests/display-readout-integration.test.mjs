@@ -1,4 +1,9 @@
-/** Execute the real cursor/readout JSX against exact samples and overview buckets. */
+/*
+Purpose: Execute the real cursor/readout JSX against exact samples and overview buckets.
+File Dependencies: app/cursor-readout.ts, app/eeg-core.ts, app/page.tsx, app/playback.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

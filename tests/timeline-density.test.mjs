@@ -1,3 +1,9 @@
+/*
+Purpose: Checks timeline density behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/timeline-density.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

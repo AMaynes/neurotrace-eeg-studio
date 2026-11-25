@@ -1,3 +1,9 @@
+/*
+Purpose: Checks label visibility behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/label-visibility-filter.tsx, app/label-visibility.ts, app/page.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

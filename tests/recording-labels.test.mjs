@@ -1,3 +1,10 @@
+/*
+Purpose: Checks recording labels behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/eeg-core.ts, app/local-recording-identity.ts, app/mat-import.ts,
+  app/neurotrace-project.ts, app/page.tsx, app/recording-labels.ts, tests/fixtures/legacy-mat.mjs.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";

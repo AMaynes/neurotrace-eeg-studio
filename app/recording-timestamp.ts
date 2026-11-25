@@ -1,4 +1,10 @@
-/** Parse elapsed recording time as seconds, mm:ss, or hh:mm:ss, with fractional seconds. */
+/*
+Purpose: Parses and bounds recording-relative timestamp input.
+File Dependencies: None.
+*/
+
+
+/** Parses a finite recording-relative time and rejects values outside its bounds. */
 export function parseRecordingTimestamp(value: string): number | null {
   const fields = value.trim().split(":");
   if (fields.length > 3 || !fields.every((field, index) =>

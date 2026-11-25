@@ -1,4 +1,10 @@
-/** Anonymous metadata fixtures and deterministic worker boundaries; never opens a browser. */
+/*
+Purpose: Anonymous metadata fixtures and deterministic worker boundaries; never opens a browser.
+File Dependencies: app/directory-event-client.ts, app/directory-event-index.ts, app/directory-import.ts,
+  app/eeg-core.ts, app/neurotrace-project.ts, tests/fixtures/legacy-mat.mjs.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { matWriter, legacyMatFile } from "./fixtures/legacy-mat.mjs";

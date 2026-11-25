@@ -1,10 +1,18 @@
+/*
+Purpose: Defines local recording identity for the NeuroTrace workspace.
+File Dependencies: app/source-integrity.ts.
+*/
+
+
 import { IncrementalSha256 } from "./source-integrity.ts";
 
 type LocalFile = Pick<File, "name" | "size" | "lastModified" | "webkitRelativePath">;
 
 /** Browser-local recovery identity. No recording bytes are read or verified. */
 export function localRecordingIdentity(file: LocalFile, interpretation?: Record<string, unknown>, companion?: LocalFile) {
+  /** Identifies a local file by relative path, size, and modification time. */
   const describe = (value: LocalFile) => [value.webkitRelativePath || value.name, value.size, value.lastModified];
+  /** Normalizes a key for comparison in the current lookup. */
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
     : value && typeof value === "object"
       ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]))

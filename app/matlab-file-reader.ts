@@ -1,4 +1,9 @@
-/** One file-decoding worker per MATLAB display view, reused across bounded reads. */
+/*
+Purpose: One file-decoding worker per MATLAB display view, reused across bounded reads.
+File Dependencies: app/eeg-core.ts, app/file-window-worker.ts, app/file-window.ts.
+*/
+
+
 import { EDFSource, RawDatSource, type SignalSource, type WindowData } from "./eeg-core.ts";
 import type { FileWindowBuildRequest, FileWindowMetrics, FileWindowProgress } from "./file-window.ts";
 import type { FileWindowWorkerRequest, FileWindowWorkerResponse } from "./file-window-worker.ts";
@@ -25,10 +30,12 @@ interface PendingRead {
   reject(error: unknown): void;
 }
 
+/** Reports whether the pending operation was canceled. */
 function aborted(reason?: unknown) {
   return reason ?? new DOMException("MATLAB source read was canceled", "AbortError");
 }
 
+/** Notifies diagnostics subscribers without allowing one listener to stop collection. */
 function safelyNotify<T>(callback: ((value: T) => void) | undefined, value: T) {
   try { callback?.(value); } catch { /* Diagnostics cannot invalidate decoded samples. */ }
 }
@@ -49,6 +56,7 @@ export function createMatlabFileReader(source: SignalSource, options: MatlabFile
   let nextId = 1;
   const fileSource = source instanceof EDFSource || source instanceof RawDatSource;
 
+  /** Closes the owned resource. */
   const close = (reason: unknown = aborted()) => {
     if (closed) return;
     closed = true;
@@ -62,8 +70,10 @@ export function createMatlabFileReader(source: SignalSource, options: MatlabFile
     queue.length = 0;
     pending.forEach((item) => { item.removeAbort(); item.reject(reason); });
   };
+  /** Handles the view abort. */
   const onViewAbort = () => close(aborted(options.signal?.reason));
 
+  /** Settles the operation once and releases its associated resources. */
   const finish = (item: PendingRead, result?: WindowData, error?: unknown) => {
     if (closed || active !== item) return;
     active = null;
@@ -73,6 +83,7 @@ export function createMatlabFileReader(source: SignalSource, options: MatlabFile
     pump();
   };
 
+  /** Ensures the worker. */
   const ensureWorker = () => {
     if (worker) return worker;
     if (typeof Worker === "undefined") throw new Error("This browser does not provide module workers for MATLAB source reads.");
@@ -103,6 +114,7 @@ export function createMatlabFileReader(source: SignalSource, options: MatlabFile
     return worker;
   };
 
+  /** Dispatches the next queued source read when the reader is idle. */
   function pump() {
     if (closed || active || !queue.length) return;
     const item = queue.shift()!;
@@ -131,6 +143,7 @@ export function createMatlabFileReader(source: SignalSource, options: MatlabFile
   if (options.signal?.aborted) onViewAbort();
 
   return {
+    /** Reads the window. */
     readWindow(startSec, durationSec, channelIndices, readOptions = {}) {
       if (closed) return Promise.reject(closeReason);
       if (readOptions.signal?.aborted) {
@@ -138,10 +151,12 @@ export function createMatlabFileReader(source: SignalSource, options: MatlabFile
         return Promise.reject(closeReason);
       }
       return new Promise<WindowData>((resolve, reject) => {
+        /** Handles the read abort. */
         const onReadAbort = () => close(aborted(readOptions.signal?.reason));
         const item: PendingRead = {
           id: nextId++, startSec, durationSec, channelIndices: channelIndices ? [...channelIndices] : undefined,
           options: readOptions, resolve, reject,
+          /** Removes the abort. */
           removeAbort: () => readOptions.signal?.removeEventListener("abort", onReadAbort),
         };
         readOptions.signal?.addEventListener("abort", onReadAbort, { once: true });
@@ -149,6 +164,7 @@ export function createMatlabFileReader(source: SignalSource, options: MatlabFile
         pump();
       });
     },
+    /** Releases resources owned by this instance. */
     dispose: () => close(),
   };
 }

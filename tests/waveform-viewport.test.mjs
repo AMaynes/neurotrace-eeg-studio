@@ -1,3 +1,9 @@
+/*
+Purpose: Checks waveform viewport behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/waveform-viewport.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

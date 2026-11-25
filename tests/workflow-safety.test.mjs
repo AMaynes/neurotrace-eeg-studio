@@ -1,3 +1,11 @@
+/*
+Purpose: Checks workflow safety behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/cursor-readout.ts, app/display-processing-worker-client.ts,
+  app/display-processing-worker.ts, app/matlab-annotations-csv.ts, app/matlab-spectrogram.ts, app/page.tsx,
+  app/source-hash-worker.ts, app/source-integrity-worker-client.ts, app/waveform-geometry.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -122,7 +130,7 @@ test("critical feedback and dialogs expose accessible semantics", async () => {
   const page = await pageSource();
   assert.match(page, /<canvas[^>]*tabIndex=\{0\}[^>]*role="img"[^>]*onPointerCancel=\{onWavePointerCancel\}/);
   assert.match(page, /className="command-status"\s*role="status"\s*aria-live="polite"\s*aria-atomic="true"/);
-  assert.match(page, /className="modal confirm-modal"\s*role="dialog"\s*aria-modal="true"\s*aria-label="Commit advisory"/);
+  assert.match(page, /className="modal confirm-modal"[^>]*role="dialog"\s*aria-modal="true"\s*aria-label="Commit advisory"/);
   assert.match(page, /className="session-map-modal"\s*role="dialog"\s*aria-modal="true"\s*aria-label="Session map"/);
 });
 

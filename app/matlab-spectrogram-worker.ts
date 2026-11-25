@@ -1,3 +1,9 @@
+/*
+Purpose: Computes MATLAB-compatible Gabor wavelets in a terminable module worker.
+File Dependencies: app/matlab-spectrogram.ts.
+*/
+
+
 import { computeMatlabSpectrogram, matlabSpectrogramTransferList } from "./matlab-spectrogram.ts";
 import type { MatlabSpectrogramRequest, MatlabSpectrogramResult } from "./matlab-spectrogram";
 

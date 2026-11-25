@@ -1,3 +1,9 @@
+/*
+Purpose: Edits keyboard and mouse bindings while isolating key recording from workspace commands.
+File Dependencies: app/shortcut-settings.css, app/shortcuts.ts.
+*/
+
+
 "use client";
 
 import { useState } from "react";

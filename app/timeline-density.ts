@@ -1,4 +1,8 @@
-/** Pure fixed-bin density clustering for wide annotation timelines. */
+/*
+Purpose: Pure fixed-bin density clustering for wide annotation timelines.
+File Dependencies: None.
+*/
+
 
 export interface TimelineDensityAnnotation<TTrack extends string = string> {
   id: string;
@@ -51,6 +55,7 @@ export function clusterTimelineDensity<TTrack extends string>(
   const binDuration = duration / binCount;
   const tracks = new Map<TTrack, TrackAccumulator>();
 
+  /** Maps a timestamp to a bounded visible density bin. */
   const binForPoint = (time: number) => Math.min(
     binCount - 1,
     Math.max(0, Math.floor((time - visibleRange.start) / binDuration)),

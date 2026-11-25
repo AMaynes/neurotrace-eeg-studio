@@ -1,3 +1,7 @@
+# Purpose: Checks the main branch and deploys the verified static build to GitHub Pages.
+# File Dependencies: package-lock.json, package.json.
+
+
 name: Deploy GitHub Pages
 
 on:

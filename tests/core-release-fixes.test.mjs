@@ -1,15 +1,8 @@
-/**
- * Overview & Purpose
- * Guards source parsing, clinical display decimation, raw dropout detection,
- * and identifier invariants required by the clinical viewer release.
- *
- * Architectural Relationships
- * Called by: Node's built-in test runner.
- * Calls: Public signal-domain operations from app/eeg-core.ts.
- *
- * External Resources
- * None; all EDF fixtures are deterministic in-memory files.
- */
+/*
+Purpose: Guards source parsing, clinical display decimation, raw dropout detection, and identifier invariants required by the clinical viewer release.
+File Dependencies: app/eeg-core.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

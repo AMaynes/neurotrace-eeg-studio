@@ -1,4 +1,9 @@
-/** Display-only label identities; file wording is independent of the shared import label ID. */
+/*
+Purpose: Display-only label identities; file wording is independent of the shared import label ID.
+File Dependencies: None.
+*/
+
+
 export interface LabelTypeAnnotation {
   labelId: string;
   recordingLabel?: { label: string };
@@ -17,6 +22,7 @@ export function recordingLabelTypeKey(name: string): string {
   return `recording:${name.trim().toLowerCase()}`;
 }
 
+/** Builds the stable key used to group annotation label types. */
 export function annotationLabelTypeKey(annotation: LabelTypeAnnotation): string {
   if (annotation.labelId === "dictionary-label" && annotation.dictionaryLabel) return `dictionary:${annotation.dictionaryLabel.id}`;
   return annotation.labelId === "recording-label" && annotation.recordingLabel
@@ -37,6 +43,7 @@ export function collectLabelTypes(
       types.set(`annotation:${label.id}`, { key: `annotation:${label.id}`, name: label.name, source: "annotation", count: 0 });
     }
   }
+  /** Adds the supplied entry to the current collection. */
   const add = (key: string, name: string, source: LabelTypeOption["source"]) => {
     const type = types.get(key);
     if (type) type.count += 1;

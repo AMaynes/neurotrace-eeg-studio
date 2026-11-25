@@ -1,10 +1,16 @@
-/**
- * Literal display processing from seizure_annotation_tool_update.m, lines
- * 353–367 and 541–558. This intentionally retains the reference's quirks:
- * cutoff 0.2 cycles/input sample (not the commented 100 Hz), window-relative
- * 2× sampling, causal zero initialization, and repeated causal end values.
- * No input sample, FIR accumulator, or filtered result is rounded to Float32.
- */
+/*
+Purpose: Applies the reference MATLAB FIR and decimation rules using double-precision samples.
+File Dependencies: None.
+*/
+
+
+/*
+Literal display processing from seizure_annotation_tool_update.m, lines
+353–367 and 541–558. This intentionally retains the reference's quirks:
+cutoff 0.2 cycles/input sample (not the commented 100 Hz), window-relative
+2× sampling, causal zero initialization, and repeated causal end values.
+No input sample, FIR accumulator, or filtered result is rounded to Float32.
+*/
 
 export type MatlabDisplaySamples = Float32Array | Float64Array;
 export type MatlabDisplayFactor = 1 | 2;
@@ -12,6 +18,7 @@ export type MatlabDisplayFactor = 1 | 2;
 export const MATLAB_DISPLAY_FIR_ORDER = 64;
 export const MATLAB_DISPLAY_FIR_DELAY = MATLAB_DISPLAY_FIR_ORDER / 2;
 
+/** Builds and normalizes the reference 65-tap windowed-sinc FIR coefficients. */
 export function designMatlabDisplayFir(): Float64Array {
   const coefficients = new Float64Array(MATLAB_DISPLAY_FIR_ORDER + 1);
   let sum = 0;
@@ -29,12 +36,14 @@ export function designMatlabDisplayFir(): Float64Array {
 
 const FIR_COEFFICIENTS = designMatlabDisplayFir();
 
+/** Rejects negative or unsafe sample indices and counts. */
 function requireNonnegativeInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${name} must be a non-negative safe integer.`);
   }
 }
 
+/** Restricts reference display processing to factors one and two. */
 function requireFactor(factor: number): asserts factor is MatlabDisplayFactor {
   if (factor !== 1 && factor !== 2) throw new Error("MATLAB display factor must be 1 or 2.");
 }
@@ -60,6 +69,7 @@ export interface MatlabDisplayChunkOptions {
   outputSampleCount?: number;
 }
 
+/** Maps a requested sample to the causal filter history. */
 function causalIndex(inputSampleCount: number, factor: MatlabDisplayFactor, outputIndex: number): number {
   const retainedInputIndex = outputIndex * factor;
   if (factor === 1 || MATLAB_DISPLAY_FIR_DELAY >= inputSampleCount) return retainedInputIndex;
@@ -158,6 +168,7 @@ export interface MatlabDisplayTrace {
   compensatedGroupDelaySamples: number;
 }
 
+/** Processes the matlab display trace. */
 export function processMatlabDisplayTrace(
   input: MatlabDisplaySamples,
   sampleRate: number,

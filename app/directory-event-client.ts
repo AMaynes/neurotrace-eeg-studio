@@ -1,8 +1,10 @@
-/**
- * Shared per-folder label cache and bounded worker scheduler. Completed metadata
- * is reused in memory and IndexedDB; only explicit cancellation stops its reader.
- * File references remain local and no source samples or hashes enter this cache.
- */
+/*
+Purpose: Shared per-folder label cache and bounded worker scheduler. Completed metadata is reused in memory and IndexedDB; only explicit cancellation stops its reader. File references remain local and no source samples or hashes enter this cache.
+File Dependencies: app/directory-event-index.ts, app/directory-event-storage.ts,
+  app/directory-event-worker.ts, app/directory-import.ts, app/event-keywords.ts.
+*/
+
+
 import { directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import.ts";
 import { createEventLabelMatcher } from "./event-keywords.ts";
 import type { DirectoryEventIndex, DirectoryEventRequest, DirectoryTimedEvent } from "./directory-event-index.ts";
@@ -16,10 +18,12 @@ export interface DirectoryEventCache {
 const caches = new WeakMap<readonly DirectoryRecording[], DirectoryEventCache>();
 const pendingScans = new WeakMap<DirectoryEventCache, Promise<void>>();
 
+/** Reports whether directory event search is supported. */
 export function supportsDirectoryEventSearch(format: DirectoryImportFormat): boolean {
   return format !== "edf";
 }
 
+/** Returns the event-label cache associated with a loaded directory. */
 export function directoryEventCache(plan: DirectoryImportPlan): DirectoryEventCache {
   const namespace = plan.unfilteredRecordings ?? plan.recordings;
   let cache = caches.get(namespace);
@@ -32,6 +36,7 @@ export function setDirectoryEventQuery(plan: DirectoryImportPlan, query: string)
   directoryEventCache(plan).query = query;
 }
 
+/** Builds a metadata-only request for a directory recording. */
 function eventRequest(plan: DirectoryImportPlan, recording: DirectoryRecording): DirectoryEventRequest {
   const file = plan.format === "mat-dat" ? recording.files.find((file) => /\.mat$/i.test(file.name)) : recording.primary;
   if (!file) throw new Error("Missing MAT event metadata.");
@@ -55,10 +60,12 @@ async function performDirectoryScan(
   const pending = plan.recordings.filter((entry) => !cache.entries[entry.id] || (retry && cache.entries[entry.id].state !== "ready"));
   if (!pending.length) { onUpdate(null); return; }
   let next = 0;
+  /** Runs the worker. */
   const runWorker = async () => {
     let worker: Worker | undefined;
     let failPending: ((error: Error) => void) | undefined;
     let fatal: Error | undefined;
+    /** Cancels the pending operation. */
     const abort = () => { worker?.terminate(); failPending?.(new Error("Directory search canceled.")); };
     signal.addEventListener("abort", abort, { once: true });
     try {
@@ -144,6 +151,7 @@ export function filterDirectoryPlan(plan: DirectoryImportPlan, query: string): D
   return filtered;
 }
 
+/** Finds the next timed event that matches the active keyword query. */
 export function nextTimedEvent<T extends DirectoryTimedEvent>(events: readonly T[], query: string, after = -Infinity): T | undefined {
   const matches = createEventLabelMatcher(query);
   let first: T | undefined;
@@ -173,6 +181,7 @@ export async function findNextDirectoryEvent(
   let worker: Worker | undefined;
   let rejectRead: ((reason: unknown) => void) | undefined;
   let incomplete = 0;
+  /** Cancels the pending operation. */
   const abort = () => {
     worker?.terminate();
     rejectRead?.(signal.reason);

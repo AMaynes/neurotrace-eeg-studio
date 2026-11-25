@@ -1,4 +1,8 @@
-/** Guards waveform rendering against vertical layout-dependent mode changes. */
+/*
+Purpose: Guards waveform rendering against vertical layout-dependent mode changes.
+File Dependencies: app/page.tsx.
+*/
+
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

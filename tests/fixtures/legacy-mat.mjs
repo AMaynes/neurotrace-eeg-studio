@@ -1,3 +1,9 @@
+/*
+Purpose: Checks legacy mat behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: None.
+*/
+
+
 import { deflateSync } from "node:zlib";
 
 // Patient-free Level-5 writers cover nested acquisition metadata and MATLAB's

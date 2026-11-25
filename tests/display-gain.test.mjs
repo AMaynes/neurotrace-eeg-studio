@@ -1,3 +1,9 @@
+/*
+Purpose: Checks display gain behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/display-gain.ts, app/page.tsx, app/shortcuts.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

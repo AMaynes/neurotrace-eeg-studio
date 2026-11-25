@@ -1,10 +1,12 @@
-/**
- * Compact, all-channel recording overviews have a separate lifetime from the
- * detailed-window LRU. Zooming into a trace must never evict its whole-file
- * index. The caller owns background construction and must never mutate a
- * published snapshot; incomplete entries contain only the fully scanned prefix.
- * No recording data is persisted or sent to a remote service by this module.
- */
+/*
+Purpose: Compact, all-channel recording overviews have a separate lifetime from the detailed-window LRU. Zooming into a trace must never evict its whole-file index. The caller owns background construction and must never mutate a published snapshot; incomplete entries contain only the fully scanned prefix.
+File Dependencies: app/eeg-core.ts.
+*/
+
+
+/*
+Compact, all-channel recording overviews have a separate lifetime from thedetailed-window LRU. Zooming into a trace must never evict its whole-fileindex. The caller owns background construction and must never mutate apublished snapshot; incomplete entries contain only the fully scanned prefix.No recording data is persisted or sent to a remote service by this module.
+*/
 
 import type { EnvelopeWindowData, RecordingMeta, SignalSource } from "./eeg-core";
 
@@ -61,6 +63,7 @@ export class RecordingOverviewCache {
   private retainedBytes = 0;
   private readonly maxBytes: number;
 
+  /** Initializes the instance from the supplied arguments. */
   constructor(maxBytes = RECORDING_OVERVIEW_CACHE_BYTES) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
       throw new Error("Recording overview cache requires a positive byte budget.");
@@ -68,9 +71,12 @@ export class RecordingOverviewCache {
     this.maxBytes = maxBytes;
   }
 
+  /** Returns the retained byte count. */
   get byteLength(): number { return this.retainedBytes; }
+  /** Returns the current collection size. */
   get size(): number { return this.entries.size; }
 
+  /** Returns the requested entry. */
   get(source: SignalSource): RecordingOverviewEntry | undefined {
     let entry = this.entries.get(source);
     if (entry) {
@@ -115,6 +121,7 @@ export class RecordingOverviewCache {
     return true;
   }
 
+  /** Clears the owned collection. */
   clear(): void {
     this.entries.clear();
     this.retainedBytes = 0;
@@ -178,6 +185,7 @@ export function recordingOverviewDisplayWindow(
   const variation: Float32Array[] | undefined = source.variation ? [] : undefined;
 
   for (const position of requestedPositions) {
+    /** Copies the values. */
     const copyValues = (values: Float32Array) => {
       const output = new Float32Array(count).fill(Number.NaN);
       output.set(values.subarray(first, end));
@@ -266,6 +274,7 @@ function currentChannelLabels(meta: RecordingMeta, window: EnvelopeWindowData): 
   return { ...window, channelLabels: labels };
 }
 
+/** Checks that restored metadata can describe a usable recording. */
 function validRecordingMeta(meta: RecordingMeta): boolean {
   return Number.isFinite(meta.durationSec) && meta.durationSec > 0
     && Number.isSafeInteger(meta.channelCount) && meta.channelCount > 0
@@ -277,6 +286,7 @@ function validRecordingMeta(meta: RecordingMeta): boolean {
     && meta.sampleRates.every((rate) => Number.isFinite(rate) && rate > 0);
 }
 
+/** Calculates the time tolerance used to compare source-aligned windows. */
 function timeTolerance(seconds: number): number {
   return Math.max(1, Math.abs(seconds)) * Number.EPSILON * 32;
 }

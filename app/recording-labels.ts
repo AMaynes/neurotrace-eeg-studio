@@ -1,8 +1,8 @@
-/**
- * Recording-supplied labels remain evidence, not automatically accepted review
- * decisions. This module owns timing validation, stable import identities, and
- * lossless source provenance for the MAT/EDF import and annotation recovery paths.
- */
+/*
+Purpose: Recording-supplied labels remain evidence, not automatically accepted review decisions. This module owns timing validation, stable import identities, and lossless source provenance for the MAT/EDF import and annotation recovery paths.
+File Dependencies: None.
+*/
+
 
 export interface RecordingLabel {
   id: string;

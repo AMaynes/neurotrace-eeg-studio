@@ -1,4 +1,8 @@
-/** Whole-file indexes stay bounded, source-specific, and independent of detail views. */
+/*
+Purpose: Whole-file indexes stay bounded, source-specific, and independent of detail views.
+File Dependencies: app/recording-overview.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

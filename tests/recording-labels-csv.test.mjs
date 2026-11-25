@@ -1,3 +1,9 @@
+/*
+Purpose: Checks recording labels csv behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/recording-labels-csv.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { serializeRecordingLabels } from "../app/recording-labels-csv.ts";

@@ -1,3 +1,9 @@
+/*
+Purpose: Checks scalp bipolar behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/bipolar-montage.ts, app/eeg-core.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildMontage } from "../app/eeg-core.ts";

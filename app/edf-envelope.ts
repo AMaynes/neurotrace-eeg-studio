@@ -1,9 +1,10 @@
-/**
- * Pure, bounded-memory EDF envelope construction shared by the worker and its
- * direct fallback. File reads remain record-aligned while the retained output
- * is limited to one min/max/mean/gap tuple per requested display bucket.
- */
+/*
+Purpose: Pure, bounded-memory EDF envelope construction shared by the worker and its direct fallback. File reads remain record-aligned while the retained output is limited to one min/max/mean/gap tuple per requested display bucket.
+File Dependencies: app/eeg-core.ts, app/file-read-utils.ts, app/progressive-envelope.ts.
+*/
 
+
+import { nowMs, validatePositiveSafeInteger as validatePositiveInteger } from "./file-read-utils.ts";
 import { buildEnvelopePyramid } from "./eeg-core.ts";
 import { createProgressiveEnvelopePublisher } from "./progressive-envelope.ts";
 import type {
@@ -144,10 +145,7 @@ type SelectedSignal = {
 
 const HOST_IS_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
-function nowMs() {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortError(signal: AbortSignal) {
   if (signal.reason !== undefined) return signal.reason;
   const error = new Error("EDF envelope construction was aborted");
@@ -155,16 +153,12 @@ function abortError(signal: AbortSignal) {
   return error;
 }
 
+/** Throws the operation-specific abort reason when cancellation is requested. */
 function throwIfAborted(signal: AbortSignal | undefined) {
   if (signal?.aborted) throw abortError(signal);
 }
 
-function validatePositiveInteger(value: number, field: string) {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${field} must be a positive safe integer.`);
-  }
-}
-
+/** Normalizes the EDF physical-unit spelling used by calibration. */
 function normalizedPhysicalDimension(dimension: string) {
   const preserved = dimension.trim() || "a.u.";
   const canonical = preserved
@@ -186,6 +180,7 @@ function normalizedPhysicalDimension(dimension: string) {
     : { unit: "µV", scale };
 }
 
+/** Allocates extrema, gap, and representative-sample buffers for the requested buckets. */
 function makeAccumulator(bucketCount: number): EnvelopeAccumulator {
   const minima = new Float32Array(bucketCount);
   const maxima = new Float32Array(bucketCount);
@@ -205,6 +200,7 @@ function makeAccumulator(bucketCount: number): EnvelopeAccumulator {
   };
 }
 
+/** Marks empty extrema as unavailable and clears representative samples in gap buckets. */
 function finishAccumulator(accumulator: EnvelopeAccumulator, signal?: AbortSignal) {
   for (let bucket = 0; bucket < accumulator.data.length; bucket += 1) {
     if ((bucket & 0xfff) === 0) throwIfAborted(signal);
@@ -219,6 +215,7 @@ function finishAccumulator(accumulator: EnvelopeAccumulator, signal?: AbortSigna
   }
 }
 
+/** Selects and validates the EDF signals requested for display. */
 function selectedDisplaySignals(
   header: EDFHeader,
   channelIndices: readonly number[] | undefined,
@@ -269,6 +266,7 @@ function selectedDisplaySignals(
   return { indices, selected };
 }
 
+/** Packages EDF read and decode counters with elapsed time for progress reporting. */
 function makeProgress(
   phase: EDFEnvelopeProgressPhase,
   metrics: EDFEnvelopeMetrics,
@@ -387,6 +385,7 @@ export async function buildEDFEnvelopeWindow(
     integrityMs: 0,
   };
 
+  /** Reads a cancellable EDF byte range and updates scan measurements. */
   const readChunk = async (
     byteStart: number,
     byteEnd: number,

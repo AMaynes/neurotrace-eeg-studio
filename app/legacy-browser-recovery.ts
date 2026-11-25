@@ -1,3 +1,9 @@
+/*
+Purpose: Defines legacy browser recovery for the NeuroTrace workspace.
+File Dependencies: None.
+*/
+
+
 export interface BrowserReviewEntry { key: string; savedAt: string; reviewer: string; labels: number; events: number; name: string }
 
 /** Old hash-keyed reviews lack filenames. Offer explicit recovery; never guess. */

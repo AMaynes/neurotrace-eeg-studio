@@ -1,8 +1,8 @@
-/**
- * Browser-side discovery and best-effort parsing for BIDS JSON/TSV companions.
- * The parser deliberately catalogs every selected file while applying only
- * metadata whose BIDS entities are compatible with the active recording.
- */
+/*
+Purpose: Browser-side discovery and best-effort parsing for BIDS JSON/TSV companions. The parser deliberately catalogs every selected file while applying only metadata whose BIDS entities are compatible with the active recording.
+File Dependencies: None.
+*/
+
 
 export type UploadedFileRole =
   | "recording"
@@ -114,6 +114,7 @@ const GENERIC_METADATA_NAMES = new Set([
 ]);
 const APPLICABLE_JSON_SUFFIXES = new Set(["eeg", "ieeg", "coordsystem"]);
 
+/** Creates an empty companion inventory with no inferred recording metadata. */
 export function emptyBidsCompanionBundle(): BidsCompanionBundle {
   return {
     files: [],
@@ -129,16 +130,19 @@ export function emptyBidsCompanionBundle(): BidsCompanionBundle {
   };
 }
 
+/** Normalizes browser-relative file paths without exposing a private absolute path. */
 export function relativeFilePath(file: File): string {
   return (file.webkitRelativePath || file.name)
     .replace(/\\/g, "/")
     .replace(/^\/+/, "");
 }
 
+/** Combines normalized path, byte length, and modification time into a selection identity. */
 export function selectedFileKey(file: File): string {
   return `${relativeFilePath(file).toLowerCase()}\0${file.size}\0${file.lastModified}`;
 }
 
+/** Merges the selected files. */
 export function mergeSelectedFiles(existing: readonly File[], incoming: readonly File[]): File[] {
   const merged = new Map<string, File>();
   for (const file of [...existing, ...incoming]) {
@@ -148,15 +152,18 @@ export function mergeSelectedFiles(existing: readonly File[], incoming: readonly
     relativeFilePath(left).localeCompare(relativeFilePath(right), undefined, { numeric: true }));
 }
 
+/** Returns the lowercase filename extension. */
 function fileExtension(file: File): string {
   return file.name.split(".").at(-1)?.toLowerCase() ?? "";
 }
 
+/** Returns the final underscore-delimited BIDS filename component. */
 function fileSuffix(path: string): string {
   const base = path.split("/").at(-1)?.replace(/\.[^.]+$/, "") ?? "";
   return base.split("_").at(-1)?.toLowerCase() ?? "";
 }
 
+/** Classifies a selected file by its extension and metadata role. */
 export function classifyUploadedFile(file: File): UploadedFileRole {
   const extension = fileExtension(file);
   const suffix = fileSuffix(relativeFilePath(file));
@@ -172,6 +179,7 @@ export function classifyUploadedFile(file: File): UploadedFileRole {
   return "other";
 }
 
+/** Parses the bids name. */
 function parseBidsName(path: string): ParsedBidsName {
   const base = path.split("/").at(-1)?.replace(/\.[^.]+$/, "") ?? "";
   const tokens = base.split("_").filter(Boolean);
@@ -184,17 +192,20 @@ function parseBidsName(path: string): ParsedBidsName {
   return { entities, suffix: (tokens.at(-1) ?? "").toLowerCase() };
 }
 
+/** Checks whether BIDS filename entities describe the active recording. */
 function entityCompatibility(sidecar: ParsedBidsName, recording: ParsedBidsName | null): boolean {
   if (!recording) return true;
   return Object.entries(sidecar.entities).every(([key, value]) =>
     recording.entities[key] === undefined || recording.entities[key] === value);
 }
 
+/** Ranks BIDS metadata by the number of applicable filename entities. */
 function specificity(path: string): number {
   const parsed = parseBidsName(path);
   return Object.keys(parsed.entities).length * 100 + path.split("/").length;
 }
 
+/** Builds a repeatable identity for a source event. */
 function stableEventId(path: string, rowIndex: number, onset: number, label: string): string {
   const material = `${path}\0${rowIndex}\0${onset}\0${label}`;
   let hash = 2_166_136_261;
@@ -205,6 +216,7 @@ function stableEventId(path: string, rowIndex: number, onset: number, label: str
   return `bids-event-${(hash >>> 0).toString(36)}`;
 }
 
+/** Parses the delimited rows. */
 function parseDelimitedRows(text: string, delimiter: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -244,6 +256,7 @@ function parseDelimitedRows(text: string, delimiter: string): string[][] {
   return rows;
 }
 
+/** Parses the tsv. */
 export function parseTsv(text: string): ParsedTsv {
   const rows = parseDelimitedRows(text.replace(/^\uFEFF/, ""), "\t");
   const columns = (rows.shift() ?? []).map((column) => column.trim());
@@ -256,17 +269,20 @@ export function parseTsv(text: string): ParsedTsv {
   };
 }
 
+/** Reads a finite TSV number while retaining missing or invalid values as unavailable. */
 function finiteTsvNumber(value: string | undefined): number | null {
   if (!value || value.trim().toLowerCase() === "n/a") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** Splits the channel names. */
 function splitChannelNames(value: string | undefined): string[] {
   if (!value || value.trim().toLowerCase() === "n/a") return [];
   return value.split(/[,;|]/).map((entry) => entry.trim()).filter(Boolean);
 }
 
+/** Derives the inventory status shown for a selected companion file. */
 function displayStatus(role: UploadedFileRole, status: UploadedFileStatus): string {
   if (status === "primary") return "Primary waveform source";
   if (status === "applied") return role === "events" ? "Events imported" : "Metadata applied";
@@ -275,6 +291,7 @@ function displayStatus(role: UploadedFileRole, status: UploadedFileStatus): stri
   return role === "other" ? "Catalogued for provenance" : "Catalogued; not associated with this recording";
 }
 
+/** Reports whether the value is generic metadata. */
 function isGenericMetadata(path: string, parsed: ParsedBidsName): boolean {
   const name = path.split("/").at(-1)?.toLowerCase() ?? "";
   return GENERIC_METADATA_NAMES.has(name) || APPLICABLE_JSON_SUFFIXES.has(parsed.suffix);
@@ -285,6 +302,7 @@ const AUXILIARY_CHANNEL_GROUPS = new Set([
   "AUX", "CH", "CHAN", "CHANNEL", "DC", "ECG", "EKG", "EMG", "EOG", "GND", "MARK", "MISC", "REF", "STI", "SYNC", "TRIG",
 ]);
 
+/** Detects the recording channel modality. */
 export function detectRecordingChannelModality(label: string, declaredType = ""): RecordingChannelModality {
   const normalizedType = declaredType.trim().toUpperCase();
   if (normalizedType === "EEG") return "scalp";
@@ -305,6 +323,7 @@ export function detectRecordingChannelModality(label: string, declaredType = "")
   return "unknown";
 }
 
+/** Combines detected channel modalities into the displayed recording type. */
 function recordingTypeForModalities(hasScalp: boolean, hasIntracranial: boolean): DetectedRecordingType {
   if (hasScalp && hasIntracranial) return "Simultaneous scalp + iEEG";
   if (hasIntracranial) return "SEEG / iEEG";
@@ -312,6 +331,7 @@ function recordingTypeForModalities(hasScalp: boolean, hasIntracranial: boolean)
   return "Unknown recording type";
 }
 
+/** Detects the recording type. */
 export function detectRecordingType(evidence: RecordingTypeEvidence): DetectedRecordingType {
   const typedModalities = (evidence.channels ?? [])
     .map((channel) => detectRecordingChannelModality(channel.name, channel.type));
@@ -344,6 +364,7 @@ export function detectRecordingType(evidence: RecordingTypeEvidence): DetectedRe
   return "Unknown recording type";
 }
 
+/** Reads applicable BIDS companions and returns metadata, events, channels, and parsing warnings. */
 export async function analyzeBidsCompanions(
   files: readonly File[],
   options: CompanionAnalysisOptions = {},

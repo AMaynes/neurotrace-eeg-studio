@@ -1,8 +1,15 @@
+/*
+Purpose: Defines matlab spectrogram worker client for the NeuroTrace workspace.
+File Dependencies: app/matlab-spectrogram-worker.ts, app/matlab-spectrogram.ts.
+*/
+
+
 import { validateMatlabSpectrogramRequest } from "./matlab-spectrogram.ts";
 import type { MatlabSpectrogramRequest, MatlabSpectrogramResult } from "./matlab-spectrogram";
 import type { MatlabSpectrogramWorkerRequest, MatlabSpectrogramWorkerResponse } from "./matlab-spectrogram-worker";
 
 let nextRequestId = 1;
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 const abortReason = (signal?: AbortSignal) => signal?.reason ?? new DOMException("MATLAB spectrogram computation was aborted.", "AbortError");
 
 /** Copies bounded input, transfers it, and never falls back onto the UI thread. */
@@ -23,6 +30,7 @@ export function computeMatlabSpectrogramOffThread(request: MatlabSpectrogramRequ
   const started = performance.now();
   return new Promise((resolve, reject) => {
     let settled = false;
+    /** Settles the operation once and releases its associated resources. */
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
@@ -30,7 +38,9 @@ export function computeMatlabSpectrogramOffThread(request: MatlabSpectrogramRequ
       worker.terminate();
       callback();
     };
+    /** Cancels the active operation and propagates its cancellation reason. */
     const onAbort = () => finish(() => reject(abortReason(options.signal)));
+    /** Rejects the spectrogram request with the worker error name and message. */
     const fail = (name: string, message: string) => finish(() => {
       const error = new Error(message); error.name = name; reject(error);
     });

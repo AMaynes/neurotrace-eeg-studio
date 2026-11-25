@@ -1,4 +1,9 @@
-/** Sidebar and optional toolbar preferences, including migration of older JSON saves. */
+/*
+Purpose: Sidebar and optional toolbar preferences, including migration of older JSON saves.
+File Dependencies: None.
+*/
+
+
 export const WORKSPACE_TABS = [
   { id: "info", label: "Info" },
   { id: "view", label: "Viewing Tools" },
@@ -33,10 +38,12 @@ export type LabelTab = typeof LABEL_TABS[number]["id"];
 export type WorkspaceToolId = typeof WORKSPACE_TOOLS[number]["id"];
 export type ToolbarToolId = WorkspaceToolId | `label:${string}`;
 
+/** Reports whether the value is label toolbar tool. */
 export function isLabelToolbarTool(id: unknown): id is `label:${string}` {
   return typeof id === "string" && /^label:(?:dictionary:)?[A-Za-z0-9_-]{1,120}$/.test(id);
 }
 
+/** Normalizes the workspace layout. */
 export function normalizeWorkspaceLayout(settings: Record<string, unknown>) {
   const legacyInfoTab = settings.sidebarTab === "files" || settings.sidebarTab === "window" ? settings.sidebarTab : null;
   const legacyInspector = settings.rightPanelView === "inspect" || settings.rightPanelView === "resources";

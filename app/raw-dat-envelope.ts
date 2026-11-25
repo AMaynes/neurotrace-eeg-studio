@@ -1,9 +1,11 @@
-/**
- * Pure, bounded-memory envelope construction for sample-major, channel-
- * interleaved signed int16 little-endian DAT recordings. The worker and its
- * direct compatibility fallback share this implementation.
- */
+/*
+Purpose: Pure, bounded-memory envelope construction for sample-major, channel- interleaved signed int16 little-endian DAT recordings. The worker and its direct compatibility fallback share this implementation.
+File Dependencies: app/eeg-core.ts, app/envelope-cache.ts, app/file-read-utils.ts,
+  app/progressive-envelope.ts, app/scan-hash-worker-client.ts, app/source-integrity.ts.
+*/
 
+
+import { nowMs, validatePositiveSafeInteger } from "./file-read-utils.ts";
 import { buildEnvelopePyramid } from "./eeg-core.ts";
 import type { EnvelopeWindowData } from "./eeg-core";
 import { exactEnvelopeFrameGrid } from "./envelope-cache.ts";
@@ -125,10 +127,7 @@ type ChannelAccumulator = {
   previousValue: number;
 };
 
-function nowMs() {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortReason(signal: AbortSignal) {
   if (signal.reason !== undefined) return signal.reason;
   const error = new Error("Raw DAT envelope construction was aborted");
@@ -136,16 +135,12 @@ function abortReason(signal: AbortSignal) {
   return error;
 }
 
+/** Throws the operation-specific abort reason when cancellation is requested. */
 function throwIfAborted(signal: AbortSignal | undefined) {
   if (signal?.aborted) throw abortReason(signal);
 }
 
-function validatePositiveSafeInteger(value: number, field: string) {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${field} must be a positive safe integer.`);
-  }
-}
-
+/** Rejects mismatched channel metadata lengths and nonfinite DAT calibration values. */
 function validateCalibration(request: RawDatEnvelopeBuildRequest) {
   const exactLengthFields: Array<[string, readonly unknown[]]> = [
     ["Raw DAT channel labels", request.channelLabels],
@@ -166,6 +161,7 @@ function validateCalibration(request: RawDatEnvelopeBuildRequest) {
   }
 }
 
+/** Validates requested DAT channel indices and rejects duplicates. */
 function selectedChannelIndices(request: RawDatEnvelopeBuildRequest) {
   const indices = request.channelIndices
     ? Array.from(request.channelIndices)
@@ -181,6 +177,7 @@ function selectedChannelIndices(request: RawDatEnvelopeBuildRequest) {
   return indices;
 }
 
+/** Allocates one channel's extrema, gap, representative-sample, and variation buffers. */
 function makeAccumulator(
   sourceIndex: number,
   request: RawDatEnvelopeBuildRequest,
@@ -207,6 +204,7 @@ function makeAccumulator(
   };
 }
 
+/** Marks empty extrema as unavailable and clears representative samples in gap buckets. */
 function finishAccumulator(accumulator: ChannelAccumulator, signal?: AbortSignal) {
   for (let bucket = 0; bucket < accumulator.data.length; bucket += 1) {
     if ((bucket & 0xfff) === 0) throwIfAborted(signal);
@@ -221,6 +219,7 @@ function finishAccumulator(accumulator: ChannelAccumulator, signal?: AbortSignal
   }
 }
 
+/** Updates bucket extrema and variation, marking nonfinite samples as gaps. */
 function addChannelEnvelopeSample(accumulator: ChannelAccumulator, bucket: number, value: number) {
   if (!Number.isFinite(value)) {
     accumulator.gaps[bucket] = 1;
@@ -242,6 +241,7 @@ function addChannelEnvelopeSample(accumulator: ChannelAccumulator, bucket: numbe
   if (value > accumulator.maxima[bucket]) accumulator.maxima[bucket] = value;
 }
 
+/** Packages cumulative DAT scan counters and elapsed times. */
 function progress(
   phase: RawDatEnvelopeProgressPhase,
   metrics: RawDatEnvelopeMetrics,
@@ -364,6 +364,7 @@ export async function buildRawDatEnvelopeWindow(
   const completeFrameBytes = totalSourceFrames * bytesPerFrame;
   const requestedByteStart = firstFrame * bytesPerFrame;
   const requestedByteEnd = endFrame * bytesPerFrame;
+  /** Reads a cancellable DAT byte range while updating optional hashing and scan measurements. */
   const readChunk = async (byteStart: number, byteEnd: number) => {
     throwIfAborted(hooks.signal);
     const readStartedAt = nowMs();
@@ -393,6 +394,7 @@ export async function buildRawDatEnvelopeWindow(
     hooks.onProgress?.(progress("reading", metrics, startedAt));
     return buffer;
   };
+  /** Scans bytes outside the requested frames in bounded chunks for whole-file hashing. */
   const readOpaqueSpan = async (byteStart: number, byteEnd: number) => {
     for (let offset = byteStart; offset < byteEnd; offset += chunkSizeBytes) {
       await readChunk(offset, Math.min(byteEnd, offset + chunkSizeBytes));

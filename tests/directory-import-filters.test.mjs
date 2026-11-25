@@ -1,3 +1,9 @@
+/*
+Purpose: Checks directory import filters behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/directory-event-client.ts, app/directory-import-filters.tsx, app/event-keywords.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

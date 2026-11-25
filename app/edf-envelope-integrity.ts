@@ -1,9 +1,11 @@
-/**
- * Optional integrity work that can share the EDF envelope builder's sequential
- * source pass. This avoids rereading a large recording for hashing, EDF+ TAL
- * extraction, and a full-session overview.
- */
+/*
+Purpose: Optional integrity work that can share the EDF envelope builder's sequential source pass. This avoids rereading a large recording for hashing, EDF+ TAL extraction, and a full-session overview.
+File Dependencies: app/edf-envelope.ts, app/eeg-core.ts, app/file-read-utils.ts,
+  app/scan-hash-worker-client.ts, app/source-integrity.ts.
+*/
 
+
+import { nowMs } from "./file-read-utils.ts";
 import { parseEdfTalText, type SourceEvent } from "./eeg-core.ts";
 import { IncrementalSha256 } from "./source-integrity.ts";
 import type { ScanHashPipeline } from "./scan-hash-worker-client.ts";
@@ -17,10 +19,7 @@ import {
   type EDFEnvelopeSourceChunk,
 } from "./edf-envelope.ts";
 
-function nowMs() {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
+/** Deduplicates and sorts EDF annotations, reporting an empty annotation channel when applicable. */
 function finalizeEvents(events: readonly SourceEvent[], annotationSignalCount: number) {
   const deduplicated = new Map<string, SourceEvent>();
   for (const event of events) {
@@ -59,6 +58,7 @@ export async function executeEDFEnvelopeBuild(
   const decoder = new TextDecoder("utf-8");
   let annotationMs = 0;
   let pendingCompleteProgress: EDFEnvelopeProgress | undefined;
+  /** Feeds source bytes to optional hashing and extracts annotations from record chunks. */
   const onSourceChunk = async (chunk: EDFEnvelopeSourceChunk) => {
     if (hashPipeline) await hashPipeline.write(chunk.bytes);
     else if (sha256) sha256.update(chunk.bytes);
@@ -80,6 +80,7 @@ export async function executeEDFEnvelopeBuild(
 
   const result = await buildEDFEnvelopeWindow(request, {
     ...hooks,
+    /** Defers completion notification until optional integrity work finishes. */
     onProgress: (progress) => {
       if (progress.phase === "complete") pendingCompleteProgress = progress;
       else hooks.onProgress?.(progress);

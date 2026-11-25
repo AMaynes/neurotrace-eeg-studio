@@ -1,3 +1,10 @@
+/*
+Purpose: Checks mat import routing behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/bids-companions.ts, app/eeg-core.ts, app/mat-import.ts, app/page.tsx,
+  tests/fixtures/legacy-mat.mjs.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";

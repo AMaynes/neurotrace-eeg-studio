@@ -1,4 +1,9 @@
-/** Verifies deterministic MATLAB v7.3 dataset selection and worker wiring. */
+/*
+Purpose: Verifies deterministic MATLAB v7.3 dataset selection and worker wiring.
+File Dependencies: app/eeg-core.ts, app/mat73-worker-client.ts, app/mat73-worker.ts, app/mat73.ts,
+  app/recording-overview.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

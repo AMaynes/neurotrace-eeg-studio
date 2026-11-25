@@ -1,4 +1,9 @@
-/** Display-only gain limits, shared by controls, tutorials, and restored views. */
+/*
+Purpose: Display-only gain limits, shared by controls, tutorials, and restored views.
+File Dependencies: None.
+*/
+
+
 export const MIN_DISPLAY_GAIN = 0.01;
 export const MAX_DISPLAY_GAIN = 4;
 

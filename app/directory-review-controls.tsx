@@ -1,3 +1,9 @@
+/*
+Purpose: Defines directory review controls for the NeuroTrace workspace.
+File Dependencies: app/directory-import.ts, app/directory-review-resume.ts, app/tutorial-events.ts.
+*/
+
+
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -39,6 +45,7 @@ export function DirectoryReviewControls({ plan, busy, onResume, onBusyChange, on
     return () => { controller.abort(); operation.current?.abort(); onBusyChange(false); };
   }, [cache, onBusyChange, plan, supported]);
 
+  /** Loads the files. */
   const loadFiles = async (files: File[]) => {
     if (working || busy || !files.length) return;
     const controller = new AbortController(); operation.current = controller;
@@ -53,6 +60,7 @@ export function DirectoryReviewControls({ plan, busy, onResume, onBusyChange, on
     } catch (error) { if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : "Could not read saved reviews.");
     } finally { if (!controller.signal.aborted) { setWorking(false); onBusyChange(false); } }
   };
+  /** Finds and opens the next supported unreviewed source event. */
   const resume = async () => {
     if (working || busy) return;
     const controller = new AbortController(); operation.current = controller;

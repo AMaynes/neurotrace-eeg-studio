@@ -1,3 +1,10 @@
+/*
+Purpose: Defines background recording overview for the NeuroTrace workspace.
+File Dependencies: app/edf-envelope-worker-client.ts, app/eeg-core.ts, app/performance-diagnostics.ts,
+  app/raw-dat-envelope-worker-client.ts, app/recording-overview.ts.
+*/
+
+
 import { EDFSource, RawDatSource, type EnvelopeWindowData, type SignalSource } from "./eeg-core.ts";
 import { buildEDFEnvelopeWindowOffThread } from "./edf-envelope-worker-client.ts";
 import { buildRawDatEnvelopeWindowOffThread } from "./raw-dat-envelope-worker-client.ts";
@@ -20,6 +27,7 @@ export async function buildBackgroundRecordingOverview(source: SignalSource, sig
   const read = performanceDiagnostics.beginSourceRead({ label: "Full-session overview", totalBytes: source.meta.byteLength ?? null, phase: "Reading overview samples" });
   const decode = performanceDiagnostics.beginDecode({ label: "Full-session overview", totalBytes: source.meta.byteLength ?? null, phase: "Reducing samples" });
   let previousBytes = 0;
+  /** Handles the progress. */
   const onProgress = (progress: { bytesRead: number; totalBytes: number }) => {
     read.update({ completedBytes: progress.bytesRead, totalBytes: progress.totalBytes,
       transientAllocatedBytes: Math.max(0, progress.bytesRead - previousBytes) });

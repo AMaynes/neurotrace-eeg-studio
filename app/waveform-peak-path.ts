@@ -1,8 +1,10 @@
-/**
- * Emits original samples for a canvas path without zoom-dependent filtering.
- * Each occupied pixel retains its first/last samples and both extrema in time
- * order. Finite runs remain separate across gaps; inputs are never modified.
- */
+/*
+Purpose: Emits waveform endpoints and extrema in time order for each screen column.
+File Dependencies: None.
+*/
+
+
+/** Emits each finite run through per-pixel endpoints and extrema without reordering samples. */
 export function visitWaveformPeakSamples(
   values: ArrayLike<number>,
   firstIndex: number,
@@ -16,6 +18,7 @@ export function visitWaveformPeakSamples(
   let maximum = -1;
   let pixel = 0;
   let beginsRun = true;
+  /** Emits the current pixel column endpoints and extrema in sample order. */
   const flush = () => {
     if (first < 0) return;
     emit(first, values[first], beginsRun);

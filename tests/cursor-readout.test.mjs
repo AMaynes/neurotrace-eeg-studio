@@ -1,3 +1,9 @@
+/*
+Purpose: Checks cursor readout behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/cursor-readout.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readCursorReadout } from "../app/cursor-readout.ts";

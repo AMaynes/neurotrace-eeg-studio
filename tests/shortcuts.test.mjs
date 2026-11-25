@@ -1,3 +1,9 @@
+/*
+Purpose: Checks shortcuts behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/page.tsx, app/shortcut-settings.tsx, app/shortcuts.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

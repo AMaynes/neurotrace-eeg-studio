@@ -1,8 +1,8 @@
-/**
- * Plans incremental overview reads on a fixed, whole-source-frame bucket grid.
- * Only complete adjacent buckets are reused: no interpolation, rebinning, or
- * fabricated samples. Callers own channel selection, cancellation, and caching.
- */
+/*
+Purpose: Plans incremental overview reads on a fixed, whole-source-frame bucket grid. Only complete adjacent buckets are reused: no interpolation, rebinning, or fabricated samples. Callers own channel selection, cancellation, and caching.
+File Dependencies: app/eeg-core.ts.
+*/
+
 
 import type { EnvelopeWindowData } from "./eeg-core";
 
@@ -84,6 +84,7 @@ export function planAlignedEnvelopeRequest(request: AlignedEnvelopeRequest): Env
   const framesPerBucket = Math.max(1, Math.floor((endSec - startSec) * sampleRate / bucketCount));
   const firstRequestedFrame = nearInteger(startSec * sampleRate);
   const lastRequestedFrame = nearInteger(endSec * sampleRate);
+  /** Aligns the requested interval to the envelope bucket grid. */
   const alignedBounds = (width: number) => ({
     start: Math.floor(firstRequestedFrame / width) * width,
     end: Math.ceil(lastRequestedFrame / width) * width,
@@ -223,6 +224,7 @@ export function mergeAdjacentEnvelopeWindows(pieces: readonly EnvelopeWindowData
   if (ordered.length === 1) return first;
   const bucketCount = counts.reduce<number>((sum, count) => sum + (count ?? 0), 0);
   if (!positiveInteger(bucketCount)) throw new Error("Envelope merge bucket count exceeds the safe integer range.");
+  /** Concatenates ordered envelope fields into one array per channel. */
   const floats = (field: "data" | "minima" | "maxima" | "variation") => first.data.map((_, channel) => {
     const result = new Float32Array(bucketCount);
     let offset = 0;
@@ -252,6 +254,7 @@ export function mergeAdjacentEnvelopeWindows(pieces: readonly EnvelopeWindowData
   };
 }
 
+/** Converts aligned sample-frame bounds into a timed envelope read and bucket count. */
 function readPlan(startFrame: number, endFrame: number, framesPerBucket: number, sampleRate: number): EnvelopeReadPlan {
   return {
     startSec: startFrame / sampleRate,
@@ -260,6 +263,7 @@ function readPlan(startFrame: number, endFrame: number, framesPerBucket: number,
   };
 }
 
+/** Extracts the retained buckets covering the requested interval. */
 function cropBuckets(base: EnvelopeWindowData, first: number, end: number): EnvelopeWindowData {
   if (first === 0 && end === base.data[0].length) return base;
   const startSec = base.startSec + first * base.bucketDurationSec;
@@ -278,6 +282,7 @@ function cropBuckets(base: EnvelopeWindowData, first: number, end: number): Enve
   };
 }
 
+/** Returns the number of retained time buckets in an envelope. */
 function envelopeBucketCount(window: EnvelopeWindowData): number | null {
   const count = window.data[0]?.length;
   const channels = window.channelIndices.length;
@@ -296,40 +301,48 @@ function envelopeBucketCount(window: EnvelopeWindowData): number | null {
   return count;
 }
 
+/** Calculates the source-frame count from the recording duration and rate. */
 function recordingFrames(durationSec: number, sampleRate: number): number | null {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0 || !Number.isFinite(durationSec) || durationSec <= 0) return null;
   const frames = integerFrame(durationSec * sampleRate);
   return frames !== null && frames > 0 ? frames : null;
 }
 
+/** Checks that the requested interval has valid finite bounds. */
 function validRange(startSec: number, endSec: number, durationSec: number) {
   return Number.isFinite(startSec) && Number.isFinite(endSec)
     && startSec >= 0 && endSec > startSec && endSec <= durationSec;
 }
 
+/** Validates the positive integer used by the current calculation. */
 function positiveInteger(value: number | undefined): value is number {
   return value !== undefined && Number.isSafeInteger(value) && value > 0;
 }
 
+/** Maps the requested position onto an integer sample frame. */
 function integerFrame(value: number, magnitude = value): number | null {
   const rounded = Math.round(value);
   const tolerance = Math.max(1, Math.abs(magnitude)) * Number.EPSILON * 32;
   return Number.isSafeInteger(rounded) && Math.abs(value - rounded) <= tolerance ? rounded : null;
 }
 
+/** Checks whether floating-point rounding leaves a value near an integer. */
 function nearInteger(value: number) {
   return integerFrame(value) ?? value;
 }
 
+/** Compares values using the tolerance required by the current sample grid. */
 function nearlyEqual(left: number, right: number) {
   return Number.isFinite(left) && Number.isFinite(right)
     && Math.abs(left - right) <= Math.max(1, Math.abs(left), Math.abs(right)) * Number.EPSILON * 32;
 }
 
+/** Compares ordered numeric arrays without changing either array. */
 function sameNumbers(left: readonly number[], right: readonly number[]) {
   return left.length === right.length && left.every((value, index) => nearlyEqual(value, right[index]));
 }
 
+/** Compares ordered string arrays without changing either array. */
 function sameStrings(left: readonly string[], right: readonly string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }

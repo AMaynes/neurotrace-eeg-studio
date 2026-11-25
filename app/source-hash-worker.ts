@@ -1,7 +1,8 @@
-/**
- * Full-file verification worker. For EDF+, one record-aligned pass computes
- * the exact SHA-256 and extracts TAL annotations without rereading the file.
- */
+/*
+Purpose: Full-file verification worker. For EDF+, one record-aligned pass computes the exact SHA-256 and extracts TAL annotations without rereading the file.
+File Dependencies: app/eeg-core.ts, app/source-integrity.ts.
+*/
+
 
 import { parseEdfTalText, type SourceEvent } from "./eeg-core";
 import { IncrementalSha256, sha256Blob } from "./source-integrity";
@@ -24,6 +25,7 @@ const workerScope = self as unknown as {
   postMessage(message: HashResponse): void;
 };
 
+/** Reports hashing progress at 32 MiB intervals and at completion. */
 function progressReporter(totalBytes: number) {
   let lastReportedBytes = 0;
   return (bytesHashed: number) => {
@@ -33,6 +35,7 @@ function progressReporter(totalBytes: number) {
   };
 }
 
+/** Verifies the edf. */
 async function verifyEdf(blob: Blob, plan: EdfAnnotationPlan) {
   const sha256 = new IncrementalSha256();
   const reportProgress = progressReporter(blob.size);
@@ -41,6 +44,7 @@ async function verifyEdf(blob: Blob, plan: EdfAnnotationPlan) {
   const ordinaryChunkBytes = 4 * 1024 * 1024;
   let hashedBytes = 0;
 
+  /** Hashes the slice. */
   const hashSlice = async (start: number, end: number) => {
     const bytes = new Uint8Array(await blob.slice(start, end).arrayBuffer());
     sha256.update(bytes);

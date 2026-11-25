@@ -1,3 +1,10 @@
+/*
+Purpose: Checks directory review resume behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/directory-event-client.ts, app/directory-import.ts, app/directory-review-resume.ts,
+  app/directory-review-worker.ts, app/matlab-annotations-csv.ts, app/page.tsx, tests/fixtures/legacy-mat.mjs.
+*/
+
+
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';

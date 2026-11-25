@@ -1,10 +1,16 @@
-/**
- * Browser-only entry point for the static GitHub Pages release.
- *
- * The product component intentionally remains shared with the vinext build. This
- * adapter supplies only the DOM mount that a server-rendered route would
- * otherwise provide.
- */
+/*
+Purpose: Browser-only entry point for the static GitHub Pages release.
+File Dependencies: app/globals.css, app/page.tsx.
+*/
+
+
+/*
+Browser-only entry point for the static GitHub Pages release.
+
+The product component intentionally remains shared with the vinext build. This
+adapter supplies only the DOM mount that a server-rendered route would
+otherwise provide.
+*/
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

@@ -1,3 +1,9 @@
+/*
+Purpose: Bounds playback to available samples and computes the centered time window.
+File Dependencies: None.
+*/
+
+
 type PlaybackCoverage = {
   viewStart: number;
   viewDuration?: number;

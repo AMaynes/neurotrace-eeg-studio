@@ -1,4 +1,8 @@
-/** Persistent browser worker client for file-backed MATLAB v7.3 signal reads. */
+/*
+Purpose: Persistent browser worker client for file-backed MATLAB v7.3 signal reads.
+File Dependencies: app/mat73-worker.ts, app/mat73.ts.
+*/
+
 
 import type {
   Mat73EnvelopeResult,
@@ -22,17 +26,20 @@ interface PendingRequest {
 
 let nextRequestId = 1;
 
+/** Allocates a request identifier and wraps before the safe-integer limit. */
 function requestId() {
   const value = nextRequestId;
   nextRequestId = nextRequestId >= Number.MAX_SAFE_INTEGER ? 1 : nextRequestId + 1;
   return value;
 }
 
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortReason(signal: AbortSignal | undefined) {
   if (signal?.reason !== undefined) return signal.reason;
   return new DOMException("MATLAB v7.3 signal read canceled", "AbortError");
 }
 
+/** Recreates the worker error with its original name and code. */
 function responseError(response: Extract<Mat73WorkerResponse, { type: "error" }>) {
   const error = new Error(response.message) as Error & { code?: string };
   error.name = response.name;
@@ -45,6 +52,7 @@ export class Mat73WorkerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private failedError: Error | null = null;
 
+  /** Initializes the instance from the supplied arguments. */
   private constructor(worker: Worker) {
     this.worker = worker;
     worker.onmessage = (event: MessageEvent<Mat73WorkerResponse>) => {
@@ -77,6 +85,7 @@ export class Mat73WorkerClient {
     };
   }
 
+  /** Constructs the source using the supplied metadata. */
   static async create(file: File): Promise<{ client: Mat73WorkerClient; metadata: Mat73OpenResult }> {
     if (typeof Worker === "undefined") {
       throw new Error("This browser does not provide workers required for large MATLAB v7.3 files.");
@@ -93,6 +102,7 @@ export class Mat73WorkerClient {
     }
   }
 
+  /** Reads the window. */
   readWindow(
     firstSample: number,
     endSample: number,
@@ -107,6 +117,7 @@ export class Mat73WorkerClient {
     }, signal);
   }
 
+  /** Reads the envelope. */
   readEnvelope(
     request: Omit<Extract<Mat73WorkerRequest, { type: "envelope" }>, "type" | "requestId">,
     signal?: AbortSignal,
@@ -115,6 +126,7 @@ export class Mat73WorkerClient {
     return this.send<Mat73EnvelopeResult>({ type: "envelope", ...request }, signal, onOverview);
   }
 
+  /** Closes the owned resource. */
   close() {
     if (this.failedError) return;
     // No caller may remain waiting for a task whose worker is being closed.
@@ -127,6 +139,7 @@ export class Mat73WorkerClient {
     void closing.then(() => this.worker.terminate(), () => this.worker.terminate());
   }
 
+  /** Dispatches a cancellable HDF5 request and tracks its pending response. */
   private send<T extends WorkerResult>(
     request: ClientRequest,
     signal?: AbortSignal,
@@ -148,6 +161,7 @@ export class Mat73WorkerClient {
         }
         : undefined;
       this.pending.set(id, {
+        /** Resolves the request with its typed worker result. */
         resolve: (result) => resolve(result as T),
         reject,
         signal,
@@ -164,12 +178,14 @@ export class Mat73WorkerClient {
     });
   }
 
+  /** Finishes the request. */
   private finishRequest(id: number) {
     const pending = this.pending.get(id);
     pending?.signal?.removeEventListener("abort", pending.onAbort!);
     this.pending.delete(id);
   }
 
+  /** Reports failure for the all. */
   private failAll(error: Error) {
     this.failedError = error;
     for (const [id, pending] of this.pending) {

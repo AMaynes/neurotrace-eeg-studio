@@ -1,3 +1,9 @@
+/*
+Purpose: Defines tutorials for the NeuroTrace workspace.
+File Dependencies: app/tutorial-events.ts.
+*/
+
+
 import type { TutorialAction, TutorialAssistAction } from "./tutorial-events";
 
 /** Task-based help with explicit completion signals and opt-in, view-only assistance. */
@@ -252,6 +258,7 @@ export const tutorialLessons: readonly TutorialLesson[] = [
   },
 ];
 
+/** Explains why the current walkthrough action is unavailable. */
 export function tutorialBlockReason(lesson: TutorialLesson, hasRecording: boolean, canAnnotate: boolean): string | null {
   if (lesson.requires !== "workspace" && !hasRecording) return "Open a recording first to try this in the workspace. You can still read every step here.";
   if (lesson.requires === "review" && !canAnnotate) return "Finish opening the recording before adding labels. You can read the steps in the meantime.";
@@ -302,6 +309,7 @@ export function placeTutorialCoach(
   // nearest clear position, not just a corner; edges also minimize unavoidable overlap.
   const xs = [origin.left, margin, right, target.left - width - gap, target.left - width, target.left + target.width, target.left + target.width + gap];
   const ys = [origin.top, margin, bottom, target.top - height - gap, target.top - height, target.top + target.height, target.top + target.height + gap];
+  /** Calculates the overlap area between a coach position and its padded target. */
   const overlap = (position: TutorialCoachPosition, padding: number) =>
     Math.max(0, Math.min(position.left + width, target.left + target.width + padding) - Math.max(position.left, target.left - padding))
       * Math.max(0, Math.min(position.top + height, target.top + target.height + padding) - Math.max(position.top, target.top - padding));

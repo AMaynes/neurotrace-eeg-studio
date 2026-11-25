@@ -1,4 +1,9 @@
-/** Runs exact Raw DAT envelope construction away from the browser UI thread. */
+/*
+Purpose: Runs exact Raw DAT envelope construction away from the browser UI thread.
+File Dependencies: app/eeg-core.ts, app/progressive-envelope.ts, app/raw-dat-envelope.ts,
+  app/scan-hash-worker-client.ts.
+*/
+
 
 import {
   buildRawDatEnvelopeWindow,
@@ -30,6 +35,7 @@ const workerScope = self as unknown as {
 
 workerScope.onmessage = (event) => {
   const { requestId, request } = event.data;
+  /** Builds the DAT overview and disposes the optional hash pipeline. */
   const build = async () => {
     // The child owns one ordered hash stream; this worker decodes the same
     // chunks concurrently. Terminating the parent also terminates its children.
@@ -38,9 +44,11 @@ workerScope.onmessage = (event) => {
       return await buildRawDatEnvelopeWindow(request, {
         backend: "worker",
         hashPipeline,
+        /** Handles the progress. */
         onProgress: (progress) => {
           workerScope.postMessage({ type: "progress", requestId, progress });
         },
+        /** Handles the overview. */
         onOverview: (window) => {
           workerScope.postMessage(
             { type: "overview", requestId, window },

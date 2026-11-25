@@ -1,4 +1,9 @@
-/** Bounded full-window Gabor analysis. Runs entirely in a terminable worker. */
+/*
+Purpose: Bounded full-window Gabor analysis. Runs entirely in a terminable worker.
+File Dependencies: app/matlab-spectrogram-input.ts, app/matlab-spectrogram.ts.
+*/
+
+
 import { computeMatlabSpectrogram, computeMatlabSpectrogramPower, matlabPercentile, type MatlabSpectrogramResult } from "./matlab-spectrogram.ts";
 import type { MatlabSpectrogramInputPlan } from "./matlab-spectrogram-input.ts";
 
@@ -16,6 +21,7 @@ export function spectrogramTileSize(channels: number) {
   return 2 ** Math.floor(Math.log2(limit));
 }
 
+/** Validates the samples. */
 function validateSamples(data: Samples[], channels: number, count: number) {
   if (data.length !== channels || data.some((values) =>
     !(values instanceof Float32Array || values instanceof Float64Array) || values.length !== count)) {

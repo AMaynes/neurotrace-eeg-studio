@@ -1,4 +1,7 @@
 #!/bin/zsh
+# Purpose: Builds and serves the static viewer on a user-selected local port on macOS.
+# File Dependencies: package.json, vite.pages.config.ts.
+
 
 # Double-click this file in Finder to build and run NeuroTrace on a chosen
 # localhost port. Keep the Terminal window open while using the viewer.

@@ -1,4 +1,8 @@
-/** Buzcode-style multitaper math with recording-aligned, pan-invariant frames. */
+/*
+Purpose: Buzcode-style multitaper math with recording-aligned, pan-invariant frames.
+File Dependencies: None.
+*/
+
 
 export const BUZCODE_FFT_SIZE = 3072;
 export const BUZCODE_TIME_BANDWIDTH = 3;
@@ -57,10 +61,12 @@ export interface SpectrogramComputeResult {
   metrics: SpectrogramComputeMetrics;
 }
 
+/** Returns monotonic milliseconds when available, otherwise wall-clock milliseconds. */
 function nowMs() {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
+/** Validates the request. */
 function validateRequest(request: SpectrogramComputeRequest) {
   if (!(request.data instanceof Float32Array)) {
     throw new TypeError("Spectrogram input must be a Float32Array.");
@@ -79,6 +85,7 @@ function validateRequest(request: SpectrogramComputeRequest) {
   }
 }
 
+/** Estimates second-order autoregressive coefficients from finite consecutive samples. */
 function estimateAr2(signal: Float32Array) {
   let x1x1 = 0;
   let x1x2 = 0;
@@ -123,17 +130,20 @@ function whitenAr2(signal: Float32Array) {
   return whitened;
 }
 
+/** Calculates the scalar product of two numeric vectors. */
 function dot(left: Float64Array, right: Float64Array) {
   let sum = 0;
   for (let index = 0; index < left.length; index += 1) sum += left[index] * right[index];
   return sum;
 }
 
+/** Normalizes a vector in place with an epsilon-bounded magnitude. */
 function normalize(vector: Float64Array) {
   const magnitude = Math.sqrt(Math.max(Number.EPSILON, dot(vector, vector)));
   for (let index = 0; index < vector.length; index += 1) vector[index] /= magnitude;
 }
 
+/** Orthogonalizes and normalizes the supplied taper vectors. */
 function orthonormalize(vectors: Float64Array[]) {
   for (let column = 0; column < vectors.length; column += 1) {
     const vector = vectors[column];
@@ -199,6 +209,7 @@ function dpssTapers(length: number) {
   return vectors;
 }
 
+/** Applies the in-place radix-two Fourier transform. */
 function fftRadix2(real: Float64Array, imaginary: Float64Array) {
   const length = real.length;
   for (let index = 1, reversed = 0; index < length; index += 1) {
@@ -259,6 +270,7 @@ function fft3072(input: Float64Array, maximumBin: number) {
   return { real: outputReal, imaginary: outputImaginary };
 }
 
+/** Returns the unmodified frequency-bin coordinates for the transform. */
 function rawFrequencyBins(sampleRate: number) {
   const nyquist = sampleRate / 2;
   const exclusiveMaximum = Math.min(BUZCODE_MAX_COMPUTED_FREQUENCY_HZ, nyquist);
@@ -274,6 +286,7 @@ function rawFrequencyBins(sampleRate: number) {
   return bins;
 }
 
+/** Groups multitaper bins according to the configured analysis ranges. */
 function buzcodeFrequencyGroups(sampleRate: number, rawBins: readonly number[]) {
   const betweenTwoAndFour = rawBins.reduce((count, bin) => {
     const frequency = (bin * sampleRate) / BUZCODE_FFT_SIZE;
@@ -379,6 +392,7 @@ export function computeSpectrogram(request: SpectrogramComputeRequest): Spectrog
   };
 }
 
+/** Finds the closest sorted frequency index, preferring the lower index on ties. */
 function nearestSortedIndex(values: Float64Array, target: number) {
   if (!values.length) return -1;
   let low = 0;
@@ -450,6 +464,7 @@ export function computeAverageSpectrogram(request: SpectrogramAverageComputeRequ
   };
 }
 
+/** Evaluates the Hann taper for a sample position. */
 function hanning(length: number) {
   if (length <= 1) return Float64Array.of(1);
   return Float64Array.from({ length }, (_, index) => (
@@ -457,6 +472,7 @@ function hanning(length: number) {
   ));
 }
 
+/** Convolves samples and retains the requested output interval. */
 function convolveTrimmed(values: Float64Array, window: Float64Array, normalize: boolean) {
   const result = new Float64Array(values.length);
   const frontTrim = Math.floor(window.length / 2);
@@ -529,6 +545,7 @@ export function thetaRatioOverlay(result: SpectrogramComputeResult, smoothingSec
   return normalized;
 }
 
+/** Collects transferable buffers from a spectral result. */
 export function spectrogramTransferList(result: SpectrogramComputeResult): Transferable[] {
   return [result.powers.buffer, result.frequencies.buffer, result.times.buffer, result.durations.buffer];
 }

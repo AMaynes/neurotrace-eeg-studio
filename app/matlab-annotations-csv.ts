@@ -1,6 +1,13 @@
-/** The savedT/newRow contract in seizure_annotation_tool_update.m (lines 314–327, 929–947).
- * No extra columns, skipped decisions, display settings, or waveform data.
- */
+/*
+Purpose: Reads and writes the reference MATLAB annotation table without additional columns.
+File Dependencies: None.
+*/
+
+
+/*
+The savedT/newRow contract in seizure_annotation_tool_update.m (lines 314–327, 929–947).No extra columns, skipped decisions, display settings, or waveform data.
+*/
+
 export const MATLAB_ANNOTATION_COLUMNS = [
   "mat_path", "data_dir", "dat_file", "event_label", "event_time_original_sec",
   "onset_offset_sec", "onset_time_adjusted_sec", "offset_offset_sec", "offset_time_adjusted_sec",
@@ -17,10 +24,12 @@ type ReviewInput = {
   annotations: { candidateId?: string; labelId: string; status: string; start: number; end: number; updatedAt: string }[];
 };
 
+/** Formats the matlab timestamp. */
 export function formatMatlabTimestamp(value: string | undefined): string {
   if (!value) return "";
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "";
+  /** Pads a time component to two digits. */
   const pad = (part: number) => String(part).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
@@ -33,6 +42,7 @@ export function matlabCsvNumber(value: number): string {
   if (value === 0) return "0";
   const [mantissa, exponentText] = value.toExponential(14).split("e");
   const exponent = Number(exponentText);
+  /** Removes insignificant decimal zeros from a formatted number. */
   const trim = (text: string) => text.includes(".") ? text.replace(/0+$/, "").replace(/\.$/, "") : text;
   if (exponent < -4 || exponent >= 15) {
     return `${trim(mantissa)}e${exponent < 0 ? "-" : "+"}${String(Math.abs(exponent)).padStart(2, "0")}`;
@@ -40,8 +50,10 @@ export function matlabCsvNumber(value: number): string {
   return trim(Number(value.toPrecision(15)).toFixed(Math.max(0, 14 - exponent)));
 }
 
+/** Converts accepted review decisions into MATLAB-compatible CSV rows. */
 export function matlabAnnotationRows(input: ReviewInput): MatlabAnnotationRow[] {
   const { meta, candidates, annotations } = input;
+  /** Reads a string-valued source interpretation field. */
   const field = (key: string) => typeof input.sourceInterpretation?.[key] === "string"
     ? input.sourceInterpretation[key] as string : "";
   const sourcePath = input.sourcePath || meta.name;
@@ -83,11 +95,13 @@ export function matlabAnnotationRows(input: ReviewInput): MatlabAnnotationRow[] 
   return rows;
 }
 
+/** Formats a MATLAB-compatible CSV cell and escapes embedded quotes. */
 export function csvCell(value: string | number): string {
   const text = typeof value === "number" ? matlabCsvNumber(value) : value;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
+/** Validates the row. */
 function validateRow(row: MatlabAnnotationRow): void {
   for (const key of MATLAB_ANNOTATION_COLUMNS.slice(4, 11)) {
     if (row[key] === "" || !Number.isFinite(Number(row[key]))) {
@@ -102,12 +116,14 @@ function validateRow(row: MatlabAnnotationRow): void {
   }
 }
 
+/** Combines source identity and the six-decimal event time for row replacement. */
 function eventKey(row: MatlabAnnotationRow): string {
   // Same six-decimal event identity as MATLAB upsertSavedRow. No rounding of stored marks.
   // Standalone/EDF sources lack a MAT path, so retain their distinct file identities.
   return JSON.stringify([row.mat_path || [row.data_dir, row.dat_file], Number(row.event_time_original_sec).toFixed(6)]);
 }
 
+/** Merges the matlab annotation rows. */
 export function mergeMatlabAnnotationRows(previous: MatlabAnnotationRow[], current: MatlabAnnotationRow[]): MatlabAnnotationRow[] {
   const rows = new Map<string, MatlabAnnotationRow>();
   for (const row of [...previous, ...current]) {
@@ -117,6 +133,7 @@ export function mergeMatlabAnnotationRows(previous: MatlabAnnotationRow[], curre
   return [...rows.values()];
 }
 
+/** Serializes the matlab annotations. */
 export function serializeMatlabAnnotations(rows: MatlabAnnotationRow[]): string {
   const lines = [MATLAB_ANNOTATION_COLUMNS.join(",")];
   for (const row of mergeMatlabAnnotationRows([], rows)) lines.push(MATLAB_ANNOTATION_COLUMNS.map((key) => csvCell(row[key])).join(","));
@@ -129,7 +146,9 @@ export function parseCsvRecords(text: string): string[][] {
   if (!text.trim()) return [];
   const records: string[][] = [];
   let record: string[] = [], cell = "", quoted = false, closed = false;
+  /** Finishes the cell. */
   const finishCell = () => { record.push(cell); cell = ""; closed = false; };
+  /** Finishes the record. */
   const finishRecord = () => { finishCell(); records.push(record); record = []; };
   const content = text.replace(/^\uFEFF/, "");
   for (let index = 0; index < content.length; index++) {
@@ -170,7 +189,9 @@ export function parseMatlabAnnotations(text: string, options: { acceptedOnly?: b
   return rows;
 }
 
+/** Builds the MATLAB-compatible annotation filename. */
 export function matlabAnnotationFilename(patient: string, reviewer: string): string {
+  /** Replaces characters that cannot appear in an exported filename. */
   const safe = (text: string) => text.trim().replace(/ /g, "_").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
   return `${safe(patient) || "recording"}_${safe(reviewer) || "reviewer"}_annotations.csv`;
 }
@@ -180,6 +201,7 @@ export type MatlabCsvFileHandle = {
   createWritable(): Promise<{ write(data: Blob): Promise<void>; close(): Promise<void>; abort?(): Promise<void> }>;
 };
 
+/** Writes the matlab annotations. */
 export async function writeMatlabAnnotations(handle: MatlabCsvFileHandle, current: MatlabAnnotationRow[]): Promise<number> {
   // Read/validate BEFORE createWritable: resaving must not erase other sessions' accepted rows.
   const previous = parseMatlabAnnotations(await (await handle.getFile()).text());
@@ -194,9 +216,11 @@ export async function writeMatlabAnnotations(handle: MatlabCsvFileHandle, curren
 /** Keep only small export rows when directory navigation closes a recording. */
 export class MatlabReviewCsvCache {
   private sessions = new Map<string, { group: string; rows: MatlabAnnotationRow[] }>();
+  /** Replaces the saved rows for one session within its review group. */
   update(session: string, group: string, rows: MatlabAnnotationRow[]): void {
     this.sessions.set(JSON.stringify([group, session]), { group, rows });
   }
+  /** Returns all saved session rows belonging to a review group. */
   rows(group: string): MatlabAnnotationRow[] {
     return [...this.sessions.values()].filter((session) => session.group === group).flatMap((session) => session.rows);
   }

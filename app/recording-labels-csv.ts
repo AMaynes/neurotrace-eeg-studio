@@ -1,3 +1,9 @@
+/*
+Purpose: Serializes and reads recording labels in the MATLAB-compatible CSV layout.
+File Dependencies: app/matlab-annotations-csv.ts.
+*/
+
+
 import { csvCell, parseCsvRecords } from "./matlab-annotations-csv.ts";
 
 interface ExportedLabel {
@@ -31,6 +37,7 @@ export type CsvRecording<T = Record<string, unknown>> = {
   interpretation?: Record<string, unknown> | null;
 };
 
+/** Classifies exported label provenance as reviewer, detected, or legacy. */
 function labelSource(annotation: ExportedLabel): "detected" | "reviewer" | "legacy" {
   if (annotation.origin === "manual") return "reviewer";
   if (annotation.origin === "imported" && annotation.candidateId && !annotation.recordingLabel) return "reviewer";
@@ -76,6 +83,7 @@ export function serializeRecordingLabels<T extends ExportedLabel>(
   return [header, ...records.map((values) => values.map(csvCell).join(",")), ""].join("\r\n");
 }
 
+/** Recognizes a non-null object that is not an array. */
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 

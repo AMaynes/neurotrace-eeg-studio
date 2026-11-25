@@ -1,4 +1,8 @@
-/** Cancellable browser client for off-main-thread spectrogram computation. */
+/*
+Purpose: Cancellable browser client for off-main-thread spectrogram computation.
+File Dependencies: app/spectrogram-compute.ts, app/spectrogram-worker.ts.
+*/
+
 
 import type {
   SpectrogramAverageComputeRequest,
@@ -14,10 +18,12 @@ export interface SpectrogramWorkerOptions {
 
 let nextRequestId = 1;
 
+/** Returns monotonic milliseconds when available, otherwise wall-clock milliseconds. */
 function nowMs() {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortReason(signal: AbortSignal | undefined) {
   if (signal?.reason !== undefined) return signal.reason;
   const error = new Error("Spectrogram computation was aborted");
@@ -25,6 +31,7 @@ function abortReason(signal: AbortSignal | undefined) {
   return error;
 }
 
+/** Creates an Error with the supplied name and message. */
 function namedError(name: string, message: string) {
   const error = new Error(message);
   error.name = name;
@@ -51,6 +58,7 @@ export function computeAverageSpectrogramOffThread(
   return runSpectrogramWorker("compute-average", request.signals, options);
 }
 
+/** Runs the spectrogram worker. */
 function runSpectrogramWorker(
   type: SpectrogramWorkerRequest["type"],
   requests: SpectrogramAverageSignalRequest[],
@@ -88,16 +96,19 @@ function runSpectrogramWorker(
 
   return new Promise<SpectrogramComputeResult>((resolve, reject) => {
     let settled = false;
+    /** Releases listeners and worker resources owned by the current operation. */
     const cleanup = () => {
       options.signal?.removeEventListener("abort", onAbort);
       worker.terminate();
     };
+    /** Settles the operation once and releases its associated resources. */
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
       cleanup();
       callback();
     };
+    /** Cancels the active operation and propagates its cancellation reason. */
     const onAbort = () => finish(() => reject(abortReason(options.signal)));
 
     worker.onmessage = (event: MessageEvent<SpectrogramWorkerResponse>) => {

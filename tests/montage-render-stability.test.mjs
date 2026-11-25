@@ -1,3 +1,9 @@
+/*
+Purpose: Checks montage render stability behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/channel-layout.ts, app/eeg-core.ts, app/page.tsx, app/trace-centering.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

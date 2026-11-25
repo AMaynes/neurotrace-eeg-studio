@@ -1,3 +1,9 @@
+/*
+Purpose: Defines tutorial progress for the NeuroTrace workspace.
+File Dependencies: app/tutorial-events.ts.
+*/
+
+
 "use client";
 
 import { useEffect, useRef } from "react";
@@ -37,6 +43,7 @@ export type TutorialMilestones = {
 export function tutorialMilestoneActions(before: TutorialMilestones | null, after: TutorialMilestones): TutorialAction[] {
   if (!before || before.scope !== after.scope) return [];
   const actions: TutorialAction[] = [];
+  /** Emits a tutorial action when the corresponding milestone changes. */
   const changed = <K extends keyof TutorialMilestones>(key: K, action: TutorialAction, condition = true) => {
     if (before[key] !== after[key] && condition) actions.push(action);
   };

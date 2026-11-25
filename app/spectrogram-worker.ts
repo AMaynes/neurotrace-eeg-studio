@@ -1,4 +1,8 @@
-/** Short-lived module worker for the viewer's spectrogram signal math. */
+/*
+Purpose: Short-lived module worker for the viewer's spectrogram signal math.
+File Dependencies: app/spectrogram-compute.ts.
+*/
+
 
 import { computeAverageSpectrogram, computeSpectrogram, spectrogramTransferList } from "./spectrogram-compute.ts";
 import type {

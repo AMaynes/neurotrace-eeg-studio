@@ -1,4 +1,9 @@
-/** Runs record-aligned EDF envelope and optional integrity work off the UI thread. */
+/*
+Purpose: Runs record-aligned EDF envelope and optional integrity work off the UI thread.
+File Dependencies: app/edf-envelope-integrity.ts, app/edf-envelope.ts, app/eeg-core.ts,
+  app/progressive-envelope.ts, app/scan-hash-worker-client.ts.
+*/
+
 
 import { executeEDFEnvelopeBuild } from "./edf-envelope-integrity.ts";
 import { edfEnvelopeTransferList } from "./edf-envelope.ts";
@@ -30,15 +35,18 @@ const workerScope = self as unknown as {
 
 workerScope.onmessage = (event) => {
   const { requestId, request } = event.data;
+  /** Builds the EDF overview and disposes the optional hash pipeline. */
   const build = async () => {
     const hashPipeline = request.integrity?.sha256 ? await createScanHashPipeline(request.blob.size) : undefined;
     try {
       return await executeEDFEnvelopeBuild(request, {
         backend: "worker",
         hashPipeline,
+        /** Handles the progress. */
         onProgress: (progress) => {
           workerScope.postMessage({ type: "progress", requestId, progress });
         },
+        /** Handles the overview. */
         onOverview: (window) => {
           workerScope.postMessage(
             { type: "overview", requestId, window },

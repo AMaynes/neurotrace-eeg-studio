@@ -1,3 +1,9 @@
+/*
+Purpose: Checks workspace layout behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/channel-layout.ts, app/workspace-layout.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeWorkspaceLayout } from "../app/workspace-layout.ts";

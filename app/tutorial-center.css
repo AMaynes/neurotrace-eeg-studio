@@ -1,4 +1,9 @@
-/* Learning UI stays outside the compact signal-control typography. */
+/*
+Purpose: Styles tutorial selection, draggable guidance, and target highlights.
+File Dependencies: None.
+*/
+
+
 .tutorial-hub.modal { display: flex; flex-direction: column; width: min(1020px, calc(100vw - 32px)); padding: 0; overflow: hidden; color: #dce8e7; }
 .tutorial-header { flex-shrink: 0; padding: 24px 32px 20px; background: radial-gradient(ellipse at top right, #153b37 0, transparent 65%); }
 .tutorial-header h2 { padding-right: 20px; font-size: 28px; }

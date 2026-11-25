@@ -1,4 +1,8 @@
-/** Browser client for cancellable clinical display processing in a worker. */
+/*
+Purpose: Browser client for cancellable clinical display processing in a worker.
+File Dependencies: app/display-processing-worker.ts, app/eeg-core.ts.
+*/
+
 
 import {
   applyDisplayFilters,
@@ -27,6 +31,7 @@ type WorkerResponse =
   | ({ type: "complete" } & DisplayProcessingResult)
   | { type: "error"; message: string };
 
+/** Applies display filters and sample preparation on the calling thread. */
 function processDirectly(request: DisplayProcessingRequest): DisplayProcessingResult {
   const filtered = request.filters.enabled
     ? applyDisplayFilters(request.data, request.sampleRates, request.filters)
@@ -87,6 +92,7 @@ function noOpDisplayResult(request: DisplayProcessingRequest): DisplayProcessing
   };
 }
 
+/** Prepares display samples in a worker, with cancellation and an optional direct fallback. */
 export function processDisplaySignalsOffThread(
   request: DisplayProcessingRequest,
   options: { signal?: AbortSignal; fallbackToMainThread?: boolean } = {},
@@ -117,6 +123,7 @@ export function processDisplaySignalsOffThread(
 
   return new Promise<DisplayProcessingResult>((resolve, reject) => {
     let settled = false;
+    /** Settles the operation once and releases its associated resources. */
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
@@ -124,6 +131,7 @@ export function processDisplaySignalsOffThread(
       worker.terminate();
       callback();
     };
+    /** Cancels the active operation and propagates its cancellation reason. */
     const onAbort = () => finish(() => {
       if (options.signal?.reason !== undefined) reject(options.signal.reason);
       else {
@@ -132,6 +140,7 @@ export function processDisplaySignalsOffThread(
         reject(error);
       }
     });
+    /** Releases the worker and retries through the permitted direct implementation. */
     const fallbackToDirect = (workerError?: unknown) => finish(() => {
       if (!allowFallback) {
         reject(workerError instanceof Error ? workerError : new Error("Signal processing worker failed."));

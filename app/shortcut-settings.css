@@ -1,3 +1,9 @@
+/*
+Purpose: Styles shortcut recording, conflict feedback, and settings controls.
+File Dependencies: None.
+*/
+
+
 .shortcut-settings > p, .shortcut-group > p { font-size: 11px !important; line-height: 1.5; color: #91aaae; }
 .shortcut-settings > input { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid #31587d; border-radius: 5px; background: #10243a; color: #d4e5f5; }
 .shortcut-status { min-height: 36px; padding: 8px 0; color: var(--mint); font-size: 11px; line-height: 1.4; }

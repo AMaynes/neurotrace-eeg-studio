@@ -1,3 +1,9 @@
+/*
+Purpose: Defines matlab cached display for the NeuroTrace workspace.
+File Dependencies: app/matlab-display-tiles.ts, app/matlab-display-window.ts.
+*/
+
+
 import type { MatlabDisplayWindow, MatlabDisplayWindowOptions } from "./matlab-display-window.ts";
 import { accumulateMatlabSummary, emptyMatlabSummary, MATLAB_TILE_BASE, summarizeMatlabTile,
   type MatlabDisplayTileCache, type MatlabDisplayTile } from "./matlab-display-tiles.ts";
@@ -42,8 +48,10 @@ export async function buildCachedMatlabDisplay(parameters: {
     segments.push({ start, count, stable, key: `${scope}:${tileSize}:${tileStart}` });
     start += count;
   }
+  /** Propagates cancellation before further tile processing. */
   const check = () => options.signal?.throwIfAborted();
   let completed = 0, lastPublish = -Infinity, lastYield = performance.now();
+  /** Copies accumulated tiles into a display window and marks unread bins as gaps. */
   const snapshot = (complete: boolean): MatlabDisplayWindow => {
     const data = summary.last.map((values) => values.slice());
     const envelopes = data.map((_, row) => {

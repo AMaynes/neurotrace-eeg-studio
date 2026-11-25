@@ -1,3 +1,9 @@
+/*
+Purpose: Checks matlab display worker client behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/matlab-display-processing.ts, app/matlab-display-worker-client.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createMatlabDisplayWorkerClient } from "../app/matlab-display-worker-client.ts";

@@ -1,3 +1,10 @@
+/*
+Purpose: Persists reviewer workspaces, reconnects local file selections, and validates restored labels and views.
+File Dependencies: app/directory-import.ts, app/matlab-annotations-csv.ts, app/neurotrace-project.ts,
+  app/recording-labels-csv.ts.
+*/
+
+
 import type { CsvRecording } from "./recording-labels-csv.ts";
 import type { DirectoryImportPlan } from "./directory-import.ts";
 import { MATLAB_ANNOTATION_COLUMNS, type MatlabAnnotationRow, type MatlabCsvFileHandle } from "./matlab-annotations-csv.ts";
@@ -6,6 +13,7 @@ import type { NeurotraceCustomToolAsset } from "./neurotrace-project.ts";
 export type LabelAlias = { key: string; alias: string; description: string };
 export type DictionaryLabel = { id: string; name: string; code: string; description: string };
 export type LabelLibrary = { aliases: LabelAlias[]; labels: DictionaryLabel[] };
+/** Creates an empty reusable label dictionary and alias list. */
 export const emptyLabelLibrary = (): LabelLibrary => ({ aliases: [], labels: [] });
 
 export type ReviewRecording = {
@@ -34,11 +42,15 @@ export type ReviewWorkspace = {
 };
 
 const MAX_WORKSPACE_BYTES = 64 * 1024 * 1024;
+/** Recognizes a non-null object that is not an array. */
 const object = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value));
+/** Validates a string against its maximum allowed length. */
 const text = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max;
+/** Reads the date value from the supplied metadata. */
 const date = (value: unknown) => text(value, 40) && Number.isFinite(Date.parse(value));
 
+/** Normalizes the reviewer id. */
 export function normalizeReviewerId(value: string) {
   const id = value.trim().toUpperCase();
   return /^[A-Z0-9][A-Z0-9-]{0,31}$/.test(id) ? id : "";
@@ -53,6 +65,7 @@ export async function reviewFolderKey(plan: DirectoryImportPlan): Promise<string
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+/** Creates a reviewer workspace with independent recording and library state. */
 export function newReviewWorkspace(folderKey: string, reviewerId: string, reviewSessionId: number, blind: boolean): ReviewWorkspace {
   const now = new Date().toISOString();
   return {
@@ -62,25 +75,30 @@ export function newReviewWorkspace(folderKey: string, reviewerId: string, review
   };
 }
 
+/** Builds paired CSV and JSON download names for a reviewer workspace. */
 export function reviewWorkspaceNames({ reviewerId, reviewSessionId }: Pick<ReviewWorkspace, "reviewerId" | "reviewSessionId">) {
   const stem = `reviewer-${reviewerId}_review-${String(reviewSessionId).padStart(3, "0")}`;
   return { workspace: `${stem}_workspace.json`, annotations: `${stem}_annotations.csv` };
 }
 
+/** Reports whether the value is review workspace file. */
 export function isReviewWorkspaceFile(file: File) {
   return /_workspace\.json$/i.test(file.name);
 }
 
+/** Reports whether the value is reviewer csv. */
 export function isReviewerCsv(file: File) {
   return /^reviewer-[a-z0-9-]+_review-\d+_annotations\.csv$/i.test(file.name);
 }
 
+/** Reports whether the operation can open review recording. */
 export function canOpenReviewRecording(review: ReviewWorkspace | undefined, plan: DirectoryImportPlan, recordingId: string) {
   if (!review?.blind) return true;
   const index = (plan.unfilteredRecordings ?? plan.recordings).findIndex(({ id }) => id === recordingId);
   return index >= 0 && index >= review.furthestIndex;
 }
 
+/** Parses the label library. */
 export function parseLabelLibrary(value: unknown): LabelLibrary {
   if (!object(value)) return emptyLabelLibrary();
   const aliases = Array.isArray(value.aliases) ? value.aliases.slice(0, 2000).filter((item): item is LabelAlias =>
@@ -91,6 +109,7 @@ export function parseLabelLibrary(value: unknown): LabelLibrary {
   return { aliases, labels };
 }
 
+/** Parses the review workspace. */
 export function parseReviewWorkspace(raw: string): ReviewWorkspace {
   if (raw.length > MAX_WORKSPACE_BYTES) throw new Error("The workspace JSON exceeds 64 MiB.");
   const value: unknown = JSON.parse(raw);
@@ -120,15 +139,19 @@ export function parseReviewWorkspace(raw: string): ReviewWorkspace {
   return { ...value, recordings, library: parseLabelLibrary(value.library), customTools } as ReviewWorkspace;
 }
 
+/** Reads the review workspace. */
 export async function readReviewWorkspace(file: Blob) {
   if (file.size > MAX_WORKSPACE_BYTES) throw new Error("The workspace JSON exceeds 64 MiB.");
   return parseReviewWorkspace(await file.text());
 }
 
+/** Builds the browser-storage prefix for a folder and reviewer. */
 const bucket = (folderKey: string, reviewerId: string) => `${folderKey}/${reviewerId}/`;
+/** Builds the lookup key for the supplied value. */
 const keyFor = (workspace: ReviewWorkspace) => `${bucket(workspace.folderKey, workspace.reviewerId)}${workspace.reviewSessionId}`;
 
 let dbPromise: Promise<IDBDatabase> | undefined;
+/** Opens or reuses the IndexedDB connection for directory event metadata. */
 function database() {
   dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open("neurotrace-review-workspaces", 1);
@@ -140,6 +163,7 @@ function database() {
   return dbPromise;
 }
 
+/** Lists the review workspaces. */
 export async function listReviewWorkspaces(folderKey: string, reviewerId: string): Promise<ReviewWorkspace[]> {
   const db = await database();
   const prefix = bucket(folderKey, reviewerId);
@@ -177,12 +201,14 @@ export async function persistReviewWorkspace(workspace: ReviewWorkspace) {
 type ReviewFile = MatlabCsvFileHandle;
 export type ReviewOutputDirectory = { getFileHandle(name: string, options?: { create: boolean }): Promise<ReviewFile> };
 
+/** Writes the review file. */
 async function writeReviewFile(handle: ReviewFile, data: Blob) {
   const writable = await handle.createWritable();
   try { await writable.write(data); await writable.close(); }
   catch (error) { await writable.abort?.().catch(() => {}); throw error; }
 }
 
+/** Finds a selected file containing a supported saved review. */
 async function existingReviewFile(directory: ReviewOutputDirectory, name: string) {
   try { return await directory.getFileHandle(name); }
   catch (error) {
@@ -214,6 +240,7 @@ export async function writeReviewWorkspacePair(directory: ReviewOutputDirectory,
 
 
 
+/** Indexes selected recordings by their normalized source paths. */
 function recordingPathLookup(entries: readonly { id: string; path: string }[]) {
   const suffixes = new Map<string, string[]>();
   for (const entry of entries) {

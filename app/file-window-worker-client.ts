@@ -1,4 +1,8 @@
-/** Browser client for cancellable exact EDF and Raw DAT sample-window reads. */
+/*
+Purpose: Browser client for cancellable exact EDF and Raw DAT sample-window reads.
+File Dependencies: app/file-window-worker.ts, app/file-window.ts.
+*/
+
 
 import {
   buildFileWindow,
@@ -22,6 +26,7 @@ export interface FileWindowWorkerOptions {
 
 let nextRequestId = 1;
 
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortReason(signal: AbortSignal | undefined) {
   if (signal?.reason !== undefined) return signal.reason;
   const error = new Error("Signal window decoding was aborted");
@@ -29,6 +34,7 @@ function abortReason(signal: AbortSignal | undefined) {
   return error;
 }
 
+/** Creates an Error with the supplied name and message. */
 function namedError(name: string, message: string, code?: string) {
   const error = new Error(message) as Error & { code?: string };
   error.name = name;
@@ -36,6 +42,7 @@ function namedError(name: string, message: string, code?: string) {
   return error;
 }
 
+/** Decodes the requested window on the calling thread with the same cancellation contract. */
 function buildDirectly(
   request: FileWindowBuildRequest,
   options: FileWindowWorkerOptions,
@@ -43,6 +50,7 @@ function buildDirectly(
   return buildFileWindow(request, {
     backend: "direct",
     signal: options.signal,
+    /** Forwards progress without letting a diagnostics callback invalidate the source read. */
     onProgress: (progress) => {
       try {
         options.onProgress?.(progress);
@@ -82,16 +90,19 @@ export function buildFileWindowOffThread(
   nextRequestId = nextRequestId >= Number.MAX_SAFE_INTEGER ? 1 : nextRequestId + 1;
   return new Promise<FileWindowBuildResult>((resolve, reject) => {
     let settled = false;
+    /** Releases listeners and worker resources owned by the current operation. */
     const cleanup = () => {
       options.signal?.removeEventListener("abort", onAbort);
       worker.terminate();
     };
+    /** Settles the operation once and releases its associated resources. */
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
       cleanup();
       callback();
     };
+    /** Releases the worker and retries through the permitted direct implementation. */
     const fallbackToDirect = (workerError: unknown) => {
       if (settled) return;
       settled = true;
@@ -102,6 +113,7 @@ export function buildFileWindowOffThread(
       }
       void buildDirectly(request, options).then(resolve, reject);
     };
+    /** Cancels the active operation and propagates its cancellation reason. */
     const onAbort = () => finish(() => reject(abortReason(options.signal)));
 
     worker.onmessage = (event: MessageEvent<FileWindowWorkerResponse>) => {
@@ -143,6 +155,7 @@ export function buildFileWindowOffThread(
   });
 }
 
+/** Dispatches an EDF window through the shared worker decoder. */
 export function buildEDFFileWindowOffThread(
   request: EDFFileWindowRequest,
   options?: FileWindowWorkerOptions,
@@ -150,6 +163,7 @@ export function buildEDFFileWindowOffThread(
   return buildFileWindowOffThread(request, options);
 }
 
+/** Dispatches a DAT window through the shared worker decoder. */
 export function buildRawDatFileWindowOffThread(
   request: RawDatFileWindowRequest,
   options?: FileWindowWorkerOptions,

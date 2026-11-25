@@ -1,3 +1,9 @@
+/*
+Purpose: Checks neurotrace project behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/neurotrace-project.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { File } from "node:buffer";

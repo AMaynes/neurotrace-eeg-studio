@@ -1,4 +1,9 @@
-/** Keep already published source bins visible while missing blocks are prepared. */
+/*
+Purpose: Retains published display bins while replacement waveform blocks are prepared.
+File Dependencies: None.
+*/
+
+
 type Envelope = { startSec: number; bucketDurationSec: number; minima: Float32Array | Float64Array;
   maxima: Float32Array | Float64Array; gaps: Uint8Array; variation?: Float32Array };
 type Waveform = {
@@ -19,6 +24,7 @@ type Waveform = {
 export function retainDisplayOverlap<T extends Waveform>(next: T, previous: Waveform | undefined): T {
   if (!previous?.recordingAnchored || !next.recordingAnchored || !next.settingsKey
     || next.settingsKey !== previous.settingsKey) return next;
+  /** Builds the identity used to compare the supplied value. */
   const identity = (window: Waveform, row: number) => JSON.stringify([
     window.labels[row], window.units[row], window.primarySourceIndices[row], window.sourceIndices[row],
   ]);

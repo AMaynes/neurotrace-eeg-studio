@@ -1,3 +1,9 @@
+/*
+Purpose: Checks trace centering behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/channel-layout.ts, app/page.tsx, app/trace-centering.ts, app/waveform-geometry.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

@@ -1,4 +1,9 @@
-/** Patient-free collection discovery: structure only, never waveform decoding. */
+/*
+Purpose: Patient-free collection discovery: structure only, never waveform decoding.
+File Dependencies: app/bids-companions.ts, app/directory-import.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

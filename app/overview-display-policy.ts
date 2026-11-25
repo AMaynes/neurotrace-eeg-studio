@@ -1,8 +1,8 @@
-/**
- * Separates an immediately useful wide-window preview from an overview whose
- * time resolution already satisfies the requested display. The caller owns
- * cache coverage, refinement, and cancellation; this policy never reads data.
- */
+/*
+Purpose: Separates an immediately useful wide-window preview from an overview whose time resolution already satisfies the requested display. The caller owns cache coverage, refinement, and cancellation; this policy never reads data.
+File Dependencies: app/waveform-geometry.ts.
+*/
+
 
 import { waveformOverviewColumnBudget } from "./waveform-geometry.ts";
 

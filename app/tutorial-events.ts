@@ -1,8 +1,9 @@
-/**
- * Semantic, payload-free tutorial notifications from completed workspace actions.
- * These never execute commands or contain recording/annotation data. The coach
- * listens only during a live step and consumes at most one match per subscription.
- */
+/*
+Purpose: Semantic, payload-free tutorial notifications from completed workspace actions. These never execute commands or contain recording/annotation data. The coach listens only during a live step and consumes at most one match per subscription.
+File Dependencies: None.
+*/
+
+
 export type TutorialAction =
   | "import-opened" | "import-format-chosen" | "import-files-ready" | "recording-opened"
   | "directory-files-ready" | "directory-list-opened" | "settings-opened" | "bias-locks-changed"
@@ -39,6 +40,7 @@ export function notifyTutorialAction(action: TutorialAction): void {
 /** One event cannot cascade through multiple steps, even if handlers emit twice. */
 export function subscribeTutorialActions(actions: readonly TutorialAction[], complete: () => void, target: EventTarget = document): () => void {
   let consumed = false;
+  /** Completes the step once when a matching tutorial action arrives. */
   const listener = (event: Event) => {
     if (consumed || !actions.includes((event as CustomEvent<TutorialAction>).detail)) return;
     consumed = true;

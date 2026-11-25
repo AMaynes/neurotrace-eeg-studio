@@ -1,3 +1,9 @@
+/*
+Purpose: Checks import selection behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/directory-import.ts, app/import-selection.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DirectoryImportError } from "../app/directory-import.ts";

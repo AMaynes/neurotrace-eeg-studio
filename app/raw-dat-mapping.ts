@@ -1,4 +1,10 @@
-/** Confirmation helpers for headerless, channel-interleaved int16 recordings. */
+/*
+Purpose: Parses channel names for explicit raw DAT mappings.
+File Dependencies: None.
+*/
+
+
+/** Parses nonempty channel names from the raw DAT mapping field. */
 export function parseRawDatChannelNames(text: string): string[] {
   if (!text.trim()) return [];
   // Accept one name per line, including MATLAB's displayed {'contact'} cells.

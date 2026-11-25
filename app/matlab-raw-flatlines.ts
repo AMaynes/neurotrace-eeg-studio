@@ -1,3 +1,9 @@
+/*
+Purpose: Finds synchronized constant-source intervals across raw channel blocks.
+File Dependencies: app/matlab-display-processing.ts.
+*/
+
+
 import type { MatlabDisplaySamples } from "./matlab-display-processing.ts";
 
 /** Bounded tiles can scan contiguous channel memory and sweep integer events. */
@@ -53,12 +59,14 @@ export function createMatlabRawFlatlineDetector(channelCount: number, sampleRate
   let regionStart = -1;
   let finished = false;
   const requiredChannels = Math.ceil(channelCount * 0.8);
+  /** Records a sufficiently long flatline run and resets its starting sample. */
   const emit = (endSample: number) => {
     if (regionStart >= 0 && (endSample - regionStart) / sampleRate >= minimumDuration) {
       regions.push({ startSec: plottedStartSec + regionStart / sampleRate, endSec: plottedStartSec + endSample / sampleRate });
     }
     regionStart = -1;
   };
+  /** Processes the events. */
   const processEvents = (through: number) => {
     while (nextEvent <= through) {
       const slot = nextEvent % ring.length;
@@ -71,6 +79,7 @@ export function createMatlabRawFlatlineDetector(channelCount: number, sampleRate
     }
   };
   return {
+    /** Appends the supplied value. */
     push(data: readonly MatlabDisplaySamples[], inputStartIndex: number) {
       if (finished) throw new Error("Cannot append to a finished raw flatline detector.");
       if (data.length !== channelCount || data.some((values) => values.length !== data[0].length)
@@ -99,6 +108,7 @@ export function createMatlabRawFlatlineDetector(channelCount: number, sampleRate
         processEvents(sample - lag);
       }
     },
+    /** Settles the operation once and releases its associated resources. */
     finish() {
       if (!finished) {
         const lastSample = nextInput - 1;

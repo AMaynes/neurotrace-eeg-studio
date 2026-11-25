@@ -1,4 +1,10 @@
-/** Real page effect, with controlled async builder; numerical pipeline tested separately. */
+/*
+Purpose: Real page effect, with controlled async builder; numerical pipeline tested separately.
+File Dependencies: app/bipolar-montage.ts, app/channel-layout.ts, app/display-overlap.ts, app/eeg-core.ts,
+  app/overview-display-policy.ts, app/page.tsx, app/recording-overview.ts, app/trace-centering.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

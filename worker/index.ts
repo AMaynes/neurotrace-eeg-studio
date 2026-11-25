@@ -1,18 +1,7 @@
-/**
- * Overview & Purpose
- * Adapts the vinext application and image endpoint to a Cloudflare Worker.
- *
- * Architectural Relationships
- * Called by: Cloudflare through vite.config.ts local/deployment bindings.
- * Calls: vinext routing, static assets, and the Cloudflare image transformer.
- *
- * External Resources
- * ASSETS and IMAGES Worker bindings; optional DB typing is retained for scaffolding.
- *
- * Notes
- * Request handling is stateless. Recording files are browser-local and never
- * enter this worker.
- */
+/*
+Purpose: Adapts the vinext application and image endpoint to a Cloudflare Worker.
+File Dependencies: None.
+*/
 
 
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
@@ -42,13 +31,16 @@ interface ExecutionContext {
 // const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
 
 const worker = {
+  /** Routes image optimization requests separately from the application handler. */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       return handleImageOptimization(request, {
+        /** Loads the requested asset through the configured Worker binding. */
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
+        /** Transforms an image through the provider binding and returns its response. */
         transformImage: async (body, { width, format, quality }) => {
           const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
           return result.response();

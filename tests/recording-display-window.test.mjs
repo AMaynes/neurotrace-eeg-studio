@@ -1,3 +1,9 @@
+/*
+Purpose: Checks recording display window behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/matlab-display-window.ts, app/recording-display-window.ts, app/trace-centering.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildMatlabDisplayWindow } from "../app/matlab-display-window.ts";

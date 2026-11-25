@@ -1,3 +1,9 @@
+/*
+Purpose: Checks window amount behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/window-amount.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { editWindowAmount, formatWindowAmount, parseWindowAmount, windowAmountPresentation } from "../app/window-amount.ts";

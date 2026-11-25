@@ -1,4 +1,9 @@
-/** Real autosave payloads must pass the real recovery parser after a reload. */
+/*
+Purpose: Real autosave payloads must pass the real recovery parser after a reload.
+File Dependencies: app/page.tsx, app/recording-labels.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

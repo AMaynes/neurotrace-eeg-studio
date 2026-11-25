@@ -1,4 +1,9 @@
-/** Explicit scalp pairs; electrode names are never paired by a numeric suffix. */
+/*
+Purpose: Explicit scalp pairs; electrode names are never paired by a numeric suffix.
+File Dependencies: None.
+*/
+
+
 export type BipolarMontageKind = "scalp" | "anatomical" | "mixed" | "unavailable";
 
 export const ANATOMICAL_EXCLUDED_GROUPS = new Set([
@@ -27,6 +32,7 @@ export function canonicalScalpElectrode(label: string): string | null {
   return TEMPORAL_ALIASES[key] ?? SCALP_NAMES.get(key) ?? null;
 }
 
+/** Removes reference suffixes before matching an electrode contact. */
 function plainContactName(label: string) {
   return label.trim().replace(/^(?:EEG|SEEG|ECOG|IEEG)[\s:_-]+/i, "")
     .replace(/[-_\s]+(?:REF|LE|AR|AVG|CAR)$/i, "").trim();
@@ -73,6 +79,7 @@ export function bipolarMontageKind(labels: readonly string[]): BipolarMontageKin
   return scalp && anatomical ? "mixed" : scalp ? "scalp" : anatomical ? "anatomical" : "unavailable";
 }
 
+/** Names the bipolar montage appropriate for the available channel labels. */
 export function bipolarMontageLabel(labels: readonly string[]): string {
   const kind = bipolarMontageKind(labels);
   return kind === "scalp" ? "Longitudinal bipolar"
@@ -86,6 +93,7 @@ export interface BipolarPair {
   label: string;
 }
 
+/** Builds available pairs from the fixed scalp bipolar montage. */
 export function scalpBipolarPairs(labels: readonly string[]): { pairs: BipolarPair[]; warnings: string[] } {
   const electrodes = new Map<string, number[]>();
   labels.forEach((label, index) => {

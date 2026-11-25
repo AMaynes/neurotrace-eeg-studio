@@ -1,3 +1,10 @@
+/*
+Purpose: Checks matlab spectrogram behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/matlab-spectrogram-worker-client.ts, app/matlab-spectrogram-worker.ts,
+  app/matlab-spectrogram.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";

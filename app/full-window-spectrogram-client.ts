@@ -1,3 +1,10 @@
+/*
+Purpose: Defines full window spectrogram client for the NeuroTrace workspace.
+File Dependencies: app/full-window-spectrogram-worker.ts, app/full-window-spectrogram.ts,
+  app/matlab-spectrogram-input.ts, app/matlab-spectrogram.ts.
+*/
+
+
 import type { MatlabSpectrogramInputPlan } from "./matlab-spectrogram-input.ts";
 import type { MatlabSpectrogramResult } from "./matlab-spectrogram.ts";
 import type { SpectrogramSampleReader } from "./full-window-spectrogram.ts";
@@ -12,12 +19,14 @@ export function computeFullWindowSpectrogramOffThread(plan: MatlabSpectrogramInp
     const worker = new Worker(new URL("./full-window-spectrogram-worker.ts", import.meta.url), { type: "module" });
     let settled = false, reading = false;
     const started = performance.now();
+    /** Settles the operation once and releases its associated resources. */
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
       options.signal?.removeEventListener("abort", onAbort);
       worker.terminate(); callback();
     };
+    /** Cancels the active operation and propagates its cancellation reason. */
     const onAbort = () => finish(() => reject(options.signal?.reason ?? new DOMException("Spectrogram view changed", "AbortError")));
     worker.onmessage = ({ data }: MessageEvent<FullSpectrogramResponse>) => {
       if (settled) return;

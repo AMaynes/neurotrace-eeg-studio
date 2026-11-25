@@ -1,4 +1,10 @@
-/** End-to-end data-path checks without browser automation or private recordings. */
+/*
+Purpose: End-to-end data-path checks without browser automation or private recordings.
+File Dependencies: app/background-recording-overview.ts, app/eeg-core.ts, app/page.tsx,
+  app/raw-dat-envelope.ts, app/recording-overview.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

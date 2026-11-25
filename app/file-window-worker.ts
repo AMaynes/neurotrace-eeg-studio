@@ -1,4 +1,8 @@
-/** Runs exact EDF and Raw DAT sample-window decoding away from the UI thread. */
+/*
+Purpose: Runs exact EDF and Raw DAT sample-window decoding away from the UI thread.
+File Dependencies: app/file-window.ts.
+*/
+
 
 import {
   buildFileWindow,
@@ -34,6 +38,7 @@ workerScope.onmessage = (event) => {
   const { requestId, request } = event.data;
   void buildFileWindow(request, {
     backend: "worker",
+    /** Handles the progress. */
     onProgress: (progress) => {
       workerScope.postMessage({ type: "progress", requestId, progress });
     },

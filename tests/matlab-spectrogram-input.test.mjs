@@ -1,3 +1,9 @@
+/*
+Purpose: Checks matlab spectrogram input behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/matlab-spectrogram-input.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { matlabSpectrogramInputPlan } from "../app/matlab-spectrogram-input.ts";

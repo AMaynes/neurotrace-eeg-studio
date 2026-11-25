@@ -1,3 +1,10 @@
+/*
+Purpose: Checks scan hash pipeline behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/edf-envelope-integrity.ts, app/raw-dat-envelope.ts, app/scan-hash-worker-client.ts,
+  tests/fixtures/browser-worker.mjs.
+*/
+
+
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";

@@ -1,4 +1,9 @@
-/** Runs the real worker logic against a synthetic HDF5 adapter and task queue. */
+/*
+Purpose: Runs the real worker logic against a synthetic HDF5 adapter and task queue.
+File Dependencies: app/mat73-worker-client.ts, app/mat73-worker.ts, app/mat73.ts, app/progressive-envelope.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";

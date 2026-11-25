@@ -1,4 +1,9 @@
-/** Exercises the real canvas ribbon helper without opening a browser. */
+/*
+Purpose: Exercises the real canvas ribbon helper without opening a browser.
+File Dependencies: app/page.tsx, app/waveform-geometry.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

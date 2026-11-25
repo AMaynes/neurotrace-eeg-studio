@@ -1,3 +1,9 @@
+/*
+Purpose: Checks time grid behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/time-grid.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

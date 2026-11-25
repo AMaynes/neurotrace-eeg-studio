@@ -1,3 +1,9 @@
+/*
+Purpose: Styles the directory keyword editor and its scan feedback.
+File Dependencies: None.
+*/
+
+
 .directory-filter-field {
   display: grid;
   gap: 8px;

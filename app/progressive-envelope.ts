@@ -1,11 +1,12 @@
-/**
- * Publishes independent, exact prefixes while a sequential overview is built.
- * The source arrays remain owned by the builder; snapshots can be transferred
- * to the UI without detaching or exposing the live accumulation buffers.
- */
+/*
+Purpose: Publishes independent, exact prefixes while a sequential overview is built. The source arrays remain owned by the builder; snapshots can be transferred to the UI without detaching or exposing the live accumulation buffers.
+File Dependencies: app/eeg-core.ts.
+*/
+
 
 import type { EnvelopeWindowData } from "./eeg-core";
 
+/** Reads the runtime clock in milliseconds. */
 function defaultNowMs() {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
 }

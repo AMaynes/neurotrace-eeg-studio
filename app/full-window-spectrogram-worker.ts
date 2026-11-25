@@ -1,3 +1,9 @@
+/*
+Purpose: Runs cancellable full-window wavelet analysis behind the worker message boundary.
+File Dependencies: app/full-window-spectrogram.ts, app/matlab-spectrogram-input.ts, app/matlab-spectrogram.ts.
+*/
+
+
 import { computeFullWindowSpectrogram } from "./full-window-spectrogram.ts";
 import { matlabSpectrogramTransferList, type MatlabSpectrogramResult } from "./matlab-spectrogram.ts";
 import type { MatlabSpectrogramInputPlan } from "./matlab-spectrogram-input.ts";

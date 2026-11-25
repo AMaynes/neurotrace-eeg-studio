@@ -1,4 +1,10 @@
-/** Read-only, local label indexing. Runs in a worker; never opens a signal source or hashes recordings. */
+/*
+Purpose: Read-only, local label indexing. Runs in a worker; never opens a signal source or hashes recordings.
+File Dependencies: app/bids-companions.ts, app/directory-import.ts, app/eeg-core.ts, app/event-keywords.ts,
+  app/neurotrace-project.ts.
+*/
+
+
 import { indexMatRecordingLabels, indexMatReviewEvents, parseEDFHeader, parseEdfTalText } from "./eeg-core.ts";
 import { analyzeBidsCompanions } from "./bids-companions.ts";
 import { readNeurotraceProjectArchive } from "./neurotrace-project.ts";
@@ -38,6 +44,7 @@ export const COMMON_EVENT_KEYWORDS = [
   { name: "Sleep", query: "sleep, NREM, REM" },
 ] as const;
 
+/** Checks source label text against the committed keyword alternatives. */
 export function eventLabelMatches(labels: readonly string[], query: string): boolean {
   return createEventLabelMatcher(query)(labels);
 }
@@ -49,21 +56,25 @@ export async function readDirectoryEventIndex(request: DirectoryEventRequest): P
   const matches = request.eventQuery === undefined ? undefined : createEventLabelMatcher(request.eventQuery);
   const excluded = new Set(request.excludedLabels?.map((label) => label.trim().toLowerCase()));
   let firstEvent: DirectoryTimedEvent | undefined;
+  /** Adds the supplied entry to the current collection. */
   const add = (value: unknown) => {
     if (typeof value !== "string" || !value.trim()) return;
     if (labels.size >= 10000 && !labels.has(value.trim())) throw new Error("More than 10,000 distinct labels; search results are incomplete.");
     labels.add(value.trim());
   };
+  /** Adds the event. */
   const addEvent = (label: unknown, time: unknown, duration = Infinity) => {
     add(label);
     if (typeof label !== "string" || !label.trim() || typeof time !== "number"
       || !Number.isFinite(time) || time < 0 || time >= duration || excluded.has(label.trim().toLowerCase()) || !matches?.([label])) return;
     if (!firstEvent || time < firstEvent.timeSec) firstEvent = { label: label.trim(), timeSec: time };
   };
+  /** Collects metadata-read failures as incomplete-index warnings. */
   const attempt = async (read: () => Promise<void>) => {
     try { await read(); } catch (error) { warnings.push(error instanceof Error ? error.message : "Event labels could not be checked."); }
   };
 
+  /** Indexes embedded events using the selected recording format. */
   async function recording(format: DirectoryImportFormat, file: File) {
     if (format === "mat" || format === "mat-dat") {
       if (matches) {
@@ -82,6 +93,7 @@ export async function readDirectoryEventIndex(request: DirectoryEventRequest): P
       const signals = header.signals.filter((signal) => signal.isAnnotation);
       const maxBytes = 4 * 1024 * 1024;
       const decoder = new TextDecoder();
+      /** Decodes nonempty EDF annotation bytes into bounded timed events. */
       const parse = (bytes: Uint8Array) => {
         // TAL records are zero-padded. Avoid decoding and splitting megabytes
         // of empty strings; only trailing padding is removed, never interior TALs.
@@ -112,6 +124,7 @@ export async function readDirectoryEventIndex(request: DirectoryEventRequest): P
       }
       const chunks: Blob[] = [];
       let batchBytes = 0;
+      /** Reads the pending annotation slices in one batch and preserves their record boundaries. */
       const flush = async () => {
         if (!chunks.length) return;
         // A composite Blob batches sparse annotation ranges into one browser
@@ -138,6 +151,7 @@ export async function readDirectoryEventIndex(request: DirectoryEventRequest): P
     }
   }
 
+  /** Adds matched BIDS event tables to the directory event index. */
   async function tables(files: File[], source?: File) {
     await attempt(async () => {
       const bundle = await analyzeBidsCompanions(files, { recordingFile: source });

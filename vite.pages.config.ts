@@ -1,15 +1,20 @@
-/**
- * Reproducible, browser-only GitHub Pages build.
- *
- * This configuration deliberately excludes vinext, React Server Components,
- * Cloudflare adapters, and application-server bindings. Every runtime asset is
- * emitted beneath pages-dist with a document-relative URL.
- */
+/*
+Purpose: Reproducible, browser-only GitHub Pages build.
+File Dependencies: None.
+*/
+
+
+/*
+This configuration deliberately excludes vinext, React Server Components,
+Cloudflare adapters, and application-server bindings. Every runtime asset is
+emitted beneath pages-dist with a document-relative URL.
+*/
 
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
+/** Resolves a project-relative path against this build configuration. */
 const projectFile = (relativePath: string) =>
   fileURLToPath(new URL(relativePath, import.meta.url));
 

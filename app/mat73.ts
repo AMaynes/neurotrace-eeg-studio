@@ -1,4 +1,8 @@
-/** Shared contracts and deterministic dataset selection for MATLAB v7.3 workers. */
+/*
+Purpose: Shared contracts and deterministic dataset selection for MATLAB v7.3 workers.
+File Dependencies: None.
+*/
+
 
 export interface Mat73DatasetDescriptor {
   path: string;
@@ -68,6 +72,7 @@ export type Mat73WorkerResponse =
     code?: string;
   };
 
+/** Ranks conventional signal dataset names when choosing the HDF5 waveform. */
 function signalNameScore(path: string): number {
   const leaf = path.split("/").at(-1)?.replace(/[^a-z0-9]/gi, "").toLowerCase() ?? "";
   if (["data", "eeg", "signal", "signals", "samples", "recording"].includes(leaf)) return 100;
@@ -88,6 +93,7 @@ export function chooseMat73SignalDataset(
       || left.path.localeCompare(right.path))[0];
 }
 
+/** Collects transferable buffers from an HDF5 worker result. */
 export function mat73TransferList(result: Mat73WindowResult | Mat73EnvelopeResult): Transferable[] {
   const buffers: Transferable[] = result.data.map((channel) => channel.buffer as ArrayBuffer);
   if ("minima" in result) {

@@ -1,4 +1,10 @@
-/** Real resume controls emit payload-free tutorial outcomes only after successful work. */
+/*
+Purpose: Real resume controls emit payload-free tutorial outcomes only after successful work.
+File Dependencies: app/directory-review-controls.tsx, app/directory-review-resume.ts,
+  app/matlab-annotations-csv.ts.
+*/
+
+
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';

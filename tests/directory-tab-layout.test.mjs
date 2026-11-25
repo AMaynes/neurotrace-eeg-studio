@@ -1,3 +1,9 @@
+/*
+Purpose: Checks directory tab layout behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/directory-tab-layout.ts, app/globals.css, app/page.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

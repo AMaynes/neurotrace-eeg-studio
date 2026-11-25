@@ -1,4 +1,10 @@
-/** Exercise the real tutorial component's controls with inert workspace/DOM boundaries. */
+/*
+Purpose: Exercise the real tutorial component's controls with inert workspace/DOM boundaries.
+File Dependencies: app/directory-sessions.tsx, app/page.tsx, app/shortcuts.ts, app/tutorial-center.tsx,
+  app/tutorial-events.ts, app/tutorials.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

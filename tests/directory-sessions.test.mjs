@@ -1,3 +1,9 @@
+/*
+Purpose: Checks directory sessions behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/directory-event-client.ts, app/directory-event-index.ts, app/directory-sessions.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

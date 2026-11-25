@@ -1,4 +1,8 @@
-/** Browser client for cancellable, off-main-thread Raw DAT envelope building. */
+/*
+Purpose: Browser client for cancellable, off-main-thread Raw DAT envelope building.
+File Dependencies: app/eeg-core.ts, app/raw-dat-envelope-worker.ts, app/raw-dat-envelope.ts.
+*/
+
 
 import {
   buildRawDatEnvelopeWindow,
@@ -23,6 +27,7 @@ export interface RawDatEnvelopeWorkerOptions {
 
 let nextRequestId = 1;
 
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortReason(signal: AbortSignal | undefined) {
   if (signal?.reason !== undefined) return signal.reason;
   const error = new Error("Raw DAT envelope construction was aborted");
@@ -30,12 +35,14 @@ function abortReason(signal: AbortSignal | undefined) {
   return error;
 }
 
+/** Creates an Error with the supplied name and message. */
 function namedError(name: string, message: string) {
   const error = new Error(message);
   error.name = name;
   return error;
 }
 
+/** Builds the DAT envelope on the calling thread with the supplied progress and cancellation hooks. */
 function buildDirectly(
   request: RawDatEnvelopeBuildRequest,
   options: RawDatEnvelopeWorkerOptions,
@@ -77,16 +84,19 @@ export function buildRawDatEnvelopeWindowOffThread(
   nextRequestId = nextRequestId >= Number.MAX_SAFE_INTEGER ? 1 : nextRequestId + 1;
   return new Promise<RawDatEnvelopeBuildResult>((resolve, reject) => {
     let settled = false;
+    /** Releases listeners and worker resources owned by the current operation. */
     const cleanup = () => {
       options.signal?.removeEventListener("abort", onAbort);
       worker.terminate();
     };
+    /** Settles the operation once and releases its associated resources. */
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
       cleanup();
       callback();
     };
+    /** Releases the worker and retries through the permitted direct implementation. */
     const fallbackToDirect = (workerError: unknown) => {
       if (settled) return;
       settled = true;
@@ -97,6 +107,7 @@ export function buildRawDatEnvelopeWindowOffThread(
       }
       void buildDirectly(request, options).then(resolve, reject);
     };
+    /** Cancels the active operation and propagates its cancellation reason. */
     const onAbort = () => finish(() => reject(abortReason(options.signal)));
 
     worker.onmessage = (event: MessageEvent<RawDatEnvelopeWorkerResponse>) => {

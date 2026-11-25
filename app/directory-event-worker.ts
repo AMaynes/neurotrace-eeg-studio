@@ -1,4 +1,9 @@
-/** One read-only event-metadata request at a time; the client owns cancellation by termination. */
+/*
+Purpose: One read-only event-metadata request at a time; the client owns cancellation by termination.
+File Dependencies: app/directory-event-index.ts.
+*/
+
+
 import { readDirectoryEventIndex, type DirectoryEventRequest, type DirectoryEventIndex } from "./directory-event-index.ts";
 
 export type DirectoryEventResponse = { id: string; result: DirectoryEventIndex };

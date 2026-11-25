@@ -1,3 +1,9 @@
+/*
+Purpose: Processes MATLAB-compatible waveform chunks and transfers their output to the requesting client.
+File Dependencies: app/matlab-display-processing.ts, app/matlab-display-worker-client.ts.
+*/
+
+
 import { filterMatlabDisplayChunk, type MatlabDisplaySamples } from "./matlab-display-processing.ts";
 import type { MatlabDisplayWorkerChunk } from "./matlab-display-worker-client.ts";
 

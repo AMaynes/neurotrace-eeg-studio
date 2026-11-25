@@ -1,3 +1,9 @@
+/*
+Purpose: Lists and searches detected label types for queue keyword selection.
+File Dependencies: app/directory-event-index.ts, app/event-keywords.ts, app/label-visibility.ts.
+*/
+
+
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -5,6 +11,7 @@ import { COMMON_EVENT_KEYWORDS } from "./directory-event-index";
 import { eventKeywords } from "./event-keywords";
 import type { LabelTypeOption } from "./label-visibility";
 
+/** Displays the queue label filters with keyword entry and a bounded list of label types. */
 export function QueueLabelDictionary({ options, hiddenTypes, keywords, onKeywordsChange, onChange, open, onOpenChange }: {
   open: boolean;
   onOpenChange(value: boolean): void;
@@ -19,6 +26,7 @@ export function QueueLabelDictionary({ options, hiddenTypes, keywords, onKeyword
   const popover = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (!open) return;
+    /** Fits the dictionary popup above or below its anchor within the viewport. */
     const fit = () => {
       const anchor = container.current?.parentElement;
       const popup = popover.current;
@@ -39,6 +47,7 @@ export function QueueLabelDictionary({ options, hiddenTypes, keywords, onKeyword
   }, [open]);
   useEffect(() => {
     if (!open) return;
+    /** Closes the dictionary when a pointer event occurs outside it. */
     const outside = (event: PointerEvent) => {
       if (!container.current?.contains(event.target as Node)) onOpenChange(false);
     };

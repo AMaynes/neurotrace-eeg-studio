@@ -1,23 +1,14 @@
-/**
- * Overview & Purpose
- * Packages Sites hosting metadata and optional Drizzle migrations after builds.
- *
- * Architectural Relationships
- * Called by: vite.config.ts during production compilation.
- * Calls: Node filesystem operations within the project build output.
- *
- * External Resources
- * .openai/hosting.json, drizzle/, and dist/.openai/.
- *
- * Notes
- * Build-only code; it never handles recording data or browser state.
- */
+/*
+Purpose: Packages Sites hosting metadata and optional Drizzle migrations after builds.
+File Dependencies: None.
+*/
 
 
 import { access, cp, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
 
+/** Reports missing paths without swallowing other filesystem failures. */
 async function exists(path: string): Promise<boolean> {
   try {
     await access(path);
@@ -37,9 +28,11 @@ export function sites(): Plugin {
   return {
     name: "sites",
     apply: "build",
+    /** Retains the resolved project root for build output packaging. */
     configResolved(config) {
       root = config.root;
     },
+    /** Copies hosting metadata and optional migrations into the completed build. */
     async closeBundle() {
       const outputDirectory = resolve(root, "dist", ".openai");
       const hostingConfig = resolve(root, ".openai", "hosting.json");

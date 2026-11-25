@@ -1,4 +1,11 @@
-/** Recording-aligned waveform blocks. Panning never changes a retained sample's grid or processing context. */
+/*
+Purpose: Recording-aligned waveform blocks. Panning never changes a retained sample's grid or processing context.
+File Dependencies: app/display-processing-worker-client.ts, app/eeg-core.ts, app/matlab-display-processing.ts,
+  app/matlab-display-tiles.ts, app/matlab-display-window.ts, app/matlab-display-worker-pool.ts,
+  app/matlab-raw-flatlines.ts, app/waveform-geometry.ts.
+*/
+
+
 import { buildMontage, type DisplayFilterSettings } from "./eeg-core.ts";
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client.ts";
 import { matlabDisplayChunkInputRange, matlabDisplayDecimationFactor } from "./matlab-display-processing.ts";
@@ -12,15 +19,18 @@ type Flatline = { startSec: number; endSec: number };
 type SampleBlock = { data: Float64Array[]; flatlines: Flatline[]; byteLength: number };
 type SummaryBlock = { summary: MatlabDisplayTile; flatlines: Flatline[]; byteLength: number };
 
+/** Creates a byte-budgeted cache that evicts least recently accessed entries. */
 function boundedCache<T extends { byteLength: number }>(budget: number) {
   const entries = new Map<string, T>();
   let bytes = 0;
   return {
+    /** Returns the requested entry. */
     get(key: string) {
       const value = entries.get(key);
       if (value) { entries.delete(key); entries.set(key, value); }
       return value;
     },
+    /** Stores the supplied entry. */
     set(key: string, value: T) {
       const old = entries.get(key);
       if (old) { bytes -= old.byteLength; entries.delete(key); }
@@ -31,7 +41,9 @@ function boundedCache<T extends { byteLength: number }>(budget: number) {
         entries.delete(oldest); bytes -= entry.byteLength;
       }
     },
+    /** Returns the retained byte count. */
     get byteLength() { return bytes; },
+    /** Returns the current collection size. */
     get size() { return entries.size; },
   };
 }
@@ -46,6 +58,7 @@ export function createRecordingDisplayCache(sampleBytes = 48 * 1024 * 1024, summ
     samples: boundedCache<SampleBlock>(sampleBytes),
     summaries: boundedCache<SummaryBlock>(summaryBytes),
     centers,
+    /** Assigns a bounded cache identity to a source and display settings. */
     scope(source: object, settings: unknown) {
       let configurations = scopes.get(source);
       if (!configurations) { configurations = new Map(); scopes.set(source, configurations); }
@@ -59,6 +72,7 @@ export function createRecordingDisplayCache(sampleBytes = 48 * 1024 * 1024, summ
 }
 export type RecordingDisplayCache = ReturnType<typeof createRecordingDisplayCache>;
 
+/** Converts duration to frame count while tolerating floating-point boundary error. */
 function sourceFrames(duration: number, rate: number) {
   const value = duration * rate, nearest = Math.round(value);
   return Math.abs(value - nearest) < Math.min(1e-6, 8 * Number.EPSILON * Math.max(1, value)) ? nearest : Math.floor(value);
@@ -72,6 +86,7 @@ function sourceFrames(duration: number, rate: number) {
 export async function buildRecordingDisplayWindow(request: MatlabDisplayWindowRequest,
   options: MatlabDisplayWindowOptions = {}): Promise<MatlabDisplayWindow> {
   const { source, startSec, durationSec, pixelWidth, montage } = request;
+  /** Propagates cancellation before further display work. */
   const check = () => options.signal?.throwIfAborted();
   check();
   if (![startSec, durationSec, pixelWidth].every(Number.isFinite) || durationSec <= 0 || pixelWidth <= 0) {
@@ -113,6 +128,7 @@ export async function buildRecordingDisplayWindow(request: MatlabDisplayWindowRe
   const flatlines: Flatline[] = [];
   const jobs: { count: number; apply(block: SampleBlock | SummaryBlock): void; load(): Promise<SampleBlock> }[] = [];
   let pool: ReturnType<typeof createMatlabDisplayWorkerPool> | undefined;
+  /** Copies the progressive display window and marks unread bins as gaps. */
   const snapshot = (): MatlabDisplayWindow => ({ data: data.map(row => row.slice()),
     envelopes: envelopes.map(envelope => {
       if (!envelope) return null;
@@ -159,8 +175,10 @@ export async function buildRecordingDisplayWindow(request: MatlabDisplayWindowRe
       });
       const scope = cache.scope(source, [indices, montage, request.bipolarKind, [...excluded], rate, factor, tileSize,
         filters.enabled ? filters : false, montageOptions.allChannelLabels, units]);
+      /** Builds the lookup key for the supplied value. */
       const keyFor = (tile: number) => `${scope}:${tile}`;
       const readWindow = options.readWindow ?? ((start, duration, channels, readOptions) => source.getWindow(start, duration, channels, readOptions));
+      /** Loads the requested processing tile with filter padding and cache reuse. */
       const load = async (tile: number): Promise<SampleBlock> => {
         check();
         const cached = cache.samples.get(keyFor(tile));
@@ -230,6 +248,7 @@ export async function buildRecordingDisplayWindow(request: MatlabDisplayWindowRe
       const firstOutput = firstBin * binSize, endOutput = Math.min(totalOutputs, endBin * binSize);
       for (let tile = Math.floor(firstOutput / tileSize); tile * tileSize < endOutput; tile++) {
         const first = tile * tileSize;
+        /** Accumulates sample or summary tiles into the visible display bins. */
         const apply = (block: SampleBlock | SummaryBlock) => {
           if ("data" in block) block.data.forEach((values, row) => {
             for (let i = Math.max(0, firstOutput - first); i < values.length && first + i < endOutput; i++) {
@@ -252,12 +271,15 @@ export async function buildRecordingDisplayWindow(request: MatlabDisplayWindowRe
         const cached = binSize >= MATLAB_TILE_BASE ? cache.summaries.get(keyFor(tile)) ?? cache.samples.get(keyFor(tile)) : cache.samples.get(keyFor(tile));
         if (cached) apply(cached);
         else jobs.push({ count: Math.max(0, Math.min(first + tileSize, endOutput) - Math.max(first, firstOutput)) * rows.length,
-          apply, load: () => load(tile) });
+          apply,
+          /** Loads the requested processing tile with filter padding and cache reuse. */
+          load: () => load(tile) });
       }
     }
     // Publish every cached island together, even when the missing block is to its left.
     const totalSamples = retainedCounts.reduce((sum, count) => sum + count, 0);
     let completed = totalSamples - jobs.reduce((sum, job) => sum + job.count, 0), lastPartial = -Infinity;
+    /** Converts the coordinate into a fraction of the available range. */
     const fraction = () => totalSamples ? completed / totalSamples : 1;
     options.onProgress?.({ completedSamples: completed, totalSamples, fraction: fraction() });
     if (jobs.length && data.some(row => row.some(Number.isFinite))) {

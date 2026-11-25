@@ -1,4 +1,9 @@
-/** Exact, immutable prefix publication and browser-worker delivery contracts. */
+/*
+Purpose: Exact, immutable prefix publication and browser-worker delivery contracts.
+File Dependencies: app/edf-envelope-worker-client.ts, app/progressive-envelope.ts,
+  app/raw-dat-envelope-worker-client.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

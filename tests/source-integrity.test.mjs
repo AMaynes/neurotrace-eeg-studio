@@ -1,17 +1,7 @@
-/**
- * Overview & Purpose
- * Verifies browser-compatible incremental SHA-256 against Node's implementation.
- *
- * Architectural Relationships
- * Called by: Node's built-in test runner.
- * Calls: app/source-integrity.ts and node:crypto as the trusted reference.
- *
- * External Resources
- * None; all payloads are deterministic in-memory fixtures.
- *
- * Notes
- * Boundary coverage ensures digest results do not depend on caller chunking.
- */
+/*
+Purpose: Verifies browser-compatible incremental SHA-256 against Node's implementation.
+File Dependencies: app/source-integrity.ts.
+*/
 
 
 import assert from "node:assert/strict";

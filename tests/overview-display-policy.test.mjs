@@ -1,3 +1,9 @@
+/*
+Purpose: Checks overview display policy behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/overview-display-policy.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { recordingOverviewDisplayPolicy } from "../app/overview-display-policy.ts";

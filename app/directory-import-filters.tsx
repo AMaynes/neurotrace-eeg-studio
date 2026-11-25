@@ -1,3 +1,10 @@
+/*
+Purpose: Edits committed folder keyword filters and reports metadata scan progress.
+File Dependencies: app/directory-event-client.ts, app/directory-import-filters.css, app/directory-import.ts,
+  app/event-keywords.ts.
+*/
+
+
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -6,6 +13,7 @@ import type { DirectoryImportPlan } from "./directory-import";
 import { eventKeywords } from "./event-keywords";
 import "./directory-import-filters.css";
 
+/** Renders the directory import filters controls and their current state. */
 export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
   plan: DirectoryImportPlan;
   busy: boolean;
@@ -39,6 +47,7 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
     scanRef.current = null;
   }, [plan]);
 
+  /** Aborts the current keyword scan and clears its transient status. */
   const cancel = () => {
     scanRef.current?.abort();
     scanRef.current = null;
@@ -46,6 +55,7 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
     setError("");
   };
 
+  /** Checks source events for the committed keywords before optionally loading matches. */
   const apply = async (loadWhenReady = false) => {
     if (scanRef.current || busy) return;
     if (!query) {

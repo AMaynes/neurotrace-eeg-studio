@@ -1,3 +1,9 @@
+/*
+Purpose: Checks session overview behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/recording-overview.ts, app/session-overview.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildSessionOverview, MAX_SESSION_OVERVIEW_BARS } from "../app/session-overview.ts";

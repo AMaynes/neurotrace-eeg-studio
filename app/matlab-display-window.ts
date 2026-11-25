@@ -1,4 +1,11 @@
-/** Bounded, full-view MATLAB processing; reduction happens after filter/montage. */
+/*
+Purpose: Bounded, full-view MATLAB processing; reduction happens after filter/montage.
+File Dependencies: app/bipolar-montage.ts, app/eeg-core.ts, app/matlab-cached-display.ts,
+  app/matlab-display-processing.ts, app/matlab-display-tiles.ts, app/matlab-display-worker-pool.ts,
+  app/matlab-raw-flatlines.ts, app/recording-display-window.ts.
+*/
+
+
 import { buildMontage, montageInputPolicy, type DisplayFilterSettings, type MontageMode, type SignalReadOptions, type SignalSource, type WindowData } from "./eeg-core.ts";
 import type { BipolarMontageKind } from "./bipolar-montage.ts";
 import { matlabDisplayChunkInputRange, matlabDisplayDecimationFactor, type MatlabDisplayFactor, type MatlabDisplaySamples } from "./matlab-display-processing.ts";
@@ -86,6 +93,7 @@ interface SourcePlan {
   outputCount: number;
 }
 
+/** Rejects canceled display work with the supplied reason or a superseded-view error. */
 function checkAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw signal.reason ?? new DOMException("MATLAB display view was superseded", "AbortError");
 }
@@ -179,6 +187,7 @@ export async function buildMatlabDisplayWindow(
     bucketDurationSec: durationSec / bucketCount,
   } : null);
   const data = rowPlans.map((plan, row) => new Float64Array(envelopes[row] ? bucketCount : plan.outputCount).fill(NaN));
+  /** Packages the completed or copied partial window with explicit unread gaps. */
   const finalize = (partial = false): MatlabDisplayWindow => {
     const outputData = partial ? data.map((values) => values.slice()) : data;
     const outputEnvelopes = partial ? envelopes.map((envelope) => envelope ? { ...envelope,
@@ -255,6 +264,7 @@ export async function buildMatlabDisplayWindow(
       return await buildCachedMatlabDisplay({ metadata: finalize(), cache: options.cache, scope,
         firstSample: firstPlan.firstSample, outputCount: firstPlan.outputCount, rate: firstPlan.rate,
         startSec, durationSec, pixelWidth, tileSize, options,
+        /** Reads and processes the requested display chunk. */
         load: async (globalStart, count, stable) => {
           checkAborted(options.signal);
           const inputFirst = stable ? phase : firstPlan.firstSample;

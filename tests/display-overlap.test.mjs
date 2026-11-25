@@ -1,3 +1,9 @@
+/*
+Purpose: Checks display overlap behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/display-overlap.ts, app/trace-centering.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { retainDisplayOverlap } from "../app/display-overlap.ts";

@@ -1,4 +1,9 @@
-/** Execute the real welcome/import JSX: choose a format, then a file or directory picker. */
+/*
+Purpose: Execute the real welcome/import JSX: choose a format, then a file or directory picker.
+File Dependencies: app/directory-import-filters.tsx, app/directory-sessions.css, app/page.tsx.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";

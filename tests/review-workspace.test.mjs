@@ -1,3 +1,10 @@
+/*
+Purpose: Checks review workspace behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/directory-import.ts, app/directory-review-resume.ts, app/matlab-annotations-csv.ts,
+  app/review-workspace.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { planDirectoryImport } from "../app/directory-import.ts";

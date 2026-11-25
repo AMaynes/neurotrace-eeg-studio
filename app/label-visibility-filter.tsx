@@ -1,3 +1,9 @@
+/*
+Purpose: Defines label visibility filter for the NeuroTrace workspace.
+File Dependencies: app/label-visibility-filter.css, app/label-visibility.ts.
+*/
+
+
 "use client";
 
 import { useState } from "react";

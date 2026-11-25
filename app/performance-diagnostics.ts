@@ -1,11 +1,17 @@
-/**
- * Lightweight, browser-safe performance diagnostics for the EEG workspace.
- *
- * The collector deliberately keeps performance work separate from React. A
- * caller records source reads, decoding, canvas surfaces, and rendered frames;
- * subscribers receive throttled immutable snapshots suitable for a diagnostics
- * panel. Browser-only observers are optional and feature-detected.
- */
+/*
+Purpose: Lightweight, browser-safe performance diagnostics for the EEG workspace.
+File Dependencies: None.
+*/
+
+
+/*
+Lightweight, browser-safe performance diagnostics for the EEG workspace.
+
+The collector deliberately keeps performance work separate from React. A
+caller records source reads, decoding, canvas surfaces, and rendered frames;
+subscribers receive throttled immutable snapshots suitable for a diagnostics
+panel. Browser-only observers are optional and feature-detected.
+*/
 
 export type DiagnosticsOperationKind = "source-read" | "decode";
 
@@ -208,6 +214,7 @@ type TimedWorkSample = { atMs: number; durationMs: number };
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 type IntervalHandle = ReturnType<typeof setInterval>;
 
+/** Creates an empty set of operation counters. */
 const EMPTY_TOTALS = (): OperationTotals => ({
   bytes: 0,
   started: 0,
@@ -217,18 +224,22 @@ const EMPTY_TOTALS = (): OperationTotals => ({
   finishedDurationMs: 0,
 });
 
+/** Accepts only finite nonnegative numeric values. */
 function finiteNonNegative(value: number, fallback = 0) {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
+/** Accepts only finite positive numeric values. */
 function finitePositive(value: number, fallback: number) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/** Bounds a numeric fraction to zero through one. */
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value));
 }
 
+/** Reads the runtime clock used by diagnostics. */
 function defaultNow() {
   return typeof globalThis.performance?.now === "function"
     ? globalThis.performance.now()
@@ -243,6 +254,7 @@ type PerformanceWithMemory = Performance & {
   };
 };
 
+/** Reads heap estimates only when the browser exposes them. */
 function defaultReadHeapMemory(): HeapMemorySample | null {
   if (typeof globalThis.performance === "undefined") return null;
   const memory = (globalThis.performance as PerformanceWithMemory).memory;
@@ -254,6 +266,7 @@ function defaultReadHeapMemory(): HeapMemorySample | null {
   };
 }
 
+/** Subscribes to supported browser performance entries. */
 function defaultObserveEntries(
   entryType: "longtask" | "gc",
   onEntries: (entries: readonly DiagnosticsPerformanceEntry[]) => void,
@@ -293,6 +306,7 @@ function defaultObserveEntries(
   return () => observer.disconnect();
 }
 
+/** Names a reported garbage-collection category. */
 function gcKindLabel(entry: DiagnosticsPerformanceEntry) {
   const detailKind = entry.detail && typeof entry.detail === "object" && "kind" in entry.detail
     ? (entry.detail as { kind?: unknown }).kind
@@ -358,6 +372,7 @@ export class PerformanceDiagnosticsCollector {
   private eventLoopDelaySamples: TimedWorkSample[] = [];
   private longTaskSamples: TimedWorkSample[] = [];
 
+  /** Initializes the instance from the supplied arguments. */
   constructor(options: PerformanceDiagnosticsOptions = {}) {
     this.now = options.now ?? defaultNow;
     this.notificationIntervalMs = finiteNonNegative(options.notificationIntervalMs ?? 200);
@@ -414,6 +429,7 @@ export class PerformanceDiagnosticsCollector {
     }
   }
 
+  /** Releases resources owned by this instance. */
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
@@ -425,12 +441,14 @@ export class PerformanceDiagnosticsCollector {
     this.subscribers.clear();
   }
 
+  /** Publishes the current snapshot to a new listener and returns its removal callback. */
   subscribe(listener: (snapshot: PerformanceDiagnosticsSnapshot) => void) {
     this.subscribers.add(listener);
     listener(this.snapshot());
     return () => this.subscribers.delete(listener);
   }
 
+  /** Combines completed and active measurements into a resource snapshot. */
   snapshot(): PerformanceDiagnosticsSnapshot {
     const capturedAtMs = this.now();
     this.trimFrameSamples(capturedAtMs);
@@ -518,14 +536,17 @@ export class PerformanceDiagnosticsCollector {
     };
   }
 
+  /** Begins the source read. */
   beginSourceRead(options: { label?: string; totalBytes?: number | null; phase?: string } = {}) {
     return this.beginOperation("source-read", options);
   }
 
+  /** Begins the decode. */
   beginDecode(options: { label?: string; totalBytes?: number | null; phase?: string } = {}) {
     return this.beginOperation("decode", options);
   }
 
+  /** Measures the source read. */
   async measureSourceRead<T>(
     options: { label?: string; totalBytes?: number | null; phase?: string },
     operation: (progress: DiagnosticsOperationHandle) => Promise<T>,
@@ -541,6 +562,7 @@ export class PerformanceDiagnosticsCollector {
     }
   }
 
+  /** Measures the decode. */
   async measureDecode<T>(
     options: { label?: string; totalBytes?: number | null; phase?: string },
     operation: (progress: DiagnosticsOperationHandle) => Promise<T>,
@@ -556,14 +578,17 @@ export class PerformanceDiagnosticsCollector {
     }
   }
 
+  /** Records the source read. */
   recordSourceRead(bytes: number, durationMs: number) {
     this.recordCompletedOperation("source-read", bytes, durationMs);
   }
 
+  /** Records the decode. */
   recordDecode(bytes: number, durationMs: number) {
     this.recordCompletedOperation("decode", bytes, durationMs);
   }
 
+  /** Records the transient allocation. */
   recordTransientAllocation(bytes: number) {
     this.reportedTransientBytes += finiteNonNegative(bytes);
     this.markDirty();
@@ -589,6 +614,7 @@ export class PerformanceDiagnosticsCollector {
     return sample;
   }
 
+  /** Records the long task. */
   recordLongTask(durationMs: number) {
     const duration = finiteNonNegative(durationMs);
     if (!(duration > 0)) return;
@@ -601,6 +627,7 @@ export class PerformanceDiagnosticsCollector {
     this.markDirty();
   }
 
+  /** Records the garbage collection. */
   recordGarbageCollection(durationMs: number, kind = "unspecified") {
     const duration = finiteNonNegative(durationMs);
     if (!(duration > 0)) return;
@@ -617,6 +644,7 @@ export class PerformanceDiagnosticsCollector {
     const startedAtMs = this.now();
     let finished = false;
     return {
+      /** Settles the operation once and releases its associated resources. */
       finish: () => {
         if (finished) return 0;
         finished = true;
@@ -628,6 +656,7 @@ export class PerformanceDiagnosticsCollector {
     };
   }
 
+  /** Records the render. */
   recordRender(durationMs: number) {
     const duration = finiteNonNegative(durationMs);
     this.renderCount += 1;
@@ -655,6 +684,7 @@ export class PerformanceDiagnosticsCollector {
     this.markDirty();
   }
 
+  /** Records the canvas surface. */
   recordCanvasSurface(
     id: string,
     surface: { width: number; height: number },
@@ -670,10 +700,12 @@ export class PerformanceDiagnosticsCollector {
     this.markDirty();
   }
 
+  /** Removes the canvas surface. */
   removeCanvasSurface(id: string) {
     if (this.canvasSurfaces.delete(id)) this.markDirty();
   }
 
+  /** Begins the operation. */
   private beginOperation(
     kind: DiagnosticsOperationKind,
     options: { label?: string; totalBytes?: number | null; phase?: string },
@@ -697,10 +729,12 @@ export class PerformanceDiagnosticsCollector {
     this.markDirty(true);
     let closed = false;
 
+    /** Updates operation counters while the measurement remains open. */
     const update = (next: OperationProgressUpdate = {}) => {
       if (closed) return;
       this.updateOperation(operation, next);
     };
+    /** Closes the owned resource. */
     const close = (outcome: "completed" | "failed" | "cancelled", next: OperationProgressUpdate = {}) => {
       if (closed) return 0;
       update(next);
@@ -721,14 +755,19 @@ export class PerformanceDiagnosticsCollector {
     return {
       id,
       kind,
+      /** Adds incremental work to the current operation measurement. */
       advance: (bytes, phase) => update({ completedBytes: operation.completedBytes + finiteNonNegative(bytes), phase }),
       update,
+      /** Settles the operation once and releases its associated resources. */
       finish: (next) => close("completed", next),
+      /** Finishes the operation measurement with a failure outcome. */
       fail: (next) => close("failed", next),
+      /** Finishes the operation measurement with a cancellation outcome. */
       cancel: (next) => close("cancelled", next),
     };
   }
 
+  /** Updates the operation. */
   private updateOperation(operation: OperationState, update: OperationProgressUpdate) {
     const totals = this.totalsFor(operation.kind);
     if (update.totalBytes === null) operation.totalBytes = null;
@@ -747,6 +786,7 @@ export class PerformanceDiagnosticsCollector {
     this.markDirty();
   }
 
+  /** Records the completed operation. */
   private recordCompletedOperation(kind: DiagnosticsOperationKind, bytes: number, durationMs: number) {
     const totals = this.totalsFor(kind);
     totals.started += 1;
@@ -756,10 +796,12 @@ export class PerformanceDiagnosticsCollector {
     this.markDirty();
   }
 
+  /** Returns the aggregate counters for the requested operation category. */
   private totalsFor(kind: DiagnosticsOperationKind) {
     return kind === "source-read" ? this.sourceTotals : this.decodeTotals;
   }
 
+  /** Copies current operation measurements for diagnostics subscribers. */
   private activeOperationSnapshot(operation: OperationState, capturedAtMs: number): ActiveDiagnosticsOperation {
     const elapsedMs = Math.max(0, capturedAtMs - operation.startedAtMs);
     return {
@@ -778,6 +820,7 @@ export class PerformanceDiagnosticsCollector {
     };
   }
 
+  /** Copies aggregate measurements without exposing mutable counters. */
   private operationTotalsSnapshot(totals: OperationTotals, activeOperations: number, durationMs: number) {
     return {
       bytes: totals.bytes,
@@ -791,6 +834,7 @@ export class PerformanceDiagnosticsCollector {
     };
   }
 
+  /** Samples the event loop delay. */
   private sampleEventLoopDelay() {
     const sampledAtMs = this.now();
     const elapsedMs = Math.max(0, sampledAtMs - this.lastEventLoopProbeAtMs);
@@ -809,6 +853,7 @@ export class PerformanceDiagnosticsCollector {
     this.markDirty();
   }
 
+  /** Trims the frame samples. */
   private trimFrameSamples(nowMs: number) {
     const cutoff = nowMs - this.frameWindowMs;
     let firstRetained = 0;
@@ -819,12 +864,14 @@ export class PerformanceDiagnosticsCollector {
     if (this.frameSamples.length > 600) this.frameSamples.splice(0, this.frameSamples.length - 600);
   }
 
+  /** Trims the main thread samples. */
   private trimMainThreadSamples(nowMs: number) {
     const cutoff = nowMs - this.mainThreadWindowMs;
     this.eventLoopDelaySamples = this.eventLoopDelaySamples.filter((sample) => sample.atMs >= cutoff);
     this.longTaskSamples = this.longTaskSamples.filter((sample) => sample.atMs >= cutoff);
   }
 
+  /** Publishes changed measurements immediately or schedules one throttled notification. */
   private markDirty(immediate = false) {
     if (!this.subscribers.size || this.disposed) return;
     const nowMs = this.now();
@@ -840,6 +887,7 @@ export class PerformanceDiagnosticsCollector {
     }, delayMs);
   }
 
+  /** Emits the snapshot. */
   private emitSnapshot() {
     if (!this.subscribers.size || this.disposed) return;
     this.lastNotificationAtMs = this.now();
@@ -848,6 +896,7 @@ export class PerformanceDiagnosticsCollector {
   }
 }
 
+/** Creates the performance diagnostics. */
 export function createPerformanceDiagnostics(options: PerformanceDiagnosticsOptions = {}) {
   return new PerformanceDiagnosticsCollector(options);
 }

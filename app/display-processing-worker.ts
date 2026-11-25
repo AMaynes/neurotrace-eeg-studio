@@ -1,4 +1,8 @@
-/** Runs clinical display filtering and conditional decimation away from the UI thread. */
+/*
+Purpose: Runs clinical display filtering and conditional decimation away from the UI thread.
+File Dependencies: app/eeg-core.ts.
+*/
+
 
 import {
   applyDisplayFilters,

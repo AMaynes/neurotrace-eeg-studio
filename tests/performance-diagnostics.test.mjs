@@ -1,7 +1,8 @@
-/**
- * Focused coverage for the browser performance diagnostics collector.
- * Browser-only observers are injected so the suite stays deterministic in Node.
- */
+/*
+Purpose: Focused coverage for the browser performance diagnostics collector. Browser-only observers are injected so the suite stays deterministic in Node.
+File Dependencies: app/performance-diagnostics.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

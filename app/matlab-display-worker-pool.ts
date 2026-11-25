@@ -1,3 +1,9 @@
+/*
+Purpose: Defines matlab display worker pool for the NeuroTrace workspace.
+File Dependencies: app/matlab-display-worker-client.ts.
+*/
+
+
 import { createMatlabDisplayWorkerClient, type MatlabDisplayWorkerChunk } from "./matlab-display-worker-client.ts";
 
 /** Channels are independent during FIR processing. Each channel keeps its exact sum order. */
@@ -6,6 +12,7 @@ export function matlabDisplayWorkerCount(channelCount: number, hardwareConcurren
   return Math.max(1, Math.min(4, Math.floor(cores / 2), Math.floor(channelCount / 8)));
 }
 
+/** Creates the matlab display worker pool. */
 export function createMatlabDisplayWorkerPool(options: { signal?: AbortSignal; fallbackToMainThread?: boolean; workerCount?: number; channelCount: number }) {
   if (options.workerCount !== undefined && (!Number.isSafeInteger(options.workerCount) || options.workerCount < 1)) {
     throw new Error("MATLAB worker count must be a positive integer.");
@@ -13,12 +20,14 @@ export function createMatlabDisplayWorkerPool(options: { signal?: AbortSignal; f
   const count = Math.max(1, Math.min(4, Math.floor(options.workerCount ?? matlabDisplayWorkerCount(options.channelCount))));
   const clients: ReturnType<typeof createMatlabDisplayWorkerClient>[] = [];
   let closed = false;
+  /** Closes the owned resource. */
   const close = () => { closed = true; clients.forEach((client) => client.close()); };
   try {
     for (let index = 0; index < count; index++) clients.push(createMatlabDisplayWorkerClient(options));
   } catch (error) { close(); throw error; }
   return {
     close,
+    /** Distributes channel chunks across workers and preserves channel order. */
     async process(channels: readonly MatlabDisplayWorkerChunk[]) {
       if (closed) throw new DOMException("MATLAB processing pool closed", "AbortError");
       const batchSize = Math.ceil(channels.length / clients.length);

@@ -1,3 +1,9 @@
+/*
+Purpose: Checks matlab timing behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/matlab-timing.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { matlabSampleSnap, matlabSampleTime } from "../app/matlab-timing.ts";

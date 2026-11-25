@@ -1,3 +1,9 @@
+/*
+Purpose: Renders keyboard-accessible sidebar tabs and optional toolbar selection.
+File Dependencies: app/workspace-layout.ts, app/workspace-navigation.css.
+*/
+
+
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -34,7 +40,9 @@ export function ToolbarCustomizer({ selected, pinnedLabels, onChange }: {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
+    /** Closes the toolbar chooser after an outside pointer event. */
     const outside = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
+    /** Closes the toolbar chooser on Escape and restores button focus. */
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.stopPropagation(); setOpen(false);

@@ -1,16 +1,8 @@
-/**
- * Overview & Purpose
- * Makes waveform rendering complexity deterministic. In particular, it proves
- * that equal-length traces can have radically different canvas raster work when
- * one signal oscillates rapidly, without relying on machine-specific timings.
- *
- * Architectural Relationships
- * Called by: Node's built-in test runner.
- * Calls: pure geometry measurements from app/waveform-geometry.ts.
- *
- * External Resources
- * None.
- */
+/*
+Purpose: Makes waveform rendering complexity deterministic. In particular, it proves that equal-length traces can have radically different canvas raster work when one signal oscillates rapidly, without relying on machine-specific timings.
+File Dependencies: app/waveform-geometry.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

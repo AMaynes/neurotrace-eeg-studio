@@ -1,3 +1,9 @@
+/*
+Purpose: Checks raw dat mapping behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/eeg-core.ts, app/page.tsx, app/raw-dat-mapping.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { deflateSync } from "node:zlib";

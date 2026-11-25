@@ -1,3 +1,10 @@
+/*
+Purpose: Measures synthetic full-window processing, cached panning, and zooming with real worker threads.
+File Dependencies: app/matlab-display-tiles.ts, app/matlab-display-window.ts,
+  tests/fixtures/browser-worker.mjs.
+*/
+
+
 import { performance } from 'node:perf_hooks';
 import { buildMatlabDisplayWindow } from '../app/matlab-display-window.ts';
 import { BrowserWorker } from '../tests/fixtures/browser-worker.mjs';
@@ -14,6 +21,7 @@ for (let i = 0; i < pattern.length; i++) {
 let reads = 0, generated = 0, generateMs = 0;
 const source = {
   meta: { channelCount: channels, channelLabels: labels, channelUnits: labels.map(() => 'µV'), sampleRates: labels.map(() => fs), durationSec: full },
+  /** Returns the window. */
   async getWindow(start, span, selected, options = {}) {
     options.signal?.throwIfAborted();
     const t = performance.now(), first = Math.floor(start * fs), count = Math.min(Math.ceil(span * fs), full * fs - first);
@@ -38,6 +46,7 @@ for (const [name, start, width, useCache] of [
   const result=await buildMatlabDisplayWindow({source,startSec:start,durationSec:duration,pixelWidth:width,channelIndices:labels.map((_,i)=>i),montage:'referential'}, {
     fallbackToMainThread:false, workerCount:useCache?4:1, cache:useCache?cache:undefined,
     maxChunkBytes:(useCache?8:2)*1024*1024, maxChunkDurationSec:useCache?120:30,
+    /** Handles the partial. */
     onPartial(){ firstPaint ??= performance.now()-started; }
   });
   console.log(JSON.stringify({name,elapsedMs:performance.now()-started,firstPaintMs:firstPaint,reads,generated,generateMs,cacheBytes:cache.byteLength,retainedBytes:result.byteLength,points:result.data[0].length}));

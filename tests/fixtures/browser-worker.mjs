@@ -1,4 +1,9 @@
-/** Execute browser module-worker entry points in real Node worker threads. */
+/*
+Purpose: Execute browser module-worker entry points in real Node worker threads.
+File Dependencies: None.
+*/
+
+
 import { Worker as NodeWorker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 export class BrowserWorker {

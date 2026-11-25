@@ -1,4 +1,10 @@
-/** Standalone Level-5 overview navigation uses exact samples without copying wide windows. */
+/*
+Purpose: Standalone Level-5 overview navigation uses exact samples without copying wide windows.
+File Dependencies: app/eeg-core.ts, app/envelope-cache.ts, app/raw-dat-envelope.ts,
+  tests/fixtures/legacy-mat.mjs.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MatSource, RawDatSource } from "../app/eeg-core.ts";

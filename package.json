@@ -14,9 +14,12 @@
     "test": "npm run build && npm run build:pages && node --experimental-strip-types --test tests/*.test.mjs",
     "test:pages": "npm run build:pages && node --test tests/pages-release.test.mjs",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run lint && npm test",
+    "check": "npm run check:source && npm run docs:check && npm run typecheck && npm run lint && npm test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "check:source": "node build/source-standards.mjs",
+    "docs:generate": "node build/document-source.mjs",
+    "docs:check": "node build/document-source.mjs --check && node build/check-doc-links.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

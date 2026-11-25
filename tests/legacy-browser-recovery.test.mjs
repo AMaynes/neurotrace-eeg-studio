@@ -1,3 +1,9 @@
+/*
+Purpose: Checks legacy browser recovery behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/legacy-browser-recovery.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { listOlderBrowserReviews } from "../app/legacy-browser-recovery.ts";

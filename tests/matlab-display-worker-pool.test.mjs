@@ -1,3 +1,10 @@
+/*
+Purpose: Checks matlab display worker pool behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/matlab-display-processing.ts, app/matlab-display-worker-pool.ts,
+  tests/fixtures/browser-worker.mjs.
+*/
+
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMatlabDisplayWorkerPool, matlabDisplayWorkerCount } from '../app/matlab-display-worker-pool.ts';

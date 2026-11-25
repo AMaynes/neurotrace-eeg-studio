@@ -1,3 +1,10 @@
+/*
+Purpose: Checks tutorial progress behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/tutorial-center.css, app/tutorial-center.tsx, app/tutorial-events.ts,
+  app/tutorial-progress.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

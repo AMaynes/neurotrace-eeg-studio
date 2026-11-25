@@ -1,4 +1,8 @@
-/** Verifies directory discovery, BIDS inheritance, TSV parsing, and additive file selection. */
+/*
+Purpose: Verifies directory discovery, BIDS inheritance, TSV parsing, and additive file selection.
+File Dependencies: app/bids-companions.ts.
+*/
+
 
 import assert from "node:assert/strict";
 import test from "node:test";

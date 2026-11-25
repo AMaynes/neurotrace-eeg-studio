@@ -1,3 +1,9 @@
+/*
+Purpose: Checks matlab display processing behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/matlab-display-processing.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

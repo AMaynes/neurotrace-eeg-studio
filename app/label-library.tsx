@@ -1,8 +1,15 @@
+/*
+Purpose: Edits reusable dictionary labels and source-label aliases.
+File Dependencies: app/review-workspace.ts.
+*/
+
+
 "use client";
 
 import { useState } from "react";
 import type { DictionaryLabel, LabelLibrary } from "./review-workspace";
 
+/** Renders the label library editor controls and their current state. */
 export function LabelLibraryEditor({ library, types, onChange, onClose }: {
   library: LabelLibrary;
   types: readonly { key: string; name: string }[];

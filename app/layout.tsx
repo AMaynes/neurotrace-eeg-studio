@@ -1,23 +1,14 @@
-/**
- * Overview & Purpose
- * Defines NeuroTrace document metadata, viewport policy, and root HTML shell.
- *
- * Architectural Relationships
- * Called by: The Next/vinext application router.
- * Calls: Request-header inspection for host-aware social metadata.
- *
- * External Resources
- * public/og.png and the canonical GitHub Pages URL.
- *
- * Notes
- * Metadata generation is request-scoped and does not access recording data.
- */
+/*
+Purpose: Defines NeuroTrace document metadata, viewport policy, and root HTML shell.
+File Dependencies: app/globals.css.
+*/
 
 
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 
+/** Builds page and sharing metadata from the forwarded request origin. */
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "neurotrace.local";
@@ -45,6 +36,7 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+/** Renders the root layout controls and their current state. */
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">

@@ -1,3 +1,10 @@
+/*
+Purpose: Checks matlab display window behavior with deterministic fixtures and controlled runtime boundaries.
+File Dependencies: app/eeg-core.ts, app/file-window.ts, app/matlab-display-processing.ts,
+  app/matlab-display-window.ts.
+*/
+
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildMatlabDisplayWindow, createMatlabRawFlatlineDetector } from "../app/matlab-display-window.ts";

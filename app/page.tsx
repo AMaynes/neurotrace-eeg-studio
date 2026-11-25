@@ -1,23 +1,28 @@
+/*
+Purpose: Owns the interactive NeuroTrace workstation and coordinates recording review, annotation, local recovery, session navigation, and export.
+File Dependencies: app/background-recording-overview.ts, app/bids-companions.ts, app/bipolar-montage.ts,
+  app/channel-layout.ts, app/cursor-readout.ts, app/directory-event-client.ts, app/directory-event-index.ts,
+  app/directory-import-filters.tsx, app/directory-import.ts, app/directory-review-resume.ts,
+  app/directory-sessions.tsx, app/directory-tab-layout.ts, app/display-gain.ts, app/display-overlap.ts,
+  app/display-processing-worker-client.ts, app/edf-envelope-worker-client.ts, app/edf-envelope.ts,
+  app/eeg-core.ts, app/envelope-cache.ts, app/event-keywords.ts, app/file-window-worker-client.ts,
+  app/full-window-spectrogram-client.ts, app/import-selection.ts, app/label-library.tsx,
+  app/label-visibility.ts, app/legacy-browser-recovery.ts, app/local-recording-identity.ts, app/mat-import.ts,
+  app/matlab-annotations-csv.ts, app/matlab-display-tiles.ts, app/matlab-display-window.ts,
+  app/matlab-file-reader.ts, app/matlab-spectrogram-input.ts, app/matlab-spectrogram.ts,
+  app/neurotrace-project.ts, app/overview-display-policy.ts, app/performance-diagnostics.ts, app/playback.ts,
+  app/queue-label-dictionary.tsx, app/raw-dat-envelope-worker-client.ts, app/raw-dat-mapping.ts,
+  app/recording-display-window.ts, app/recording-info.ts, app/recording-labels-csv.ts,
+  app/recording-labels.ts, app/recording-overview.ts, app/recording-timestamp.ts,
+  app/resource-usage-panel.tsx, app/review-workspace.ts, app/session-overview.ts, app/session-tab-title.tsx,
+  app/shortcut-settings.tsx, app/shortcuts.ts, app/time-grid.ts, app/timeline-density.ts,
+  app/trace-centering.ts, app/tutorial-center.tsx, app/tutorial-events.ts, app/tutorial-progress.ts,
+  app/tutorials.ts, app/waveform-geometry.ts, app/waveform-peak-path.ts, app/waveform-viewport.ts,
+  app/window-amount.ts, app/workspace-layout.ts, app/workspace-navigation.tsx, app/zoom-history.ts.
+*/
+
+
 "use client";
-
-/**
- * Overview & Purpose
- * Owns the interactive NeuroTrace workstation and coordinates recording review,
- * annotation, local recovery, session navigation, and export.
- *
- * Architectural Relationships
- * Called by: The root application route through app/layout.tsx.
- * Calls: Browser signal sources in eeg-core.ts plus display-processing and
- * background workers for signal preparation and overview indexing.
- *
- * External Resources
- * Browser File/Blob APIs, localStorage, Canvas 2D, and public/og.png via layout metadata.
- *
- * Notes
- * React owns UI state on the main thread. File reads are asynchronous and stale
- * display requests are discarded so an older window cannot replace a newer one.
- */
-
 
 import {
   useCallback,
@@ -31,6 +36,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { ResourceUsagePanel, type ResourceCacheUsage } from "./resource-usage-panel";
+import { formatSessionStart, formatByteCount, sourceReadProfile } from "./recording-info";
+
 import {
   DemoSource,
   EDFSource,
@@ -93,7 +101,6 @@ import { createMatlabDisplayTileCache, MATLAB_TILE_CACHE_BYTES } from "./matlab-
 import { createMatlabFileReader, type MatlabFileReader } from "./matlab-file-reader";
 import {
   PerformanceDiagnosticsCollector,
-  type PerformanceDiagnosticsSnapshot,
 } from "./performance-diagnostics";
 import { localRecordingIdentity } from "./local-recording-identity";
 import { buildBackgroundRecordingOverview } from "./background-recording-overview";
@@ -386,31 +393,6 @@ function groupDirectorySessionTabs(tabs: SessionTab[]): SessionTab[] {
   });
 }
 
-type ResourceCacheUsage = {
-  rawBytes: number;
-  rawEntries: number;
-  processedBytes: number;
-  processedEntries: number;
-  envelopeBytes: number;
-  envelopeEntries: number;
-};
-
-type BrowserResourceUsage = {
-  heapUsedBytes: number | null;
-  heapAllocatedBytes: number | null;
-  heapLimitBytes: number | null;
-  storageUsedBytes: number | null;
-  storageQuotaBytes: number | null;
-};
-
-type PerformanceWithMemory = Performance & {
-  memory?: {
-    usedJSHeapSize: number;
-    totalJSHeapSize: number;
-    jsHeapSizeLimit: number;
-  };
-};
-
 type DisplayWindow = {
   /** Wider prepared data used by continuously scrolling playback. */
   playbackBuffer?: boolean;
@@ -579,6 +561,7 @@ function annotationLabel(annotation: Annotation, library?: LabelLibrary): LabelD
   return alias && original ? { ...original, name: alias, short: alias } : original;
 }
 
+/** Returns source events with usable timing for queue navigation. */
 function timedNavigationEvents(annotations: readonly Annotation[], candidates: readonly Candidate[], duration: number): DirectoryTimedEvent[] {
   const events = candidates.map(({ label, time }) => ({ label, timeSec: time }));
   for (const item of annotations) {
@@ -588,6 +571,7 @@ function timedNavigationEvents(annotations: readonly Annotation[], candidates: r
   return events.filter(({ timeSec }) => timeSec >= 0 && timeSec < duration);
 }
 
+/** Returns recording-provided labels exposed by the current source. */
 function detectedRecordingLabels(source: SignalSource): readonly RecordingLabel[] {
   return source instanceof EDFSource ? edfRecordingLabels(source.events) : source.recordingLabels ?? [];
 }
@@ -621,20 +605,24 @@ const PALETTE_BUTTON_NAMES: Record<string, string> = {
   uncertain: "Unknown",
 };
 
+/** Resolves the stored or default geometry of a review annotation. */
 function annotationGeometry(annotation: Pick<Annotation, "geometry" | "labelId">): Geometry {
   const geometry = annotation.geometry ?? LABEL_BY_ID.get(annotation.labelId)?.geometry ?? "point";
   return geometry === "window" ? "interval" : geometry;
 }
 
+/** Reports whether the value is legacy seizure candidate. */
 function isLegacySeizureCandidate(label: string) {
   const normalized = label.trim().toLowerCase();
   return LEGACY_SEIZURE_EVENT_TERMS.some((term) => normalized.includes(term));
 }
 
+/** Returns the lowercase extension used to classify a recording selection. */
 function recordingExtension(file: File) {
   return file.name.split(".").at(-1)?.toLowerCase() ?? "";
 }
 
+/** Validates the upload selection. */
 function validateUploadSelection(files: readonly File[]): UploadErrorMessage | null {
   const incomplete = files.filter((file) => {
     const extension = recordingExtension(file);
@@ -654,6 +642,7 @@ function validateUploadSelection(files: readonly File[]): UploadErrorMessage | n
   return null;
 }
 
+/** Chooses the primary recording. */
 function choosePrimaryRecording(files: readonly File[]): File | null {
   const supported = files
     .filter((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))
@@ -665,6 +654,7 @@ function choosePrimaryRecording(files: readonly File[]): File | null {
   return supported.find((file) => recordingExtension(file) === "mat") ?? null;
 }
 
+/** Formats metadata values for the compact file details view. */
 function compactMetadataValue(value: unknown): string | number | boolean | null {
   if (typeof value === "string") return value.length > 240 ? `${value.slice(0, 237)}…` : value;
   if (typeof value === "number" || typeof value === "boolean") return value;
@@ -677,6 +667,7 @@ function compactMetadataValue(value: unknown): string | number | boolean | null 
   }
 }
 
+/** Applies the companion bundle to meta. */
 function applyCompanionBundleToMeta(meta: RecordingMeta, bundle: BidsCompanionBundle) {
   if (bundle.channels.length === meta.channelCount) {
     const labels = bundle.channels.map((channel) => channel.name);
@@ -711,6 +702,7 @@ function applyCompanionBundleToMeta(meta: RecordingMeta, bundle: BidsCompanionBu
   meta.warnings = [...new Set([...meta.warnings, ...bundle.warnings])];
 }
 
+/** Maps a BIDS event category to an existing viewer label. */
 function bidsEventLabelId(event: BidsEventRecord): string {
   const normalized = `${event.label} ${event.description}`.trim().toLowerCase();
   if (/pre[-_ ]?ictal/.test(normalized)) return "preictal";
@@ -730,6 +722,7 @@ function bidsEventLabelId(event: BidsEventRecord): string {
   return event.duration > 0 ? "uncertain" : "clinical";
 }
 
+/** Converts compatible BIDS events into review annotations with source provenance. */
 function bidsEventAnnotations(
   bundle: BidsCompanionBundle,
   durationSec: number,
@@ -771,6 +764,7 @@ function bidsEventAnnotations(
   });
 }
 
+/** Prepares the source import context. */
 async function prepareSourceImportContext(
   source: SignalSource,
   primary: File,
@@ -796,6 +790,7 @@ async function prepareSourceImportContext(
   };
 }
 
+/** Converts a source import failure into the existing user-facing error contract. */
 function uploadErrorFrom(error: unknown, files: readonly File[]): UploadErrorMessage {
   if (error instanceof MatDatImportError) {
     return { title: error.title, message: error.message, files: files.map((file) => file.name) };
@@ -832,6 +827,7 @@ function uploadErrorFrom(error: unknown, files: readonly File[]): UploadErrorMes
   };
 }
 
+/** Normalizes the annotation geometry. */
 function normalizeAnnotationGeometry(annotation: Annotation, durationSec: number): Annotation {
   const label = LABEL_BY_ID.get(annotation.labelId);
   if (!label) return annotation;
@@ -872,6 +868,7 @@ function normalizeAnnotationGeometry(annotation: Annotation, durationSec: number
     ...(annotation.timingSampleRateHz !== undefined ? { timingSampleRateHz } : {}) };
 }
 
+/** Checks whether an annotation intersects the visible time interval. */
 function annotationOverlapsWindow(annotation: Annotation, start: number, end: number) {
   const point = annotationGeometry(annotation) === "point";
   return point
@@ -879,6 +876,7 @@ function annotationOverlapsWindow(annotation: Annotation, start: number, end: nu
     : annotation.start < end && annotation.end > start;
 }
 
+/** Places overlapping annotations into separate timeline lanes. */
 function assignAnnotationLanes(items: Annotation[]) {
   const laneEnds: number[] = [];
   const lanes = new Map<string, number>();
@@ -896,6 +894,7 @@ function assignAnnotationLanes(items: Annotation[]) {
   return { lanes, laneCount: Math.max(1, laneEnds.length) };
 }
 
+/** Migrates the annotation list. */
 function migrateAnnotationList(value: unknown, durationSec: number, channelCount = Number.POSITIVE_INFINITY): Annotation[] {
   if (!Array.isArray(value)) return [];
   const seenIds = new Set<string>();
@@ -960,6 +959,7 @@ function migrateAnnotationList(value: unknown, durationSec: number, channelCount
   });
 }
 
+/** Migrates the candidate list. */
 function migrateCandidateList(value: unknown, durationSec: number): Candidate[] {
   if (!Array.isArray(value)) return [];
   const seenIds = new Set<string>();
@@ -995,6 +995,7 @@ function migrateCandidateList(value: unknown, durationSec: number): Candidate[] 
   });
 }
 
+/** Reconciles the candidate queue. */
 function reconcileCandidateQueue(imported: Candidate[], restored: Candidate[], restoredActiveCandidate: number) {
   const importedIds = new Set(imported.map((candidate) => candidate.id));
   const restoredTerminalDecisions = restored.filter((candidate) =>
@@ -1071,6 +1072,7 @@ type RecoveredProject = {
   recordingLabelsImported: boolean;
 };
 
+/** Reports whether the value has valid recovery bounds. */
 function hasValidRecoveryBounds(value: unknown, durationSec: number): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const annotation = value as Record<string, unknown>;
@@ -1085,6 +1087,7 @@ function hasValidRecoveryBounds(value: unknown, durationSec: number): boolean {
   return annotation.end > annotation.start;
 }
 
+/** Validates recovered annotations against the current recording duration. */
 function parseRecoveryDraft(raw: string, durationSec: number, channelCount: number): Annotation[] {
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) throw new Error("Draft labels are not a list");
@@ -1094,6 +1097,7 @@ function parseRecoveryDraft(raw: string, durationSec: number, channelCount: numb
   return annotations;
 }
 
+/** Validates a saved browser review before restoring its annotations and view state. */
 function parseRecoveryProject(raw: string, durationSec: number, channelCount: number): RecoveredProject {
   const parsed: unknown = JSON.parse(raw);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Project is not an object");
@@ -1237,6 +1241,7 @@ async function readMatlabSourceWindow(source: SignalSource, startSec: number, du
   const decode = performanceDiagnostics.beginDecode({ label: "MATLAB source decoding", phase: "Calibrating samples" });
   let previousBytes = 0;
   const workerOptions = { ...options, fallbackToMainThread: false,
+    /** Handles the progress. */
     onProgress: (progress: { bytesRead: number; totalBytes: number }) => {
       read.update({ completedBytes: progress.bytesRead, totalBytes: progress.totalBytes,
         transientAllocatedBytes: Math.max(0, progress.bytesRead - previousBytes) });
@@ -1246,6 +1251,7 @@ async function readMatlabSourceWindow(source: SignalSource, startSec: number, du
     if (reader) {
       let reportedMetrics = false;
       const windowData = await reader.readWindow(startSec, durationSec, channelIndices, { ...workerOptions,
+        /** Handles the complete. */
         onComplete: (metrics) => {
           reportedMetrics = true;
           read.finish({ completedBytes: metrics.bytesRead, durationMs: metrics.readMs });
@@ -1274,16 +1280,19 @@ async function readMatlabSourceWindow(source: SignalSource, startSec: number, du
   }
 }
 
+/** Bounds a value to the inclusive minimum and maximum. */
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+/** Reports whether the value is abort failure. */
 function isAbortFailure(error: unknown) {
   return error instanceof DOMException
     ? error.name === "AbortError"
     : error instanceof Error && error.name === "AbortError";
 }
 
+/** Bounds overview refinement by the shared envelope memory budget. */
 function reusableEnvelopeBucketCount(
   channelCount: number,
   requiredBucketCount: number,
@@ -1306,6 +1315,7 @@ function reusableEnvelopeBucketCount(
   );
 }
 
+/** Totals the retained sample arrays in an envelope window. */
 function envelopeWindowByteLength(window: EnvelopeWindowData) {
   return window.data.reduce((sum, channel) => sum + channel.byteLength, 0)
     + window.minima.reduce((sum, channel) => sum + channel.byteLength, 0)
@@ -1314,6 +1324,7 @@ function envelopeWindowByteLength(window: EnvelopeWindowData) {
     + (window.variation?.reduce((sum, channel) => sum + channel.byteLength, 0) ?? 0);
 }
 
+/** Creates the envelope cache entry. */
 function makeEnvelopeCacheEntry(
   source: SignalSource,
   channelKey: string,
@@ -1341,6 +1352,7 @@ function makeEnvelopeCacheEntry(
 
 const TRACE_ROW_EDGE_INSET_PX = 4;
 
+/** Bounds a plotted sample to its channel row when clamping is enabled. */
 function confineTraceYValueToRow(y: number, rowTop: number, rowHeight: number) {
   const rowBottom = rowTop + rowHeight;
   // A stroke centered exactly on the clip boundary loses half its width and
@@ -1356,12 +1368,14 @@ function confineTraceYValueToRow(y: number, rowTop: number, rowHeight: number) {
   return (rowTop + rowBottom) / 2;
 }
 
+/** Reports whether a plotted sample extends outside its channel row. */
 function traceYOverflowsRow(y: number, rowTop: number, rowHeight: number) {
   // Warn whenever the actual inset clamp alters a sample, not only after it
   // crosses the outer row boundary. Samples exactly on the clamp remain valid.
   return !Number.isFinite(y) || y !== confineTraceYValueToRow(y, rowTop, rowHeight);
 }
 
+/** Emits a continuous waveform path while preserving finite runs, peaks, and clipping rules. */
 function drawContinuousTrace(
   context: CanvasRenderingContext2D,
   values: ArrayLike<number>,
@@ -1385,6 +1399,7 @@ function drawContinuousTrace(
   let overflow = false;
   let connected = false;
   context.beginPath();
+  /** Projects a finite waveform point and preserves gaps and clipping state. */
   const emit = (index: number, value: number, beginsRun: boolean) => {
     if (beginsRun) connected = false;
     if (!Number.isFinite(value) || gaps?.[index]) {
@@ -1422,6 +1437,7 @@ function drawContinuousTrace(
   return overflow;
 }
 
+/** Draws clipping indicators from sample excursions beyond each channel row. */
 function drawSampleClippingRibbon(
   context: CanvasRenderingContext2D,
   minima: ArrayLike<number>,
@@ -1479,6 +1495,7 @@ function drawSampleClippingRibbon(
   }
 }
 
+/** Calculates the expected byte length of the declared EDF record data. */
 function expectedEDFRecordBytes(source: EDFSource, startSec: number, durationSec: number) {
   const firstRecord = Math.floor(startSec / source.header.dataRecordDurationSec);
   const lastRecord = Math.min(
@@ -1487,10 +1504,12 @@ function expectedEDFRecordBytes(source: EDFSource, startSec: number, durationSec
   );
   return Math.max(0, lastRecord - firstRecord) * source.header.bytesPerDataRecord;
 }
+/** Quantizes the window zoom. */
 function quantizeWindowZoom(value: number) {
   return Number((Math.round(value / WINDOW_ZOOM_STEP_SECONDS) * WINDOW_ZOOM_STEP_SECONDS).toFixed(10));
 }
 
+/** Snaps the time. */
 function snapTime(value: number, mode: SnapMode, sampleRate: number, bypass = false, origin = 0) {
   if (bypass || mode === "none") return value;
   if (mode === "1s") return Math.round(value);
@@ -1498,12 +1517,14 @@ function snapTime(value: number, mode: SnapMode, sampleRate: number, bypass = fa
   return origin + Math.round((value - origin) * sampleRate) / sampleRate;
 }
 
+/** Returns the one-based MATLAB window origin or the recording origin for sample snapping. */
 function sampleSnapOrigin(display: DisplayWindow, sampleRate: number) {
   return display.timingConvention === "matlab-window" ? display.viewStart + 1 / sampleRate : 0;
 }
 
 
 
+/** Formats the amplitude. */
 function formatAmplitude(value: number, unit = "µV") {
   if (!Number.isFinite(value)) return `— ${unit}`;
   const abs = Math.abs(value);
@@ -1512,11 +1533,13 @@ function formatAmplitude(value: number, unit = "µV") {
   return `${value.toFixed(digits)} ${unit || "a.u."}`;
 }
 
+/** Formats the cursor amplitude. */
 function formatCursorAmplitude(readout: CursorReadout) {
   if (readout.kind === "range") return `Range ${formatAmplitude(readout.minimum, readout.unit)} – ${formatAmplitude(readout.maximum, readout.unit)}`;
   return readout.kind === "sample" ? formatAmplitude(readout.value, readout.unit) : "—";
 }
 
+/** Formats the cursor sample. */
 function formatCursorSample(readout: CursorReadout) {
   if (readout.kind === "range") return `Overview ${formatClock(readout.startSec, true)}–${formatClock(readout.endSec, true)} · zoom in for samples`;
   if (readout.kind === "unavailable") return "Sample unavailable";
@@ -1524,12 +1547,14 @@ function formatCursorSample(readout: CursorReadout) {
   return `${hasSourceTime ? "source sample" : "display sample"} ${(hasSourceTime ? readout.sourceSampleIndex! : readout.displaySampleIndex).toLocaleString()} · ${formatClock(hasSourceTime ? readout.sourceTimeSec! : readout.sampleTimeSec, true)}`;
 }
 
+/** Formats the relative time. */
 function formatRelativeTime(value: number) {
   if (!Number.isFinite(value)) return "—";
   if (Math.abs(value) < .0005) return "0.000 s";
   return `${value > 0 ? "+" : "−"}${Math.abs(value).toFixed(3)} s`;
 }
 
+/** Normalizes the channel list. */
 function normalizeChannelList(value: string) {
   return value
     .split(/[,;]+/)
@@ -1538,6 +1563,7 @@ function normalizeChannelList(value: string) {
     .join(",");
 }
 
+/** Splits a source path into portable directory and filename components. */
 function portablePathParts(value: string) {
   const normalized = value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
   const parts = normalized.split("/").filter(Boolean);
@@ -1549,6 +1575,7 @@ function portablePathParts(value: string) {
   };
 }
 
+/** Builds the interpretation values included in a local recording identity. */
 function sourceIdentityInterpretation(interpretation: Record<string, unknown> | undefined) {
   if (!interpretation) return undefined;
   const exportOnlyKeys = new Set([
@@ -1563,8 +1590,10 @@ function sourceIdentityInterpretation(interpretation: Record<string, unknown> | 
   return Object.fromEntries(Object.entries(interpretation).filter(([key]) => !exportOnlyKeys.has(key)));
 }
 
+/** Reads the MATLAB source identity retained in the import interpretation. */
 function matlabExportIdentityFromInterpretation(interpretation: Record<string, unknown> | null | undefined): MatlabExportIdentity | null {
   if (interpretation?.kind !== "raw-int16-le") return null;
+  /** Reads a string-valued source interpretation field. */
   const stringValue = (key: string) => typeof interpretation[key] === "string" ? interpretation[key] as string : "";
   return {
     patientId: stringValue("patient_id_hint"),
@@ -1574,6 +1603,7 @@ function matlabExportIdentityFromInterpretation(interpretation: Record<string, u
   };
 }
 
+/** Applies the matlab export identity. */
 function applyMatlabExportIdentity(
   interpretation: Record<string, unknown> | undefined,
   identity: MatlabExportIdentity | null,
@@ -1588,6 +1618,7 @@ function applyMatlabExportIdentity(
   };
 }
 
+/** Limits canvas pixel scaling to the configured backing-store budget. */
 function boundedCanvasScale(width: number, height: number, requestedScale: number) {
   const safeArea = Math.max(1, width * height);
   return Math.min(
@@ -1597,6 +1628,7 @@ function boundedCanvasScale(width: number, height: number, requestedScale: numbe
   );
 }
 
+/** Resolves the original source rate for a derived display row. */
 function sourceRateForDisplayRow(display: DisplayWindow, meta: RecordingMeta, row: number) {
   return display.sourceSampleRates[row]
     ?? meta.sampleRates[display.primarySourceIndices[row]]
@@ -1604,6 +1636,7 @@ function sourceRateForDisplayRow(display: DisplayWindow, meta: RecordingMeta, ro
     ?? primarySampleRate(meta);
 }
 
+/** Resolves the source rate used for annotation sample snapping. */
 function annotationTimingSampleRate(annotation: Annotation, display: DisplayWindow, meta: RecordingMeta, row: number) {
   if (Number.isFinite(annotation.timingSampleRateHz) && annotation.timingSampleRateHz! > 0) {
     return annotation.timingSampleRateHz!;
@@ -1613,6 +1646,7 @@ function annotationTimingSampleRate(annotation: Annotation, display: DisplayWind
     : sourceRateForDisplayRow(display, meta, row);
 }
 
+/** Downloads a local Blob and releases its temporary object URL. */
 function downloadBlob(name: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -1622,10 +1656,12 @@ function downloadBlob(name: string, blob: Blob) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Returns the metadata owned by the active signal source. */
 function sourceMeta(source: SignalSource) {
   return source.meta;
 }
 
+/** Creates an independent blank session with the current default controls. */
 function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspaceSnapshot {
   return {
     hasRecording: false,
@@ -1670,51 +1706,22 @@ function blankSessionSnapshot(source: SignalSource, id: string): SessionWorkspac
   };
 }
 
+/** Returns the recording’s first sample rate or the existing fallback. */
 function primarySampleRate(meta: RecordingMeta) {
   return meta.sampleRates[0] ?? 1;
 }
 
+/** Returns the source patient label or the local-session fallback. */
 function patientLabel(meta: RecordingMeta) {
   return meta.patientId || "Local session";
 }
 
+/** Returns the recording identifier or its internal identity fallback. */
 function recordingLabel(meta: RecordingMeta) {
   return meta.recordingId || meta.id;
 }
 
-function formatSessionStart(date?: Date) {
-  if (!date) return "Not provided";
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${months[date.getUTCMonth()]} ${date.getUTCDate()}, ${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")} source clock`;
-}
-
-function formatByteCount(bytes: number | null | undefined) {
-  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return "Unavailable";
-  if (bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${units[unitIndex]}`;
-}
-
-function formatByteRate(bytesPerSecond: number | null | undefined) {
-  if (bytesPerSecond === null || bytesPerSecond === undefined || !(bytesPerSecond > 0)) return "—";
-  return `${formatByteCount(bytesPerSecond)}/s`;
-}
-
-function formatMetricDuration(durationMs: number | null | undefined) {
-  if (durationMs === null || durationMs === undefined || !Number.isFinite(durationMs)) return "Unavailable";
-  if (durationMs < 1) return `${durationMs.toFixed(2)} ms`;
-  if (durationMs < 1_000) return `${durationMs.toFixed(durationMs < 10 ? 1 : 0)} ms`;
-  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(2)} s`;
-  return `${(durationMs / 60_000).toFixed(1)} min`;
-}
-
+/** Records read and decode measurements around an import operation without swallowing errors. */
 async function measureLocalFileDecode<T>(
   file: File,
   label: string,
@@ -1747,59 +1754,7 @@ async function measureLocalFileDecode<T>(
   }
 }
 
-function usagePercent(used: number | null, limit: number | null) {
-  if (used === null || limit === null || !(limit > 0)) return 0;
-  return clamp((used / limit) * 100, 0, 100);
-}
-
-function sourceReadProfile(format: RecordingMeta["format"], hasRecording: boolean) {
-  if (!hasRecording) {
-    return {
-      origin: "No recording loaded",
-      access: "Waiting for a local file",
-      detail: "Signal reads begin after an EDF, MAT, or MAT + DAT recording is selected.",
-    };
-  }
-  if (format === "edf" || format === "edf+") {
-    return {
-      origin: "Local browser file",
-      access: "Worker-indexed EDF record slices",
-      detail: "A background task builds the full-session overview; finer uncached views read only bounded record slices.",
-    };
-  }
-  if (format === "raw-int16-le") {
-    return {
-      origin: "Local browser file",
-      access: "Worker-indexed DAT frame slices",
-      detail: "A background task builds the full-session overview; finer uncached views read only bounded frame slices.",
-    };
-  }
-  if (format === "mat-v5") {
-    return {
-      origin: "Local browser file",
-      access: "Decoded signal matrix in memory",
-      detail: "The selected MATLAB matrix is decoded once, then visible windows are read from browser memory.",
-    };
-  }
-  if (format === "mat-v7.3") {
-    return {
-      origin: "Local browser file",
-      access: "Worker-backed HDF5 dataset slices",
-      detail: "The large MATLAB signal matrix stays on disk; only requested time and channel slices are decoded.",
-    };
-  }
-  return {
-    origin: "Generated in this browser",
-    access: "Deterministic synthetic signal",
-    detail: "Demo samples are generated for the requested window without reading a recording file.",
-  };
-}
-
-function estimatedDecodedSourceBytes(meta: RecordingMeta) {
-  if (meta.format !== "mat-v5") return 0;
-  return meta.sampleRates.reduce((sum, sampleRate) => sum + Math.ceil(meta.durationSec * sampleRate) * Float32Array.BYTES_PER_ELEMENT, 0);
-}
-
+/** Coordinates recording sources, review state, asynchronous display requests, and workspace interactions. */
 export default function Home() {
   const demoSource = useMemo(() => {
     return new DemoSource({ name: "blank-session", durationSec: 1, sampleRate: 256 });
@@ -2290,17 +2245,20 @@ export default function Home() {
   const queueDetailLabel = queueDetailAnnotation ? annotationLabel(queueDetailAnnotation, labelLibrary) : null;
   const reviewReady = hasRecording && !verifyingSource;
 
+  /** Changes the hidden label types. */
   const changeHiddenLabelTypes = (hidden: Set<string>) => {
     if (hidden.size !== hiddenLabelTypes.size || [...hidden].some(key => !hiddenLabelTypes.has(key))) notifyTutorialAction("label-filter-changed");
     setHiddenLabelTypes(hidden);
     clearLabelFilterSelection();
   };
+  /** Changes the label keywords. */
   const changeLabelKeywords = (keywords: string) => {
     if (keywords === labelKeywords) return;
     setLabelKeywords(keywords);
     notifyTutorialAction("label-filter-changed");
     clearLabelFilterSelection();
   };
+  /** Clears the label filter selection. */
   const clearLabelFilterSelection = () => {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
@@ -2349,6 +2307,7 @@ export default function Home() {
     } catch { /* local preferences are optional */ }
   }, []);
 
+  /** Changes the bias locks. */
   const changeBiasLocks = (enabled: boolean) => {
     setBiasLocks(enabled);
     try {
@@ -2375,6 +2334,7 @@ export default function Home() {
     setShowDirectorySessions(true);
   }, [directoryCatalogs, setShowImport]);
 
+  /** Clears the directory catalog. */
   const clearDirectoryCatalog = () => {
     if (importBusyRef.current || queuedDirectoryOpenRef.current) return;
     const id = directoryCatalogIdRef.current;
@@ -2546,8 +2506,10 @@ export default function Home() {
   }, [storeActiveSession]);
 
   useEffect(() => {
+    /** Flushes the active session through its current save callback. */
     const flush = () => flushSessionRef.current();
     window.addEventListener("pagehide", flush);
+    /** Handles the visibility. */
     const onVisibility = () => { if (document.visibilityState === "hidden") flush(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
@@ -2735,6 +2697,7 @@ export default function Home() {
     const closingIndex = sessionTabs.findIndex((tab) => tab.id === id);
     let remaining = sessionTabs.filter((tab) => tab.id !== id);
     sessionSnapshotsRef.current.delete(id);
+    /** Reports whether the operation can access. */
     const canAccess = (tab: SessionTab) => {
       const catalog = directoryCatalogs.find((item) => item.id === tab.directoryId);
       const review = catalog && directoryCatalogWorkspacesRef.current.get(catalog.id)?.review;
@@ -2856,6 +2819,7 @@ export default function Home() {
     setToast("Previous waveform zoom restored");
   }, [activeTool, changeZoomView]);
 
+  /** Commits the gain input. */
   const commitGainInput = (input: HTMLInputElement) => {
     // Commit once on blur, leaving partial decimal typing and native text undo alone.
     const next = input.value.trim() ? normalizeDisplayGain(Number(input.value), gain) : gain;
@@ -2894,6 +2858,7 @@ export default function Home() {
   const windowPresentation = windowAmountPresentation(timebase, windowDraftUnit);
   const windowDisplayUnit = windowDraftValue === null ? windowPresentation.unit : windowDraftUnit;
   const windowDraftDisplayValue = windowDraftValue ?? windowPresentation.amount;
+  /** Updates the time-window input from the current view duration. */
   const syncWindowDraft = (cycleUnit = false) => {
     if (!hasRecording) return;
     const numericValue = parseWindowAmount(windowDraftDisplayValue);
@@ -2923,6 +2888,7 @@ export default function Home() {
     setToast(`Window ${cycleUnit ? "shown as" : "set to"} ${applied.amount} ${WINDOW_UNIT_LABELS[applied.unit]}`);
     notifyTutorialAction("window-applied");
   };
+  /** Changes the displayed time unit while retaining the current duration. */
   const cycleWindowDraftUnit = () => syncWindowDraft(true);
 
   const commitMutation = useCallback((mutator: (current: Annotation[]) => Annotation[]) => {
@@ -3062,6 +3028,7 @@ export default function Home() {
           ? activeSourceCandidate.time >= start && activeSourceCandidate.time <= end
           : Math.abs(activeSourceCandidate.time - start) <= 1));
     const labelSource = sourceRef.current;
+    /** Adds the supplied entry to the current collection. */
     const add = (confidence: number) => {
       if (sourceRef.current !== labelSource || sourceVerificationRef.current) return;
       const now = new Date().toISOString();
@@ -3194,6 +3161,7 @@ export default function Home() {
     if (previous?.candidateId && previous.status === "committed" && patch.status !== "committed") {
       reopenedCandidateIds.add(previous.candidateId);
     }
+    /** Updates the matching annotation with a new revision and normalized geometry. */
     const apply = (current: Annotation[]) => current.map((item) => {
       if (item.id !== id) return item;
       const next = {
@@ -3323,6 +3291,7 @@ export default function Home() {
 
   const advanceFromCandidate = useCallback((candidateId: string) => {
     const currentIndex = candidates.findIndex((item) => item.id === candidateId);
+    /** Returns the unresolved result for the current request. */
     const unresolved = (item: Candidate) => item.id !== candidateId && !["reviewed", "skipped", "conflict"].includes(item.status)
       && !hiddenLabelTypes.has(recordingLabelTypeKey(item.label)) && matchesLabelKeywords([item.label]);
     let nextIndex = candidates.findIndex((item, index) => index > currentIndex && unresolved(item));
@@ -3529,7 +3498,9 @@ export default function Home() {
     const source = sourceRef.current;
     const overviewAbortController = new AbortController();
     overviewBuildSourceRef.current = recordingOverviewCacheRef.current.get(source)?.complete ? null : source;
+    /** Reports whether the value is current. */
     const isCurrent = () => !overviewAbortController.signal.aborted && sourceRef.current === source;
+    /** Publishes the recording overview. */
     const publishRecordingOverview = (window: EnvelopeWindowData, complete = false) => {
       if (overviewAbortController.signal.aborted) return;
       if (recordingOverviewCacheRef.current.put(source, window, { complete }) && sourceRef.current === source) {
@@ -3623,6 +3594,7 @@ export default function Home() {
     const channelKey = indices.join(",");
     const visibleDuration = timebase;
     const visibleWidth = waveformWidth;
+    /** Prepares the current visible signal window and discards obsolete asynchronous results. */
     const refreshWindow = async () => {
       const playbackRead = playbackBufferRangeRef.current;
       const timebase = playbackRead?.source === source && playbackRead.startSec === signalViewStart
@@ -3640,6 +3612,7 @@ export default function Home() {
       }
       setLoadingSignal(true);
       try {
+        /** Publishes the display. */
         const publishDisplay = (next: DisplayWindow) => {
           const pending = playbackPendingViewRef.current;
           const playbackPage = playbackBufferRangeRef.current === playbackRead && playbackRead?.source === source && playbackRead.startSec === next.viewStart;
@@ -3682,6 +3655,7 @@ export default function Home() {
                 signal: abortController.signal, fallbackToMainThread: false, maxChunkDurationSec: 120, maxChunkBytes: 8 * 1024 * 1024,
                 cache: matlabTileCacheRef.current,
                 recordingCache: recordingDisplayCacheRef.current,
+                /** Handles the partial. */
                 onPartial: (partial, through) => {
                   if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
                   if (!publishDisplay({ ...partial, settingsKey: displaySettingsKey, traceBaselines: partial.traceBaselines ?? [],
@@ -3691,6 +3665,7 @@ export default function Home() {
                   displayPreviewReadyRef.current = true;
                   setLoadingSignal(false);
                 },
+                /** Reads the window. */
                 readWindow: (start, duration, channels, options) => readMatlabSourceWindow(source, start, duration, channels, options, reader),
               });
               operation.finish({ completedBytes: prepared.byteLength });
@@ -3718,6 +3693,7 @@ export default function Home() {
           return;
         }
         let previewCoverageEndSec = signalViewStart;
+        /** Publishes a source-matched overview preview only while its request remains current. */
         const showOverviewPreview = (visible: EnvelopeWindowData, status: Pick<DisplayWindow,
           "indexedThroughSec" | "refiningOverview" | "unreadAfterSec">) => {
           if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
@@ -3873,7 +3849,9 @@ export default function Home() {
             );
             const bucketCount = Math.min(requestedBucketCount, maximumUsefulBucketCount);
             const readSourceEnvelope = source.getEnvelopeWindow.bind(source);
+            /** Reads the overview. */
             const readOverview = async (cacheStart: number, cacheDuration: number, bucketCount: number, buildPyramid = true) => {
+              /** Publishes the window preview. */
               const publishWindowPreview = (prefix: EnvelopeWindowData) => {
                 if (abortController.signal.aborted || sourceRef.current !== source || requestId !== displayRequestIdRef.current) return;
                 const prefixEnd = prefix.startSec + prefix.durationSec;
@@ -3920,6 +3898,7 @@ export default function Home() {
                     signal: abortController.signal,
                     fallbackToMainThread: false,
                     onOverview: publishWindowPreview,
+                    /** Handles the progress. */
                     onProgress: (progress: EDFEnvelopeProgress) => {
                       const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
                       lastReportedReadBytes = progress.bytesRead;
@@ -3955,6 +3934,7 @@ export default function Home() {
                     signal: abortController.signal,
                     fallbackToMainThread: false,
                     onOverview: publishWindowPreview,
+                    /** Handles the progress. */
                     onProgress: (progress) => {
                       const transientBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
                       lastReportedReadBytes = progress.bytesRead;
@@ -4167,6 +4147,7 @@ export default function Home() {
               }, {
                 signal: abortController.signal,
                 fallbackToMainThread: false,
+                /** Handles the progress. */
                 onProgress: (progress) => {
                   const transientAllocatedBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
                   lastReportedReadBytes = progress.bytesRead;
@@ -4204,6 +4185,7 @@ export default function Home() {
               }, {
                 signal: abortController.signal,
                 fallbackToMainThread: false,
+                /** Handles the progress. */
                 onProgress: (progress) => {
                   const transientAllocatedBytes = Math.max(0, progress.bytesRead - lastReportedReadBytes);
                   lastReportedReadBytes = progress.bytesRead;
@@ -4491,6 +4473,7 @@ export default function Home() {
     displayRefreshPendingRef.current = refreshWindow;
     if (!displayRefreshActiveRef.current) {
       displayRefreshActiveRef.current = true;
+      /** Processes pending display requests while retaining only the latest queued window. */
       const pumpLatestWindow = async () => {
         while (displayRefreshPendingRef.current) {
           const refresh = displayRefreshPendingRef.current;
@@ -4561,7 +4544,9 @@ export default function Home() {
         if (begin < 0 || windowData.data[position].length < begin + count) throw new Error("Spectrogram source read did not cover the requested samples.");
         return windowData.data[position].slice(begin, begin + count);
       });
-    }, { signal: abortController.signal, onProgress: (completed, total) => {
+    }, { signal: abortController.signal,
+    /** Handles the progress. */
+    onProgress: (completed, total) => {
       if (abortController.signal.aborted || sourceRef.current !== source) return;
       operation.update({ completedBytes: completed * plan.sourceIndices.length * 4 });
       setSpectrogramState({ requestKey, result: null, progress: completed / total, error: "" });
@@ -4622,6 +4607,7 @@ export default function Home() {
   useEffect(() => {
     if (!hasRecording || activeSessionContentView !== "recording") return;
     let frame = 0;
+    /** Samples the frame. */
     const sampleFrame = (timestamp: number) => {
       performanceDiagnostics.recordFrame(timestamp);
       frame = window.requestAnimationFrame(sampleFrame);
@@ -4640,6 +4626,7 @@ export default function Home() {
       }
       return;
     }
+    /** Paints the current plot into its bounded canvas surface. */
     const draw = () => {
       const rect = canvas.getBoundingClientRect();
       const canvasScale = boundedCanvasScale(rect.width, rect.height, window.devicePixelRatio || 1);
@@ -4657,6 +4644,7 @@ export default function Home() {
         { gpuSurfaceCopies: 2 },
       );
       performanceDiagnostics.recordCanvasSurface("waveform-frame", { width: backingWidth, height: backingHeight });
+      /** Copies the completed waveform frame to the visible canvas and finishes timing. */
       const presentFrame = () => {
         const output = canvas.getContext("2d", { alpha: false });
         if (!output) { renderSpan.finish(); return; }
@@ -4692,6 +4680,7 @@ export default function Home() {
       const rowScrollOffset = expandedChannels
         ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current
         : 0;
+      /** Returns the top edge of the requested display row. */
       const rowTopForChannel = (channel: number) => plotTop + yForUnit(channelRowLayout.rowStartUnits[channel])
         - rowScrollOffset;
       const lastRowBottom = display.labels.length ? rowTopForChannel(display.labels.length - 1) + rowHeight : height;
@@ -4742,6 +4731,7 @@ export default function Home() {
 
       // Selection stores source identities, while montage/group rows can be reordered.
       const selectedSources = new Set(spectrogramChannels);
+      /** Reports whether the value is selected channel. */
       const isSelectedChannel = (channel: number) => selectedSources.size
         ? selectedSources.has(display.primarySourceIndices[channel])
         : channelSelectionActive && channel === focusedChannel;
@@ -4994,6 +4984,7 @@ export default function Home() {
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    /** Updates the waveform width before requesting data at the new resolution. */
     const measure = () => {
       const nextWidth = Math.max(1, Math.round(canvas.getBoundingClientRect().width));
       if (waveformWidthRef.current === nextWidth) {
@@ -5032,6 +5023,7 @@ export default function Home() {
     const container = waveformScrollRef.current;
     if (!container) return;
     if (!expandedChannels) container.scrollTop = 0;
+    /** Synchronizes vertical viewport measurements and redraws the waveform. */
     const update = () => {
       channelScrollOffsetRef.current = expandedChannels ? container.scrollTop : 0;
       const nextHeight = Math.max(1, expandedChannels ? container.clientHeight : canvasRef.current?.getBoundingClientRect().height ?? container.clientHeight);
@@ -5086,6 +5078,7 @@ export default function Home() {
     };
   }, [channelRowLayout, channelViewportHeight, expandedChannels, waveformVerticalViewport]);
 
+  /** Positions a group label at its visible channel block midpoint. */
   const channelGroupLabelStyle = (startRow: number, endRow: number): React.CSSProperties | null => {
     const plotHeight = Math.max(1, channelViewportHeight - CHANNEL_RAIL_HEADER_HEIGHT);
     const geometry = channelPlotGeometry(channelRowLayout, plotHeight, expandedChannels, waveformVerticalViewport);
@@ -5145,6 +5138,7 @@ export default function Home() {
     const canvasHeight = Math.max(1, rect.height);
     const geometry = channelPlotGeometry(channelRowLayout, canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
     const scrollTop = expandedChannels ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current : 0;
+    /** Converts the coordinate into a fraction of the available range. */
     const fraction = (position: number) => clamp(geometry.unitForY(
       scrollTop + position * canvasHeight - CHANNEL_RAIL_HEADER_HEIGHT) / channelRowLayout.totalUnits, 0, 1);
     const selection = { top: fraction(range.top), bottom: fraction(range.bottom) };
@@ -5158,6 +5152,7 @@ export default function Home() {
 
   const inspectionMode = boxZoomActive;
 
+  /** Starts the configured waveform selection, inspection, or zoom interaction. */
   const onWavePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0) return;
     clearChannelSelection();
@@ -5191,6 +5186,7 @@ export default function Home() {
     }
   };
 
+  /** Updates the active waveform gesture using the current pointer position. */
   const onWavePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!pointerRef.current || pointerRef.current.pointerId !== event.pointerId) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -5225,6 +5221,7 @@ export default function Home() {
     });
   };
 
+  /** Commits the active waveform gesture and releases pointer capture. */
   const onWavePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const pointer = pointerRef.current;
     if (!pointer || pointer.pointerId !== event.pointerId) return;
@@ -5281,6 +5278,7 @@ export default function Home() {
     }
   };
 
+  /** Cancels the active waveform gesture and clears transient interaction state. */
   const onWavePointerCancel = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (pointerRef.current?.pointerId !== event.pointerId) return;
     pointerRef.current = null;
@@ -5292,6 +5290,7 @@ export default function Home() {
     }
   };
 
+  /** Handles the label drop. */
   const onLabelDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const labelId = event.dataTransfer.getData("application/x-neurotrace-label");
@@ -5328,6 +5327,7 @@ export default function Home() {
     setDragGhost(null);
   };
 
+  /** Handles the label drag over. */
   const onLabelDragOver = (event: DragEvent<HTMLDivElement>) => {
     const labelId = event.dataTransfer.types.includes("application/x-neurotrace-label") ? "drag" : "";
     const canvas = canvasRef.current;
@@ -5350,6 +5350,7 @@ export default function Home() {
   };
 
   useEffect(() => {
+    /** Applies the preview. */
     const applyPreview = () => {
       const drag = dragAnnotationRef.current;
       const patches = pendingAnnotationDragRef.current;
@@ -5357,6 +5358,7 @@ export default function Home() {
       if (!drag || !patches) return;
       setAnnotationDragPreview({ patches });
     };
+    /** Handles the move. */
     const onMove = (event: PointerEvent) => {
       const drag = dragAnnotationRef.current;
       const timeline = timelineRef.current;
@@ -5424,6 +5426,7 @@ export default function Home() {
         || normalized.geometry !== drag.original.geometry;
       if (dragFrameRef.current === null) dragFrameRef.current = window.requestAnimationFrame(applyPreview);
     };
+    /** Handles the up. */
     const onUp = () => {
       const drag = dragAnnotationRef.current;
       if (!drag) return;
@@ -5472,6 +5475,7 @@ export default function Home() {
     };
   }, [display, focusedChannel, meta, reopenCandidateReviews, snapMode, timebase]);
 
+  /** Starts the annotation drag. */
   const startAnnotationDrag = (event: ReactPointerEvent, item: Annotation, mode: "move" | "start" | "end") => {
     event.preventDefault();
     event.stopPropagation();
@@ -5495,6 +5499,7 @@ export default function Home() {
     dragAnnotationRef.current = { id: item.id, mode, originX: event.clientX, original: { ...item }, originals, snapshot: annotationsRef.current, moved: false };
   };
 
+  /** Handles the timeline pointer down. */
   const onTimelinePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!labelsVisible) return;
     const target = event.target as HTMLElement;
@@ -5513,6 +5518,7 @@ export default function Home() {
     setAnnotationSelectionBox({ left: event.clientX - timelineRect.left, top: event.clientY - timelineRect.top, width: 0, height: 0 });
   };
 
+  /** Handles the timeline pointer move. */
   const onTimelinePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const selectionDrag = annotationSelectionRef.current;
     const timeline = timelineRef.current;
@@ -5544,6 +5550,7 @@ export default function Home() {
     setSelectedAnnotationId(nextIds.values().next().value ?? null);
   };
 
+  /** Handles the timeline pointer up. */
   const onTimelinePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     const selectionDrag = annotationSelectionRef.current;
     if (!selectionDrag || selectionDrag.pointerId !== event.pointerId) return;
@@ -5557,6 +5564,7 @@ export default function Home() {
   };
 
   useEffect(() => {
+    /** Handles the move. */
     const onMove = (event: PointerEvent) => {
       const gap = channelGapResizeRef.current;
       if (gap) {
@@ -5567,6 +5575,7 @@ export default function Home() {
       if (!resize) return;
       setContextTrackHeightOverride(clamp(resize.startHeight - (event.clientY - resize.startY), 44, 420));
     };
+    /** Handles the up. */
     const onUp = () => {
       channelGapResizeRef.current = null;
       contextResizeRef.current = null;
@@ -5664,6 +5673,7 @@ export default function Home() {
     if (!hasRecording) return;
     const viewer = viewerRef.current;
     if (!viewer) return;
+    /** Handles the wheel. */
     const handleWheel = (event: WheelEvent) => viewerWheelRef.current(event);
     viewer.addEventListener("wheel", handleWheel, { passive: false, capture: true });
     return () => viewer.removeEventListener("wheel", handleWheel, { capture: true });
@@ -5694,6 +5704,7 @@ export default function Home() {
       setToast("This event falls outside the recording.");
       return;
     }
+    /** Checks whether the supplied values satisfy the matching rule. */
     const matches = (label: string, time: number) => label === event.label && Math.abs(time - event.timeSec) < 1e-6;
     const index = candidatesRef.current.findIndex((candidate) => matches(candidate.label, candidate.time));
     if (index >= 0) {
@@ -5725,6 +5736,7 @@ export default function Home() {
       || !hasRecording || verifyingSource || importBusy) return;
     const source = sourceRef.current;
     let canceled = false;
+    /** Waits for source annotations before selecting the pending directory event. */
     const arrive = async () => {
       if (source instanceof EDFSource) await source.loadAnnotations().catch(() => undefined);
       if (canceled || source !== sourceRef.current) return;
@@ -5881,6 +5893,7 @@ export default function Home() {
     sourceVerificationAbortRef.current?.abort(new DOMException("Recording load superseded", "AbortError"));
     const verificationAbortController = new AbortController();
     sourceVerificationAbortRef.current = verificationAbortController;
+    /** Ensures the verification active. */
     const ensureVerificationActive = () => {
       if (!verificationAbortController.signal.aborted) return;
       throw verificationAbortController.signal.reason
@@ -5940,6 +5953,7 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setSelectedAnnotationIds(new Set());
     setReviewer("");
+    /** Publishes the label preview. */
     const publishLabelPreview = () => {
       if (verificationAbortController.signal.aborted || sourceRef.current !== source
         || activeSessionIdRef.current !== targetSessionId || !sourceVerificationRef.current) return;
@@ -6022,6 +6036,7 @@ export default function Home() {
     let recordingLabelsImported = false;
     let recoveryWarning: string | null = null;
     const draftKey = `neurotrace:draft:${nextKey}`;
+    /** Restores the draft. */
     const restoreDraft = () => {
       const cached = localStorage.getItem(draftKey);
       if (cached) {
@@ -6030,6 +6045,7 @@ export default function Home() {
       }
       return false;
     };
+    /** Keeps unreadable recovery text available instead of overwriting it. */
     const preserveUnreadableRecovery = (kind: "project" | "draft", raw: string) => {
       try {
         localStorage.setItem(`neurotrace:unreadable-${kind}:${nextKey}:${Date.now()}`, raw);
@@ -6138,6 +6154,7 @@ export default function Home() {
     }
   }, [activeSessionId, applySessionSnapshot, cancelPendingViewFrames, commitViewStart, detachDirectorySession, reviewerProfileId, sessionTabs, setShowImport, storeActiveSession]);
 
+  /** Opens the older reviews. */
   const openOlderReviews = () => {
     setOlderReviewKey("");
     setOlderReviewError("");
@@ -6146,6 +6163,7 @@ export default function Home() {
     setShowSettings(false);
   };
 
+  /** Restores the older review. */
   const restoreOlderReview = () => {
     if (!reviewReady || activeReviewIdentity || !olderReviews?.some((entry) => entry.key === olderReviewKey)) return;
     try {
@@ -6270,6 +6288,7 @@ export default function Home() {
     }
   }, [commitViewStart]);
 
+  /** Opens the mapped dat. */
   const openMappedDat = async ({
     pendingDat, pendingLegacyMatFile, pendingLegacyMeta, datMapping, channelLabels, pendingImportFiles,
     legacyExportHints, selectedLegacyEventIndices, keepSeparateSession, csvReviewRows,
@@ -6398,6 +6417,7 @@ export default function Home() {
     return true;
   };
 
+  /** Classifies local selections, opens compatible sources, and attaches supported companion metadata. */
   const importFiles = async (files: File[], expectedFormat?: DirectoryImportFormat, keepSeparateSession = false, csvReviewRows?: MatlabAnnotationRow[], editDatMapping = false): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
     const selectionError = validateUploadSelection(files);
@@ -6589,7 +6609,9 @@ export default function Home() {
     if (!reviewViewArrival || reviewViewArrival.sessionId !== activeSessionId || importBusy || !hasRecording) return;
     const frame = window.requestAnimationFrame(() => {
       const view = reviewViewArrival.view;
+      /** Accepts finite numeric state or returns the supplied fallback. */
       const number = (value: unknown, fallback: number) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
+      /** Retains unique channel indices within the current recording. */
       const indices = (value: unknown) => Array.isArray(value) ? [...new Set(value.filter((item): item is number =>
         Number.isInteger(item) && item >= 0 && item < meta.channelCount))] : undefined;
       const duration = meta.durationSec;
@@ -6689,6 +6711,7 @@ export default function Home() {
     });
   }, [activeSessionId, queuedDirectoryOpen, updateDirectoryStatus]);
 
+  /** Opens the directory recording. */
   const openDirectoryRecording = (recording: DirectoryRecording, options?: { catalog: DirectoryCatalog; replaceSessionId?: string; event?: DirectoryTimedEvent; incompleteEventChecks?: number; continuing?: boolean }) => {
     const catalog = options?.catalog ?? directoryCatalog;
     if (!catalog || importBusyRef.current || queuedDirectoryOpenRef.current) return;
@@ -6788,6 +6811,7 @@ export default function Home() {
     setShowDirectorySessions(false);
   };
 
+  /** Navigates the directory recording. */
   const navigateDirectoryRecording = (catalogId: string, direction: -1 | 1) => {
     if ((biasLocks && direction === -1) || importBusyRef.current || queuedDirectoryOpenRef.current || pendingDat) return;
     const catalog = directoryCatalogs.find((entry) => entry.id === catalogId);
@@ -6798,6 +6822,7 @@ export default function Home() {
     openDirectoryRecording(next, { catalog, replaceSessionId: activeSessionId });
   };
 
+  /** Navigates the directory event. */
   const navigateDirectoryEvent = async () => {
     if (directoryEventScanRef.current || directoryEventArrival || importBusyRef.current || queuedDirectoryOpenRef.current || pendingDat || !hasRecording) return;
     const tab = sessionTabs.find((item) => item.id === activeSessionId);
@@ -6807,10 +6832,12 @@ export default function Home() {
     const source = sourceRef.current;
     const after = cursorLocked ? cursorTime : viewStartRef.current - 1e-9;
     const query = queueSearch;
+    /** Checks whether the source event type is enabled by label visibility. */
     const eventVisible = (event: DirectoryTimedEvent) => !hiddenLabelTypes.has(recordingLabelTypeKey(event.label));
     const controller = new AbortController();
     directoryEventScanRef.current = controller;
     setDirectoryEventProgress("Checking this recording…");
+    /** Checks whether the request still belongs to the active operation. */
     const current = () => !controller.signal.aborted && sourceRef.current === source
       && activeSessionIdRef.current === tab.id && directoryCatalogWorkspacesRef.current.has(catalog.id)
       && !importBusyRef.current && !queuedDirectoryOpenRef.current;
@@ -6858,6 +6885,7 @@ export default function Home() {
     }
   };
 
+  /** Handles the uploaded files. */
   const handleUploadedFiles = async (files: File[], keepSeparateSession = false, editDatMapping = false): Promise<DirectorySessionStatus | undefined> => {
     if (!files.length || importBusyRef.current) return;
     if (activeReviewIdentity && files.some((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))) {
@@ -6906,6 +6934,7 @@ export default function Home() {
     return result;
   };
 
+  /** Handles the selected recording files. */
   const handleSelectedRecordingFiles = async (files: File[], fromDirectory = false, selectedFormat: DirectoryImportFormat | null = null, confirmSelection = false) => {
     if (importBusyRef.current || (!files.length && !fromDirectory)) return;
     setStagedDirectoryPlan(null);
@@ -6970,6 +6999,7 @@ export default function Home() {
     } finally { setFolderPreparing(false); }
   };
 
+  /** Prepares detected files for confirmation in the recording loader. */
   const stageDetectedImport = (event: ChangeEvent<HTMLInputElement>) => {
     const files = [...(event.target.files ?? [])];
     const fromDirectory = Boolean(event.target.webkitdirectory);
@@ -6978,6 +7008,7 @@ export default function Home() {
     void handleSelectedRecordingFiles(files, fromDirectory, fromDirectory ? importChoice : null, true);
   };
 
+  /** Handles the dropped recording files. */
   const handleDroppedRecordingFiles = async (transfer: DataTransfer, allowDirectories = false) => {
     if (importBusyRef.current) return;
     const selectedFormat = allowDirectories ? importChoice : null;
@@ -7002,12 +7033,14 @@ export default function Home() {
     if (selection) await handleSelectedRecordingFiles(selection.files, selection.directory, selectedFormat);
   };
 
+  /** Chooses the import type. */
   const chooseImportType = (choice: ImportChoice) => {
     if (importBusyRef.current) return;
     setImportChoice((current) => current === choice ? null : choice);
     setImportPickerKind(null);
   };
 
+  /** Opens the import picker. */
   const openImportPicker = (kind: "files" | "directory") => {
     if (importBusyRef.current) return;
     const input = kind === "directory" ? guidedDirectoryInputRef.current : guidedFilesInputRef.current;
@@ -7044,6 +7077,7 @@ export default function Home() {
     labelsVisible, saveOpen: showProjectSave,
   });
 
+  /** Opens the reviewer folder. */
   const openReviewerFolder = (plan: DirectoryImportPlan, review: ReviewWorkspace, continuing: boolean) => {
     const recording = continuing && review.position ? plan.recordings.find(({ id }) => id === review.position) : plan.recordings[0];
     if (!recording || !canOpenReviewRecording(review, plan, recording.id)) {
@@ -7081,6 +7115,7 @@ export default function Home() {
     }
     const settings = review.settings;
     if (settings.controlBindings) setControlBindings(normalizeControlBindings(settings.controlBindings));
+    /** Retains string entries from restored list state. */
     const textList = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
     setHiddenLabelTypes(new Set(textList(settings.hiddenLabelTypes)));
     setLabelKeywords(typeof settings.labelKeywords === "string" ? settings.labelKeywords : "");
@@ -7100,6 +7135,7 @@ export default function Home() {
     try { localStorage.setItem("neurotrace:reviewer-id", review.reviewerId); } catch { /* optional preference */ }
   };
 
+  /** Opens the confirmed file or folder selection with the chosen review settings. */
   const submitGuidedImport = async (plan = stagedDirectoryPlan) => {
     if (!guidedImportReady || !plan?.recordings.length || importBusyRef.current || queuedDirectoryOpenRef.current) return;
     if (plan.format !== "neurotrace" && (reviewerProfileId.trim() || portableReviewFile || pendingAnnotationCsv)) {
@@ -7185,6 +7221,7 @@ export default function Home() {
     openDirectoryRecording(plan.recordings[0], { catalog });
   };
 
+  /** Opens a DAT recording after the user confirms its channel and timing mapping. */
   const confirmDatImport = async () => {
     if (!pendingDat || importBusyRef.current) return;
     const directoryRequest = directoryConfirmationRef.current;
@@ -7238,6 +7275,7 @@ export default function Home() {
   };
 
   const csvDirectoryId = sessionTabs.find((tab) => tab.id === activeSessionId)?.directoryId;
+  /** Completes the export labels. */
   const completeExportLabels = async (source: EDFSource, readLabels: () => Annotation[]) => {
     try { await source.loadAnnotations(); }
     catch (error) {
@@ -7249,7 +7287,9 @@ export default function Home() {
       source.meta.durationSec, source.meta.channelLabels);
     return mergeRecordingLabels<Annotation>(readLabels(), detected);
   };
+  /** Resolves the label text written to the annotation CSV. */
   const csvLabelName = (item: Annotation) => annotationLabel(item)?.name ?? item.labelId;
+  /** Saves reviewer annotations and workspace state after validating the reviewer signature. */
   const saveReviewerWorkspace = async (signature: string) => {
     if (projectSaveBusy || !hasRecording || sourceVerificationRef.current || importBusyRef.current || reviewViewArrival || !primaryFile) return;
     const reviewerId = normalizeReviewerId(signature);
@@ -7369,6 +7409,7 @@ export default function Home() {
     } finally { setProjectSaveBusy(false); }
   };
 
+  /** Closes the reviewer folder. */
   const closeReviewerFolder = async (catalogId = directoryCatalog?.id) => {
     if (!catalogId || importBusyRef.current || queuedDirectoryOpenRef.current || reviewViewArrival) return;
     const id = catalogId;
@@ -7444,6 +7485,7 @@ export default function Home() {
       const firstFocusable = [...modal.querySelectorAll<HTMLElement>(focusableSelector)].find((element) => element.offsetParent !== null);
       (firstFocusable ?? modal).focus();
     });
+    /** Keeps keyboard focus inside the active modal dialog. */
     const trapFocus = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return;
       const focusable = [...modal.querySelectorAll<HTMLElement>(focusableSelector)].filter((element) => element.offsetParent !== null);
@@ -7472,6 +7514,7 @@ export default function Home() {
   }, [confirmCommit.length, olderReviews, pendingLabel, queueDetailEntry, showAnnotationEditor, showChannels, showDirectorySessions, showEphysLabelPicker, showLabelLibrary, showLabelVisibilityFilter, showHelp, showImport, showProjectSave, showSessionMap, showSettings]);
 
   useEffect(() => {
+    /** Handles the key. */
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       // The recorder owns every captured key, including a newly assigned dialog-close key.
@@ -7668,6 +7711,7 @@ export default function Home() {
       : LABEL_BY_ID.get(labelId);
     return [{ id, definition: label, label: label ? label.name : labelId.replace(/^dictionary:/, "Dictionary label ") }];
   });
+  /** Renders the control that adds or removes a label shortcut from the toolbar. */
   const labelPin = (label: LabelDefinition) => {
     const id: ToolbarToolId = label.dictionaryLabel ? `label:dictionary:${label.dictionaryLabel.id}` : `label:${label.id}`;
     const pinned = toolbarTools.includes(id);
@@ -7690,6 +7734,7 @@ export default function Home() {
     });
     return [...groups];
   }, [channelGroupingMode, meta.channelLabels]);
+  /** Sets the channel visibility. */
   const setChannelVisibility = (indices: number[], enabled: boolean) => {
     if (!enabled) clearChannelSelection();
     setSelectedChannels((current) => {
@@ -7751,6 +7796,7 @@ export default function Home() {
     { id: "instance", label: "ePhys Instance Labels" },
   ];
   const gridDivisions = timebase <= 30 ? Math.max(2, Math.ceil(timebase / 5)) : 10;
+  /** Selects the sidebar tool. */
   const selectSidebarTool = (view: "labels" | "inspect") => {
     setLeftPanelOpen(true);
     setSidebarTab(view === "inspect" ? "info" : "labels");
@@ -7783,12 +7829,14 @@ export default function Home() {
       setShowDirectorySessions(true); return true;
     }
     if (!hasRecording || activeSessionContentView !== "recording") return false;
+    /** Activates an enabled, visible tutorial target button. */
     const clickControl = (anchor: string) => {
       const button = document.querySelector<HTMLButtonElement>(`button[data-tutorial="${anchor}"]`);
       if (!button || button.disabled || !button.getClientRects().length) return false;
       button.click();
       return true;
     };
+    /** Moves the time. */
     const moveTime = (distance: number) => {
       const start = viewStartRef.current;
       const next = Math.min(Math.max(0, meta.durationSec - timebase), start + distance);
@@ -7859,6 +7907,7 @@ export default function Home() {
       : null;
   const spectrogramLabel = spectrogramInputPlan.plan?.label ?? "Select a waveform channel";
 
+  /** Toggles the fit channels. */
   const toggleFitChannels = () => {
     const { expandedChannels, verticalViewport, channelScrollTop, channelGroupGap, channelFitRestore } = readZoomView();
     if (channelFitRestore) {
@@ -8151,6 +8200,8 @@ export default function Home() {
                         activeDisplayBytes={activeDisplayBytes}
                         activeDisplayVisibleBytes={activeDisplayVisibleBytes}
                         readCacheUsage={readResourceCacheUsage}
+                        performanceDiagnostics={performanceDiagnostics}
+                        cacheBudgetBytes={TOTAL_SIGNAL_CACHE_BUDGET_BYTES}
                       />
                     </div>
                   </section>
@@ -9225,6 +9276,7 @@ export default function Home() {
   );
 }
 
+/** Calculates the height available after fixed viewer controls are accounted for. */
 function availableSpectrogramHeight(panel: HTMLDivElement | null) {
   const viewer = panel?.parentElement;
   if (!panel || !viewer) return MAX_SPECTROGRAM_HEIGHT;
@@ -9279,6 +9331,7 @@ const SPECTROGRAM_PLOT_TOP = 34;
 const SPECTROGRAM_PLOT_BOTTOM = 22;
 const SPECTROGRAM_MINIMUM_DRAG_PX = 4;
 
+/** Formats the actual time coverage represented by the wavelet cells. */
 function spectrogramAnalysisRange(spectrum: MatlabSpectrogramResult) {
   const first = spectrum.times[0] ?? 0;
   const last = spectrum.times[spectrum.width - 1] ?? 0;
@@ -9289,10 +9342,12 @@ function spectrogramAnalysisRange(spectrum: MatlabSpectrogramResult) {
   return `${formatClock(start, true)}–${formatClock(end, true)}`;
 }
 
+/** Describes the resolution limit of a tiled wavelet overview. */
 function spectrogramAnalysisNote(spectrum: MatlabSpectrogramResult) {
   return spectrum.tiled ? `Full-window wavelet overview${(spectrum.timeStride ?? 1) > 1 ? " · sampled power" : ""} · zoom in for detail` : "";
 }
 
+/** Maps a normalized intensity to the MATLAB jet palette. */
 function matlabJet(value: number) {
   const scaled = 4 * clamp(value, 0, 1);
   const red = clamp(Math.min(scaled - 1.5, -scaled + 4.5), 0, 1);
@@ -9310,6 +9365,7 @@ function spectrogramDisplayRange(range: SpectrogramFrequencyRange, sampleRate: n
   return { min, max, maximum, minimumSpan };
 }
 
+/** Chooses readable frequency ticks inside the displayed range. */
 function spectrogramFrequencyTicks(min: number, max: number) {
   const span = max - min;
   if (!(span > 0)) return [];
@@ -9320,10 +9376,12 @@ function spectrogramFrequencyTicks(min: number, max: number) {
     (_, index) => Number((first + index * step).toPrecision(12)));
 }
 
+/** Formats the spectrogram frequency. */
 function formatSpectrogramFrequency(frequency: number) {
   return Number(frequency.toPrecision(6)).toString();
 }
 
+/** Maps wavelet cells into the visible pixel grid using the MATLAB-compatible color scale. */
 function rasterizeMatlabSpectrogram(
   pixels: Uint8ClampedArray,
   width: number,
@@ -9375,6 +9433,7 @@ function rasterizeMatlabSpectrogram(
   }
 }
 
+/** Renders wavelet power and coordinates time-frequency browsing, zooming, and color controls. */
 function SpectrogramPanel({
   toolsHost = null,
   controlBindings,
@@ -9403,6 +9462,7 @@ function SpectrogramPanel({
     const panel = panelRef.current;
     const waveform = waveformCanvasRef.current;
     if (!panel || !waveform) return;
+    /** Aligns the time plot. */
     const alignTimePlot = () => {
       const waveformRect = waveform.getBoundingClientRect();
       const panelRect = panel.getBoundingClientRect();
@@ -9438,6 +9498,7 @@ function SpectrogramPanel({
   const displayFrequencySpanHz = Math.max(Number.EPSILON, effectiveDisplayMaxHz - effectiveDisplayMinHz);
 
   useEffect(() => {
+    /** Handles the move. */
     const onMove = (event: PointerEvent) => {
       const resize = resizeRef.current;
       if (!resize || resize.pointerId !== event.pointerId) return;
@@ -9447,6 +9508,7 @@ function SpectrogramPanel({
         resize.maximumHeight,
       ));
     };
+    /** Handles the up. */
     const onUp = (event: PointerEvent) => {
       if (resizeRef.current?.pointerId === event.pointerId) resizeRef.current = null;
     };
@@ -9463,6 +9525,7 @@ function SpectrogramPanel({
   useLayoutEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
+    /** Paints the current plot into its bounded canvas surface. */
     const draw = () => {
       const renderSpan = performanceDiagnostics.beginRender();
       try {
@@ -9569,6 +9632,7 @@ function SpectrogramPanel({
     };
   }, [colorLimit, cursor, displayFrequencySpanHz, effectiveDisplayMaxHz, effectiveDisplayMinHz, inputError, progress, sampleRate, spectrum, viewDuration, viewStart]);
 
+  /** Converts the pointer position into a fraction of the plot width. */
   const plotRatio = (clientX: number, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
     return clamp(
@@ -9578,12 +9642,14 @@ function SpectrogramPanel({
       1,
     );
   };
+  /** Converts the pointer position into the displayed frequency. */
   const frequencyFromPointer = (clientY: number, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
     const plotHeight = Math.max(1, rect.height - SPECTROGRAM_PLOT_TOP - SPECTROGRAM_PLOT_BOTTOM);
     const ratioFromTop = clamp((clientY - rect.top - SPECTROGRAM_PLOT_TOP) / plotHeight, 0, 1);
     return effectiveDisplayMinHz + (1 - ratioFromTop) * displayFrequencySpanHz;
   };
+  /** Zooms the box from interaction. */
   const zoomBoxFromInteraction = (
     interaction: NonNullable<typeof interactionRef.current>,
     canvas: HTMLCanvasElement,
@@ -9604,7 +9670,9 @@ function SpectrogramPanel({
       height: Math.abs(currentY - startY),
     };
   };
+  /** Bounds the requested start time to the available recording interval. */
   const boundedStart = (requested: number) => clamp(requested, 0, Math.max(0, sessionDuration - viewDuration));
+  /** Completes the interaction. */
   const completeInteraction = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const interaction = interactionRef.current;
     if (!interaction || interaction.pointerId !== event.pointerId) return;
@@ -9854,6 +9922,7 @@ function SpectrogramPanel({
 
 type FileStructureNode = { title: string; detail: string };
 
+/** Describes the container structure of the current recording format. */
 function fileStructureNodes(meta: RecordingMeta): FileStructureNode[] {
   if (meta.format === "edf" || meta.format === "edf+") {
     return [
@@ -9898,10 +9967,12 @@ function fileStructureNodes(meta: RecordingMeta): FileStructureNode[] {
   ];
 }
 
+/** Formats the file detail label. */
 function formatFileDetailLabel(key: string) {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (character) => character.toUpperCase());
 }
 
+/** Names a file’s source, companion, or error role in the inventory. */
 function uploadedFileRoleLabel(file: UploadedFileRecord) {
   if (file.status === "primary") return "SOURCE";
   if (file.status === "error") return "ERROR";
@@ -9909,6 +9980,7 @@ function uploadedFileRoleLabel(file: UploadedFileRecord) {
   return file.role.toUpperCase();
 }
 
+/** Displays selected source and companion files with their interpretation status. */
 function UploadedFilesPanel({ bundle, compact = false }: { bundle: BidsCompanionBundle; compact?: boolean }) {
   const inventoryDetails = useMemo(() => compact
     ? bundle.files.map(file => `${file.path} · ${formatByteCount(file.size)} · ${file.status} · ${file.detail}`).join("\n")
@@ -9940,6 +10012,7 @@ function UploadedFilesPanel({ bundle, compact = false }: { bundle: BidsCompanion
   </section>;
 }
 
+/** Displays source metadata and format-specific structure without reading new waveform samples. */
 function FileStructurePanel({
   meta,
   companionBundle,
@@ -10035,6 +10108,7 @@ function FileStructurePanel({
   </section>;
 }
 
+/** Displays the selected waveform point or range and its associated labels. */
 function GeneralInfoPanel({
   meta,
   display,
@@ -10109,137 +10183,7 @@ function GeneralInfoPanel({
   </section>;
 }
 
-function ResourceUsagePanel({
-  meta,
-  hasRecording,
-  verifyingSource,
-  loadingSignal,
-  recoveryStatus,
-  activeDisplayBytes,
-  activeDisplayVisibleBytes,
-  readCacheUsage,
-}: {
-  meta: RecordingMeta;
-  hasRecording: boolean;
-  verifyingSource: boolean;
-  loadingSignal: boolean;
-  recoveryStatus: "saved" | "error";
-  activeDisplayBytes: number;
-  activeDisplayVisibleBytes: number;
-  readCacheUsage: () => ResourceCacheUsage;
-}) {
-  const [browserUsage, setBrowserUsage] = useState<BrowserResourceUsage>({
-    heapUsedBytes: null,
-    heapAllocatedBytes: null,
-    heapLimitBytes: null,
-    storageUsedBytes: null,
-    storageQuotaBytes: null,
-  });
-  const [cacheUsage, setCacheUsage] = useState<ResourceCacheUsage>({
-    rawBytes: 0,
-    rawEntries: 0,
-    processedBytes: 0,
-    processedEntries: 0,
-    envelopeBytes: 0,
-    envelopeEntries: 0,
-  });
-  const [performanceUsage, setPerformanceUsage] = useState<PerformanceDiagnosticsSnapshot>(
-    () => performanceDiagnostics.snapshot(),
-  );
-
-  useEffect(() => {
-    const unsubscribe = performanceDiagnostics.subscribe(setPerformanceUsage);
-    return () => { unsubscribe(); };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    const sampleBrowserUsage = async () => {
-      setCacheUsage(readCacheUsage());
-      const memory = (performance as PerformanceWithMemory).memory;
-      let storageEstimate: StorageEstimate | undefined;
-      try {
-        storageEstimate = await navigator.storage?.estimate?.();
-      } catch {
-        // Storage estimates are optional browser diagnostics.
-      }
-      if (!active) return;
-      performanceDiagnostics.sampleHeapMemory(memory ? {
-        usedBytes: memory.usedJSHeapSize,
-        allocatedBytes: memory.totalJSHeapSize,
-        limitBytes: memory.jsHeapSizeLimit,
-      } : null);
-      setBrowserUsage({
-        heapUsedBytes: memory?.usedJSHeapSize ?? null,
-        heapAllocatedBytes: memory?.totalJSHeapSize ?? null,
-        heapLimitBytes: memory?.jsHeapSizeLimit ?? null,
-        storageUsedBytes: storageEstimate?.usage ?? null,
-        storageQuotaBytes: storageEstimate?.quota ?? null,
-      });
-    };
-    void sampleBrowserUsage();
-    const interval = window.setInterval(() => void sampleBrowserUsage(), 1500);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [readCacheUsage]);
-
-  const signalCacheBytes = cacheUsage.rawBytes + cacheUsage.processedBytes + cacheUsage.envelopeBytes;
-  const cacheEntries = cacheUsage.rawEntries + cacheUsage.processedEntries + cacheUsage.envelopeEntries;
-  const decodedSourceBytes = hasRecording ? estimatedDecodedSourceBytes(meta) : 0;
-  const activeOperation = performanceUsage.activeOperations[0] ?? null;
-  const mainThreadPercent = performanceUsage.mainThread.utilizationEstimate * 100;
-  const transientObservationBytes = Math.max(
-    performanceUsage.allocations.reportedTransientBytes,
-    performanceUsage.allocations.observedHeapGrowthBytes,
-  );
-  const processingStatus = activeOperation?.phase
-    ?? (verifyingSource ? "Opening recording" : loadingSignal ? "Preparing signal window" : "Ready");
-
-  // Keep primary measurements visible; hover exposes secondary counts and caveats.
-  const metrics = [
-    { label: "Main-thread pressure", value: `${mainThreadPercent.toFixed(1)}% · ${formatMetricDuration(performanceUsage.mainThread.eventLoopDelayMs)} delay`,
-      detail: "Rolling 10 s event-loop estimate. Process CPU utilization is not exposed by browsers." },
-    { label: "UI frame cadence", value: `${performanceUsage.rendering.rollingFrameSamples > 1 ? `${performanceUsage.rendering.rollingFps.toFixed(0)} fps` : "Sampling"} · ${performanceUsage.rendering.rollingDroppedFrames}/${performanceUsage.rendering.totalDroppedFrames} drops`,
-      detail: `Dropped frames: ${performanceUsage.rendering.rollingDroppedFrames} recent, ${performanceUsage.rendering.totalDroppedFrames} total.` },
-    { label: "Last canvas draw", value: `${formatMetricDuration(performanceUsage.rendering.lastDurationMs)} · avg ${formatMetricDuration(performanceUsage.rendering.averageDurationMs)}`,
-      detail: `${performanceUsage.rendering.renders} renders; ${formatMetricDuration(performanceUsage.rendering.longestDurationMs)} longest draw.` },
-    { label: "File reads", value: `${formatByteCount(performanceUsage.sourceReads.bytes)} · ${formatByteRate(performanceUsage.sourceReads.throughputBytesPerSecond)}`,
-      detail: `Total source bytes read: ${formatByteCount(performanceUsage.sourceReads.bytes)} in ${formatMetricDuration(performanceUsage.sourceReads.durationMs)}. Measured at the browser file boundary; physical disk and operating-system cache reads cannot be distinguished.` },
-    { label: "Read operations", value: `${performanceUsage.sourceReads.operationsCompleted} / ${performanceUsage.sourceReads.operationsCancelled} / ${performanceUsage.sourceReads.operationsFailed}`,
-      detail: "Completed / canceled / failed source reads." },
-    { label: "Decoding", value: `${formatMetricDuration(performanceUsage.decoding.durationMs)} · ${formatByteRate(performanceUsage.decoding.throughputBytesPerSecond)}`,
-      detail: `${performanceUsage.decoding.activeOperations} active decode/reduction operations; ${performanceUsage.sourceReads.activeOperations} active source reads.` },
-    { label: "Long tasks", value: `${performanceUsage.mainThread.longTaskCount} · max ${formatMetricDuration(performanceUsage.mainThread.longestLongTaskMs)}`,
-      detail: `${formatMetricDuration(performanceUsage.mainThread.longTaskDurationMs)} total long-task duration.` },
-    { label: "Canvas backing store", value: formatByteCount(performanceUsage.canvases.backingBytes),
-      detail: `GPU/compositor surfaces: approximately ${formatByteCount(performanceUsage.canvases.estimatedGpuBytes)}. Conservative surface estimate; exact GPU allocation is not exposed.` },
-    { label: "Temporary memory ≥", value: formatByteCount(transientObservationBytes),
-      detail: `Transient buffers processed: ${formatByteCount(performanceUsage.allocations.reportedTransientBytes)}. Observed heap growth: ${formatByteCount(performanceUsage.allocations.observedHeapGrowthBytes)}; release: ${formatByteCount(performanceUsage.allocations.observedHeapReleaseBytes)}. A lower bound, not complete native allocation accounting.` },
-    { label: "Browser JS heap", value: browserUsage.heapUsedBytes === null ? "Not exposed" : `${formatByteCount(browserUsage.heapUsedBytes)} / ${formatByteCount(browserUsage.heapLimitBytes)}`,
-      detail: `Used / limit. Allocated heap: ${formatByteCount(browserUsage.heapAllocatedBytes)}; browser-managed.` },
-    { label: "Garbage collection", value: performanceUsage.garbageCollection.supported ? `${performanceUsage.garbageCollection.count} · ${formatMetricDuration(performanceUsage.garbageCollection.durationMs)}` : "Timing not exposed",
-      detail: "Count and duration when exposed by the browser; complete garbage-collector accounting is unavailable." },
-    { label: "Signal cache / view", value: `${formatByteCount(signalCacheBytes)} / ${formatByteCount(activeDisplayBytes)}`,
-      detail: `Signal cache: ${cacheEntries} windows, ${usagePercent(signalCacheBytes, TOTAL_SIGNAL_CACHE_BUDGET_BYTES).toFixed(0)}% of ceiling. Raw: ${formatByteCount(cacheUsage.rawBytes)} (${cacheUsage.rawEntries}); processed: ${formatByteCount(cacheUsage.processedBytes)} (${cacheUsage.processedEntries}); envelopes: ${formatByteCount(cacheUsage.envelopeBytes)} (${cacheUsage.envelopeEntries}). Active retained view: ${formatByteCount(activeDisplayBytes)}, ${formatByteCount(activeDisplayVisibleBytes)} visible; backing may be shared with cache.${decodedSourceBytes > 0 ? ` Decoded MAT estimate: ${formatByteCount(decodedSourceBytes)}.` : ""}` },
-    { label: "Site storage", value: browserUsage.storageUsedBytes === null ? "Not exposed" : `${formatByteCount(browserUsage.storageUsedBytes)} / ${formatByteCount(browserUsage.storageQuotaBytes)}`,
-      detail: "Used / browser storage quota. Estimates may not be available in every browser." },
-    { label: "Recovery / loading", value: `${recoveryStatus === "saved" ? "Saved" : "Unavailable"} · ${processingStatus}`,
-      detail: `Local recovery: ${recoveryStatus === "saved" ? "Saved" : "Unavailable"}. Processing: ${processingStatus}.` },
-  ];
-
-  return <section className="resource-panel resource-panel-compact" aria-label="Resource usage">
-    <section className={`resource-operation-card${activeOperation ? " active" : ""}`}
-      title={`${activeOperation?.label ?? "No read or decode operation running"}\n${activeOperation?.phase ?? "Cached interactions do not touch the source file."}\n${activeOperation ? `${formatByteCount(activeOperation.completedBytes)} / ${formatByteCount(activeOperation.totalBytes)} · ${formatByteRate(activeOperation.throughputBytesPerSecond)}` : `${formatByteCount(performanceUsage.sourceReads.bytes)} read this session`}`}>
-      <header><span>{activeOperation?.label ?? "Data pipeline"}</span><strong>{activeOperation ? `${Math.round((activeOperation.progress ?? 0) * 100)}%` : "IDLE"}</strong></header>
-      <p>{activeOperation?.phase ?? "No read or decode operation running"}</p>
-      <div className="resource-meter"><i style={{ width: `${(activeOperation?.progress ?? 0) * 100}%` }} /></div>
-    </section>
-    <dl className="resource-metrics">{metrics.map(({ label, value, detail }) => <div key={label} title={`${label}: ${value}\n${detail}`}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-  </section>;
-}
-
+/** Displays annotations on a session timeline and opens selected entries for review. */
 function SessionMap({
   meta,
   annotations,
@@ -10255,10 +10199,18 @@ function SessionMap({
   const [selected, setSelected] = useState<{ kind: "annotation"; item: Annotation } | null>(null);
   const inspected = hovered ?? selected;
   const rows: Array<{ id: string; label: string; matches: (annotation: Annotation) => boolean }> = [
-    { id: "session", label: "Entire-session context", matches: (item) => item.track === "context" && annotationGeometry(item) === "session" },
-    { id: "context", label: "Context labels", matches: (item) => item.track === "context" && annotationGeometry(item) !== "session" },
-    { id: "windowed", label: "ePhys window labels", matches: (item) => item.track === "windowed" },
-    { id: "instance", label: "ePhys instance labels", matches: (item) => item.track === "instance" },
+    { id: "session", label: "Entire-session context",
+    /** Checks whether the supplied values satisfy the matching rule. */
+    matches: (item) => item.track === "context" && annotationGeometry(item) === "session" },
+    { id: "context", label: "Context labels",
+    /** Checks whether the supplied values satisfy the matching rule. */
+    matches: (item) => item.track === "context" && annotationGeometry(item) !== "session" },
+    { id: "windowed", label: "ePhys window labels",
+    /** Checks whether the supplied values satisfy the matching rule. */
+    matches: (item) => item.track === "windowed" },
+    { id: "instance", label: "ePhys instance labels",
+    /** Checks whether the supplied values satisfy the matching rule. */
+    matches: (item) => item.track === "instance" },
   ];
   return <div className="modal-backdrop map-backdrop"><div className="session-map-modal" role="dialog" aria-modal="true" aria-label="Session map" tabIndex={-1}>
     <header><div><span className="modal-eyebrow">MODEL-READY SESSION MAP</span><h2>{patientLabel(meta)} <i>/</i> {recordingLabel(meta)}</h2><p>{meta.channelLabels.length} channels · {formatClock(meta.durationSec)} · {primarySampleRate(meta)} Hz</p></div><button onClick={onClose} aria-label="Close session map">×</button></header>

@@ -1,3 +1,9 @@
+/*
+Purpose: Defines matlab display worker client for the NeuroTrace workspace.
+File Dependencies: app/matlab-display-processing.ts, app/matlab-display-worker.ts.
+*/
+
+
 import { filterMatlabDisplayChunk, type MatlabDisplayChunkOptions, type MatlabDisplaySamples } from "./matlab-display-processing.ts";
 
 export interface MatlabDisplayWorkerChunk {
@@ -10,6 +16,7 @@ export interface MatlabDisplayWorkerClient {
   close(): void;
 }
 
+/** Returns the supplied cancellation reason or the operation-specific AbortError. */
 function abortReason(signal?: AbortSignal): unknown {
   return signal?.reason ?? new DOMException("MATLAB display processing was cancelled", "AbortError");
 }
@@ -35,6 +42,7 @@ export function createMatlabDisplayWorkerClient(
   }
   let requestId = 0;
   const pending = new Map<number, { resolve: (data: MatlabDisplaySamples[]) => void; reject: (reason: unknown) => void }>();
+  /** Closes the owned resource. */
   const close = (reason: unknown = abortReason(options.signal)) => {
     if (closed) return;
     closed = true;
@@ -44,6 +52,7 @@ export function createMatlabDisplayWorkerClient(
     for (const request of pending.values()) request.reject(reason);
     pending.clear();
   };
+  /** Cancels the active operation and propagates its cancellation reason. */
   const onAbort = () => close(abortReason(options.signal));
   if (worker) {
     worker.onmessage = (event: MessageEvent<{ id: number; data?: MatlabDisplaySamples[]; error?: string }>) => {
@@ -65,7 +74,9 @@ export function createMatlabDisplayWorkerClient(
   options.signal?.addEventListener("abort", onAbort, { once: true });
   if (options.signal?.aborted) onAbort();
   return {
+    /** Closes the owned resource. */
     close: () => close(),
+    /** Filters channel chunks through the worker or the permitted direct fallback. */
     process(channels) {
       // Module loading can fail while the first file read is still in flight.
       // Preserve that failure for a later process() instead of reporting an
