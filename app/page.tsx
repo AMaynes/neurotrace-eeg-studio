@@ -5043,17 +5043,16 @@ export default function Home() {
     return () => observer.disconnect();
   }, [activeSessionContentView, expandedChannels, hasRecording]);
 
-  const channelRowFromClientY = useCallback((clientY: number, rect: DOMRect, allowGaps = false) => {
+  const channelRowFromClientY = useCallback((clientY: number, rect: DOMRect) => {
     const localY = clientY - rect.top;
-    if (!allowGaps && (localY < CHANNEL_RAIL_HEADER_HEIGHT || localY > rect.height)) return null;
     const geometry = channelPlotGeometry(channelRowLayout, rect.height - CHANNEL_RAIL_HEADER_HEIGHT, expandedChannels, waveformVerticalViewport);
     const scrollTop = expandedChannels ? waveformScrollRef.current?.scrollTop ?? channelScrollOffsetRef.current : 0;
     const plotY = scrollTop + Math.min(rect.height, Math.max(CHANNEL_RAIL_HEADER_HEIGHT, localY)) - CHANNEL_RAIL_HEADER_HEIGHT;
     const unit = geometry.unitForY(plotY);
     const hitRow = channelRowFromFraction(channelRowLayout, unit / channelRowLayout.totalUnits);
-    if (hitRow !== null || !allowGaps) return hitRow;
-    // Box geometry follows the pointer through blank space. The nearest row only
-    // supplies channel context; labels and ordinary channel clicks still need a hit.
+    if (hitRow !== null) return hitRow;
+    // Every part of the recording canvas is interactive. Blank areas use the
+    // nearest channel for sample timing and channel-specific labels.
     let nearestRow: number | null = null;
     let nearestDistance = Infinity;
     channelRowLayout.rowStartUnits.forEach((start, row) => {
@@ -5163,10 +5162,8 @@ export default function Home() {
     clearChannelSelection();
     if (!displayReadoutReady || !display.data.length) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const pointerY = inspectionMode
-      ? clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom)
-      : event.clientY;
-    const row = channelRowFromClientY(pointerY, rect, inspectionMode);
+    const pointerY = clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom);
+    const row = channelRowFromClientY(pointerY, rect);
     if (row === null) return;
     if (playing) setPlaying(false);
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
@@ -5196,10 +5193,8 @@ export default function Home() {
   const onWavePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!pointerRef.current || pointerRef.current.pointerId !== event.pointerId) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const pointerY = inspectionMode
-      ? clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom)
-      : event.clientY;
-    const row = channelRowFromClientY(pointerY, rect, inspectionMode);
+    const pointerY = clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom);
+    const row = channelRowFromClientY(pointerY, rect);
     if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     if (Math.abs(event.clientX - pointerRef.current.startX) > 3
@@ -5240,15 +5235,9 @@ export default function Home() {
     }
     pendingCursorRef.current = null;
     const rect = event.currentTarget.getBoundingClientRect();
-    const pointerY = inspectionMode
-      ? clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom)
-      : event.clientY;
-    const hitRow = channelRowFromClientY(pointerY, rect, inspectionMode);
-    if (hitRow === null && !pointer.moved) {
-      setToast("Click directly on a waveform row");
-      return;
-    }
-    const row = hitRow ?? clamp(focusedChannel, 0, Math.max(0, display.data.length - 1));
+    const pointerY = clamp(event.clientY, rect.top + CHANNEL_RAIL_HEADER_HEIGHT, rect.bottom);
+    const row = channelRowFromClientY(pointerY, rect);
+    if (row === null) return;
     const time = timeFromPointer(event, event.currentTarget, row, event.altKey || inspectionMode);
     setCursorTime(time);
     setCursorLocked(true);
@@ -5311,16 +5300,15 @@ export default function Home() {
     if (!canvas) return;
     const canvasRect = canvas.getBoundingClientRect();
     if (event.clientX < canvasRect.left || event.clientX > canvasRect.right
-      || event.clientY < canvasRect.top + CHANNEL_RAIL_HEADER_HEIGHT
+      || event.clientY < canvasRect.top
       || event.clientY > canvasRect.bottom) {
       setDragGhost(null);
-      setToast("Drop labels directly on a waveform row");
+      setToast("Drop labels in the recording area");
       return;
     }
     const row = channelRowFromClientY(event.clientY, canvasRect);
     if (row === null) {
       setDragGhost(null);
-      setToast("Drop labels on a channel row, not in an anatomical group gap");
       return;
     }
     const time = timeFromPointer(event, canvas, row, event.altKey);
@@ -5345,7 +5333,7 @@ export default function Home() {
     if (labelId && canvas) {
       const canvasRect = canvas.getBoundingClientRect();
       if (event.clientX < canvasRect.left || event.clientX > canvasRect.right
-        || event.clientY < canvasRect.top + CHANNEL_RAIL_HEADER_HEIGHT
+        || event.clientY < canvasRect.top
         || event.clientY > canvasRect.bottom) {
         setDragGhost(null);
         return;
@@ -8642,7 +8630,7 @@ export default function Home() {
                   onDrop={onLabelDrop}
                   onDragLeave={() => setDragGhost(null)}
                 >
-                  <canvas ref={canvasRef} data-tutorial="waveform" tabIndex={0} role="img" aria-busy={loadingSignal || display.processingThroughSec !== undefined} aria-label={inspectionMode ? "Interactive EEG waveform. Drag a box to zoom in. Double-click to restore the previous box zoom." : "Interactive EEG waveform. Click to pin a time or drag to select a labeling window. Double-click to restore the previous box zoom."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} onDoubleClick={restorePreviousWaveformZoom} />
+                  <canvas ref={canvasRef} data-tutorial="waveform" tabIndex={0} role="img" aria-busy={loadingSignal || display.processingThroughSec !== undefined} aria-label={inspectionMode ? "Interactive EEG waveform. Drag a box anywhere in the recording area to zoom in. Double-click to restore the previous box zoom." : "Interactive EEG waveform. Click anywhere to pin a time or drag to select a labeling window. Double-click to restore the previous box zoom."} onPointerDown={onWavePointerDown} onPointerMove={onWavePointerMove} onPointerUp={onWavePointerUp} onPointerCancel={onWavePointerCancel} onDoubleClick={restorePreviousWaveformZoom} />
                   {!inspectionMode && selection && <div className="wave-selection" style={{
                     left: `${((Math.max(viewStart, selection.start) - viewStart) / timebase) * 100}%`,
                     width: `${Math.max(0, ((Math.min(viewStart + timebase, selection.end) - Math.max(viewStart, selection.start)) / timebase) * 100)}%`,

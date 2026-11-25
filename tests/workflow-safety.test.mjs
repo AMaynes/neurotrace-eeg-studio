@@ -205,7 +205,7 @@ test("mixed-rate interaction keeps channel provenance and sample timing", async 
   assert.match(pointer, /snapTime[\s\S]*?visibleStart,[\s\S]*?visibleEnd/);
 
   const drop = section(page, "const onLabelDrop", "useEffect(() => {");
-  assert.match(drop, /clientY\s*<\s*canvasRect\.top\s*\+\s*CHANNEL_RAIL_HEADER_HEIGHT/);
+  assert.match(drop, /clientY\s*<\s*canvasRect\.top/);
   assert.match(drop, /addAnnotation\(label,[\s\S]*?intent,\s*row\)/);
   assert.match(page, /className=\{`canvas-shell[^`]*`\}[\s\S]{0,320}?onDragOver=\{onLabelDragOver\}[\s\S]{0,100}?onDrop=\{onLabelDrop\}/);
   assert.doesNotMatch(page, /className=\{`signal-and-tracks[^>]+onDrop=\{onLabelDrop\}/);

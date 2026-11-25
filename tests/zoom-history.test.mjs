@@ -259,7 +259,7 @@ test("compact group rows, hit tests, scroll, and box zoom share the actual displ
       if (y < 28 || y >= height) continue;
       assert.equal(ui.channelRowFromClientY(rect.top + y, rect), row, "clicking a visible label's baseline hits its own waveform");
     }
-    if (!expanded && height >= 400) assert.equal(ui.channelRowFromClientY(rect.top + 29, rect), null, "outer whitespace cannot select a channel");
+    if (!expanded && height >= 400) assert.equal(ui.channelRowFromClientY(rect.top + 29, rect), 0, "outer whitespace uses the nearest channel");
   }
   const ui = build(900, false);
   const first = ui.channelRailRowStyle(0), last = ui.channelRailRowStyle(2);

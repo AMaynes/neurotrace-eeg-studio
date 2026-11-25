@@ -1003,7 +1003,7 @@ test("aligns waveform rows and pointer hit-testing with the channel rail", async
   assert.match(hit, /geometry\.unitForY\(plotY\)/);
   assert.match(hit, /channelPlotGeometry\(channelRowLayout/);
   assert.match(hit, /rect\.height\s*-\s*CHANNEL_RAIL_HEADER_HEIGHT/);
-  assert.match(page, /const row\s*=\s*channelRowFromClientY\(pointerY,\s*rect,\s*inspectionMode\)/);
+  assert.match(page, /const row\s*=\s*channelRowFromClientY\(pointerY,\s*rect\)/);
 });
 
 test("renders all signal units with a gain-aware clipping halo around out-of-range peaks", async () => {
