@@ -45,7 +45,7 @@ function harness() {
     snapMode: "none", spectrogramOpen: false, spectrogramChannels: [0,1], spectrogramAnchor: 107, anatomicalGroups: true,
     expandedChannels: false, channelGroupGap: 48, waveformVerticalViewport: null, spectrogramFrequencyRange: {min: 0,max: 50}, controlBindings: {},
     hiddenLabelTypes: new Set(), labelKeywords: "sz", labelsVisible: true, queueAcrossSessions: true,
-    enabledEphysLabelIds: new Set(["ictal"]), leftPanelOpen: true, sidebarTab: "view", labelsTab: "create", toolbarTools: ["spectrogram", "gain"], bottomTracksOpen: true,
+    enabledEphysLabelIds: new Set(["ictal"]), leftPanelOpen: true, sidebarTab: "view", infoTab: "window", labelsTab: "create", toolbarTools: ["spectrogram", "gain"], bottomTracksOpen: true,
     labelLibrary: {aliases: [],labels: []}, customTools: [], localStorage: {getItem: () => null},
     recordingSourcePath, serializeRecordingLabels, csvLabelName: () => "Ictal", reviewWorkspaceNames,
     downloadBlob: (name,blob) => downloads.push({name,blob}), setReviewer: id => state.reviewer = id,
@@ -74,6 +74,7 @@ test("one signature downloads exactly CSV and JSON, retaining other opened sessi
   assert.equal(json.recordings[json.position].view.channelGroupGap,48);
   assert.deepEqual(json.settings.toolbarTools,["spectrogram","gain"]);
   assert.equal(json.settings.sidebarTab,"view");
+  assert.equal(json.settings.infoTab,"window");
 });
 test("an invalid reviewing signature downloads nothing", async () => {
   const h = harness(); await h.action("../bad");

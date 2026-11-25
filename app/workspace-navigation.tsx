@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { WORKSPACE_TOOLS, type ToolbarToolId } from "./workspace-layout";
 import "./workspace-navigation.css";
 
-/** Small, keyboard-accessible tabs shared by the sidebar and its label sections. */
+/** Small, keyboard-accessible tabs shared by the sidebar and its subsections. */
 export function WorkspaceTabs<T extends string>({ id, label, tabs, value, onChange, numbered = false }: {
   id: string; label: string; tabs: readonly { id: T; label: string }[]; value: T; onChange: (value: T) => void;
   numbered?: boolean;

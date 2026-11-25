@@ -70,7 +70,7 @@ import { directoryReviewCache, indexReviewRows, isReviewCsv, loadDirectoryReview
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
 import { SessionTabTitle } from "./session-tab-title";
 import { WorkspaceTabs, ToolbarCustomizer } from "./workspace-navigation";
-import { WORKSPACE_TABS, LABEL_TABS, VIEW_TOOL_SECTIONS, WORKSPACE_TOOLS, isLabelToolbarTool, normalizeWorkspaceLayout, type WorkspaceTab, type LabelTab, type ToolbarToolId, type WorkspaceToolId } from "./workspace-layout";
+import { WORKSPACE_TABS, INFO_TABS, LABEL_TABS, VIEW_TOOL_SECTIONS, WORKSPACE_TOOLS, isLabelToolbarTool, normalizeWorkspaceLayout, type WorkspaceTab, type InfoTab, type LabelTab, type ToolbarToolId, type WorkspaceToolId } from "./workspace-layout";
 import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "./import-selection";
 import { scanDirectoryEvents, findNextDirectoryEvent, nextTimedEvent } from "./directory-event-client";
 import type { DirectoryTimedEvent } from "./directory-event-index";
@@ -2122,6 +2122,7 @@ export default function Home() {
   const [projectSaveError, setProjectSaveError] = useState("");
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<WorkspaceTab>("labels");
+  const [infoTab, setInfoTab] = useState<InfoTab>("files");
   const [labelsTab, setLabelsTab] = useState<LabelTab>("events");
   const [toolbarTools, setToolbarTools] = useState<ToolbarToolId[]>([]);
   const [layoutPreferencesReady, setLayoutPreferencesReady] = useState(false);
@@ -2129,7 +2130,7 @@ export default function Home() {
     const frame = window.requestAnimationFrame(() => {
       try {
         const layout = normalizeWorkspaceLayout(JSON.parse(localStorage.getItem("neurotrace:workspace-layout") || "{}"));
-        setSidebarTab(layout.sidebarTab); setLabelsTab(layout.labelsTab); setToolbarTools(layout.toolbarTools);
+        setSidebarTab(layout.sidebarTab); setInfoTab(layout.infoTab); setLabelsTab(layout.labelsTab); setToolbarTools(layout.toolbarTools);
       } catch { /* Defaults work when local preferences are unavailable. */ }
       setLayoutPreferencesReady(true);
     });
@@ -2137,9 +2138,9 @@ export default function Home() {
   }, []);
   useEffect(() => {
     if (!layoutPreferencesReady) return;
-    try { localStorage.setItem("neurotrace:workspace-layout", JSON.stringify({ sidebarTab, labelsTab, toolbarTools })); }
+    try { localStorage.setItem("neurotrace:workspace-layout", JSON.stringify({ sidebarTab, infoTab, labelsTab, toolbarTools })); }
     catch { /* Preference storage does not affect recording review. */ }
-  }, [layoutPreferencesReady, sidebarTab, labelsTab, toolbarTools]);
+  }, [layoutPreferencesReady, sidebarTab, infoTab, labelsTab, toolbarTools]);
   const [bottomTracksOpen, setBottomTracksOpen] = useState(true);
   const [contextTrackHeightOverride, setContextTrackHeightOverride] = useState<number | null>(null);
   const [pendingDat, setPendingDat] = useState<File | null>(null);
@@ -2508,7 +2509,7 @@ export default function Home() {
         managed.settings = {
           folderName: primaryFile?.webkitRelativePath?.split("/")[0] || meta.name,
           controlBindings, hiddenLabelTypes: [...hiddenLabelTypes], labelKeywords, labelsVisible,
-          queueAcrossSessions, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, sidebarTab, labelsTab, toolbarTools, bottomTracksOpen,
+          queueAcrossSessions, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, sidebarTab, infoTab, labelsTab, toolbarTools, bottomTracksOpen,
         };
         setReviewAutosaveStatus("saving");
         const task = persistReviewWorkspace(managed);
@@ -2538,7 +2539,7 @@ export default function Home() {
     setSessionTabs((current) => current.map((tab) => tab.id === activeSessionId
       ? { ...tab, hasRecording: snapshot.hasRecording, recoveryStatus: snapshot.recoveryStatus }
       : tab));
-  }, [activeCandidate, activeSessionId, anatomicalGroups, bottomTracksOpen, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, queueAcrossSessions, enabledEphysLabelIds, expandedChannels, channelGroupGap, channelFitRestore, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, sidebarTab, labelsTab, toolbarTools, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
+  }, [activeCandidate, activeSessionId, anatomicalGroups, bottomTracksOpen, channelSelectionActive, companionBundle, controlBindings, cursorAmplitude, cursorLocked, cursorTime, customTools, queueAcrossSessions, enabledEphysLabelIds, expandedChannels, channelGroupGap, channelFitRestore, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, meta, montage, primaryFile, rawSourceHash, recoveryStatus, reviewer, reviewViewArrival, sidebarTab, infoTab, labelsTab, toolbarTools, selectedAnnotationId, selectedChannels, selection, sessionKey, sessionTabs, snapMode, sourceHash, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramOpen, spectrogramFrequencyRange, timebase, traceDisplayMode, uploadedFileInputs, viewStart, waveformVerticalViewport]);
 
   useLayoutEffect(() => {
     flushSessionRef.current = storeActiveSession;
@@ -2561,7 +2562,7 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [activeReviewIdentity, activeCandidate, annotations, anatomicalGroups, bottomTracksOpen, candidates, channelSelectionActive, controlBindings, cursorLocked, cursorTime,
     customTools, queueAcrossSessions, enabledEphysLabelIds, expandedChannels, channelGroupGap, channelFitRestore, filters, focusedChannel, gain, hasRecording, hiddenLabelTypes, importBusy,
-    labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, montage, playing, reviewViewArrival, sidebarTab, labelsTab, toolbarTools, selectedAnnotationId, selectedChannels,
+    labelKeywords, labelLibrary, labelsVisible, leftPanelOpen, montage, playing, reviewViewArrival, sidebarTab, infoTab, labelsTab, toolbarTools, selectedAnnotationId, selectedChannels,
     selection, sessionKey, snapMode, sourceInterpretation, spectrogramAnchor, spectrogramChannels, spectrogramFrequencyRange, spectrogramOpen, timebase,
     traceDisplayMode, verifyingSource, viewStart, waveformVerticalViewport]);
 
@@ -6441,7 +6442,7 @@ export default function Home() {
           setToast(`${files.length} file${files.length === 1 ? "" : "s"} added · ${bundle.files.filter((file) => file.status === "applied").length} companions applied · ${bundle.events.length} BIDS events found`);
         } else {
           setToast(`${files.length} file${files.length === 1 ? "" : "s"} catalogued · add a supported EDF, MAT, or DAT recording to attach the metadata`);
-          setSidebarTab("files");
+          setSidebarTab("info"); setInfoTab("files");
           setLeftPanelOpen(true);
         }
         setShowImport(false);
@@ -7086,9 +7087,9 @@ export default function Home() {
     setLabelsVisible(settings.labelsVisible !== false);
     if (Array.isArray(settings.enabledEphysLabelIds)) setEnabledEphysLabelIds(new Set(textList(settings.enabledEphysLabelIds)));
     if (typeof settings.leftPanelOpen === "boolean") setLeftPanelOpen(settings.leftPanelOpen);
-    if ("sidebarTab" in settings || "labelsTab" in settings || "toolbarTools" in settings || "rightPanelView" in settings) {
+    if ("sidebarTab" in settings || "infoTab" in settings || "labelsTab" in settings || "toolbarTools" in settings || "rightPanelView" in settings) {
       const layout = normalizeWorkspaceLayout(settings);
-      setSidebarTab(layout.sidebarTab);
+      setSidebarTab(layout.sidebarTab); setInfoTab(layout.infoTab);
       setLabelsTab(layout.labelsTab);
       setToolbarTools(layout.toolbarTools);
     }
@@ -7290,7 +7291,7 @@ export default function Home() {
             channelScrollTop: snapshot.channelScrollTop, waveformVerticalViewport, spectrogramFrequencyRange },
         };
         review.settings = { controlBindings, hiddenLabelTypes: [...hiddenLabelTypes], labelKeywords, labelsVisible,
-          queueAcrossSessions, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, sidebarTab, labelsTab, toolbarTools, bottomTracksOpen };
+          queueAcrossSessions, enabledEphysLabelIds: [...enabledEphysLabelIds], leftPanelOpen, sidebarTab, infoTab, labelsTab, toolbarTools, bottomTracksOpen };
         review.library = labelLibrary;
         review.customTools = customTools;
       }
@@ -7752,7 +7753,8 @@ export default function Home() {
   const gridDivisions = timebase <= 30 ? Math.max(2, Math.ceil(timebase / 5)) : 10;
   const selectSidebarTool = (view: "labels" | "inspect") => {
     setLeftPanelOpen(true);
-    setSidebarTab(view === "inspect" ? "window" : "labels");
+    setSidebarTab(view === "inspect" ? "info" : "labels");
+    if (view === "inspect") setInfoTab("window");
     if (view === "labels") setLabelsTab("create");
     if (view === "inspect") {
       setToast(inspectionRange || selection || channelSelectionActive
@@ -8062,93 +8064,98 @@ export default function Home() {
             <button className="sidebar-mobile-close" aria-label="Hide workspace sidebar" onClick={() => setLeftPanelOpen(false)}>‹</button>
           </div>
           <div className="workspace-sidebar-body" role="tabpanel" id={`workspace-panel-${sidebarTab}`} aria-labelledby={`workspace-tab-${sidebarTab}`}>
-            {sidebarTab === "files" && <div className="sidebar-pane-stack compact-info-stack" data-pane-layout="folder-file">
-              <section className="sidebar-pane" aria-label="Folder info">
-                <header className="sidebar-pane-heading"><h2>Folder info</h2></header>
-                <div className="sidebar-pane-content">
-                  {directoryCatalog ? <>
-                    <dl className="sidebar-info-grid">
-                      <div className="info-wide"><dt>Folder</dt><dd title={directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label}>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</dd></div>
-                      <div><dt>Recordings</dt><dd>{directoryCatalog.plan.recordings.length}</dd></div>
-                      <div><dt>Open files</dt><dd>{sessionTabs.filter(tab => tab.directoryId === directoryCatalog.id).length}</dd></div>
-                      <div><dt>File type</dt><dd>{directoryCatalog.plan.format.toUpperCase()}</dd></div>
-                      <div><dt>Reviewer</dt><dd title={directoryCatalog.review?.reviewerId || reviewer || "—"}>{directoryCatalog.review?.reviewerId || reviewer || "—"}</dd></div>
-                    </dl>
-                    <button className="button secondary folder-files-button" onClick={() => setShowDirectorySessions(true)}>Open Loaded Folder</button>
-                  </> : <p className="sidebar-empty-message">{hasRecording ? "Individual file loaded. No folder selected." : "No folder selected."}</p>}
-                </div>
-              </section>
-              <section className="sidebar-pane" aria-label="File info">
-                <header className="sidebar-pane-heading"><h2>File info</h2></header>
-                <div className="sidebar-pane-content">
-                  <dl className="sidebar-info-grid">
-                    <div className="info-wide"><dt>File name</dt><dd title={meta.name}>{hasRecording ? meta.name : "—"}</dd></div>
-                    <div className="info-wide"><dt>File path</dt><dd title={primaryFile ? relativeFilePath(primaryFile) : undefined}>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
-                    <div><dt>Format</dt><dd>{hasRecording ? meta.format.toUpperCase() : "—"}</dd></div>
-                    <div><dt>Size</dt><dd>{hasRecording ? formatByteCount(primaryFile?.size ?? meta.byteLength ?? 0) : "—"}</dd></div>
-                  </dl>
-                  <dl className="sidebar-info-grid" aria-label="Recording details">
-                    <div><dt>Channels</dt><dd>{hasRecording ? meta.channelLabels.length : "—"}</dd></div>
-                    <div><dt>Sample rate</dt><dd>{hasRecording ? `${primarySampleRate(meta)} Hz` : "—"}</dd></div>
-                    <div><dt>Type</dt><dd>{hasRecording ? recordingType : "—"}</dd></div>
-                    <div><dt>Duration</dt><dd>{hasRecording ? formatClock(meta.durationSec, true) : "—"}</dd></div>
-                    <div><dt>Detected labels</dt><dd>{annotations.filter(item => item.recordingLabel).length}</dd></div>
-                    <div><dt>Created labels</dt><dd>{annotations.filter(item => !item.recordingLabel).length}</dd></div>
-                    <div><dt>Total labels</dt><dd>{annotations.length}</dd></div>
-                    <div><dt>Signal values</dt><dd>{hasRecording ? meta.sampleRates.reduce((count, rate) => count + Math.round(rate * meta.durationSec), 0).toLocaleString() : "—"}</dd></div>
-                  </dl>
-                  <dl className="sidebar-info-grid" aria-label="Display and file access">
-                    <div className="info-wide"><dt>Montage</dt><dd title={montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
-                    <div className="info-wide"><dt>Filters</dt><dd title={filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
-                    <div className="info-wide"><dt>Access</dt><dd title={sourceReadProfile(meta.format, hasRecording).access}>{sourceReadProfile(meta.format, hasRecording).access}</dd></div>
-                  </dl>
-                  <UploadedFilesPanel bundle={companionBundle} compact />
-                </div>
-              </section>
-            </div>}
-            {sidebarTab === "window" && <div className="sidebar-pane-stack compact-info-stack" data-pane-layout="window-performance" data-tutorial="window-info">
-              <section className="sidebar-pane" aria-label="Window info">
-                <header className="sidebar-pane-heading"><h2>Window info</h2></header>
-                <div className="sidebar-pane-content">
-                  <dl className="sidebar-info-grid">
-                    <div><dt>Start</dt><dd>{formatClock(viewStart, true)}</dd></div>
-                    <div><dt>End</dt><dd>{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
-                    <div><dt>Duration</dt><dd>{timebase.toLocaleString()} s</dd></div>
-                    <div><dt>Curr. RAM Usage</dt><dd>{formatByteCount(activeDisplayVisibleBytes)}</dd></div>
-                    <div className="info-wide"><dt>Signal status</dt><dd>{verifyingSource ? "Opening recording" : loadingSignal || display.processingThroughSec !== undefined ? "Loading…" : display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase ? "Partially loaded" : display.data.length ? "Loaded" : "No data loaded"}</dd></div>
-                  </dl>
-                  <GeneralInfoPanel
-                    meta={meta}
-                    display={display}
-                    annotations={displayAnnotations}
-                    focusedChannel={focusedChannel}
-                    cursorTime={cursorTime}
-                    cursorReadout={cursorReadout}
-                    inspectionRange={inspectionRange}
-                    selection={selection}
-                    channelSelectionActive={channelSelectionActive}
-                    timebase={timebase}
-                    hasRecording={hasRecording}
-                  />
-                </div>
-              </section>
-              <section className="sidebar-pane pane-performance" aria-label="Performance and loading info">
-                <header className="sidebar-pane-heading"><h2>Performance &amp; loading info</h2></header>
-                <div className="sidebar-pane-content">
-                  <ResourceUsagePanel
-                    meta={meta}
-                    hasRecording={hasRecording}
-                    verifyingSource={verifyingSource}
-                    loadingSignal={loadingSignal}
+            {sidebarTab === "info" && <div className="info-workspace">
+              <WorkspaceTabs label="Info sections" id="info" tabs={INFO_TABS} value={infoTab} onChange={setInfoTab} />
+              <div className="info-tab-body" role="tabpanel" id={`info-panel-${infoTab}`} aria-labelledby={`info-tab-${infoTab}`}>
+                {infoTab === "files" && <div className="sidebar-pane-stack compact-info-stack" data-pane-layout="folder-file">
+                  <section className="sidebar-pane" aria-label="Folder info">
+                    <header className="sidebar-pane-heading"><h2>Folder info</h2></header>
+                    <div className="sidebar-pane-content">
+                      {directoryCatalog ? <>
+                        <dl className="sidebar-info-grid">
+                          <div className="info-wide"><dt>Folder</dt><dd title={directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label}>{directoryHeaders.find(group => group.catalogId === directoryCatalog.id)?.label || "Loaded folder"}</dd></div>
+                          <div><dt>Recordings</dt><dd>{directoryCatalog.plan.recordings.length}</dd></div>
+                          <div><dt>Open files</dt><dd>{sessionTabs.filter(tab => tab.directoryId === directoryCatalog.id).length}</dd></div>
+                          <div><dt>File type</dt><dd>{directoryCatalog.plan.format.toUpperCase()}</dd></div>
+                          <div><dt>Reviewer</dt><dd title={directoryCatalog.review?.reviewerId || reviewer || "—"}>{directoryCatalog.review?.reviewerId || reviewer || "—"}</dd></div>
+                        </dl>
+                        <button className="button secondary folder-files-button" onClick={() => setShowDirectorySessions(true)}>Open Loaded Folder</button>
+                      </> : <p className="sidebar-empty-message">{hasRecording ? "Individual file loaded. No folder selected." : "No folder selected."}</p>}
+                    </div>
+                  </section>
+                  <section className="sidebar-pane" aria-label="File info">
+                    <header className="sidebar-pane-heading"><h2>File info</h2></header>
+                    <div className="sidebar-pane-content">
+                      <dl className="sidebar-info-grid">
+                        <div className="info-wide"><dt>File name</dt><dd title={meta.name}>{hasRecording ? meta.name : "—"}</dd></div>
+                        <div className="info-wide"><dt>File path</dt><dd title={primaryFile ? relativeFilePath(primaryFile) : undefined}>{primaryFile ? relativeFilePath(primaryFile) : "—"}</dd></div>
+                        <div><dt>Format</dt><dd>{hasRecording ? meta.format.toUpperCase() : "—"}</dd></div>
+                        <div><dt>Size</dt><dd>{hasRecording ? formatByteCount(primaryFile?.size ?? meta.byteLength ?? 0) : "—"}</dd></div>
+                      </dl>
+                      <dl className="sidebar-info-grid" aria-label="Recording details">
+                        <div><dt>Channels</dt><dd>{hasRecording ? meta.channelLabels.length : "—"}</dd></div>
+                        <div><dt>Sample rate</dt><dd>{hasRecording ? `${primarySampleRate(meta)} Hz` : "—"}</dd></div>
+                        <div><dt>Type</dt><dd>{hasRecording ? recordingType : "—"}</dd></div>
+                        <div><dt>Duration</dt><dd>{hasRecording ? formatClock(meta.durationSec, true) : "—"}</dd></div>
+                        <div><dt>Detected labels</dt><dd>{annotations.filter(item => item.recordingLabel).length}</dd></div>
+                        <div><dt>Created labels</dt><dd>{annotations.filter(item => !item.recordingLabel).length}</dd></div>
+                        <div><dt>Total labels</dt><dd>{annotations.length}</dd></div>
+                        <div><dt>Signal values</dt><dd>{hasRecording ? meta.sampleRates.reduce((count, rate) => count + Math.round(rate * meta.durationSec), 0).toLocaleString() : "—"}</dd></div>
+                      </dl>
+                      <dl className="sidebar-info-grid" aria-label="Display and file access">
+                        <div className="info-wide"><dt>Montage</dt><dd title={montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}>{montage === "referential" ? "Recorded reference" : montage === "average" ? "Average reference" : bipolarMontageLabel(meta.channelLabels)}</dd></div>
+                        <div className="info-wide"><dt>Filters</dt><dd title={filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}>{filters.enabled ? `${filters.highPassHz}–${filters.lowPassHz} Hz · ${filters.notchHz || "No"} notch` : "MATLAB display processing"}</dd></div>
+                        <div className="info-wide"><dt>Access</dt><dd title={sourceReadProfile(meta.format, hasRecording).access}>{sourceReadProfile(meta.format, hasRecording).access}</dd></div>
+                      </dl>
+                      <UploadedFilesPanel bundle={companionBundle} compact />
+                    </div>
+                  </section>
+                </div>}
+                {infoTab === "window" && <div className="sidebar-pane-stack compact-info-stack" data-pane-layout="window-performance" data-tutorial="window-info">
+                  <section className="sidebar-pane" aria-label="Window info">
+                    <header className="sidebar-pane-heading"><h2>Window info</h2></header>
+                    <div className="sidebar-pane-content">
+                      <dl className="sidebar-info-grid">
+                        <div><dt>Start</dt><dd>{formatClock(viewStart, true)}</dd></div>
+                        <div><dt>End</dt><dd>{formatClock(Math.min(meta.durationSec, viewStart + timebase), true)}</dd></div>
+                        <div><dt>Duration</dt><dd>{timebase.toLocaleString()} s</dd></div>
+                        <div><dt>Curr. RAM Usage</dt><dd>{formatByteCount(activeDisplayVisibleBytes)}</dd></div>
+                        <div className="info-wide"><dt>Signal status</dt><dd>{verifyingSource ? "Opening recording" : loadingSignal || display.processingThroughSec !== undefined ? "Loading…" : display.unreadAfterSec !== undefined && display.unreadAfterSec < viewStart + timebase ? "Partially loaded" : display.data.length ? "Loaded" : "No data loaded"}</dd></div>
+                      </dl>
+                      <GeneralInfoPanel
+                        meta={meta}
+                        display={display}
+                        annotations={displayAnnotations}
+                        focusedChannel={focusedChannel}
+                        cursorTime={cursorTime}
+                        cursorReadout={cursorReadout}
+                        inspectionRange={inspectionRange}
+                        selection={selection}
+                        channelSelectionActive={channelSelectionActive}
+                        timebase={timebase}
+                        hasRecording={hasRecording}
+                      />
+                    </div>
+                  </section>
+                  <section className="sidebar-pane pane-performance" aria-label="Performance and loading info">
+                    <header className="sidebar-pane-heading"><h2>Performance &amp; loading info</h2></header>
+                    <div className="sidebar-pane-content">
+                      <ResourceUsagePanel
+                        meta={meta}
+                        hasRecording={hasRecording}
+                        verifyingSource={verifyingSource}
+                        loadingSignal={loadingSignal}
 
-                    recoveryStatus={recoveryStatus}
+                        recoveryStatus={recoveryStatus}
 
-                    activeDisplayBytes={activeDisplayBytes}
-                    activeDisplayVisibleBytes={activeDisplayVisibleBytes}
-                    readCacheUsage={readResourceCacheUsage}
-                  />
-                </div>
-              </section>
+                        activeDisplayBytes={activeDisplayBytes}
+                        activeDisplayVisibleBytes={activeDisplayVisibleBytes}
+                        readCacheUsage={readResourceCacheUsage}
+                      />
+                    </div>
+                  </section>
+                </div>}
+              </div>
             </div>}
             {sidebarTab === "view" && <div className="sidebar-pane-stack view-pane-stack" data-pane-layout="view-tools">
               <section className="sidebar-pane" aria-label="All viewing tools" data-tutorial="view-tools">
@@ -9069,9 +9076,9 @@ export default function Home() {
           } else if (area === "view-panel") {
             setLeftPanelOpen(true); setSidebarTab("view");
           } else if (area === "window-panel") {
-            setLeftPanelOpen(true); setSidebarTab("window");
+            setLeftPanelOpen(true); setSidebarTab("info"); setInfoTab("window");
           } else if (area === "file-panel") {
-            setLeftPanelOpen(true); setSidebarTab("files");
+            setLeftPanelOpen(true); setSidebarTab("info"); setInfoTab("files");
           } else if (area === "label-panel") selectSidebarTool("labels");
           else if (area === "label-tracks") setBottomTracksOpen(true);
           else if (area === "spectrogram" && hasRecording) setSpectrogramOpen(true);

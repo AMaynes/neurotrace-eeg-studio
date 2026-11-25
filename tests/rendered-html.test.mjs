@@ -40,7 +40,8 @@ test("renders the NeuroTrace clinical EEG workspace", async () => {
   assert.match(html, /NEUROTRACE/);
   assert.match(html, /Clinical EEG Studio/);
   assert.match(html, /Workspace sections/);
-  assert.match(html, /Folder\/File Info/);
+  assert.match(html, /id="workspace-tab-info"[^>]*>Info<\/button>/);
+  assert.doesNotMatch(html, /Folder\/File Info|Window Info/);
   assert.match(html, /Label sections/);
   assert.match(html, /Window \/ Instance/);
   assert.match(html, /Instance Queue/);
@@ -630,7 +631,7 @@ test("keeps box zoom in the toolbar while General Info follows the current wavef
   ]);
 
   assert.match(page, /useState<WorkspaceTab>\("labels"\)/);
-  assert.match(page, /sidebarTab === "window"[^]*?<GeneralInfoPanel/);
+  assert.match(page, /infoTab === "window"[^]*?<GeneralInfoPanel/);
   assert.match(page, /const \[boxZoomActive, setBoxZoomActive\] = useState\(false\)/);
   assert.match(page, /const inspectionMode = boxZoomActive/);
   const boxZoomButton = page.indexOf('className={`tool-button box-zoom-button');
@@ -702,7 +703,7 @@ test("places live resource usage in Window and compact utilities at the bottom r
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  const windowStart = page.indexOf('{sidebarTab === "window"');
+  const windowStart = page.indexOf('{infoTab === "window"');
   const windowPanel = page.slice(windowStart, page.indexOf('{sidebarTab === "view"', windowStart));
   assert.match(windowPanel, /<ResourceUsagePanel/);
   assert.match(windowPanel, /<GeneralInfoPanel/);
