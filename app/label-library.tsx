@@ -13,7 +13,7 @@ export function LabelLibraryEditor({ library, types, onChange, onClose }: {
   const currentAlias = library.aliases.find((item) => item.key === key);
   const [editing, setEditing] = useState<DictionaryLabel | null>(null);
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className="modal label-library-modal" role="dialog" aria-modal="true" aria-label="Label library" tabIndex={-1}>
+    <div className="modal label-library-modal" data-tutorial="label-library-dialog" role="dialog" aria-modal="true" aria-label="Label library" tabIndex={-1}>
       <button type="button" className="modal-close" onClick={onClose} aria-label="Close label library">×</button>
       <h2>Label library</h2>
       <p>Give detected labels clearer names and descriptions, or create reusable labels for the palette.</p>

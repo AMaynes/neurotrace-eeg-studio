@@ -12,7 +12,7 @@ import { subscribeTutorialActions } from "../app/tutorial-events.ts";
 const componentSource = await readFile(new URL("../app/tutorial-center.tsx", import.meta.url), "utf8");
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const directorySessions = await readFile(new URL("../app/directory-sessions.tsx", import.meta.url), "utf8");
-const extraSurfaces = (await Promise.all(["queue-label-dictionary.tsx", "directory-import-filters.tsx"].map(name => readFile(new URL(`../app/${name}`, import.meta.url), "utf8")))).join("\n");
+const extraSurfaces = (await Promise.all(["queue-label-dictionary.tsx", "directory-import-filters.tsx", "label-library.tsx"].map(name => readFile(new URL(`../app/${name}`, import.meta.url), "utf8")))).join("\n");
 const syntax = ts.createSourceFile("tutorial-center.tsx", componentSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = syntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "TutorialCenter");
 assert.ok(component);
@@ -150,6 +150,7 @@ test("every tutorial topic has unique lessons, valid steps, and real workspace a
       assert.ok(anchors.has(step.target), `${lesson.id}: ${step.target} exists`);
       if (step.fallback) assert.ok(anchors.has(step.fallback));
       if (step.readyTarget) assert.ok(anchors.has(step.readyTarget));
+      if (step.dialogTarget) assert.ok(anchors.has(step.dialogTarget));
       assert.ok(step.instruction && step.unavailable);
     }
   }
@@ -307,6 +308,41 @@ test("an already open target does not offer a redundant Do it for me button", ()
   ui.click("Do it for me");
   assert.deepEqual(ui.actions, ["assist:open-import"]);
   assert.match(ui.markup(), /STEP 2 OF 4/);
+  ui.dispose();
+});
+
+test("tutorial navigation embedded in a save form never submits that form", () => {
+  const ui = harness({ topic: "save" });
+  ui.click("Start walkthrough →");
+  ui.emit("save-opened");
+  ui.surface.dialogName = "Save review";
+  ui.surface.host = { querySelector: () => ({ focus() {} }) };
+  ui.render();
+  for (const button of nodes(ui.coach()).filter(node => node.type === "button")) {
+    assert.equal(button.props.type, "button", `${text(button) || button.props["aria-label"]} must not submit the host form`);
+  }
+  ui.click("Next →");
+  assert.match(ui.markup(), /Download both files/);
+  assert.doesNotMatch(ui.markup(), /WALKTHROUGH COMPLETE/);
+  assert.deepEqual(ui.actions, [], "Next does not save or change the workspace");
+  ui.emit("annotations-saved");
+  assert.match(ui.markup(), /WALKTHROUGH COMPLETE/);
+  assert.equal(ui.button("Done").props.type, "button");
+  ui.dispose();
+});
+
+test("opening the directory list keeps its filter and navigation instructions visible", () => {
+  const ui = harness({ topic: "directories" });
+  const lesson = catalog.tutorialLessons.find(lesson => lesson.id === "directory-navigation");
+  ui.find(node => node.type === "button" && text(node).startsWith(lesson.title)).props.onClick();
+  ui.render(); ui.click("Start walkthrough →");
+  for (let index = 0; index < 4; index++) ui.click("Next →");
+  ui.surface.ready = true;
+  ui.surface.dialogName = "Directory sessions";
+  ui.surface.host = { querySelector: () => ({ focus() {} }) };
+  ui.render();
+  assert.ok(ui.markup().includes(lesson.steps[4].instruction));
+  assert.doesNotMatch(ui.markup(), /Close Directory sessions to continue/);
   ui.dispose();
 });
 

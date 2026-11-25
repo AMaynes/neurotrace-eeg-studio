@@ -79,13 +79,13 @@ const centerSyntax = ts.createSourceFile("tutorial-center.tsx", centerSource, ts
 const measurement = centerSyntax.statements.filter((node) => ts.isFunctionDeclaration(node) && ["visibleTargetRect", "sameSurface", "useTourSurface"].includes(node.name?.text));
 const compiledMeasurement = ts.transpileModule(measurement.map((node) => node.getText(centerSyntax)).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
-function measurementHarness(dialogOptions = null) {
+function measurementHarness(dialogOptions = null, step = null) {
   let current = null; let cleanup; let scheduled = 0;
   const frames = new Map();
   const rect = { left: 100, top: 80, width: 200, height: 100 };
   const body = { parentElement: null, getBoundingClientRect: () => ({ left: 0, top: 0, right: 1280, bottom: 720 }) };
   const target = { parentElement: body, getClientRects: () => [rect], getBoundingClientRect: () => ({ ...rect, right: rect.left + rect.width, bottom: rect.top + rect.height }) };
-  const dialog = dialogOptions && { ...target, dataset: { tutorial: "directory-list" }, querySelector: () => null, getAttribute: (name) => dialogOptions[name] ?? null };
+  const dialog = dialogOptions && { ...target, dataset: { tutorial: dialogOptions["data-tutorial"] ?? "directory-list" }, querySelector: () => null, getAttribute: (name) => dialogOptions[name] ?? null };
   const doc = Object.assign(new EventTarget(), { body, querySelectorAll: () => dialog ? [dialog] : [], querySelector: () => target,
     getElementById: (id) => id === "directory-heading" ? { textContent: "Directory sessions" } : null });
   const win = Object.assign(new EventTarget(), { innerWidth: 1280, innerHeight: 720 });
@@ -101,7 +101,7 @@ function measurementHarness(dialogOptions = null) {
     cancelAnimationFrame: (id) => frames.delete(id),
   };
   const hook = new Function(...Object.keys(scope), `${compiledMeasurement}\nreturn useTourSurface;`)(...Object.values(scope));
-  hook(dialog ? { target: "import-open", readyTarget: "directory-list" } : { target: "import" }, true);
+  hook(step ?? (dialog ? { target: "import-open", readyTarget: "directory-list" } : { target: "import" }), true);
   const flush = () => { const tasks = [...frames.values()]; frames.clear(); tasks.forEach((task) => task()); };
   return { rect, doc, frames, observers, flush, cleanup: () => cleanup(), surface: () => current };
 }
@@ -146,6 +146,18 @@ test("measurement distinguishes clipped controls from absent controls", () => {
   ui.doc.dispatchEvent(new Event("transitionend")); ui.flush();
   assert.notEqual(ui.surface().rect, null);
   assert.equal(ui.surface().offscreen, false);
+  ui.cleanup();
+});
+
+test("workflow dialogs highlight the active form without treating the step as finished", () => {
+  const ui = measurementHarness({ "aria-label": "Confidence for Ictal", "data-tutorial": "label-confidence" }, {
+    target: "ephys-palette", dialogTarget: "label-confidence",
+  });
+  ui.flush();
+  assert.equal(ui.surface().dialogName, "Confidence for Ictal");
+  assert.notEqual(ui.surface().rect, null);
+  assert.equal(ui.surface().fallback, false);
+  assert.equal(ui.surface().ready, false, "entering confidence still requires the user's confirmation");
   ui.cleanup();
 });
 

@@ -84,7 +84,7 @@ function useTourSurface(step: TutorialStep | undefined, active: boolean) {
         : null;
       const readyTarget = find(step?.readyTarget);
       const readyRect = readyTarget ? visibleTargetRect(readyTarget) : null;
-      const target = find(step?.target);
+      const target = (dialog ? find(step?.dialogTarget) : null) ?? find(step?.target);
       const fallback = !target ? find(step?.fallback) : null;
       const element = readyRect ? readyTarget : target ?? fallback;
       if (element !== observed) {
@@ -235,16 +235,16 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
   return <>
     {open && <div className="modal-backdrop tutorial-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="modal tutorial-hub" role="dialog" aria-modal="true" aria-label="Help" aria-labelledby="tutorial-title" tabIndex={-1}>
-        <button className="modal-close" onClick={onClose} aria-label="Close Help">×</button>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Close Help">×</button>
         <header className="tutorial-header">
           <span className="modal-eyebrow">NEUROTRACE / LEARN BY DOING</span>
           <h2 id="tutorial-title">What would you like to do?</h2>
           <p>Pick a lesson. Follow it step by step in your workspace, at your own pace.</p>
           <span className="tutorial-session-progress">{completed.size} / {tutorialLessons.length} walkthroughs completed this visit</span>
-          {tour && <button className="tutorial-resume" onClick={onClose}>Resume: {activeLesson?.title} →</button>}
+          {tour && <button type="button" className="tutorial-resume" onClick={onClose}>Resume: {activeLesson?.title} →</button>}
         </header>
         <div className="tutorial-tabs" data-shortcut-scope="tutorialTabs" role="tablist" aria-label="Tutorial topics">
-          {tutorialTopics.map((item, index) => <button
+          {tutorialTopics.map((item, index) => <button type="button"
             key={item.id} id={`tutorial-tab-${item.id}`} role="tab" aria-selected={topic === item.id}
             aria-controls="tutorial-topic-panel" tabIndex={topic === item.id ? 0 : -1}
             onClick={() => onTopicChange(item.id)}
@@ -262,7 +262,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
         <div className="tutorial-topic-panel" id="tutorial-topic-panel" role="tabpanel" aria-labelledby={`tutorial-tab-${topic}`}>
           <nav className="tutorial-lesson-list" aria-label="Lessons">
             <span className="tutorial-section-label">CHOOSE A WALKTHROUGH</span>
-            {lessons.map((lesson) => <button key={lesson.id} aria-pressed={selected.id === lesson.id} onClick={() => setSelectedId(lesson.id)}>
+            {lessons.map((lesson) => <button type="button" key={lesson.id} aria-pressed={selected.id === lesson.id} onClick={() => setSelectedId(lesson.id)}>
               <span className="tutorial-lesson-heading"><strong>{lesson.title}</strong>{completed.has(lesson.id) && <span aria-label="Walkthrough completed">✓</span>}</span>
               <span>{lesson.description}</span>
               <small>{lesson.steps.length} steps · About {lesson.duration}</small>
@@ -273,7 +273,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
             <h3>{selected.title}</h3>
             <p>{selected.description}</p>
             <ol className="tutorial-step-list" aria-label="Preview lesson steps">
-              {selected.steps.map((step, index) => <li key={step.title}><button
+              {selected.steps.map((step, index) => <li key={step.title}><button type="button"
                 aria-current={index === previewIndex ? "step" : undefined}
                 onClick={() => setPreview({ lessonId: selected.id, index })}
               ><span>{index + 1}</span>{step.title}</button></li>)}
@@ -288,7 +288,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
         <footer className="tutorial-footer">
           <div><p>Steps advance when you complete the action. “Do it for me” can open tools or adjust the view. You choose files, labels, and final saves. Workspace actions are real.</p>
             {blockReason && <p className="tutorial-prerequisite" role="status">{blockReason}</p>}</div>
-          <button className="button primary tutorial-start" disabled={Boolean(blockReason)} onClick={() => {
+          <button type="button" className="button primary tutorial-start" disabled={Boolean(blockReason)} onClick={() => {
             advancedTourRef.current = tour;
             resetCoachPosition();
             setTour({ lessonId: selected.id, stepIndex: 0 });
@@ -306,7 +306,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
         onKeyDown={(event) => { if (matchesShortcut(event, controlBindings, "clear")) { event.preventDefault(); event.stopPropagation(); endTour(); } }}
       >
         <header>
-          <button
+          <button type="button"
             className="tutorial-drag-handle"
             aria-label="Move walkthrough panel"
             title={`Drag to move · Nudge: ${["coachLeft", "coachRight", "coachUp", "coachDown"].map((action) => shortcutHint(controlBindings, action as "coachLeft" | "coachRight" | "coachUp" | "coachDown")).join(" / ")} · Reset: ${shortcutHint(controlBindings, "coachReset")}`}
@@ -337,14 +337,15 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
               moveCoach(rect.left + delta[0] * distance, rect.top + delta[1] * distance, rect.width);
             }}
           ><span aria-hidden="true">⠿</span><span>{activeStep ? `STEP ${tour.stepIndex + 1} OF ${activeLesson.steps.length}` : "WALKTHROUGH COMPLETE"}</span><small>Drag to move</small></button>
-          {coachPosition && <button aria-label="Reset walkthrough position" title="Reset position" onClick={resetCoachPosition}>↺</button>}
-          <button aria-label="End walkthrough" title="End walkthrough" onClick={endTour}>×</button>
+          {coachPosition && <button type="button" aria-label="Reset walkthrough position" title="Reset position" onClick={resetCoachPosition}>↺</button>}
+          <button type="button" aria-label="End walkthrough" title="End walkthrough" onClick={endTour}>×</button>
         </header>
         <div className="tutorial-progress" aria-hidden="true">{activeLesson.steps.map((step, index) => <i key={step.title} className={index <= tour.stepIndex ? "active" : ""} />)}</div>
         <div className="tutorial-coach-copy" aria-live="polite" aria-atomic="true">
           <span className="tutorial-coach-lesson">{activeLesson.title}</span>
           <h3>{activeStep?.title ?? "You’ve reached the end."}</h3>
-          <p>{surface.ready ? "That area is already open. Select Next to continue." : activeStep ? shortcutText(activeStep.instruction, controlBindings) : "Replay whenever you need a refresher, or choose another lesson. This completes the guide, not a save or commit."}</p>
+          <p>{activeStep ? shortcutText(activeStep.instruction, controlBindings) : "Replay whenever you need a refresher, or choose another lesson. This completes the guide, not a save or commit."}</p>
+          {surface.ready && activeStep?.completeOn && <p className="tutorial-tip">That area is already open. Select Next to continue.</p>}
           {activeStep?.tip && <p className="tutorial-tip">{shortcutText(activeStep.tip, controlBindings)}</p>}
           {tourBlock && <p className="tutorial-prerequisite">{tourBlock}</p>}
           {activeStep && !tourBlock && !surface.ready && (!surface.rect || surface.fallback) && <p className="tutorial-prerequisite">{surface.offscreen
@@ -352,7 +353,7 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
             : <>{embedded && !surface.rect ? `Close ${surface.dialogName} to continue in the workspace. ` : ""}{activeStep.unavailable}</>}</p>}
         </div>
         {activeStep?.completeOn?.length && activeStep.assist && !tourBlock && !embedded && !surface.ready && <div className="tutorial-assistance">
-          <button className="tutorial-do" onClick={() => {
+          <button type="button" className="tutorial-do" onClick={() => {
             if (!onAssist(activeStep.assist!.action)) { setAssistFailure(tour); return; }
             setAssistFailure(null);
             // Opening a chooser can assist an action without completing the user's choices.
@@ -362,15 +363,15 @@ export function TutorialCenter({ controlBindings = DEFAULT_CONTROLS, open, topic
           {assistFailure === tour && <small role="status">This action is unavailable here. Show the highlighted area, or select Next to continue.</small>}
         </div>}
         {activeStep && <p className="tutorial-advance-hint">{activeStep.completeOn ? "Advances automatically when done · Next skips this step" : "Read this step, then select Next"}</p>}
-        {activeStep?.reveal && !surface.rect && !embedded && !tourBlock && <button className="tutorial-reveal" onClick={() => {
+        {activeStep?.reveal && !surface.rect && !embedded && !tourBlock && <button type="button" className="tutorial-reveal" onClick={() => {
           onReveal(activeStep.reveal!);
           // Wait for the requested panel to mount before bringing an offscreen control into view.
           requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-tutorial="${activeStep.target}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" }));
         }}>Show this area</button>}
         <footer>
-          <button className="tutorial-library-link" disabled={embedded} title={embedded ? "Close this dialog first to return to tutorials" : "Choose another lesson"} onClick={openLibrary}>All tutorials</button>
-          <div><button disabled={tour.stepIndex === 0} onClick={() => { advancedTourRef.current = tour; setTour({ ...tour, stepIndex: Math.max(0, tour.stepIndex - 1) }); }}>Back</button>
-            {activeStep ? <button className="tutorial-next" onClick={advance}>Next →</button> : <button className="tutorial-next" onClick={endTour}>Done</button>}</div>
+          <button type="button" className="tutorial-library-link" disabled={embedded} title={embedded ? "Close this dialog first to return to tutorials" : "Choose another lesson"} onClick={openLibrary}>All tutorials</button>
+          <div><button type="button" disabled={tour.stepIndex === 0} onClick={() => { advancedTourRef.current = tour; setTour({ ...tour, stepIndex: Math.max(0, tour.stepIndex - 1) }); }}>Back</button>
+            {activeStep ? <button type="button" className="tutorial-next" onClick={advance}>Next →</button> : <button type="button" className="tutorial-next" onClick={endTour}>Done</button>}</div>
         </footer>
       </section>
     </>, surface.host)}

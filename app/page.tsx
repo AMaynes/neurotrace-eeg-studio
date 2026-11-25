@@ -8798,7 +8798,7 @@ export default function Home() {
       {pendingLabel && <div className="modal-backdrop" onMouseDown={(event) => {
         if (event.target === event.currentTarget) setPendingLabel(null);
       }}>
-        <form className="modal label-confidence-modal" role="dialog" aria-modal="true" aria-labelledby="label-confidence-title" tabIndex={-1}
+        <form className="modal label-confidence-modal" data-tutorial="label-confidence" role="dialog" aria-modal="true" aria-labelledby="label-confidence-title" tabIndex={-1}
           onSubmit={(event) => {
             event.preventDefault();
             const value = String(new FormData(event.currentTarget).get("confidence") ?? "").trim();
@@ -9006,7 +9006,7 @@ export default function Home() {
         </form>
       </div>}
 
-      {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Commit advisory" tabIndex={-1}><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but there is an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => { setConfirmCommit([]); setCommitAdvanceAfter(false); }}>Return to label</button><button className="button primary" onClick={() => {
+      {confirmCommit.length > 0 && <div className="modal-backdrop"><div className="modal confirm-modal" data-tutorial="commit-advisory" role="dialog" aria-modal="true" aria-label="Commit advisory" tabIndex={-1}><span className="warning-mark">!</span><h2>Review before committing</h2><p>The label is valid, but there is an advisory:</p><ul>{confirmCommit.map((warning) => <li key={warning}>{warning}</li>)}</ul><div className="modal-actions"><button className="button secondary" onClick={() => { setConfirmCommit([]); setCommitAdvanceAfter(false); }}>Return to label</button><button className="button primary" onClick={() => {
         if (commitSelected(true, commitAdvanceAfter)) setShowAnnotationEditor(false);
       }}>Commit with advisory</button></div></div></div>}
 
@@ -9098,7 +9098,9 @@ export default function Home() {
           <button className="modal-close" onClick={() => setShowSettings(false)} aria-label="Close Settings">×</button>
           <h2>Settings</h2>
           <section className="settings-section">
-            <button className="button secondary" disabled={!reviewReady || Boolean(activeReviewIdentity)} data-tutorial="older-review-open" onClick={openOlderReviews}>Restore older browser review…</button>
+            <button type="button" className="button secondary" disabled={!reviewReady || Boolean(activeReviewIdentity)} data-tutorial="older-review-open"
+              title={activeReviewIdentity ? "Open the recording separately with Files to restore an older browser review. Managed folder reviews use their own saved progress." : !reviewReady ? "Open a recording first." : undefined}
+              onClick={openOlderReviews}>Restore older browser review…</button>
           </section>
           <section className="settings-section bias-locks-settings" data-tutorial="bias-locks">
             <div><strong id="bias-locks-label">Bias Locks</strong><p id="bias-locks-description">Disable the directory Previous button to prevent backward navigation. Next stays available.</p></div>
