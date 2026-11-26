@@ -24,6 +24,8 @@ export interface DirectoryImportPlan {
   eventKeywordFilter?: string;
   /** Files skipped in a MAT + DAT folder, with the expected sibling path. */
   missingCompanions?: { filePath: string; expectedPath: string }[];
+  /** Standalone MAT files skipped before opening the collection. */
+  matFailures?: { filePath: string; reason: string }[];
   /** Shared once, avoiding one full companion-file array per recording. */
   supportingFiles: File[];
 }

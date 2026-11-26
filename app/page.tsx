@@ -70,9 +70,9 @@ import {
 } from "./eeg-core";
 import { processDisplaySignalsOffThread } from "./display-processing-worker-client";
 import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping";
-import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
+import { checkStandaloneMatPlan, MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
 import { DirectoryImportError, planDirectoryImport, directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
-import { DirectoryPairFailures, DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
+import { DirectoryImportFailures, DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
 import { DirectoryImportFilters } from "./directory-import-filters";
 import { directoryReviewCache, indexReviewRows, isReviewCsv, loadDirectoryReviewCsvs, reviewRowMatches } from "./directory-review-resume";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
@@ -6481,7 +6481,7 @@ export default function Home() {
       const savedLayout = stored?.review.sourceInterpretation as Record<string, unknown> | null | undefined;
       const savedRawLayout = savedLayout?.kind === "raw-int16-le" && Number.isFinite(savedLayout.sample_rate_hz) && Number(savedLayout.sample_rate_hz) > 0
         && Number.isInteger(savedLayout.channel_count) && Number(savedLayout.channel_count) > 0 ? savedLayout : undefined;
-      if (expectedFormat && ((expectedFormat === "edf") !== (extension === "edf"))) {
+      if (expectedFormat && ((expectedFormat === "edf") !== (extension === "edf") || (expectedFormat === "mat" && extension !== "mat"))) {
         throw new MatDatImportError("Directory format mismatch", "This recording does not match the selected directory format. Select a directory containing only one recording format.");
       }
       setPendingDat(null);
@@ -6505,7 +6505,7 @@ export default function Home() {
         // Counts and format only: do not send patient metadata or file paths to logs.
         console.info("[NeuroTrace import]", resolved.diagnostics);
         if (expectedFormat && ((expectedFormat === "mat" && resolved.kind !== "standalone-mat")
-          || (expectedFormat === "mat-dat" && resolved.kind !== "legacy-dat" && !savedRawLayout))) {
+          || (expectedFormat === "mat-dat" && resolved.kind !== "legacy-dat" && !(resolved.kind === "raw-dat" && savedRawLayout)))) {
           // Filename discovery cannot distinguish a signal MAT from metadata.
           // Reject a content mismatch before installing any source or mapping.
           if (resolved.kind === "standalone-mat") resolved.source.dispose?.();
@@ -6966,14 +6966,14 @@ export default function Home() {
       const stagedFiles = pendingDat && !pendingLegacyMatFile
         ? pendingImportFiles.filter((file) => !/\.mat$/i.test(file.name))
         : stagedImportFiles;
-      const filesWithCompanion = fromDirectory ? recordingFiles : completeStagedMatDatSelection(stagedFiles, recordingFiles);
-      if (confirmSelection && pendingDat && !pendingLegacyMatFile && filesWithCompanion === recordingFiles
+      const filesWithCompanion = fromDirectory || selectedFormat === "mat" ? recordingFiles : completeStagedMatDatSelection(stagedFiles, recordingFiles);
+      if (confirmSelection && selectedFormat !== "mat" && pendingDat && !pendingLegacyMatFile && filesWithCompanion === recordingFiles
         && recordingFiles.every((file) => /\.mat$/i.test(file.name))) {
         const expected = pendingDat.name.replace(/\.dat$/i, ".mat");
         throw new DirectoryImportError("MISSING_PAIR", `Choose ${expected} to match ${pendingDat.name}, or confirm the raw DAT layout below.`, recordingFiles.map((file) => file.name));
       }
       let selection = classifyRecordingSelection(filesWithCompanion, fromDirectory, selectedFormat);
-      if (selection.kind === "files" && (reviewJson || portableReviewFile || importedCsv) && selection.files.some((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))) {
+      if (selection.kind === "files" && selectedFormat !== "mat-dat" && (reviewJson || portableReviewFile || importedCsv) && selection.files.some((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))) {
         const primary = choosePrimaryRecording(selection.files)!;
         const extension = recordingExtension(primary);
         const format = extension === "edf" ? "edf" : selection.files.some((file) => /\.dat$/i.test(file.name)) ? "mat-dat" : "mat";
@@ -6985,17 +6985,17 @@ export default function Home() {
       }
       if (selection.kind === "directory") {
         setPendingDat(null);
-        setStagedDirectoryPlan(selection.plan);
         setShowImport(true);
         folderIndexAbortRef.current?.abort();
-        if (!selection.plan.recordings.length) {
-          folderIndexAbortRef.current = null;
-          return;
-        }
         const controller = new AbortController();
         folderIndexAbortRef.current = controller;
-        void scanDirectoryEvents(selection.plan, controller.signal, () => {}, false, true).catch(() => {});
-      } else if (confirmSelection && !isUnmappedDatSelection(selection.files)) {
+        const plan = selection.plan.format === "mat"
+          ? await checkStandaloneMatPlan(selection.plan, controller.signal)
+          : selection.plan;
+        if (controller.signal.aborted) return;
+        setStagedDirectoryPlan(plan);
+        if (plan.recordings.length) void scanDirectoryEvents(plan, controller.signal, () => {}, false, true).catch(() => {});
+      } else if (confirmSelection && (selectedFormat === "mat-dat" || !isUnmappedDatSelection(selection.files))) {
         setPendingDat(null);
         setStagedImportFiles(selection.files);
         setShowImport(true);
@@ -7018,7 +7018,8 @@ export default function Home() {
     const fromDirectory = Boolean(event.target.webkitdirectory);
     event.target.value = "";
     if (!files.length) return;
-    void handleSelectedRecordingFiles(files, fromDirectory, fromDirectory ? importChoice : null, true);
+    const selectedFormat = fromDirectory || importChoice === "mat" || importChoice === "mat-dat" ? importChoice : null;
+    void handleSelectedRecordingFiles(files, fromDirectory, selectedFormat, true);
   };
 
   /** Handles the dropped recording files. */
@@ -7043,7 +7044,7 @@ export default function Home() {
       importBusyRef.current = false;
       setImportBusy(false);
     }
-    if (selection) await handleSelectedRecordingFiles(selection.files, selection.directory, selectedFormat);
+    if (selection) await handleSelectedRecordingFiles(selection.files, selection.directory, selectedFormat, selectedFormat === "mat-dat");
   };
 
   /** Chooses the import type. */
@@ -7051,6 +7052,15 @@ export default function Home() {
     if (importBusyRef.current) return;
     setImportChoice((current) => current === choice ? null : choice);
     setImportPickerKind(null);
+    const switchingMatMode = (choice === "mat" && stagedDirectoryPlan?.format === "mat-dat")
+      || (choice === "mat-dat" && stagedDirectoryPlan?.format === "mat")
+      || (choice !== "edf" && stagedImportFiles.some((file) => /\.(mat|dat)$/i.test(file.name)));
+    if (switchingMatMode) {
+      folderIndexAbortRef.current?.abort();
+      setStagedDirectoryPlan(null);
+      setStagedImportFiles([]);
+      setUploadError(null);
+    }
   };
 
   /** Opens the import picker. */
@@ -7070,6 +7080,7 @@ export default function Home() {
   };
 
   const guidedImportReady = Boolean(stagedDirectoryPlan?.recordings.length);
+  const stagedPairMissingCompanion = importChoice === "mat-dat" && stagedImportFiles.some((file) => /\.(mat|dat)$/i.test(file.name));
 
   // Wait for the selected tab's render before calling its import closure.
   // Calling immediately after setActiveSessionId would load into the old tab.
@@ -8953,7 +8964,7 @@ export default function Home() {
             event.stopPropagation();
             fileDragDepthRef.current = 0;
             setFileDragActive(false);
-            if (!importBusyRef.current) void handleDroppedRecordingFiles(event.dataTransfer, !pendingDat);
+            if (!importBusyRef.current && !folderPreparing) void handleDroppedRecordingFiles(event.dataTransfer, !pendingDat);
           }}
         >
           <button className="modal-close" disabled={importBusy || folderPreparing} onClick={() => setShowImport(false)} aria-label="Close">×</button>
@@ -8979,7 +8990,7 @@ export default function Home() {
             {(portableReviewFile || pendingAnnotationCsv) && <p role="status">
               {portableReviewFile?.name || pendingAnnotationCsv?.name} ready. Select the original recording files or folder.
             </p>}
-            <p>Choose an optional format filter for mixed folders.</p>
+            <p>Choose MAT for embedded waveforms or MAT + DAT for matching pairs.</p>
             <div className="format-cards" data-tutorial="import-formats" role="group" aria-label="Recording formats">
               <button type="button" aria-label="EDF / EDF+" aria-pressed={importChoice === "edf"} disabled={importBusy || folderPreparing} onClick={() => chooseImportType("edf")}><strong>EDF / EDF+</strong><span>Calibrated .edf recordings</span></button>
               <button type="button" aria-label="MAT" aria-pressed={importChoice === "mat"} disabled={importBusy || folderPreparing} onClick={() => chooseImportType("mat")}><strong>MAT</strong><span>Standalone .mat recordings</span></button>
@@ -8990,16 +9001,16 @@ export default function Home() {
               <p>For MAT + DAT, choose files with the same name before the extension, or choose their folder.</p>
             </div>
             {stagedImportFiles.length > 0 && <section className="guided-import" aria-label="Detected files">
-              <header><strong>{stagedImportFiles.some((file) => /\.dat$/i.test(file.name)) && stagedImportFiles.some((file) => /\.mat$/i.test(file.name))
+              <header><strong>{stagedPairMissingCompanion ? "Choose the matching MAT or DAT file" : stagedImportFiles.some((file) => /\.dat$/i.test(file.name)) && stagedImportFiles.some((file) => /\.mat$/i.test(file.name))
                 ? "MAT + DAT pair detected" : "Ready to open"}</strong><b>{importBusy ? "Opening…" : "Detected"}</b></header>
               <div className="directory-import-summary"><ul aria-label="Selected files">
                 {stagedImportFiles.slice(0, 5).map((file, index) => <li key={index}>{file.name}</li>)}
               </ul>{stagedImportFiles.length > 5 && <small>And {stagedImportFiles.length - 5} more files.</small>}</div>
               <footer><span>Files stay on this device.</span>
-                {stagedImportFiles.some((file) => recordingExtension(file) === "dat") &&
+                {!stagedPairMissingCompanion && stagedImportFiles.some((file) => recordingExtension(file) === "dat") &&
                   <button type="button" className="button secondary" disabled={importBusy || folderPreparing}
                     onClick={() => void handleUploadedFiles(stagedImportFiles, false, true)}>Edit DAT mapping</button>}
-                <button type="button" className="button primary" data-tutorial="import-open" disabled={importBusy || folderPreparing}
+                <button type="button" className="button primary" data-tutorial="import-open" disabled={importBusy || folderPreparing || stagedPairMissingCompanion}
                   onClick={() => void handleUploadedFiles(stagedImportFiles)}>Open selected files</button>
               </footer>
             </section>}
@@ -9013,9 +9024,9 @@ export default function Home() {
                 {guidedImportReady ? <>
                   <strong>{stagedDirectoryPlan.recordings.length} sessions found</strong>
                   <p>Ready to open {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : "paired MAT + DAT"} recordings. File contents are checked when each session opens.</p>
-                  <p>The first matching recording opens when you load the folder.</p>
-                </> : <strong>No complete MAT + DAT pairs found</strong>}
-                <DirectoryPairFailures failures={stagedDirectoryPlan.missingCompanions} initiallyOpen />
+                  <p>The first matching recording opens when you confirm.</p>
+                </> : <strong>{stagedDirectoryPlan.format === "mat" ? "No standalone MAT recordings found" : "No complete MAT + DAT pairs found"}</strong>}
+                <DirectoryImportFailures plan={stagedDirectoryPlan} initiallyOpen />
               </div>
                 {guidedImportReady && stagedDirectoryPlan.format !== "neurotrace" && <div className="review-folder-setup">
                   <small>{reviewerProfileId ? `Reviewing as ${reviewerProfileId}` : "Enter a reviewer ID above for autosave. Leave blank to browse."}</small>

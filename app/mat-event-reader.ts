@@ -1,5 +1,5 @@
 /*
-Purpose: Selective Level-5 MAT traversal for directory event indexing. Numeric signal payloads are skipped, not decoded (bounded read-ahead may touch their edges). Compressed elements are streamed through zlib; only character matrices under sessionInfo.sFile.events.label reach the existing MAT decoder by default.
+Purpose: Selective Level-5 MAT traversal for embedded-signal checks and directory event indexing. Signal checks read matrix headers. Event indexing streams compressed elements and decodes only requested metadata.
 File Dependencies: None.
 */
 
@@ -203,7 +203,16 @@ function containsEventLabels(path: string, review = false) {
 
 /** Default label searches omit numeric metadata; resume opts into its bounded timing subset. */
 export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint8Array, prefix: string, little: boolean) => Promise<void>, options: { reviewTiming?: boolean } = {}) {
-  const review = options.reviewTiming === true;
+  await scanMatMatrices(file, visit, options.reviewTiming === true);
+}
+
+/** Checks Level-5 matrix headers for an embedded signal without decoding samples. */
+export function hasMatV5SignalMatrix(file: File) {
+  return scanMatMatrices(file);
+}
+
+/** Walks Level-5 metadata and stops at the first signal candidate when no event visitor is supplied. */
+async function scanMatMatrices(file: File, visit?: (bytes: Uint8Array, prefix: string, little: boolean) => Promise<void>, review = false) {
   const reader = new BlobReader(file);
   const header = await reader.read(128);
   if (!/MATLAB\s+(?:5\.0|Level 5)\s+MAT-file/i.test(text(header))) throw new Error("Background event search supports Level-5 MAT metadata; this MAT format cannot be checked.");
@@ -211,9 +220,15 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
   if (endian !== "IM" && endian !== "MI") throw new Error("Invalid MAT byte order.");
   const little = endian === "IM";
   let metadataBytes = 0;
+  /** Omits acquisition arrays in signal checks and unrelated metadata in event searches. */
+  function wantsPath(path: string) {
+    if (visit) return containsEventLabels(path, review);
+    const normalized = path.replace(/\[\d+\]/g, "").replace(/[^a-z0-9.]/gi, "").toLowerCase();
+    return !/(?:^|\.)sessioninfo\.(?:sfile|channelmat)(?:\.|$)/.test(normalized);
+  }
 
   /** Traverses supported MATLAB matrix metadata within the nesting limit. */
-  async function matrix(input: Reader, end: number, prefix: string, depth: number) {
+  async function matrix(input: Reader, end: number, prefix: string, depth: number): Promise<true | void> {
     if (depth > 24) throw new Error("MAT metadata nesting exceeds the search safety limit.");
     if (input.position === end && prefix) return; // MATLAB's unset-field representation.
     const flags = await field(input, end, little);
@@ -227,9 +242,10 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
     const shape = integers(dimensions, little);
     const count = shape.reduce((product, value) => product * value, 1);
     if (!shape.length || shape.some((value) => value < 0) || !Number.isSafeInteger(count)) throw new Error("Invalid MAT dimensions.");
-    if (!containsEventLabels(name, review)) { await input.skip(end - input.position); return; }
-    if ((kind === 4 && /(?:^|\.)sessionInfo(?:\[\d+\])?\.sFile(?:\[\d+\])?\.events(?:\[\d+\])?\.label(?:\[\d+\])*$/i.test(name))
-      || (review && kind >= 6 && kind <= 15 && /\.(?:times|epochs|sample_rate|num_channels)(?:\[\d+\])*$/i.test(name))) {
+    if (!wantsPath(name)) { await input.skip(end - input.position); return; }
+    if (!visit && kind >= 6 && kind <= 15 && count > 1) return true;
+    if (visit && ((kind === 4 && /(?:^|\.)sessionInfo(?:\[\d+\])?\.sFile(?:\[\d+\])?\.events(?:\[\d+\])?\.label(?:\[\d+\])*$/i.test(name))
+      || (review && kind >= 6 && kind <= 15 && /\.(?:times|epochs|sample_rate|num_channels)(?:\[\d+\])*$/i.test(name)))) {
       const remaining = end - input.position;
       metadataBytes += flags.raw.length + dimensions.raw.length + nameField.raw.length + remaining;
       if (metadataBytes > MAX_METADATA_BYTES) throw new Error("Event metadata exceeds the 64 MiB background-search safety limit.");
@@ -255,7 +271,7 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
         const childPath = kind === 2 ? `${path}.${names[index % names.length]}` : path;
         // Child byte lengths let us seek past large times/notes/ChannelMat
         // arrays without parsing their elements or allocating marker objects.
-        if (containsEventLabels(childPath, review)) await matrix(input, childEnd, childPath, depth + 1);
+        if (wantsPath(childPath) && await matrix(input, childEnd, childPath, depth + 1)) return true;
         index += 1;
       }
       await input.skip(childEnd - input.position);
@@ -266,14 +282,14 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
   }
 
   /** Walks MAT elements and recursively inflates compressed containers. */
-  async function elements(input: Reader, end: number, depth: number): Promise<void> {
+  async function elements(input: Reader, end: number, depth: number): Promise<true | void> {
     if (depth > 24) throw new Error("Compressed MAT nesting exceeds the search safety limit.");
     while (input.position < end) {
       const item = await tag(input, end, little);
       if (!item) break;
       if (item.type === 15 && !item.small) {
         const expanded = new StreamReader(input.stream(item.size).pipeThrough(new DecompressionStream("deflate")));
-        try { await elements(expanded, Infinity, depth + 1); } finally { await expanded.close(); }
+        try { if (await elements(expanded, Infinity, depth + 1)) return true; } finally { await expanded.close(); }
         // Accept both standard unpadded compressed elements and padded writers.
         const padding = align8(item.size) - item.size;
         const next = await input.peek(8);
@@ -281,11 +297,11 @@ export async function visitMatEventLabelMatrices(file: File, visit: (bytes: Uint
         if (!immediate && next.subarray(0, padding).every((byte) => byte === 0)) await input.skip(Math.min(padding, next.length));
       } else if (!item.small) {
         const itemEnd = input.position + item.size;
-        if (item.type === 14) await matrix(input, itemEnd, "", depth + 1);
+        if (item.type === 14 && await matrix(input, itemEnd, "", depth + 1)) return true;
         await input.skip(itemEnd - input.position);
         await input.skip(Math.min(align8(item.size) - item.size, end - input.position));
       }
     }
   }
-  await elements(reader, file.size, 0);
+  return Boolean(await elements(reader, file.size, 0));
 }

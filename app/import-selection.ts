@@ -45,9 +45,8 @@ export function completeStagedMatDatSelection(staged: readonly File[], incoming:
 }
 
 /**
- * Classify input shape using filenames only. A chosen folder format filters the
- * directory; without a choice, automatic detection must not discard recordings.
- * Ordinary file imports retain their existing routing. Contents are checked on opening.
+ * Classifies filenames for preview. An explicit MAT mode applies to both Files
+ * and Folder. Automatic detection keeps its filename-based routing.
  */
 export function classifyRecordingSelection(files: readonly File[], fromDirectory = false, selectedFormat: DirectoryImportFormat | null = null): RecordingSelection {
   const directory = fromDirectory || files.some((file) => Boolean(file.webkitRelativePath));
@@ -58,7 +57,9 @@ export function classifyRecordingSelection(files: readonly File[], fromDirectory
   if (!files.length && directory) {
     throw new DirectoryImportError("EMPTY_DIRECTORY", "The selected directory is empty. Choose a directory containing recordings.");
   }
-  if (directory && selectedFormat) return { kind: "directory", plan: planDirectoryImport(files, selectedFormat, { skipIncompletePairs: true }) };
+  if ((directory && selectedFormat) || selectedFormat === "mat") {
+    return { kind: "directory", plan: planDirectoryImport(files, selectedFormat, { skipIncompletePairs: directory }) };
+  }
   let edf = 0;
   let mat = 0;
   let dat = 0;
@@ -69,6 +70,9 @@ export function classifyRecordingSelection(files: readonly File[], fromDirectory
     else if (extension === "mat") mat += 1;
     else if (extension === "dat") dat += 1;
     else if (OTHER_RECORDING_EXTENSIONS.has(extension)) otherRecordings += 1;
+  }
+  if (selectedFormat === "mat-dat" && (edf || otherRecordings || mat + dat > 1)) {
+    return { kind: "directory", plan: planDirectoryImport(files, selectedFormat, { rejectOtherFormats: true }) };
   }
   // A MAT and its DAT describe one session, not two. Sidecars never increase
   // the session count, and companion-only folders keep additive file import.

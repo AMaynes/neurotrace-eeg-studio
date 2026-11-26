@@ -85,7 +85,7 @@ function harness(count, options = {}) {
     },
     renderPairFailures(props) {
       cursor = 1; // DirectorySessions owns the first state slot in this harness.
-      return exports.DirectoryPairFailures(props);
+      return exports.DirectoryImportFailures(props);
     },
     unmount() { for (const hook of hooks) hook?.cleanup?.(); },
     button(tree, label) {
@@ -107,8 +107,8 @@ test("loaded directories retain all skipped files and expose them in batches", (
     expectedPath: `folder/missing-${index}.mat`,
   }));
   const tree = ui.render();
-  const report = elements(tree, (node) => node.props?.failures)[0];
-  assert.equal(report.props.failures, ui.props.plan.missingCompanions);
+  const report = elements(tree, (node) => node.props?.plan?.missingCompanions)[0];
+  assert.equal(report.props.plan.missingCompanions, ui.props.plan.missingCompanions);
   let details = ui.renderPairFailures(report.props);
   assert.equal(elements(details, (node) => node.type === "li").length, 50);
   elements(details, (node) => node.type === "button")[0].props.onClick();

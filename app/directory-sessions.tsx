@@ -38,20 +38,22 @@ const STATUS_LABELS = {
   error: "Could not open this session",
 };
 
-/** Lists skipped MAT/DAT files in batches so large folders keep the dialog responsive. */
-export function DirectoryPairFailures({ failures, initiallyOpen = false }: {
-  failures: DirectoryImportPlan["missingCompanions"];
+/** Lists skipped files in batches so large folders keep the dialog responsive. */
+export function DirectoryImportFailures({ plan, initiallyOpen = false }: {
+  plan: DirectoryImportPlan;
   initiallyOpen?: boolean;
 }) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const failures = plan.missingCompanions ?? plan.matFailures;
   if (!failures?.length) return null;
+  const missingCompanions = Boolean(plan.missingCompanions);
   return <details className="directory-pair-failures" open={initiallyOpen}>
-    <summary>{failures.length.toLocaleString()} {failures.length === 1 ? "file" : "files"} skipped · missing MAT/DAT companion</summary>
+    <summary>{failures.length.toLocaleString()} {failures.length === 1 ? "file" : "files"} skipped · {missingCompanions ? "missing MAT/DAT companion" : "standalone MAT"}</summary>
     <div className="directory-pair-failures-body">
-      <ul aria-label="Files missing a MAT or DAT companion">
-        {failures.slice(0, visibleCount).map(({ filePath, expectedPath }) => <li key={filePath}>
-          <strong>{filePath}</strong>
-          <span>Missing {expectedPath}</span>
+      <ul aria-label={missingCompanions ? "Files missing a MAT or DAT companion" : "Skipped standalone MAT files"}>
+        {failures.slice(0, visibleCount).map((failure) => <li key={failure.filePath}>
+          <strong>{failure.filePath}</strong>
+          <span>{"expectedPath" in failure ? `Missing ${failure.expectedPath}` : failure.reason}</span>
         </li>)}
       </ul>
       {visibleCount < failures.length && <button type="button" className="button secondary"
@@ -90,7 +92,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
         <span>{loadedCount.toLocaleString()} open</span>
         {errorCount > 0 && <span>{errorCount.toLocaleString()} need attention</span>}
       </div>
-      <DirectoryPairFailures failures={plan.missingCompanions} />
+      <DirectoryImportFailures plan={plan} />
       {onFilter && <section className="directory-folder-filters" aria-label="Folder filters">
         {plan.eventKeywordFilter && <p>Folder filter · {plan.eventKeywordFilter}</p>}
         <DirectoryImportFilters plan={fullPlan} busy={busy} mode="update" onLoad={onFilter} />

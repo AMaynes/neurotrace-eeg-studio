@@ -1,11 +1,13 @@
 /*
 Purpose: Resolves local MAT/DAT imports for the recording dialog. Legacy sessionInfo metadata configures a separate binary source; standalone MAT signals keep their existing decoder. Acquisition paths inside metadata are never used.
-File Dependencies: app/bids-companions.ts, app/eeg-core.ts.
+File Dependencies: app/bids-companions.ts, app/directory-import.ts, app/eeg-core.ts, app/mat-event-reader.ts.
 */
 
 
-import { inspectMatRecording, type LegacyMatMetadata, type SignalSource } from "./eeg-core.ts";
+import { inspectMatRecording, isMat73File, type LegacyMatMetadata, type SignalSource } from "./eeg-core.ts";
 import { relativeFilePath } from "./bids-companions.ts";
+import type { DirectoryImportPlan } from "./directory-import.ts";
+import { hasMatV5SignalMatrix } from "./mat-event-reader.ts";
 
 type ImportDiagnostics = {
   format: "legacy-mat-dat" | "standalone-mat" | "raw-dat";
@@ -30,6 +32,42 @@ export class MatDatImportError extends Error {
     this.name = "MatDatImportError";
     this.title = title;
   }
+}
+
+/** Checks MAT headers first and defers waveform decoding until a recording is opened. */
+async function hasStandaloneMatSignal(file: File) {
+  if (!await isMat73File(file)) {
+    try { return await hasMatV5SignalMatrix(file); }
+    catch { /* The full reader also accepts containers the bounded header scan cannot traverse. */ }
+  }
+  const inspected = await inspectMatRecording(file);
+  if (inspected.kind !== "standalone") return false;
+  const source: SignalSource = inspected.source;
+  source.dispose?.();
+  return true;
+}
+
+/** Retains standalone recordings in their original order and explains every skipped MAT file. */
+export async function checkStandaloneMatPlan(plan: DirectoryImportPlan, signal: AbortSignal): Promise<DirectoryImportPlan> {
+  const recordings: DirectoryImportPlan["recordings"] = [];
+  const matFailures: NonNullable<DirectoryImportPlan["matFailures"]> = [];
+  for (const recording of plan.recordings) {
+    signal.throwIfAborted();
+    let reason = "Metadata only. No embedded waveform was found.";
+    try {
+      if (await hasStandaloneMatSignal(recording.primary)) {
+        recordings.push(recording);
+        continue;
+      }
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "NO_SIGNAL_MATRIX")) {
+        reason = error instanceof Error ? error.message : "Could not read this MAT file.";
+      }
+    }
+    matFailures.push({ filePath: recording.relativePath, reason });
+  }
+  signal.throwIfAborted();
+  return matFailures.length ? { ...plan, recordings, matFailures } : plan;
 }
 
 /** Reuse staged companions only for the same recording, never an unrelated new selection. */

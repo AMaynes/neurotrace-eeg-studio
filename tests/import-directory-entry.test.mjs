@@ -113,7 +113,7 @@ function harness(options = {}) {
   const env = {
     useCallback: (callback) => callback,
     pendingDat: null, importBusy: false, importBusyRef: { current: false },
-    guidedImportReady: false, folderPreparing: false, pendingAnnotationCsv: null,
+    guidedImportReady: false, stagedPairMissingCompanion: false, folderIndexAbortRef: { current: null }, folderPreparing: false, pendingAnnotationCsv: null,
     directoryConfirmationRef: { current: null },
     guidedFilesInputRef: { current: null },
     guidedDirectoryInputRef: { current: null },
@@ -121,7 +121,7 @@ function harness(options = {}) {
     handleDroppedRecordingFiles: (...args) => actions.push(["dropped", ...args]),
     stageDetectedImport: (event) => actions.push(["detected", event]),
     SavedReviews: () => null,
-    DirectoryPairFailures: () => null,
+    DirectoryImportFailures: () => null,
     DirectoryImportFilters: filterExports.DirectoryImportFilters,
     submitGuidedImport: () => actions.push(["submit"]),
   };
@@ -147,8 +147,8 @@ test("an all-incomplete MAT/DAT folder displays its report without a load action
   const tree = ui.render();
   assert.match(text(tree), /No complete MAT \+ DAT pairs found/);
   assert.equal(elements(tree, (node) => node.props?.["data-tutorial"] === "import-open").length, 0);
-  const report = elements(tree, (node) => node.type === ui.env.DirectoryPairFailures)[0];
-  assert.equal(report.props.failures, missingCompanions);
+  const report = elements(tree, (node) => node.type === ui.env.DirectoryImportFailures)[0];
+  assert.equal(report.props.plan.missingCompanions, missingCompanions);
   assert.equal(report.props.initiallyOpen, true);
 });
 
@@ -441,4 +441,19 @@ test("native file and folder pickers work with automatic format detection", () =
   }
   assert.deepEqual(calls, ["files", "directory"]);
   assert.equal(ui.env.importChoice, null);
+});
+
+test("loose file picks honor the selected MAT mode", () => {
+  for (const importChoice of ["mat", "mat-dat"]) {
+    const files = [{ name: "recording.mat" }, { name: "recording.dat" }];
+    const calls = [];
+    handler("stageDetectedImport", { importChoice, handleSelectedRecordingFiles: (...args) => calls.push(args) })({
+      target: { files, webkitdirectory: false, value: "chosen-path" },
+    });
+    assert.deepEqual(calls, [[files, false, importChoice, true]]);
+  }
+  const ui = harness({ importChoice: "mat-dat",
+    stagedDirectoryPlan: { format: "mat-dat", recordings: [{ id: "pair" }], supportingFiles: [] } });
+  formatButton(ui.render(), "MAT").props.onClick();
+  assert.equal(ui.env.stagedDirectoryPlan, null, "the Standalone MAT card cannot submit a previously staged pair");
 });

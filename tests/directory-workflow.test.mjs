@@ -18,7 +18,7 @@ import { mergeSelectedFiles, relativeFilePath } from "../app/bids-companions.ts"
 import { DirectoryImportError, directoryRecordingFiles, planDirectoryImport } from "../app/directory-import.ts";
 import { classifyRecordingSelection, collectDroppedRecordingFiles, completeStagedMatDatSelection, isUnmappedDatSelection } from "../app/import-selection.ts";
 import { adjacentDirectoryRecording } from "../app/directory-tab-layout.ts";
-import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "../app/mat-import.ts";
+import { checkStandaloneMatPlan, MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "../app/mat-import.ts";
 import { legacyMatFile, standaloneMatFile } from "./fixtures/legacy-mat.mjs";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
@@ -79,7 +79,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 function stageHarness(format = null) {
   const calls = [];
   const env = { importBusyRef: { current: false }, DirectoryImportError, classifyRecordingSelection, completeStagedMatDatSelection, isUnmappedDatSelection,
-    pendingImportFiles: [], pendingLegacyMatFile: null,
+    pendingImportFiles: [], pendingLegacyMatFile: null, checkStandaloneMatPlan: async (plan) => plan,
     directoryConfirmationRef: { current: { stale: true } },
     handleUploadedFiles: async (files) => { calls.push(files); } };
   state(env, "importChoice", format);
@@ -175,6 +175,28 @@ test("explicit folder selection keeps the chosen type and never opens ignored re
   assert.deepEqual(empty.calls, []);
 });
 
+test("Standalone MAT checks contents in both pickers and never includes the matching DAT", async () => {
+  for (const fromDirectory of [false, true]) {
+    const h = stageHarness("mat");
+    h.env.checkStandaloneMatPlan = checkStandaloneMatPlan;
+    const metadata = legacyMatFile({ name: "metadata.mat", compressed: true });
+    const data = standaloneMatFile({ name: "signal.mat", compressed: true });
+    data.arrayBuffer = () => assert.fail("the folder preview must not decode the waveform");
+    const dat = new File([new Int16Array(157)], "metadata.dat");
+    await h.stage([metadata, dat, data], fromDirectory, "mat", true);
+    assert.equal(h.env.uploadError, null);
+    assert.deepEqual(h.env.stagedDirectoryPlan.recordings.map(({ primary }) => primary), [data]);
+    assert.deepEqual(h.env.stagedDirectoryPlan.supportingFiles, []);
+    assert.deepEqual(h.env.stagedDirectoryPlan.matFailures, [
+      { filePath: "metadata.mat", reason: "Metadata only. No embedded waveform was found." },
+    ]);
+    await h.stage([metadata, dat], fromDirectory, "mat", true);
+    assert.deepEqual(h.env.stagedDirectoryPlan.recordings, []);
+    assert.equal(h.env.stagedDirectoryPlan.matFailures[0].filePath, "metadata.mat");
+    assert.deepEqual(h.calls, []);
+  }
+});
+
 test("single files route to the existing importer while clearing stale directory plans", async () => {
   const h = stageHarness("mat-dat");
   const files = [new File([new Uint8Array(256)], "session.edf")];
@@ -252,7 +274,7 @@ test("drop routing holds its busy guard through asynchronous discovery and relea
     assert.deepEqual(routed, []);
     finish({ files, directory: true });
     await pending;
-    assert.deepEqual(routed, [[files, true, null]]);
+    assert.deepEqual(routed, [[files, true, null, false]]);
   }
 });
 

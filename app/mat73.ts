@@ -80,12 +80,13 @@ function signalNameScore(path: string): number {
   return 0;
 }
 
-/** Selects the largest two-dimensional numeric dataset, matching MAT v5 behavior. */
+/** Selects the largest two-dimensional numeric dataset outside acquisition metadata. */
 export function chooseMat73SignalDataset(
   datasets: readonly Mat73DatasetDescriptor[],
 ): Mat73DatasetDescriptor | undefined {
   return datasets
     .filter((dataset) => !dataset.path.startsWith("/#"))
+    .filter((dataset) => !/(?:^|\/)sessionInfo\/(?:sFile|ChannelMat)(?:\/|$)/i.test(dataset.path))
     .filter((dataset) => dataset.shape.length === 2 && dataset.elementCount > 1)
     .sort((left, right) =>
       right.elementCount - left.elementCount

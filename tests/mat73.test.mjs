@@ -34,6 +34,16 @@ test("prefers a signal-like path when viable datasets have equal size", () => {
   assert.equal(selected?.path, "/eeg");
 });
 
+test("rejects legacy acquisition arrays as standalone MAT v7.3 signals", () => {
+  const metadata = [
+    { path: "/sessionInfo/sFile/events/times", shape: [2, 20], dtype: "<d", elementCount: 40 },
+    { path: "/sessionInfo/ChannelMat/Channel/Loc", shape: [3, 20], dtype: "<d", elementCount: 60 },
+  ];
+  const signal = { path: "/sessionInfo/data", shape: [2, 12], dtype: "<d", elementCount: 24 };
+  assert.equal(chooseMat73SignalDataset(metadata), undefined);
+  assert.equal(chooseMat73SignalDataset([...metadata, signal]), signal);
+});
+
 test("keeps large v7.3 files worker-backed instead of calling arrayBuffer", async () => {
   const [core, worker] = await Promise.all([
     readFile(new URL("../app/eeg-core.ts", import.meta.url), "utf8"),
