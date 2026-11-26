@@ -1,14 +1,13 @@
 /*
 Purpose: Lists and searches detected label types for queue keyword selection.
-File Dependencies: app/directory-event-index.ts, app/event-keywords.ts, app/label-visibility.ts.
+File Dependencies: app/event-keywords.ts, app/label-visibility.ts.
 */
 
 
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { COMMON_EVENT_KEYWORDS } from "./directory-event-index";
-import { eventKeywords } from "./event-keywords";
+import { COMMON_EVENT_KEYWORDS, eventKeywordPresetState, eventKeywords } from "./event-keywords";
 import type { LabelTypeOption } from "./label-visibility";
 
 /** Displays the queue label filters with keyword entry and a bounded list of label types. */
@@ -63,13 +62,9 @@ export function QueueLabelDictionary({ options, hiddenTypes, keywords, onKeyword
     {open && <div ref={popover} className="queue-dictionary-popover" role="region" aria-label="Label dictionary" data-tutorial="label-filter-dialog">
       <header><strong>Common keywords</strong><button type="button" aria-label="Close label dictionary" onClick={() => onOpenChange(false)}>×</button></header>
       <div className="queue-keyword-presets">{COMMON_EVENT_KEYWORDS.map((preset) => {
-        const values = eventKeywords(preset.query);
-        const enabled = values.every((value) => terms.some((term) => term.toLowerCase() === value.toLowerCase()));
-        return <button type="button" key={preset.name} aria-pressed={enabled} title={preset.query} onClick={() => {
-          const next = enabled ? terms.filter((term) => !values.some((value) => value.toLowerCase() === term.toLowerCase()))
-            : [...terms, ...values];
-          onKeywordsChange(eventKeywords(next.join(", ")).join(", "));
-        }}>{preset.name}</button>;
+        const { selected, toggledQuery } = eventKeywordPresetState(terms, preset.query);
+        return <button type="button" key={preset.name} aria-pressed={selected} title={preset.query}
+          onClick={() => onKeywordsChange(toggledQuery)}>{preset.name}</button>;
       })}</div>
       <div className="queue-dictionary-actions">
         <strong>Detected labels</strong>

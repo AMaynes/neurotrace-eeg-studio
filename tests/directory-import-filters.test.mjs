@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import { directoryEventCache, filterDirectoryPlan } from "../app/directory-event-client.ts";
-import { eventKeywords } from "../app/event-keywords.ts";
+import { COMMON_EVENT_KEYWORDS, eventKeywordPresetState, eventKeywords } from "../app/event-keywords.ts";
 
 const source = await readFile(new URL("../app/directory-import-filters.tsx", import.meta.url), "utf8");
 const code = ts.transpileModule(source, { compilerOptions: {
@@ -45,7 +45,7 @@ function harness(mode = "update", scan = async () => {}) {
     };
     if (name === "./directory-event-client") return { directoryEventCache, filterDirectoryPlan,
       scanDirectoryEvents: (...args) => { scans.push(args); return scan(...args); } };
-    if (name === "./event-keywords") return { eventKeywords };
+    if (name === "./event-keywords") return { COMMON_EVENT_KEYWORDS, eventKeywordPresetState, eventKeywords };
     if (name.endsWith(".css")) return {};
     return require(name);
   }, exports);
@@ -81,6 +81,31 @@ test("loaded-folder filters apply in one action and do not change the list while
   assert.deepEqual(ui.actions[0].recordings.map(item => item.id), ["seizure"]);
   assert.equal(ui.actions[0].eventKeywordFilter, "seizure");
   assert.equal(ui.scans[0][3], true, "explicit apply retries incomplete metadata checks");
+});
+
+test("common keyword presets are selectable in both folder entry points", async () => {
+  for (const mode of ["load", "update"]) {
+    const ui = harness(mode);
+    ui.open();
+    assert.equal(ui.button("Seizure / Sz / Seiz"), undefined);
+    ui.button("Common keywords").props.onClick();
+    assert.equal(ui.button("Common keywords").props["aria-expanded"], true);
+    ui.type("EEG ONSET, custom");
+    ui.button("Seizure / Sz / Seiz").props.onClick();
+    assert.equal(ui.button("Seizure / Sz / Seiz").props["aria-pressed"], true);
+    assert.equal(ui.input().props.value, "EEG ONSET, custom, sz, seizure, seiz, tonic");
+    ui.button("Sleep").props.onClick();
+    ui.button("Sleep").props.onClick();
+    assert.equal(ui.button("Sleep").props["aria-pressed"], false);
+    ui.button("Spikes / sharp waves").props.onClick();
+    ui.button("Common keywords").props.onClick();
+    assert.equal(ui.button("Seizure / Sz / Seiz"), undefined);
+    assert.deepEqual(ui.scans, [], "choosing presets edits the query without starting a scan");
+    ui.button(mode === "load" ? "Load matching sessions" : "Apply to folder").props.onClick();
+    await tick();
+    assert.equal(ui.actions[0].eventKeywordFilter, "EEG ONSET, custom, sz, seizure, seiz, tonic, spike, sharp");
+    assert.deepEqual(ui.actions[0].recordings.map(item => item.id), ["seizure", "spike"]);
+  }
 });
 
 test("Enter applies zero matches and clearing the query restores the full folder", async () => {

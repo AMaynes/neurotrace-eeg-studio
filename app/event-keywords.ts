@@ -1,8 +1,19 @@
 /*
-Purpose: Splits committed event-label searches into literal keyword alternatives.
+Purpose: Defines common event-label presets and matches comma-separated keyword alternatives.
 File Dependencies: None.
 */
 
+
+export const COMMON_EVENT_KEYWORDS = [
+  // Matches target_evs in seizure_annotation_tool_update.m.
+  { name: "Seizure / Sz / Seiz", query: "sz, seizure, seiz, tonic, EEG onset" },
+  { name: "Spikes / sharp waves", query: "spike, sharp" },
+  { name: "Artifact", query: "artifact, artefact" },
+  { name: "Stimulation", query: "stim" },
+  { name: "Medication", query: "medication, med given, drug" },
+  { name: "Button press", query: "button, push" },
+  { name: "Sleep", query: "sleep, NREM, REM" },
+] as const;
 
 /** Splits comma-separated label keywords into trimmed, nonempty alternatives. */
 export function eventKeywords(query: string): string[] {
@@ -13,6 +24,16 @@ export function eventKeywords(query: string): string[] {
     seen.add(key);
     return true;
   });
+}
+
+/** Reports whether every alias is present and returns the query after toggling the preset. */
+export function eventKeywordPresetState(terms: readonly string[], presetQuery: string) {
+  const aliases = eventKeywords(presetQuery);
+  const aliasKeys = new Set(aliases.map((alias) => alias.toLowerCase()));
+  const termKeys = new Set(terms.map((term) => term.toLowerCase()));
+  const selected = [...aliasKeys].every((key) => termKeys.has(key));
+  const next = selected ? terms.filter((term) => !aliasKeys.has(term.toLowerCase())) : [...terms, ...aliases];
+  return { selected, toggledQuery: eventKeywords(next.join(", ")).join(", ") };
 }
 
 /** Creates the event label matcher. */

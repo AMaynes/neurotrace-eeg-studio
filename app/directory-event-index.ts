@@ -11,7 +11,7 @@ import { readNeurotraceProjectArchive } from "./neurotrace-project.ts";
 import type { DirectoryImportFormat } from "./directory-import.ts";
 import { createEventLabelMatcher } from "./event-keywords.ts";
 
-export { createEventLabelMatcher, eventKeywords } from "./event-keywords.ts";
+export { COMMON_EVENT_KEYWORDS, createEventLabelMatcher, eventKeywords } from "./event-keywords.ts";
 
 export interface DirectoryEventIndex {
   state: "ready" | "partial" | "error";
@@ -32,17 +32,6 @@ export interface DirectoryEventRequest {
   excludedLabels?: readonly string[];
   datBytes?: number;
 }
-
-export const COMMON_EVENT_KEYWORDS = [
-  // Matches target_evs in seizure_annotation_tool_update.m.
-  { name: "Seizure / Sz / Seiz", query: "sz, seizure, seiz, tonic, EEG onset" },
-  { name: "Spikes / sharp waves", query: "spike, sharp" },
-  { name: "Artifact", query: "artifact, artefact" },
-  { name: "Stimulation", query: "stim" },
-  { name: "Medication", query: "medication, med given, drug" },
-  { name: "Button press", query: "button, push" },
-  { name: "Sleep", query: "sleep, NREM, REM" },
-] as const;
 
 /** Checks source label text against the committed keyword alternatives. */
 export function eventLabelMatches(labels: readonly string[], query: string): boolean {

@@ -10,7 +10,7 @@ File Dependencies: app/directory-event-client.ts, app/directory-import-filters.c
 import { useEffect, useRef, useState } from "react";
 import { directoryEventCache, filterDirectoryPlan, scanDirectoryEvents } from "./directory-event-client";
 import type { DirectoryImportPlan } from "./directory-import";
-import { eventKeywords } from "./event-keywords";
+import { COMMON_EVENT_KEYWORDS, eventKeywordPresetState, eventKeywords } from "./event-keywords";
 import "./directory-import-filters.css";
 
 /** Renders the directory import filters controls and their current state. */
@@ -21,6 +21,7 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
   onLoad: (plan: DirectoryImportPlan) => void;
 }) {
   const [open, setOpen] = useState(Boolean(plan.eventKeywordFilter));
+  const [presetsOpen, setPresetsOpen] = useState(false);
   const [keywords, setKeywords] = useState(plan.eventKeywordFilter ?? "");
   const [applied, setApplied] = useState<{ query: string; plan: DirectoryImportPlan; incomplete: number } | null>(null);
   const [checking, setChecking] = useState(false);
@@ -29,13 +30,15 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
   const [sourcePlan, setSourcePlan] = useState(plan);
   const scanRef = useRef<AbortController | null>(null);
   const total = plan.recordings.length;
-  const query = eventKeywords(keywords).join(", ");
+  const terms = eventKeywords(keywords);
+  const query = terms.join(", ");
   const ready = !query || applied?.query === query;
   const selected = query ? applied?.plan : plan;
 
   if (sourcePlan !== plan) {
     setSourcePlan(plan);
     setOpen(Boolean(plan.eventKeywordFilter));
+    setPresetsOpen(false);
     setKeywords(plan.eventKeywordFilter ?? "");
     const sameFolder = (sourcePlan.unfilteredRecordings ?? sourcePlan.recordings) === (plan.unfilteredRecordings ?? plan.recordings);
     if (!sameFolder || applied?.query !== eventKeywords(plan.eventKeywordFilter ?? "").join(", ")) setApplied(null);
@@ -52,6 +55,13 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
     scanRef.current?.abort();
     scanRef.current = null;
     setChecking(false);
+    setError("");
+  };
+
+  /** Updates the draft query and clears results from the previous keywords. */
+  const changeKeywords = (value: string) => {
+    setKeywords(value);
+    setApplied(null);
     setError("");
   };
 
@@ -100,20 +110,37 @@ export function DirectoryImportFilters({ plan, busy, onLoad, mode = "load" }: {
 
   return <>
     <button type="button" className="button secondary directory-import-filter-toggle" aria-expanded={open} disabled={busy}
-      onClick={() => { if (open) { cancel(); setKeywords(""); setApplied(null); if (mode === "update") onLoad({ ...plan, eventKeywordFilter: undefined }); } setOpen(!open); }}>
+      onClick={() => {
+        if (open) {
+          cancel();
+          changeKeywords("");
+          setPresetsOpen(false);
+          if (mode === "update") onLoad({ ...plan, eventKeywordFilter: undefined });
+        }
+        setOpen(!open);
+      }}>
       {open ? "Remove filters" : mode === "update" ? "Change folder filters" : "Add filters"}
     </button>
     {open && <div className="directory-import-filter">
       <label className="directory-filter-field">Include recordings with event labels matching
         <input type="search" value={keywords} disabled={busy || checking} placeholder="e.g. seizure, spike"
-          onChange={(event) => { setKeywords(event.target.value); setApplied(null); setError(""); }}
+          onChange={(event) => changeKeywords(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void apply(mode === "update"); } }} />
         <small>Separate keywords with commas. A recording is included if any keyword matches.</small>
       </label>
       <div className="directory-filter-actions">
+        <button type="button" className="button secondary" aria-expanded={presetsOpen} disabled={busy || checking}
+          onClick={() => setPresetsOpen((current) => !current)}>Common keywords</button>
         {mode === "load" && <button type="button" className="button secondary" disabled={busy || checking || !query} onClick={() => void apply()}>Apply filters</button>}
         {checking && <button type="button" className="button secondary" onClick={cancel}>Cancel check</button>}
       </div>
+      {presetsOpen && <div className="directory-filter-presets" role="group" aria-label="Common event keywords">
+        {COMMON_EVENT_KEYWORDS.map((preset) => {
+          const { selected, toggledQuery } = eventKeywordPresetState(terms, preset.query);
+          return <button key={preset.name} type="button" className="button secondary" disabled={busy || checking}
+            aria-pressed={selected} title={preset.query} onClick={() => changeKeywords(toggledQuery)}>{preset.name}</button>;
+        })}
+      </div>}
       {checking && <p role="status">Checking event labels… {checked}/{total} checked.</p>}
       {error && <p role="alert">{error}</p>}
       {ready && applied && <p role="status">{applied.plan.recordings.length} of {total} sessions match.

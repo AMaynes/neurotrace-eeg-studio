@@ -31,7 +31,9 @@ File Dependencies: None.
 .directory-filter-field input:disabled { opacity: .5; }
 .directory-import-filter > p { margin: 10px 0; font-size: 12px; }
 .directory-import-filter > [role="alert"] { color: var(--coral); }
-.directory-filter-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.directory-filter-actions:not(:empty) { margin-top: 10px; }
+.directory-filter-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.directory-filter-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.directory-filter-presets > .button { height: 28px; padding-inline: 9px; font-weight: 500; }
+.directory-filter-presets > .button[aria-pressed="true"] { border-color: var(--mint); color: var(--mint); background: var(--mint-dark); }
 .directory-filter-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 9px; }
 .directory-folder-filters { flex-shrink: 0; }
