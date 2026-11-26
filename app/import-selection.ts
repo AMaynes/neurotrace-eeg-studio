@@ -58,7 +58,7 @@ export function classifyRecordingSelection(files: readonly File[], fromDirectory
   if (!files.length && directory) {
     throw new DirectoryImportError("EMPTY_DIRECTORY", "The selected directory is empty. Choose a directory containing recordings.");
   }
-  if (directory && selectedFormat) return { kind: "directory", plan: planDirectoryImport(files, selectedFormat) };
+  if (directory && selectedFormat) return { kind: "directory", plan: planDirectoryImport(files, selectedFormat, { skipIncompletePairs: true }) };
   let edf = 0;
   let mat = 0;
   let dat = 0;
@@ -82,7 +82,7 @@ export function classifyRecordingSelection(files: readonly File[], fromDirectory
       .map((file) => file.webkitRelativePath || file.name);
     throw new DirectoryImportError("MIXED_FORMATS", "Collections support EDF, standalone MAT, or matching MAT + DAT pairs. Choose a supported type, then Files or Folder. Every session in a collection must use the same format.", paths);
   }
-  return { kind: "directory", plan: planDirectoryImport(files, format, { rejectOtherFormats: true }) };
+  return { kind: "directory", plan: planDirectoryImport(files, format, { rejectOtherFormats: true, skipIncompletePairs: directory }) };
 }
 
 interface DroppedEntry {

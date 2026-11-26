@@ -151,6 +151,8 @@ export interface DirectoryImportPlan {
   /** Keep the original filename namespace when matching saved reviews. */
   unfilteredRecordings?: readonly DirectoryRecording[];
   eventKeywordFilter?: string;
+  /** Files skipped in a MAT + DAT folder, with the expected sibling path. */
+  missingCompanions?: { filePath: string; expectedPath: string }[];
   /** Shared once, avoiding one full companion-file array per recording. */
   supportingFiles: File[];
 }

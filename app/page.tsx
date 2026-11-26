@@ -72,7 +72,7 @@ import { processDisplaySignalsOffThread } from "./display-processing-worker-clie
 import { describeRawDatLayout, parseRawDatChannelNames } from "./raw-dat-mapping";
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "./mat-import";
 import { DirectoryImportError, planDirectoryImport, directoryRecordingFiles, type DirectoryImportFormat, type DirectoryImportPlan, type DirectoryRecording } from "./directory-import";
-import { DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
+import { DirectoryPairFailures, DirectorySessions, type DirectorySessionStatus } from "./directory-sessions";
 import { DirectoryImportFilters } from "./directory-import-filters";
 import { directoryReviewCache, indexReviewRows, isReviewCsv, loadDirectoryReviewCsvs, reviewRowMatches } from "./directory-review-resume";
 import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab-layout";
@@ -6988,6 +6988,10 @@ export default function Home() {
         setStagedDirectoryPlan(selection.plan);
         setShowImport(true);
         folderIndexAbortRef.current?.abort();
+        if (!selection.plan.recordings.length) {
+          folderIndexAbortRef.current = null;
+          return;
+        }
         const controller = new AbortController();
         folderIndexAbortRef.current = controller;
         void scanDirectoryEvents(selection.plan, controller.signal, () => {}, false, true).catch(() => {});
@@ -9006,17 +9010,20 @@ export default function Home() {
                 <b>{importBusy ? "Opening…" : "Detected"}</b>
               </header>
               <div className="directory-import-summary" role="status">
-                <strong>{stagedDirectoryPlan.recordings.length} sessions found</strong>
-                <p>All recording filenames match {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : "paired MAT + DAT"}. File contents are checked when each session opens.</p>
-                <p>The first matching recording opens when you load the folder.</p>
+                {guidedImportReady ? <>
+                  <strong>{stagedDirectoryPlan.recordings.length} sessions found</strong>
+                  <p>Ready to open {stagedDirectoryPlan.format === "edf" ? "EDF / EDF+" : stagedDirectoryPlan.format === "mat" ? "standalone MAT" : "paired MAT + DAT"} recordings. File contents are checked when each session opens.</p>
+                  <p>The first matching recording opens when you load the folder.</p>
+                </> : <strong>No complete MAT + DAT pairs found</strong>}
+                <DirectoryPairFailures failures={stagedDirectoryPlan.missingCompanions} initiallyOpen />
               </div>
-                {stagedDirectoryPlan.format !== "neurotrace" && <div className="review-folder-setup">
+                {guidedImportReady && stagedDirectoryPlan.format !== "neurotrace" && <div className="review-folder-setup">
                   <small>{reviewerProfileId ? `Reviewing as ${reviewerProfileId}` : "Enter a reviewer ID above for autosave. Leave blank to browse."}</small>
                   <label><input type="checkbox" checked={startBlindReview} disabled={importBusy || folderPreparing} onChange={(event) => setStartBlindReview(event.target.checked)} /> Blind review (forward only)</label>
                   <label className="form-field"><span>Open workspace JSON (optional)</span><input type="file" accept=".json,application/json"
                     disabled={importBusy || folderPreparing} onChange={(event) => setPortableReviewFile(event.target.files?.[0] ?? null)} /></label>
                 </div>}
-                <DirectoryImportFilters plan={stagedDirectoryPlan} busy={importBusy} onLoad={submitGuidedImport} />
+                {guidedImportReady && <DirectoryImportFilters plan={stagedDirectoryPlan} busy={importBusy} onLoad={submitGuidedImport} />}
             </section>}
           </>}
           {uploadError && <div className="upload-error" role="alert" aria-live="assertive">

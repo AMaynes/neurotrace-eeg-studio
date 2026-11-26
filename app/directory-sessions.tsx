@@ -38,6 +38,30 @@ const STATUS_LABELS = {
   error: "Could not open this session",
 };
 
+/** Lists skipped MAT/DAT files in batches so large folders keep the dialog responsive. */
+export function DirectoryPairFailures({ failures, initiallyOpen = false }: {
+  failures: DirectoryImportPlan["missingCompanions"];
+  initiallyOpen?: boolean;
+}) {
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  if (!failures?.length) return null;
+  return <details className="directory-pair-failures" open={initiallyOpen}>
+    <summary>{failures.length.toLocaleString()} {failures.length === 1 ? "file" : "files"} skipped · missing MAT/DAT companion</summary>
+    <div className="directory-pair-failures-body">
+      <ul aria-label="Files missing a MAT or DAT companion">
+        {failures.slice(0, visibleCount).map(({ filePath, expectedPath }) => <li key={filePath}>
+          <strong>{filePath}</strong>
+          <span>Missing {expectedPath}</span>
+        </li>)}
+      </ul>
+      {visibleCount < failures.length && <button type="button" className="button secondary"
+        onClick={() => setVisibleCount((current) => current + PAGE_SIZE)}>
+        Show {Math.min(PAGE_SIZE, failures.length - visibleCount)} more skipped files
+      </button>}
+    </div>
+  </details>;
+}
+
 /** On-demand session catalog with a cancellable, metadata-only event-label index. */
 export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onClear, reviewMode, reviewProgress, canOpen, onFilter }: DirectorySessionsProps) {
   const fullPlan = useMemo(() => plan.unfilteredRecordings ? { ...plan, recordings: [...plan.unfilteredRecordings] } : plan, [plan]);
@@ -66,6 +90,7 @@ export function DirectorySessions({ plan, busy, statuses, onOpen, onClose, onCle
         <span>{loadedCount.toLocaleString()} open</span>
         {errorCount > 0 && <span>{errorCount.toLocaleString()} need attention</span>}
       </div>
+      <DirectoryPairFailures failures={plan.missingCompanions} />
       {onFilter && <section className="directory-folder-filters" aria-label="Folder filters">
         {plan.eventKeywordFilter && <p>Folder filter · {plan.eventKeywordFilter}</p>}
         <DirectoryImportFilters plan={fullPlan} busy={busy} mode="update" onLoad={onFilter} />

@@ -121,6 +121,7 @@ function harness(options = {}) {
     handleDroppedRecordingFiles: (...args) => actions.push(["dropped", ...args]),
     stageDetectedImport: (event) => actions.push(["detected", event]),
     SavedReviews: () => null,
+    DirectoryPairFailures: () => null,
     DirectoryImportFilters: filterExports.DirectoryImportFilters,
     submitGuidedImport: () => actions.push(["submit"]),
   };
@@ -138,6 +139,18 @@ function harness(options = {}) {
     welcome: () => evaluate(`const render = () => (${welcomeButton.getText(syntax)});`, "render()", env),
   };
 }
+
+test("an all-incomplete MAT/DAT folder displays its report without a load action", () => {
+  const missingCompanions = [{ filePath: "root/recording.dat", expectedPath: "root/recording.mat" }];
+  const ui = harness({ showImport: true, guidedImportReady: false,
+    stagedDirectoryPlan: { format: "mat-dat", recordings: [], supportingFiles: [], missingCompanions } });
+  const tree = ui.render();
+  assert.match(text(tree), /No complete MAT \+ DAT pairs found/);
+  assert.equal(elements(tree, (node) => node.props?.["data-tutorial"] === "import-open").length, 0);
+  const report = elements(tree, (node) => node.type === ui.env.DirectoryPairFailures)[0];
+  assert.equal(report.props.failures, missingCompanions);
+  assert.equal(report.props.initiallyOpen, true);
+});
 
 test("welcome offers file and folder selection before any optional format filter", () => {
   const ui = harness();

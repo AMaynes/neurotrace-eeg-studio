@@ -119,11 +119,29 @@ test("rejects cross-directory pairing even when basenames match", () => {
   assert.match(failure.message, /same folder/);
 });
 
-test("rejects orphan MATs and DATs instead of importing an incomplete subset", () => {
+test("strict selections reject incomplete pairs", () => {
   for (const orphan of ["orphan.mat", "orphan.dat"]) {
     const failure = expectError([fileAt("study/good.mat"), fileAt("study/good.dat"), fileAt(`study/${orphan}`)], "mat-dat", "MISSING_PAIR");
     assert.deepEqual(failure.paths, [`study/${orphan}`]);
   }
+});
+
+test("a MAT/DAT folder keeps complete pairs and reports all missing siblings", () => {
+  const mat = fileAt("study/complete/EEG.MAT");
+  const dat = fileAt("study/complete/eeg.dat");
+  const sidecar = fileAt("study/complete/notes.txt");
+  const orphans = [fileAt("study/day-1/EEG.MAT"), fileAt("study/day-2/EEG.DAT"), fileAt("study/extra.v2.dat")];
+  const plan = planDirectoryImport([orphans[2], mat, ...orphans.slice(0, 2), dat, sidecar], "mat-dat", { skipIncompletePairs: true });
+  assert.deepEqual(plan.recordings.map(recording => recording.files), [[mat, dat]]);
+  assert.deepEqual(plan.supportingFiles, [sidecar], "skipped recordings never become sidecars");
+  assert.deepEqual(plan.missingCompanions, [
+    { filePath: "study/day-1/EEG.MAT", expectedPath: "study/day-1/EEG.dat" },
+    { filePath: "study/day-2/EEG.DAT", expectedPath: "study/day-2/EEG.mat" },
+    { filePath: "study/extra.v2.dat", expectedPath: "study/extra.v2.mat" },
+  ]);
+  const empty = planDirectoryImport(orphans, "mat-dat", { skipIncompletePairs: true });
+  assert.deepEqual(empty.recordings, []);
+  assert.deepEqual(empty.missingCompanions, plan.missingCompanions);
 });
 
 test("requires exact pair basenames, never fuzzy matches", () => {

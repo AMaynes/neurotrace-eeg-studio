@@ -115,16 +115,21 @@ test("a selected folder format with no matches errors instead of silently openin
     assert.throws(() => classifyRecordingSelection(files, true, "edf"), (error) => error.code === "NO_RECORDINGS");
   }
   assert.throws(() => classifyRecordingSelection([], true, "edf"), (error) => error.code === "EMPTY_DIRECTORY");
-  assert.throws(() => classifyRecordingSelection([fileAt("a.mat"), fileAt("wrong.dat"), fileAt("other.edf")], true, "mat-dat"),
-    (error) => error.code === "MISSING_PAIR");
+  const incomplete = classifyRecordingSelection([fileAt("a.mat"), fileAt("wrong.dat"), fileAt("other.edf")], true, "mat-dat").plan;
+  assert.deepEqual(incomplete.recordings, []);
+  assert.deepEqual(incomplete.missingCompanions.map(({ filePath }) => filePath), ["a.mat", "wrong.dat"]);
 });
 test("DAT-only collections require MAT partners but single DAT is preserved", () => {
   expectError([fileAt("a.dat"), fileAt("b.dat")], false, "MISSING_PAIR");
-  expectError([fileAt("study/a.dat", true)], false, "MISSING_PAIR");
+  assert.deepEqual(classifyRecordingSelection([fileAt("study/a.dat", true)]).plan.missingCompanions, [
+    { filePath: "study/a.dat", expectedPath: "study/a.mat" },
+  ]);
   assert.equal(classifyRecordingSelection([fileAt("a.dat")]).kind, "files");
 });
 test("folder pairs require matching basename in the same directory", () => {
-  expectError([fileAt("study/day1/a.mat", true), fileAt("study/day2/a.dat", true)], false, "MISSING_PAIR");
+  const plan = classifyRecordingSelection([fileAt("study/day1/a.mat", true), fileAt("study/day2/a.dat", true)]).plan;
+  assert.deepEqual(plan.recordings, []);
+  assert.deepEqual(plan.missingCompanions.map(({ expectedPath }) => expectedPath), ["study/day1/a.dat", "study/day2/a.mat"]);
 });
 
 

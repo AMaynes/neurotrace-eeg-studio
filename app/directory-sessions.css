@@ -89,6 +89,23 @@ File Dependencies: None.
 .directory-sessions-summary strong { color: var(--mint); }
 .directory-sessions-summary span { font-variant-numeric: tabular-nums; }
 
+.directory-pair-failures {
+  flex-shrink: 0;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--gold);
+  font-size: 11px;
+}
+.directory-pair-failures > summary { cursor: pointer; font-weight: 650; }
+.directory-pair-failures-body { max-height: min(136px, 24vh); margin-top: 6px; overflow: auto; }
+.directory-pair-failures-body > ul { margin: 0; padding: 0; list-style: none; }
+.directory-pair-failures-body li { padding: 4px 0; overflow-wrap: anywhere; }
+.directory-pair-failures-body strong, .directory-pair-failures-body span { display: block; }
+.directory-pair-failures-body strong { color: var(--ink); }
+.directory-pair-failures-body span { color: var(--muted); }
+
 .directory-event-search { flex-shrink: 0; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .directory-event-search > label { font-size: 11px; color: var(--ink); }
 .directory-event-search-row { position: relative; display: flex; gap: 6px; margin: 6px 0; }

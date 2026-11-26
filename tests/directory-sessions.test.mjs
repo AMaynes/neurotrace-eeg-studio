@@ -83,6 +83,10 @@ function harness(count, options = {}) {
       for (const effect of effects.splice(0)) effect();
       return tree;
     },
+    renderPairFailures(props) {
+      cursor = 1; // DirectorySessions owns the first state slot in this harness.
+      return exports.DirectoryPairFailures(props);
+    },
     unmount() { for (const hook of hooks) hook?.cleanup?.(); },
     button(tree, label) {
       const found = elements(tree, (node) => node.type === "button" && node.props["aria-label"] === label)[0];
@@ -95,6 +99,23 @@ function harness(count, options = {}) {
     search(tree, query) { this.type(tree, query); this.button(this.render(), "Search event labels").props.onClick(); },
   };
 }
+
+test("loaded directories retain all skipped files and expose them in batches", () => {
+  const ui = harness(1);
+  ui.props.plan.missingCompanions = Array.from({ length: 53 }, (_, index) => ({
+    filePath: `folder/missing-${index}.dat`,
+    expectedPath: `folder/missing-${index}.mat`,
+  }));
+  const tree = ui.render();
+  const report = elements(tree, (node) => node.props?.failures)[0];
+  assert.equal(report.props.failures, ui.props.plan.missingCompanions);
+  let details = ui.renderPairFailures(report.props);
+  assert.equal(elements(details, (node) => node.type === "li").length, 50);
+  elements(details, (node) => node.type === "button")[0].props.onClick();
+  details = ui.renderPairFailures(report.props);
+  assert.equal(elements(details, (node) => node.type === "li").length, 53);
+  assert.ok(elements(details, (node) => node.type === "strong" && node.props.children === "folder/missing-52.dat").length);
+});
 
 test("directory catalog renders at most 50 entries and paginates without reading recordings", () => {
   const ui = harness(123);

@@ -22,6 +22,8 @@ export interface DirectoryImportPlan {
   /** Keep the original filename namespace when matching saved reviews. */
   unfilteredRecordings?: readonly DirectoryRecording[];
   eventKeywordFilter?: string;
+  /** Files skipped in a MAT + DAT folder, with the expected sibling path. */
+  missingCompanions?: { filePath: string; expectedPath: string }[];
   /** Shared once, avoiding one full companion-file array per recording. */
   supportingFiles: File[];
 }
@@ -112,10 +114,12 @@ function recordingEntry(primary: DirectoryFile, files: File[]): DirectoryRecordi
  * case); a similarly named file in another directory is never a substitute.
  * The chosen format filters out other recording families. Automatic detection
  * opts into rejecting mixed families so it cannot silently choose a subset.
- * Ambiguous selected paths and incomplete MAT + DAT pairs still fail before
- * opening any source. Non-recording companions are shared separately on the plan.
+ * Ambiguous selected paths fail before opening any source. Folder imports can
+ * retain complete pairs and report every missing companion in the plan.
  */
-export function planDirectoryImport(files: readonly File[], format: DirectoryImportFormat, options: { rejectOtherFormats?: boolean } = {}): DirectoryImportPlan {
+export function planDirectoryImport(files: readonly File[], format: DirectoryImportFormat,
+  options: { rejectOtherFormats?: boolean; skipIncompletePairs?: boolean } = {},
+): DirectoryImportPlan {
   if (!files.length) {
     throw new DirectoryImportError("EMPTY_DIRECTORY", "The selected directory is empty. Choose a directory containing recordings.");
   }
@@ -150,21 +154,27 @@ export function planDirectoryImport(files: readonly File[], format: DirectoryImp
     throw new DirectoryImportError("NO_RECORDINGS", `No ${FORMAT_LABELS[format]} ${format === "neurotrace" ? "projects" : "recordings"} were found in the selected directory.`);
   }
 
-  let recordings: DirectoryRecording[];
+  let recordings: DirectoryRecording[] = [];
+  const missingCompanions: NonNullable<DirectoryImportPlan["missingCompanions"]> = [];
   if (format === "mat-dat") {
-    const missing = sources.filter((entry) => !byPath.has(`${entry.stemKey}.${entry.extension === "dat" ? "mat" : "dat"}`));
-    if (missing.length) {
-      const paths = missing.map((entry) => entry.path);
+    for (const entry of sources) {
+      const partnerExtension = entry.extension === "dat" ? "mat" : "dat";
+      const partner = byPath.get(`${entry.stemKey}.${partnerExtension}`);
+      if (!partner) {
+        missingCompanions.push({ filePath: entry.path, expectedPath: entry.path.slice(0, -entry.extension.length) + partnerExtension });
+      } else if (entry.extension === "dat") {
+        // DAT is the waveform source; MAT supplies only that source's metadata.
+        recordings.push(recordingEntry(entry, [partner.file, entry.file]));
+      }
+    }
+    if (missingCompanions.length && !options.skipIncompletePairs) {
+      const paths = missingCompanions.map(({ filePath }) => filePath);
       throw new DirectoryImportError(
         "MISSING_PAIR",
         `Every MAT + DAT session needs one .mat and one .dat file with the same basename in the same folder (case-insensitive). Missing partners for ${describePaths(paths)}.`,
         paths,
       );
     }
-    // DAT is the waveform source; MAT supplies only that source's metadata.
-    recordings = sources.filter((entry) => entry.extension === "dat").map((entry) => (
-      recordingEntry(entry, [byPath.get(`${entry.stemKey}.mat`)!.file, entry.file])
-    ));
   } else {
     recordings = sources.map((entry) => recordingEntry(entry, [entry.file]));
   }
@@ -172,6 +182,7 @@ export function planDirectoryImport(files: readonly File[], format: DirectoryImp
   return {
     format,
     recordings,
+    ...(missingCompanions.length ? { missingCompanions } : {}),
     supportingFiles: entries.filter((entry) => !allowed.has(entry.extension)).map((entry) => entry.file),
   };
 }
