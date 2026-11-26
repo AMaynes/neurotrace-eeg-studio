@@ -11,6 +11,7 @@ export type RecordingSelection =
   | { kind: "files"; files: File[] };
 
 const OTHER_RECORDING_EXTENSIONS = new Set(["bdf", "set", "nwb", "vhdr", "vmrk", "eeg", "fdt", "mefd"]);
+const RECORDING_EXTENSIONS = new Set(["edf", "mat", "dat", ...OTHER_RECORDING_EXTENSIONS]);
 
 /** Returns the lowercase filename extension. */
 function extensionOf(file: File): string {
@@ -21,6 +22,26 @@ function extensionOf(file: File): string {
 export function isUnmappedDatSelection(files: readonly File[]): boolean {
   const dat = files.find((file) => extensionOf(file) === "dat");
   return Boolean(dat && !files.some((file) => file.name.toLowerCase() === dat.name.toLowerCase().replace(/\.dat$/, ".mat")));
+}
+
+/**
+ * Keeps a loose file preview only when a second selection completes its
+ * MAT/DAT pair. A complete pair or a selection of another recording replaces
+ * the old preview. Folder selections are planned independently.
+ */
+export function completeStagedMatDatSelection(staged: readonly File[], incoming: File[]): File[] {
+  if (incoming.some((file) => file.webkitRelativePath) || staged.some((file) => file.webkitRelativePath)) return incoming;
+  const stagedSources = staged.filter((file) => RECORDING_EXTENSIONS.has(extensionOf(file)));
+  const incomingSources = incoming.filter((file) => RECORDING_EXTENSIONS.has(extensionOf(file)));
+  if (stagedSources.length !== 1 || incomingSources.length !== 1) return incoming;
+  const [first] = stagedSources;
+  const [second] = incomingSources;
+  const extension = extensionOf(first);
+  if (extension !== "mat" && extension !== "dat") return incoming;
+  const companion = extension === "mat" ? "dat" : "mat";
+  if (second.name.toLowerCase() !== first.name.toLowerCase().replace(/\.(mat|dat)$/, `.${companion}`)) return incoming;
+  // Keep selected sidecars, taking the latest copy of any file reselected.
+  return [...new Map([...staged, ...incoming].map((file) => [file.name.toLowerCase(), file])).values()];
 }
 
 /**
@@ -52,7 +73,8 @@ export function classifyRecordingSelection(files: readonly File[], fromDirectory
   // A MAT and its DAT describe one session, not two. Sidecars never increase
   // the session count, and companion-only folders keep additive file import.
   const sessionCount = edf + Math.max(mat, dat) + otherRecordings;
-  if (!sessionCount || (!directory && sessionCount <= 1)) return { kind: "files", files: [...files] };
+  const mismatchedPair = mat === 1 && dat === 1 && isUnmappedDatSelection(files);
+  if (!sessionCount || (!directory && sessionCount <= 1 && !mismatchedPair)) return { kind: "files", files: [...files] };
 
   const format: DirectoryImportFormat | null = edf ? "edf" : dat ? "mat-dat" : mat ? "mat" : null;
   if (!format) {

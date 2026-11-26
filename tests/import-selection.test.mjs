@@ -7,7 +7,7 @@ File Dependencies: app/directory-import.ts, app/import-selection.ts.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DirectoryImportError } from "../app/directory-import.ts";
-import { classifyRecordingSelection, collectDroppedRecordingFiles } from "../app/import-selection.ts";
+import { classifyRecordingSelection, collectDroppedRecordingFiles, completeStagedMatDatSelection } from "../app/import-selection.ts";
 
 function fileAt(path, relative = false) {
   const file = new File([new Uint8Array(256)], path.split("/").at(-1));
@@ -47,8 +47,19 @@ test("a plain single recording remains a file selection without reading bytes", 
   }
 });
 test("one MAT + DAT pair with companions remains a single session", () => {
-  const files = [fileAt("one.mat"), fileAt("one.dat"), fileAt("one_events.tsv")];
+  const files = [fileAt("one.session.MAT"), fileAt("ONE.session.dat"), fileAt("one.session_events.tsv")];
   assert.deepEqual(classifyRecordingSelection(files), { kind: "files", files });
+  expectError([fileAt("one.session.mat"), fileAt("another.session.dat")], false, "MISSING_PAIR");
+});
+test("separate picks retain only a staged selection whose companion completes the pair", () => {
+  const mat = fileAt("recording.v2.MAT");
+  const dat = fileAt("Recording.v2.dat");
+  const events = fileAt("recording.v2_events.tsv");
+  assert.deepEqual(completeStagedMatDatSelection([mat, events], [dat]), [mat, events, dat]);
+  assert.deepEqual(completeStagedMatDatSelection([dat], [mat]), [dat, mat]);
+  assert.deepEqual(completeStagedMatDatSelection([mat, dat], [mat]), [mat]);
+  assert.deepEqual(completeStagedMatDatSelection([mat, events], [fileAt("other.dat")]).map(file => file.name), ["other.dat"]);
+  assert.deepEqual(completeStagedMatDatSelection([fileAt("day1/Recording.v2.dat", true)], [mat]), [mat]);
 });
 test("a folder containing one recording is detected from relative paths", () => {
   const file = fileAt("study/one.edf", true);

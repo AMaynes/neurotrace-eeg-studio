@@ -16,7 +16,7 @@ import ts from "typescript";
 import { inspectMatRecording, RawDatSource } from "../app/eeg-core.ts";
 import { mergeSelectedFiles, relativeFilePath } from "../app/bids-companions.ts";
 import { DirectoryImportError, directoryRecordingFiles, planDirectoryImport } from "../app/directory-import.ts";
-import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "../app/import-selection.ts";
+import { classifyRecordingSelection, collectDroppedRecordingFiles, completeStagedMatDatSelection, isUnmappedDatSelection } from "../app/import-selection.ts";
 import { adjacentDirectoryRecording } from "../app/directory-tab-layout.ts";
 import { MatDatImportError, pendingFilesForSelection, resolveMatDatImport } from "../app/mat-import.ts";
 import { legacyMatFile, standaloneMatFile } from "./fixtures/legacy-mat.mjs";
@@ -78,7 +78,8 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function stageHarness(format = null) {
   const calls = [];
-  const env = { importBusyRef: { current: false }, DirectoryImportError, classifyRecordingSelection, isUnmappedDatSelection,
+  const env = { importBusyRef: { current: false }, DirectoryImportError, classifyRecordingSelection, completeStagedMatDatSelection, isUnmappedDatSelection,
+    pendingImportFiles: [], pendingLegacyMatFile: null,
     directoryConfirmationRef: { current: { stale: true } },
     handleUploadedFiles: async (files) => { calls.push(files); } };
   state(env, "importChoice", format);
@@ -94,6 +95,31 @@ function stageHarness(format = null) {
     },
   };
 }
+
+test("the recording picker completes one loose MAT + DAT pair from successive selections", async () => {
+  const mat = legacyMatFile({ name: "Example.V1.MAT" });
+  const dat = new File([new Int16Array(157)], "example.v1.dat");
+  const matFirst = stageHarness();
+  matFirst.env.pendingDat = null;
+  await matFirst.stage([mat], false, null, true);
+  await matFirst.stage([dat], false, null, true);
+  assert.deepEqual(matFirst.env.stagedImportFiles, [mat, dat]);
+  assert.deepEqual(matFirst.calls, [], "the pair waits for the single Open selected files action");
+
+  const datFirst = stageHarness();
+  datFirst.env.pendingDat = null;
+  await datFirst.stage([dat], false, null, true);
+  assert.deepEqual(datFirst.calls, [[dat]], "a lone DAT offers manual mapping");
+  datFirst.env.pendingDat = dat;
+  datFirst.env.pendingImportFiles = [dat];
+  await datFirst.stage([legacyMatFile({ name: "other.mat" })], false, null, true);
+  assert.equal(datFirst.env.pendingDat, dat, "a wrong companion leaves the DAT available");
+  assert.match(datFirst.env.uploadError.message, /Choose example\.v1\.mat/);
+  await datFirst.stage([mat], false, null, true);
+  assert.deepEqual(datFirst.env.stagedImportFiles, [dat, mat]);
+  assert.equal(datFirst.env.pendingDat, null);
+  assert.equal(datFirst.env.uploadError, null);
+});
 
 test("directory selection auto-detects format and every nested session without opening recording bytes", async () => {
   const h = stageHarness();

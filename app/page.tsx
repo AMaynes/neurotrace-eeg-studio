@@ -79,7 +79,7 @@ import { adjacentDirectoryRecording, directoryTabHeaders } from "./directory-tab
 import { SessionTabTitle } from "./session-tab-title";
 import { WorkspaceTabs, ToolbarCustomizer } from "./workspace-navigation";
 import { WORKSPACE_TABS, INFO_TABS, LABEL_TABS, VIEW_TOOL_SECTIONS, WORKSPACE_TOOLS, isLabelToolbarTool, normalizeWorkspaceLayout, type WorkspaceTab, type InfoTab, type LabelTab, type ToolbarToolId, type WorkspaceToolId } from "./workspace-layout";
-import { classifyRecordingSelection, collectDroppedRecordingFiles, isUnmappedDatSelection } from "./import-selection";
+import { classifyRecordingSelection, collectDroppedRecordingFiles, completeStagedMatDatSelection, isUnmappedDatSelection } from "./import-selection";
 import { scanDirectoryEvents, findNextDirectoryEvent, nextTimedEvent } from "./directory-event-client";
 import type { DirectoryTimedEvent } from "./directory-event-index";
 import { edfRecordingLabels, mergeRecordingLabels, recordingLabelAnnotations, validRecordingLabel, type RecordingLabel } from "./recording-labels";
@@ -6963,7 +6963,16 @@ export default function Home() {
       }
       const recordingFiles = files.filter((file) => file !== reviewJson && file !== reviewCsv);
       if (!recordingFiles.length) { setShowImport(true); return; }
-      let selection = classifyRecordingSelection(recordingFiles, fromDirectory, selectedFormat);
+      const stagedFiles = pendingDat && !pendingLegacyMatFile
+        ? pendingImportFiles.filter((file) => !/\.mat$/i.test(file.name))
+        : stagedImportFiles;
+      const filesWithCompanion = fromDirectory ? recordingFiles : completeStagedMatDatSelection(stagedFiles, recordingFiles);
+      if (confirmSelection && pendingDat && !pendingLegacyMatFile && filesWithCompanion === recordingFiles
+        && recordingFiles.every((file) => /\.mat$/i.test(file.name))) {
+        const expected = pendingDat.name.replace(/\.dat$/i, ".mat");
+        throw new DirectoryImportError("MISSING_PAIR", `Choose ${expected} to match ${pendingDat.name}, or confirm the raw DAT layout below.`, recordingFiles.map((file) => file.name));
+      }
+      let selection = classifyRecordingSelection(filesWithCompanion, fromDirectory, selectedFormat);
       if (selection.kind === "files" && (reviewJson || portableReviewFile || importedCsv) && selection.files.some((file) => SUPPORTED_RECORDING_EXTENSIONS.has(recordingExtension(file)))) {
         const primary = choosePrimaryRecording(selection.files)!;
         const extension = recordingExtension(primary);
@@ -8950,8 +8959,8 @@ export default function Home() {
             ? "The signal bytes are ready. Confirm the recording details before NeuroTrace opens them."
             : "Choose files or a folder. NeuroTrace detects the recording format from your selection."}</p>
           {folderPreparing && <div className="folder-loading" role="status" aria-live="polite"><span className="loading-spinner" />Loading…</div>}
+          <input ref={guidedFilesInputRef} hidden type="file" multiple disabled={importBusy || folderPreparing} onChange={stageDetectedImport} />
           {!pendingDat && <>
-            <input ref={guidedFilesInputRef} hidden type="file" multiple disabled={importBusy || folderPreparing} onChange={stageDetectedImport} />
             <input ref={(element) => { guidedDirectoryInputRef.current = element; if (element) element.webkitdirectory = true; }} hidden type="file" multiple disabled={importBusy || folderPreparing} onChange={stageDetectedImport} />
             <section className="recording-import-actions" data-tutorial="import-files" aria-label="Choose files or folder">
               <div>
@@ -8974,10 +8983,11 @@ export default function Home() {
             </div>
             <div className="recording-import-drop-hint">
               <strong>Or drop files or a folder here</strong>
-              <p>For MAT + DAT, select both matching files or their folder.</p>
+              <p>For MAT + DAT, choose files with the same name before the extension, or choose their folder.</p>
             </div>
             {stagedImportFiles.length > 0 && <section className="guided-import" aria-label="Detected files">
-              <header><strong>Ready to open</strong><b>{importBusy ? "Opening…" : "Detected"}</b></header>
+              <header><strong>{stagedImportFiles.some((file) => /\.dat$/i.test(file.name)) && stagedImportFiles.some((file) => /\.mat$/i.test(file.name))
+                ? "MAT + DAT pair detected" : "Ready to open"}</strong><b>{importBusy ? "Opening…" : "Detected"}</b></header>
               <div className="directory-import-summary"><ul aria-label="Selected files">
                 {stagedImportFiles.slice(0, 5).map((file, index) => <li key={index}>{file.name}</li>)}
               </ul>{stagedImportFiles.length > 5 && <small>And {stagedImportFiles.length - 5} more files.</small>}</div>
@@ -9016,6 +9026,8 @@ export default function Home() {
           </div>}
           {pendingDat && <div className="dat-mapper">
             <div><span className="file-type">DAT</span><div><strong>{pendingDat.name}</strong><small>Signed int16 · little-endian</small></div></div>
+            {!pendingLegacyMatFile && <button type="button" className="button secondary"
+              disabled={importBusy || folderPreparing} onClick={() => openImportPicker("files")}>Choose matching MAT</button>}
             <p>{pendingLegacyMeta ? `Companion MAT metadata found ${pendingLegacyMeta.channelLabels.length || pendingLegacyMeta.channelCount || 0} channels and ${pendingLegacyMeta.recordingLabels.length} recording labels. All valid labels will be imported automatically, including non-seizure markers and repeated occurrences. They remain unreviewed. ${datMapping.channelCount < 100 ? "The separate MATLAB seizure-review workflow requires 100 channels; automatic label import does not. " : ""}Confirm the timing and scale below.` : "Enter and confirm the raw binary layout. Zero means the timing/channel mapping is still unknown; the recording cannot open until those fields are verified."}</p>
             <div className="mapper-fields"><label><span>Sample rate</span><input type="number" value={datMapping.sampleRate} onChange={(event) => setDatMapping((current) => ({ ...current, sampleRate: Number(event.target.value) }))} /><small>Hz</small></label><label><span>Channels</span><input type="number" value={datMapping.channelCount} onChange={(event) => setDatMapping((current) => ({ ...current, channelCount: Number(event.target.value) }))} /></label><label><span>Scale (optional)</span><input type="number" step="0.001" min="0.000001" placeholder="Raw counts" value={datMapping.physicalScale} onChange={(event) => setDatMapping((current) => ({ ...current, physicalScale: event.target.value === "" ? "" : Number(event.target.value) }))} /><small>µV/count</small></label></div>
             <p className="dat-scale-note">Use sessionInfo.sFile.header.sample_rate and num_channels. DAT bytes do not contain these values; do not use LoadBinary&apos;s defaults unless independently confirmed. Layout: channel 1, channel 2, … for each sample; int16, little-endian, no header.</p>

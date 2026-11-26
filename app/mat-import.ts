@@ -46,7 +46,8 @@ export function pendingFilesForSelection(pending: readonly File[], incoming: rea
 }
 
 /**
- * Matches case-insensitive basenames, preferring siblings in a selected folder.
+ * Matches case-insensitive basenames in the same folder when paths are known.
+ * A loose file selection can supply a companion whose parent path is hidden.
  * Multiple equally plausible matches require the user to select an exact pair.
  */
 export function findMatDatCompanion(file: File, files: readonly File[], extension: "mat" | "dat"): File | null {
@@ -57,7 +58,9 @@ export function findMatDatCompanion(file: File, files: readonly File[], extensio
   const siblings = matches.filter((candidate) =>
     relativeFilePath(candidate).replace(/[^/]*$/, "").toLowerCase() === directory,
   );
-  const preferred = siblings.length ? siblings : matches;
+  const preferred = siblings.length
+    ? siblings
+    : matches.filter((candidate) => !directory || !relativeFilePath(candidate).includes("/"));
   if (preferred.length > 1) {
     throw new MatDatImportError("Ambiguous MAT + DAT pair", "More than one matching companion was selected. Choose only the MAT and DAT for this recording, or select their containing folder.");
   }

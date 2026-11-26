@@ -155,6 +155,9 @@ test("folder pairing prefers a sibling and rejects ambiguous basename-only match
   const sibling = withPath(datFile(), "root/session/synthetic.dat");
   const other = withPath(datFile(), "root/other/synthetic.dat");
   assert.equal(findMatDatCompanion(mat, [other, sibling], "dat"), sibling);
+  assert.equal(findMatDatCompanion(mat, [other], "dat"), null, "a known different parent is never a match");
+  const loose = datFile();
+  assert.equal(findMatDatCompanion(mat, [other, loose], "dat"), loose);
   assert.equal(findMatDatCompanion(legacyMatFile(), [sibling], "dat"), sibling);
   assert.throws(() => findMatDatCompanion(legacyMatFile(), [sibling, other], "dat"), /More than one matching companion/);
 });
